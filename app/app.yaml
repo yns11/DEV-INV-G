@@ -56,7 +56,7 @@ env:
   - name: INV_LAKEBASE_BRANCH
     value: "projects/inventaire/branches/production"
 
-  # Lakebase connection variables (PGHOST / PGDATABASE / PGUSER / PGPORT,
-  # LAKEBASE_ENDPOINT and, for password auth, PGPASSWORD) are injected
-  # automatically once the `postgres` resource is attached to the app. Do not
-  # declare them here.
+  # Lakebase connection variables (PGHOST / PGDATABASE / PGUSER / PGPORT /
+  # PGSSLMODE / PGAPPNAME) are injected automatically once the `postgres`
+  # resource is attached to the app. Do not declare them here. The endpoint's
+  # resource path is NOT among them, hence INV_LAKEBASE_BRANCH above.

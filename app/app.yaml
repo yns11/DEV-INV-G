@@ -7,23 +7,20 @@
 #
 # Port/host rules (the #1 cause of 502 Bad Gateway):
 #   * bind to 0.0.0.0 — never localhost/127.0.0.1
-#   * use ${DATABRICKS_APP_PORT} — never a hard-coded port
+#   * use DATABRICKS_APP_PORT — never a hard-coded port
 # A single process serves both the JSON API and the pre-built React SPA, because
 # only one service may bind to DATABRICKS_APP_PORT.
+#
+# `main.py` starts uvicorn itself and reads the port from the environment. The
+# uvicorn options (single worker, 75 s keep-alive, no access log) live there, so
+# both files stay short and cannot drift apart. Writing the command as
+# `uvicorn ... --port ${DATABRICKS_APP_PORT}` would work here but breaks the
+# identical block in databricks.yml, where `${...}` is bundle interpolation.
 # =============================================================================
 
 command:
-  - uvicorn
-  - main:app
-  - --host
-  - "0.0.0.0"
-  - --port
-  - "${DATABRICKS_APP_PORT}"
-  - --workers
-  - "1"                       # keep 1: the app holds a shared Lakebase pool in-process
-  - --timeout-keep-alive
-  - "75"
-  - --no-access-log           # access logs are emitted by our own middleware as JSON
+  - python
+  - main.py
 
 env:
   # --- Resource bindings (resolved by the platform, never hard-code IDs) ------

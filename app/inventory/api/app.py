@@ -75,9 +75,19 @@ def _configure_logging(level: str) -> None:
     root.handlers = [handler]
     root.setLevel(level.upper())
     # uvicorn's own access log is replaced by our middleware, which knows the
-    # request id and the acting user.
-    logging.getLogger("uvicorn.access").handlers = []
-    logging.getLogger("uvicorn.error").handlers = [handler]
+    # request id and the acting user. Silence it at the source rather than
+    # letting it propagate to the root handler.
+    access = logging.getLogger("uvicorn.access")
+    access.handlers = []
+    access.propagate = False
+    # uvicorn.error carries the start-up and shutdown lines, which we do want —
+    # but only once. Clearing its handlers lets the record reach the root
+    # handler installed above; adding a handler here as well would print every
+    # line twice, doubling the log volume on a platform that only captures
+    # stdout.
+    uvicorn_error = logging.getLogger("uvicorn.error")
+    uvicorn_error.handlers = []
+    uvicorn_error.propagate = True
 
 
 # --------------------------------------------------------------------------- #

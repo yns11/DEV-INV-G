@@ -716,7 +716,7 @@ Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur
 
 | Symptôme | Cause probable | Correction |
 |---|---|---|
-| **502 Bad Gateway** | L'app n'écoute pas sur `DATABRICKS_APP_PORT`, ou sur `localhost` | Vérifiez `app.yaml` : `--host 0.0.0.0 --port ${DATABRICKS_APP_PORT}` |
+| **502 Bad Gateway** | L'app n'écoute pas sur `DATABRICKS_APP_PORT`, ou sur `localhost` | La commande est `python main.py` ; `main.py` lit `DATABRICKS_APP_PORT` et se lie à `0.0.0.0`. Vérifiez la ligne `Uvicorn running on http://0.0.0.0:<port>` dans les logs |
 | `ModuleNotFoundError` au démarrage | Dépendance absente de `app/requirements.txt` | Ajoutez-la et redéployez ; aucun paquet système n'est installable |
 | `/api/health` → `ready: false` | Lakebase non attaché ou permissions manquantes | Vérifiez la ressource `postgres` et `CAN_CONNECT_AND_CREATE` |
 | `Lakebase n'est pas configuré` | `PGHOST` / `PGDATABASE` / `PGUSER` absents | La ressource `postgres` n'est pas attachée à l'app |
@@ -727,6 +727,7 @@ Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur
 | `cycle detected in field resolution: variables.X.default -> var.X -> var.X` | Une cible redéclare `X: ${var.X}` | Supprimez l'override : une variable ne peut pas se référencer elle-même (§4.1) |
 | `no value assigned to required variable warehouse_id` au `deploy` alors que le `validate` passait | `--var` n'a été passé qu'au `validate` | Répétez `--var` sur chaque commande, ou utilisez `variable-overrides.json` (§4.1) |
 | `Invalid SQL warehouse resource sql-warehouse: ID  is invalid` (400) | Valeur **vide** transmise à `warehouse_id` : la variable du shell référencée par `--var` n'était pas définie | Le `validate` ne détecte pas ce cas. Vérifiez la variable, ou passez au fichier d'override / au `lookup` par nom (§4.1) |
+| `invalid dependency "${DATABRICKS_APP_PORT}", no such node ""` | `${...}` est aussi la syntaxe d'interpolation du bundle : le résolveur cherche ce nom dans l'arbre du bundle | Ne mettez aucune variable d'exécution dans `config.command`. La commande est `python main.py`, et `main.py` lit le port depuis l'environnement. Non détecté par `validate` |
 | `password authentication failed` après ~1 h | Jeton Lakebase expiré | Normalement géré automatiquement ; si cela persiste, redémarrez l'app et ouvrez un ticket |
 | **404 sur toutes les pages sauf `/api/...`** | SPA non construite | `make build-frontend` puis redéployez ; `app/static/index.html` doit exister |
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |

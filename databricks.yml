@@ -87,18 +87,15 @@ resources:
             permission: CAN_CONNECT_AND_CREATE
 
       config:
+        # `main.py` starts uvicorn itself, reading DATABRICKS_APP_PORT from the
+        # environment. Spelling the port here as `${DATABRICKS_APP_PORT}` would
+        # collide with the bundle's own `${...}` interpolation: the resolver
+        # looks the name up in the bundle tree and aborts the deployment with
+        # `invalid dependency "${DATABRICKS_APP_PORT}", no such node ""`.
+        # `bundle validate` does not catch it — only `apps deploy` does.
         command:
-          - uvicorn
-          - main:app
-          - --host
-          - "0.0.0.0"
-          - --port
-          - "${DATABRICKS_APP_PORT}"
-          - --workers
-          - "1"
-          - --timeout-keep-alive
-          - "75"
-          - --no-access-log
+          - python
+          - main.py
         env:
           # In databricks.yml the field is snake_case (`value_from`); the CLI
           # silently ignores the camelCase `valueFrom` spelling used by

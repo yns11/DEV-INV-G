@@ -25,7 +25,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import get_settings
@@ -262,6 +262,9 @@ def create_app() -> FastAPI:
             "env": settings.env,
             "lakebaseConfigured": settings.lakebase_configured,
             "warehouseConfigured": bool(settings.warehouse_id),
+            # False means the deployment shipped without `app/static/`, i.e.
+            # the API answers but the browser gets no interface.
+            "frontendBuilt": STATIC_DIR.exists(),
             "llmEndpoint": settings.llm_endpoint,
             "startupError": getattr(app.state, "startup_error", None),
         }
@@ -307,6 +310,41 @@ def create_app() -> FastAPI:
     return app
 
 
+#: Shown at ``/`` when the SPA was never built. ``app/static/`` is generated,
+#: so it is git-ignored and absent from a fresh clone: forgetting the build
+#: step ships a working API with no interface. Without this page the browser
+#: gets FastAPI's bare ``{"detail":"Not Found"}``, which says nothing about the
+#: cause — and the app is otherwise healthy, so nothing else raises the alarm.
+_NO_FRONTEND_PAGE = """<!doctype html>
+<html lang="fr"><meta charset="utf-8">
+<title>Interface non construite — Campagnes Inventaire</title>
+<style>
+ body{font:16px/1.6 system-ui,sans-serif;margin:0;display:grid;place-items:center;
+      min-height:100vh;background:#0f172a;color:#e2e8f0}
+ main{max-width:44rem;padding:2rem}
+ h1{font-size:1.4rem;margin:0 0 .5rem}
+ code,pre{background:#1e293b;border-radius:6px}
+ code{padding:.1rem .35rem}
+ pre{padding:1rem;overflow-x:auto}
+ a{color:#7dd3fc}
+</style>
+<main>
+ <h1>L'API fonctionne, l'interface n'a pas été construite</h1>
+ <p>Le dossier <code>app/static/</code> est absent de ce déploiement. Il est
+    généré à partir de <code>frontend/</code> et exclu du dépôt&nbsp;: il faut
+    donc le construire <em>avant</em> chaque déploiement.</p>
+ <pre>cd frontend
+npm ci
+npm run build          # écrit app/static/
+databricks apps deploy -t prod --profile PROD</pre>
+ <p>Sous Linux ou macOS, <code>make deploy</code> enchaîne les deux étapes.
+    L'API reste utilisable en attendant&nbsp;:
+    <a href="/api/health">/api/health</a> ·
+    <a href="/api/docs">/api/docs</a></p>
+</main></html>
+"""
+
+
 def _mount_spa(app: FastAPI) -> None:
     """Serve the built React app, with client-side routing support."""
     if not STATIC_DIR.exists():
@@ -314,6 +352,18 @@ def _mount_spa(app: FastAPI) -> None:
             "No built frontend at %s — API only. Run `make build-frontend`.",
             STATIC_DIR,
         )
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def missing_frontend(full_path: str) -> Any:
+            if full_path.startswith("api/"):
+                return JSONResponse(
+                    status_code=404,
+                    content={"code": "not_found", "message": "Route API inconnue.",
+                             "details": {"path": f"/{full_path}"}},
+                )
+            # 503, not 404: the route exists, its payload is missing.
+            return HTMLResponse(_NO_FRONTEND_PAGE, status_code=503)
+
         return
 
     assets = STATIC_DIR / "assets"

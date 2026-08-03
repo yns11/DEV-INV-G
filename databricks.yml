@@ -157,12 +157,15 @@ resources:
       queue:
         enabled: true
 
+# Targets deliberately declare no `variables:` overrides. Restating a variable
+# as `warehouse_id: ${var.warehouse_id}` makes it depend on itself, which the
+# CLI rejects at deploy time ("cycle detected in field resolution"). Supply the
+# values per environment with `--var=` / `BUNDLE_VAR_*` instead (§4.1 of the
+# deployment guide), or hard-code an environment-specific value here.
 targets:
   dev:
     default: true
     mode: development
-    variables:
-      warehouse_id: ${var.warehouse_id}
   prod:
     mode: production
     # `mode: production` requires an explicit, single-copy root path; recent
@@ -170,5 +173,3 @@ targets:
     # CLI would derive by default, spelled out.
     workspace:
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
-    variables:
-      warehouse_id: ${var.warehouse_id}

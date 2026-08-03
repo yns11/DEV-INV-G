@@ -323,25 +323,55 @@ make check     # les deux
 
 ### 4.1 Renseigner les variables du bundle
 
-Créez `databricks.yml.local` **ou** exportez les variables (elles ne doivent
-jamais être committées) :
+Seul `warehouse_id` n'a pas de valeur par défaut ; les autres variables ne se
+renseignent que pour s'écarter des défauts de `databricks.yml`.
+
+**Méthode recommandée — un fichier d'override par cible.** Les valeurs sont
+lues automatiquement par *toutes* les commandes du bundle (`validate`,
+`deploy`, `run`), sans drapeau à répéter. `.databricks/` est ignoré par Git,
+rien n'est donc committé.
+
+```bash
+mkdir -p .databricks/bundle/prod
+cat > .databricks/bundle/prod/variable-overrides.json <<'JSON'
+{
+  "warehouse_id":      "4b9b953939869799",
+  "llm_endpoint":      "databricks-claude-sonnet-4-5",
+  "lakebase_project":  "inventaire",
+  "lakebase_branch":   "production",
+  "lakebase_database": "databricks-postgres",
+  "uc_catalog":        "emotors_data_champions"
+}
+JSON
+```
+
+**Alternatives** — variables d'environnement, ou drapeaux en ligne de commande :
 
 ```bash
 export BUNDLE_VAR_warehouse_id="$WAREHOUSE_ID"
 export BUNDLE_VAR_llm_endpoint="$LLM_ENDPOINT"
-export BUNDLE_VAR_lakebase_project="inventaire"
-export BUNDLE_VAR_lakebase_branch="production"
-export BUNDLE_VAR_lakebase_database="databricks-postgres"
-export BUNDLE_VAR_uc_catalog="emotors_data_champions"
-```
 
-Alternative — passer les variables en ligne de commande :
-
-```bash
 databricks bundle validate -t prod --profile PROD \
-  --var="warehouse_id=$WAREHOUSE_ID" \
-  --var="llm_endpoint=$LLM_ENDPOINT"
+  --var="warehouse_id=$WAREHOUSE_ID"
 ```
+
+> ⚠️ Les deux alternatives ci-dessus valent **pour une seule commande** :
+> `--var` doit être répété à l'identique sur `validate` **et** sur
+> `apps deploy`. C'est la source d'erreur la plus fréquente — un `validate`
+> vert suivi d'un `deploy` qui échoue sur
+> `no value assigned to required variable warehouse_id`.
+>
+> ⚠️ Sous PowerShell, une variable non définie s'étend en chaîne **vide** sans
+> avertissement : `--var="lakebase_branch=$lakebase_branch"` écrase alors le
+> défaut `production` par du vide, et l'app est déployée avec une ressource
+> Lakebase invalide. Vérifiez vos variables (`echo $env:WAREHOUSE_ID`) ou
+> passez par le fichier d'override, qui ne souffre pas de ce problème.
+
+> 🚫 Ne redéclarez **jamais** une variable dans un `targets:` en la faisant
+> pointer sur elle-même (`warehouse_id: ${var.warehouse_id}`) : le CLI y voit
+> une dépendance circulaire et refuse de déployer
+> (`cycle detected in field resolution`). Dans un `targets:`, n'inscrivez
+> qu'une valeur littérale propre à cet environnement.
 
 ### 4.2 Construire la SPA
 
@@ -674,6 +704,8 @@ Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur
 | `unknown field: branch` au `bundle validate` | Idem — clé `database` au lieu de `postgres` | Voir §2.3 |
 | `Use 'value_from' instead of 'valueFrom'` | `databricks.yml` attend le snake_case | `value_from` dans `databricks.yml`, `valueFrom` dans `app.yaml` |
 | `path ... is not contained in sync root path` | Chemin de fichier remontant au-dessus de la racine du bundle | Les chemins de `databricks.yml` sont relatifs à son propre répertoire : `./jobs/...`, jamais `../jobs/...` |
+| `cycle detected in field resolution: variables.X.default -> var.X -> var.X` | Une cible redéclare `X: ${var.X}` | Supprimez l'override : une variable ne peut pas se référencer elle-même (§4.1) |
+| `no value assigned to required variable warehouse_id` au `deploy` alors que le `validate` passait | `--var` n'a été passé qu'au `validate` | Répétez `--var` sur chaque commande, ou utilisez `variable-overrides.json` (§4.1) |
 | `password authentication failed` après ~1 h | Jeton Lakebase expiré | Normalement géré automatiquement ; si cela persiste, redémarrez l'app et ouvrez un ticket |
 | **404 sur toutes les pages sauf `/api/...`** | SPA non construite | `make build-frontend` puis redéployez ; `app/static/index.html` doit exister |
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |

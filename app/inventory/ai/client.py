@@ -75,7 +75,16 @@ class LlmClient:
     # ------------------------------------------------------------------ setup
 
     def _openai(self) -> Any:
-        """Lazily build the OpenAI-compatible client bound to the workspace."""
+        """Lazily build the OpenAI-compatible client bound to the workspace.
+
+        ``get_open_ai_client()`` imports the ``openai`` package and raises
+        ``ImportError`` when it is absent — which is why ``openai`` is a
+        declared runtime dependency even though this project never imports it
+        directly. The helper is deprecated in favour of ``databricks-openai``;
+        it still works, and migrating means taking on the auth plumbing it
+        currently handles (host resolution and OAuth refresh), so the swap is
+        deliberately deferred until that package is required for something else.
+        """
         if self._client is None:
             try:
                 from databricks.sdk import WorkspaceClient

@@ -19,16 +19,22 @@ pydantic-settings~=2.6.0
 
 # --- Databricks platform -----------------------------------------------------
 databricks-sdk>=0.81,<1.0       # WorkspaceClient + w.postgres (Lakebase Autoscaling)
-databricks-sql-connector~=3.4.0 # Delta / Unity Catalog reads through a SQL warehouse
+openai~=1.54                    # required by WorkspaceClient().serving_endpoints
+                                # .get_open_ai_client(): the SDK imports `openai`
+                                # and raises ImportError without it. Pulls httpx.
+#
+# NOT declared here: databricks-sql-connector. Nothing in the app imports it —
+# cross-campaign Delta reads run in the Lakeflow job (Spark, jobs/), not in the
+# app process. It also caps numpy below 2.0 up to and including 3.7.x, which is
+# incompatible with the pins below and makes the whole install unresolvable. If
+# a warehouse-backed read is ever added to the app, require version >= 4.
 
 # --- Lakebase (PostgreSQL OLTP) ---------------------------------------------
 psycopg[binary,pool]~=3.2.0     # psycopg 3: native connection pool + pipeline mode
-SQLAlchemy~=2.0.36              # used only for the migration bookkeeping + query building
 
 # --- Data / analytics --------------------------------------------------------
 numpy~=2.1.0
 pandas~=2.2.0
-pyarrow~=17.0.0
 scikit-learn~=1.5.0
 scipy~=1.14.0
 
@@ -37,9 +43,6 @@ openpyxl~=3.1.5                 # .xlsx read (ERP exports) and write (downloads)
 XlsxWriter~=3.2.0               # fast streaming .xlsx writer for large exports
 reportlab~=4.2.0                # printable counting sheets (PDF)
 pypdf~=5.1.0                    # split / inspect uploaded scanned sheets
-pillow~=11.0.0                  # image normalisation before sending scans to the LLM
 
 # --- Misc --------------------------------------------------------------------
-httpx~=0.27.0
-tenacity~=9.0.0                 # retry policy for warehouse / serving-endpoint calls
-python-dateutil~=2.9.0
+tenacity~=9.0.0                 # retry policy for serving-endpoint calls

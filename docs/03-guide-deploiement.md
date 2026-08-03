@@ -416,6 +416,17 @@ dir app\static\index.html   # doit exister
 > Un déploiement sans ce dossier réussit et l'app démarre : seule l'interface
 > manque. Elle répond alors **503** avec une page qui explique quoi faire, et
 > `/api/health` renvoie `"frontendBuilt": false`.
+>
+> ⚠️ Construire la SPA ne suffit pas si le bundle ne la téléverse pas. La
+> synchronisation d'un Asset Bundle **applique `.gitignore`**, où `app/static/`
+> figure puisqu'il s'agit d'un produit de compilation. `databricks.yml` le
+> réadmet explicitement via `sync.include` ; ne retirez pas ce bloc. Pour
+> vérifier ce qui part réellement :
+>
+> ```bash
+> databricks bundle sync --dry-run --full -t prod --profile PROD -o json \
+>   | grep '"type":"complete"'
+> ```
 
 ### 4.3 Valider
 
@@ -743,7 +754,7 @@ Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur
 | `Invalid SQL warehouse resource sql-warehouse: ID  is invalid` (400) | Valeur **vide** transmise à `warehouse_id` : la variable du shell référencée par `--var` n'était pas définie | Le `validate` ne détecte pas ce cas. Vérifiez la variable, ou passez au fichier d'override / au `lookup` par nom (§4.1) |
 | `invalid dependency "${DATABRICKS_APP_PORT}", no such node ""` | `${...}` est aussi la syntaxe d'interpolation du bundle : le résolveur cherche ce nom dans l'arbre du bundle | Ne mettez aucune variable d'exécution dans `config.command`. La commande est `python main.py`, et `main.py` lit le port depuis l'environnement. Non détecté par `validate` |
 | `Error installing packages. Please check /logz for more details` | Conflit de dépendances dans `app/requirements.txt` — le message de l'app ne dit pas lequel | Reproduisez-le localement, où pip nomme le coupable : `pip install --dry-run -r app/requirements.txt` |
-| Page « L'API fonctionne, l'interface n'a pas été construite » (503), ou `{"detail":"Not Found"}` sur les versions antérieures | `app/static/` absent du déploiement : le dossier est généré et exclu du dépôt | Construisez la SPA puis redéployez (§4.2). Contrôle : `/api/health` → `"frontendBuilt"` |
+| Page « L'API fonctionne, l'interface n'a pas été construite » (503), ou `{"detail":"Not Found"}` sur les versions antérieures | `app/static/` absent du déploiement | Deux causes distinctes : la SPA n'a pas été construite, **ou** elle l'a été mais le bundle ne la téléverse pas (`.gitignore` s'applique à la synchronisation — d'où le bloc `sync.include` de `databricks.yml`). Contrôlez l'un avec `dir app\static\index.html`, l'autre avec `databricks bundle sync --dry-run --full -o json` (§4.2) |
 | `password authentication failed` après ~1 h | Jeton Lakebase expiré | Normalement géré automatiquement ; si cela persiste, redémarrez l'app et ouvrez un ticket |
 | **404 sur toutes les pages sauf `/api/...`** | SPA non construite | `make build-frontend` puis redéployez ; `app/static/index.html` doit exister |
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |

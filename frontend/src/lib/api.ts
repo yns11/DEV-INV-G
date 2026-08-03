@@ -1,0 +1,418 @@
+/**
+ * Typed HTTP client.
+ *
+ * One place that knows the URL shapes and the error contract, so every screen
+ * gets the same behaviour: a failed call raises an `ApiError` carrying the
+ * backend's stable `code`, its human-readable French `message` and its details.
+ * Components render `error.message` directly — the backend already writes for
+ * the end user, so the UI never has to invent a message.
+ */
+
+import type {
+  AggregateRow,
+  Analytics,
+  Arbitration,
+  AssignableCause,
+  AuditEvent,
+  Campaign,
+  CauseSplit,
+  ConsolidationLine,
+  ControlsPayload,
+  Finding,
+  GridContract,
+  Health,
+  ImportPreview,
+  ImportResult,
+  Journal,
+  JournalDetail,
+  JournalStatus,
+  Kpis,
+  LocationStatus,
+  Me,
+  Overview,
+  SheetStatus,
+  Threshold,
+  TransitionReadiness,
+  VarianceRow,
+  WipBreakdownRow,
+  WipWithoutBom,
+  Zone,
+} from './types'
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+
+  /** Blocking findings returned by a refused transition or consolidation. */
+  get findings(): Finding[] {
+    const raw = this.details.findings ?? this.details.blockers
+    return Array.isArray(raw) ? (raw as Finding[]) : []
+  }
+}
+
+const BASE = '/api'
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: {
+      Accept: 'application/json',
+      ...(init.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      ...init.headers,
+    },
+  })
+
+  if (!response.ok) {
+    let code = 'http_error'
+    let message = `Erreur ${response.status}`
+    let details: Record<string, unknown> = {}
+    try {
+      const payload = await response.json()
+      code = payload.code ?? code
+      message = payload.message ?? message
+      details = payload.details ?? {}
+    } catch {
+      /* a non-JSON body (proxy timeout, HTML error page) keeps the defaults */
+    }
+    throw new ApiError(response.status, code, message, details)
+  }
+
+  if (response.status === 204) return undefined as T
+  const type = response.headers.get('content-type') ?? ''
+  if (!type.includes('application/json')) return (await response.text()) as T
+  return response.json() as Promise<T>
+}
+
+const qs = (params: Record<string, string | number | boolean | undefined>) => {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') search.set(key, String(value))
+  }
+  const text = search.toString()
+  return text ? `?${text}` : ''
+}
+
+/** Trigger a browser download without leaving the SPA. */
+export function download(path: string): void {
+  const anchor = document.createElement('a')
+  anchor.href = `${BASE}${path}`
+  anchor.rel = 'noopener'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
+export const api = {
+  // ---------------------------------------------------------------- system
+  health: () => request<Health>('/health'),
+  me: () => request<Me>('/me'),
+  contracts: () => request<GridContract[]>('/contracts'),
+
+  // -------------------------------------------------------------- campaigns
+  listCampaigns: (includeClosed = true) =>
+    request<Campaign[]>(`/campaigns${qs({ includeClosed })}`),
+  getCampaign: (id: string) => request<Campaign>(`/campaigns/${id}`),
+  overview: (id: string) => request<Overview>(`/campaigns/${id}/overview`),
+  createCampaign: (body: {
+    code: string
+    label: string
+    countDate: string
+  }) => request<Campaign>('/campaigns', { method: 'POST', body: JSON.stringify(body) }),
+  cloneCampaign: (body: {
+    sourceCampaignId: string
+    code: string
+    label: string
+    countDate: string
+    includeZones: boolean
+    includeSheetLines: boolean
+  }) =>
+    request<Campaign>('/campaigns/clone', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  transitionReadiness: (id: string, target: string) =>
+    request<TransitionReadiness>(`/campaigns/${id}/transition-readiness${qs({ target })}`),
+  transition: (id: string, target: string) =>
+    request<Campaign>(`/campaigns/${id}/transition`, {
+      method: 'POST',
+      body: JSON.stringify({ target }),
+    }),
+  thresholds: (id: string) => request<Threshold[]>(`/campaigns/${id}/thresholds`),
+  saveThresholds: (id: string, thresholds: unknown[]) =>
+    request<Threshold[]>(`/campaigns/${id}/thresholds`, {
+      method: 'PUT',
+      body: JSON.stringify({ thresholds }),
+    }),
+  audit: (id: string, params: { entityType?: string; limit?: number } = {}) =>
+    request<AuditEvent[]>(`/campaigns/${id}/audit${qs(params)}`),
+  importHistory: (id: string) =>
+    request<Array<Record<string, unknown>>>(`/campaigns/${id}/imports`),
+
+  // ------------------------------------------------------------ referentials
+  items: (id: string, params: { limit?: number; offset?: number; search?: string } = {}) =>
+    request<{ total: number; offset: number; limit: number; rows: Array<Record<string, unknown>> }>(
+      `/campaigns/${id}/items${qs(params)}`,
+    ),
+  boms: (id: string, parent?: string) =>
+    request<Array<Record<string, unknown>>>(`/campaigns/${id}/boms${qs({ parent })}`),
+  bomHealth: (id: string) =>
+    request<{
+      linkCount: number
+      parentCount: number
+      cycles: string[]
+      summary: ControlsPayload['summary']
+      findings: Finding[]
+    }>(`/campaigns/${id}/bom-health`),
+  bookStock: (id: string, params: { limit?: number; offset?: number } = {}) =>
+    request<{
+      total: number
+      frozenAt: string | null
+      rows: Array<Record<string, unknown>>
+    }>(`/campaigns/${id}/book-stock${qs(params)}`),
+  freezeBookStock: (id: string) =>
+    request<Campaign>(`/campaigns/${id}/book-stock/freeze`, { method: 'POST' }),
+  locations: (id: string) =>
+    request<{
+      warehouses: Array<Record<string, unknown>>
+      locations: Array<Record<string, unknown>>
+    }>(`/campaigns/${id}/locations`),
+
+  // ----------------------------------------------------------------- imports
+  importFile: (id: string, target: string, file: File, options: {
+    sheet?: string
+    replace?: boolean
+    dryRun?: boolean
+  } = {}) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (options.sheet) form.append('sheet', options.sheet)
+    if (options.replace) form.append('replace', 'true')
+    if (options.dryRun) form.append('dryRun', 'true')
+    return request<ImportResult & ImportPreview>(`/campaigns/${id}/import/${target}`, {
+      method: 'POST',
+      body: form,
+    })
+  },
+  importPaste: (id: string, target: string, text: string, options: {
+    dryRun?: boolean
+    replace?: boolean
+  } = {}) =>
+    request<ImportResult & ImportPreview>(`/campaigns/${id}/import/${target}/paste`, {
+      method: 'POST',
+      body: JSON.stringify({ text, ...options }),
+    }),
+  importRows: (id: string, target: string, rows: Array<Record<string, unknown>>, options: {
+    dryRun?: boolean
+    replace?: boolean
+  } = {}) =>
+    request<ImportResult & ImportPreview>(`/campaigns/${id}/import/${target}/rows`, {
+      method: 'POST',
+      body: JSON.stringify({ rows, ...options }),
+    }),
+
+  // ---------------------------------------------------------------- counting
+  journals: (id: string, params: { status?: string; warehouseId?: string } = {}) =>
+    request<Journal[]>(`/campaigns/${id}/counting/journals${qs(params)}`),
+  journal: (id: string, journalId: string) =>
+    request<JournalDetail>(`/campaigns/${id}/counting/journals/${journalId}`),
+  countingControls: (id: string) =>
+    request<Finding[]>(`/campaigns/${id}/counting/controls`),
+  setJournalStatus: (id: string, journalIds: string[], status: JournalStatus) =>
+    request<{ updated: number }>(`/campaigns/${id}/counting/journals/status`, {
+      method: 'POST',
+      body: JSON.stringify({ journalIds, status }),
+    }),
+  saveJournalLine: (id: string, journalId: string, body: {
+    lineId?: string | null
+    itemNumber: string
+    qty: number | null
+    unit?: string
+    comment?: string
+  }) =>
+    request<Record<string, unknown>>(
+      `/campaigns/${id}/counting/journals/${journalId}/lines`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  deleteJournalLine: (id: string, lineId: string) =>
+    request<{ deleted: boolean }>(`/campaigns/${id}/counting/lines/${lineId}`, {
+      method: 'DELETE',
+    }),
+  setLocationStatus: (
+    id: string,
+    locations: Array<{ warehouseId: string; locationId: string }>,
+    status: LocationStatus,
+  ) =>
+    request<{ updated: number; journalsRemoved: number; journalsCreated: number }>(
+      `/campaigns/${id}/counting/locations/status`,
+      { method: 'POST', body: JSON.stringify({ locations, status }) },
+    ),
+
+  // ---------------------------------------------------------------- GENERIQUE
+  zones: (id: string) => request<Zone[]>(`/campaigns/${id}/generic/zones`),
+  createZone: (id: string, body: {
+    code: string
+    label?: string
+    sector?: string
+    displayOrder?: number
+  }) =>
+    request<Zone>(`/campaigns/${id}/generic/zones`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deleteZone: (id: string, zoneId: string) =>
+    request<{ deleted: boolean }>(`/campaigns/${id}/generic/zones/${zoneId}`, {
+      method: 'DELETE',
+    }),
+  sheet: (id: string, sheetId: string) =>
+    request<{ sheet: Record<string, unknown>; lines: Array<Record<string, unknown>> }>(
+      `/campaigns/${id}/generic/sheets/${sheetId}`,
+    ),
+  transitionSheet: (id: string, sheetId: string, target: SheetStatus, counterName?: string) =>
+    request<Record<string, unknown>>(
+      `/campaigns/${id}/generic/sheets/${sheetId}/transition`,
+      { method: 'POST', body: JSON.stringify({ target, counterName }) },
+    ),
+  saveSheetLines: (id: string, sheetId: string, lines: unknown[], replace = false) =>
+    request<{ written: number }>(`/campaigns/${id}/generic/sheets/${sheetId}/lines`, {
+      method: 'PUT',
+      body: JSON.stringify({ lines, replace }),
+    }),
+  deleteSheetLine: (id: string, lineId: string) =>
+    request<{ deleted: boolean }>(`/campaigns/${id}/generic/lines/${lineId}`, {
+      method: 'DELETE',
+    }),
+  scanSheet: (id: string, sheetId: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<{ report: Record<string, unknown>; sheet: Record<string, unknown> }>(
+      `/campaigns/${id}/generic/sheets/${sheetId}/scan`,
+      { method: 'POST', body: form },
+    )
+  },
+  arbitrations: (id: string, zoneId?: string) =>
+    request<Arbitration[]>(`/campaigns/${id}/generic/arbitrations${qs({ zoneId })}`),
+  refreshArbitrations: (id: string, zoneId: string) =>
+    request<Arbitration[]>(
+      `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/refresh`,
+      { method: 'POST' },
+    ),
+  decideArbitration: (id: string, arbitrationId: string, qty: number, comment = '') =>
+    request<{ decided: boolean }>(
+      `/campaigns/${id}/generic/arbitrations/${arbitrationId}`,
+      { method: 'POST', body: JSON.stringify({ qty, comment }) },
+    ),
+  acceptPass2: (id: string, zoneId: string) =>
+    request<{ decided: number }>(
+      `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/accept-pass-2`,
+      { method: 'POST' },
+    ),
+  wipWithoutBom: (id: string) =>
+    request<WipWithoutBom[]>(`/campaigns/${id}/generic/wip-without-bom`),
+  reclassifyWip: (id: string, lineIds: string[], section: 'WIP_OK' | 'LINE_SIDE' | 'WIP') =>
+    request<{ updated: number }>(`/campaigns/${id}/generic/reclassify-wip`, {
+      method: 'POST',
+      body: JSON.stringify({ lineIds, section }),
+    }),
+  consolidationPreview: (id: string) =>
+    request<{
+      lines: ConsolidationLine[]
+      totalQty: number
+      zonesIncluded: string[]
+      zonesSkipped: string[]
+      findings: Finding[]
+      blocking: number
+    }>(`/campaigns/${id}/generic/consolidation/preview`),
+  consolidation: (id: string) =>
+    request<{
+      run: Record<string, unknown> | null
+      lines: ConsolidationLine[]
+      breakdown: WipBreakdownRow[]
+    }>(`/campaigns/${id}/generic/consolidation`),
+  runConsolidation: (id: string) =>
+    request<{
+      runId: string
+      journalId: string
+      lines: number
+      totalQty: number
+      zonesIncluded: string[]
+      zonesSkipped: string[]
+      findings: Finding[]
+    }>(`/campaigns/${id}/generic/consolidation`, { method: 'POST' }),
+  wipBreakdown: (id: string, itemNumber: string) =>
+    request<WipBreakdownRow[]>(`/campaigns/${id}/generic/wip/${itemNumber}`),
+
+  // ---------------------------------------------------------------- analysis
+  kpis: (id: string) => request<Kpis>(`/campaigns/${id}/analysis/kpis`),
+  variances: (id: string, params: {
+    limit?: number
+    materialOnly?: boolean
+    granularity?: 'item' | 'item_location'
+  } = {}) => request<VarianceRow[]>(`/campaigns/${id}/analysis/variances${qs(params)}`),
+  aggregate: (id: string, dimension: string, limit = 200) =>
+    request<AggregateRow[]>(`/campaigns/${id}/analysis/aggregate${qs({ dimension, limit })}`),
+  pareto: (id: string, coverage = 0.8) =>
+    request<AggregateRow[]>(`/campaigns/${id}/analysis/pareto${qs({ coverage })}`),
+  controls: (id: string) => request<ControlsPayload>(`/campaigns/${id}/analysis/controls`),
+  analytics: (id: string) => request<Analytics>(`/campaigns/${id}/analysis/analytics`),
+  compare: (id: string, otherCampaignId: string) =>
+    request<Record<string, unknown>>(
+      `/campaigns/${id}/analysis/compare${qs({ otherCampaignId })}`,
+    ),
+  causes: (id: string) => request<AssignableCause[]>(`/campaigns/${id}/analysis/causes`),
+  causeSplit: (id: string) => request<CauseSplit>(`/campaigns/${id}/analysis/cause-split`),
+  saveVarianceAnalysis: (id: string, itemNumber: string, body: {
+    causeCode: string | null
+    comment: string
+    accepted: boolean
+  }) =>
+    request<Record<string, unknown>>(`/campaigns/${id}/analysis/variances/${itemNumber}`, {
+      method: 'PUT',
+      body: JSON.stringify({ itemNumber, ...body }),
+    }),
+  suggestCauses: (id: string, maxItems = 40) =>
+    request<{ suggestions: number }>(
+      `/campaigns/${id}/analysis/ai/suggest-causes${qs({ maxItems })}`,
+      { method: 'POST' },
+    ),
+  aiSummary: (id: string) =>
+    request<{ markdown: string }>(`/campaigns/${id}/analysis/ai/summary`),
+  explain: (id: string, itemNumber: string) =>
+    request<{
+      itemNumber: string
+      explanation: string
+      wipBreakdown: WipBreakdownRow[]
+      movements: Array<Record<string, unknown>>
+    }>(`/campaigns/${id}/analysis/ai/explain/${itemNumber}`),
+  adjustments: (id: string, limit = 1000) =>
+    request<Array<Record<string, unknown>>>(
+      `/campaigns/${id}/analysis/adjustments${qs({ limit })}`,
+    ),
+  saveAdjustments: (id: string, rows: unknown[]) =>
+    request<{ written: number }>(`/campaigns/${id}/analysis/adjustments`, {
+      method: 'PUT',
+      body: JSON.stringify(rows),
+    }),
+  deleteAdjustment: (id: string, lineId: string) =>
+    request<{ deleted: boolean }>(`/campaigns/${id}/analysis/adjustments/${lineId}`, {
+      method: 'DELETE',
+    }),
+}
+
+/** Download URLs, kept next to the API so paths live in one file. */
+export const downloads = {
+  campaignWorkbook: (id: string) => `/campaigns/${id}/reports/campaign.xlsx`,
+  gridTemplate: (id: string, key: string) => `/campaigns/${id}/reports/grids/${key}.xlsx`,
+  journal: (id: string, journalId: string) =>
+    `/campaigns/${id}/reports/journals/${journalId}.xlsx`,
+  countingSheet: (id: string, sheetId: string) =>
+    `/campaigns/${id}/reports/counting-sheets/${sheetId}.pdf`,
+  allCountingSheets: (id: string, passNo: number) =>
+    `/campaigns/${id}/reports/counting-sheets.pdf?passNo=${passNo}`,
+}

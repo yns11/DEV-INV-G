@@ -1,0 +1,46 @@
+[project]
+name = "campagnes-inventaire"
+version = "1.0.0"
+description = "Pilotage des campagnes d'inventaire physique sur Databricks Apps"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["app"]
+addopts = "-q --strict-markers --strict-config"
+filterwarnings = ["error::DeprecationWarning:inventory.*"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+src = ["app"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # FastAPI depends() in defaults is the framework's idiom
+    "RUF001",  # French text legitimately contains typographic characters
+    "RUF002",
+    "RUF003",
+    # `l` is used only as a comprehension variable for "line", always within
+    # three tokens of its binding. Renaming it to `line_` everywhere would add
+    # noise without adding clarity.
+    "E741",
+    # `__all__` is grouped by concern and commented, which is more useful to a
+    # reader than alphabetical order.
+    "RUF022",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E731"]
+# `from pyspark.sql import functions as F` is the universal Spark convention;
+# renaming it would make the file harder to read for every Spark developer.
+"jobs/*" = ["N812"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "app"
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true

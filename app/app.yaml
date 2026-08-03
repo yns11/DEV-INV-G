@@ -1,0 +1,57 @@
+# =============================================================================
+# Databricks Apps runtime manifest — Campagnes Inventaire
+# -----------------------------------------------------------------------------
+# This file drives the app when it is deployed from the Databricks UI or with
+# `databricks apps deploy`. It MUST stay in sync with the `config:` block of
+# ../databricks.yml (Asset Bundle deployments read that one instead).
+#
+# Port/host rules (the #1 cause of 502 Bad Gateway):
+#   * bind to 0.0.0.0 — never localhost/127.0.0.1
+#   * use ${DATABRICKS_APP_PORT} — never a hard-coded port
+# A single process serves both the JSON API and the pre-built React SPA, because
+# only one service may bind to DATABRICKS_APP_PORT.
+# =============================================================================
+
+command:
+  - uvicorn
+  - main:app
+  - --host
+  - "0.0.0.0"
+  - --port
+  - "${DATABRICKS_APP_PORT}"
+  - --workers
+  - "1"                       # keep 1: the app holds a shared Lakebase pool in-process
+  - --timeout-keep-alive
+  - "75"
+  - --no-access-log           # access logs are emitted by our own middleware as JSON
+
+env:
+  # --- Resource bindings (resolved by the platform, never hard-code IDs) ------
+  - name: DATABRICKS_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: INV_LLM_ENDPOINT
+    valueFrom: serving-endpoint
+
+  # --- Unity Catalog layout ---------------------------------------------------
+  # The catalog already exists and cannot be created by this project; only the
+  # schema and volume below are provisioned (see sql/00_unity_catalog.sql).
+  - name: INV_UC_CATALOG
+    value: "emotors_data_champions"
+  - name: INV_UC_SCHEMA
+    value: "inventory"
+  - name: INV_UC_VOLUME
+    value: "inventory_evidence"
+
+  # --- Application behaviour --------------------------------------------------
+  - name: INV_GENERIC_WAREHOUSE
+    value: "B06VRAC"
+  - name: INV_GENERIC_LOCATION
+    value: "GENERIQUE"
+  - name: INV_LOG_LEVEL
+    value: "INFO"
+  - name: INV_ENV
+    value: "prod"
+
+  # Lakebase connection variables (PGHOST / PGDATABASE / PGUSER / PGPORT and,
+  # for password auth, PGPASSWORD) are injected automatically once a Lakebase
+  # database resource is attached to the app. Do not declare them here.

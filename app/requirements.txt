@@ -1,0 +1,45 @@
+# =============================================================================
+# Databricks Apps runtime dependencies — Campagnes Inventaire
+# -----------------------------------------------------------------------------
+# The Databricks Apps runtime (Python 3.11 / Ubuntu 22.04) pre-installs a small
+# set of packages, but NOT psycopg / databricks-sql-connector. Everything the
+# app imports at runtime must be pinned here: there is no root access in the
+# container, so only pure-Python or manylinux wheels from PyPI can be used.
+#
+# Pins use `~=` (compatible release) so that patch-level security fixes are
+# picked up while the API surface stays stable.
+# =============================================================================
+
+# --- Web layer ---------------------------------------------------------------
+fastapi~=0.115.0
+uvicorn[standard]~=0.32.0
+python-multipart~=0.0.12        # multipart/form-data uploads (scans, Excel files)
+pydantic~=2.9.0
+pydantic-settings~=2.6.0
+
+# --- Databricks platform -----------------------------------------------------
+databricks-sdk~=0.38.0          # WorkspaceClient, Config, OAuth token federation
+databricks-sql-connector~=3.4.0 # Delta / Unity Catalog reads through a SQL warehouse
+
+# --- Lakebase (PostgreSQL OLTP) ---------------------------------------------
+psycopg[binary,pool]~=3.2.0     # psycopg 3: native connection pool + pipeline mode
+SQLAlchemy~=2.0.36              # used only for the migration bookkeeping + query building
+
+# --- Data / analytics --------------------------------------------------------
+numpy~=2.1.0
+pandas~=2.2.0
+pyarrow~=17.0.0
+scikit-learn~=1.5.0
+scipy~=1.14.0
+
+# --- File ingestion / reporting ---------------------------------------------
+openpyxl~=3.1.5                 # .xlsx read (ERP exports) and write (downloads)
+XlsxWriter~=3.2.0               # fast streaming .xlsx writer for large exports
+reportlab~=4.2.0                # printable counting sheets (PDF)
+pypdf~=5.1.0                    # split / inspect uploaded scanned sheets
+pillow~=11.0.0                  # image normalisation before sending scans to the LLM
+
+# --- Misc --------------------------------------------------------------------
+httpx~=0.27.0
+tenacity~=9.0.0                 # retry policy for warehouse / serving-endpoint calls
+python-dateutil~=2.9.0

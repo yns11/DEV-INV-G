@@ -1,0 +1,138 @@
+# =============================================================================
+# Databricks Asset Bundle — Campagnes Inventaire
+# -----------------------------------------------------------------------------
+# Deploy with:
+#   databricks bundle validate -t dev
+#   databricks apps deploy -t dev --profile <PROFILE>
+#
+# `databricks apps deploy` validates, uploads, applies `config:` AND starts the
+# app. A bare `databricks bundle deploy` uploads the code but leaves the app
+# stopped with no URL — see docs/03-deployment-guide.md.
+# =============================================================================
+
+bundle:
+  name: campagnes-inventaire
+
+variables:
+  warehouse_id:
+    description: SQL warehouse used for all Delta / Unity Catalog reads.
+  llm_endpoint:
+    description: Serving endpoint (vision-capable LLM) used to read scanned counting sheets.
+    default: databricks-claude-sonnet-4-5
+  lakebase_branch:
+    description: Lakebase (Postgres) branch that stores the operational data.
+    default: main
+  lakebase_database:
+    description: Lakebase database name inside the branch.
+    default: databricks_postgres
+  uc_catalog:
+    description: Existing Unity Catalog catalog (cannot be created by this project).
+    default: emotors_data_champions
+  uc_schema:
+    description: Schema created by sql/00_unity_catalog.sql.
+    default: inventory
+  uc_volume:
+    description: UC volume holding scans, imports and generated reports.
+    default: inventory_evidence
+
+resources:
+  apps:
+    campagnes_inventaire:
+      name: campagnes-inventaire
+      description: >-
+        Pilotage de bout en bout des campagnes d'inventaire physique
+        (préparation, comptage, analyse & ajustements, clôture).
+      source_code_path: ./app
+
+      # --- Resources: the platform auto-grants these permissions to the app SP -
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: serving-endpoint
+          serving_endpoint:
+            name: ${var.llm_endpoint}
+            permission: CAN_QUERY
+        - name: database
+          database:
+            # Lakebase (Autoscaling project). See docs/03-deployment-guide.md
+            # §4 for the `postgres` vs legacy `database` resource-key nuance.
+            branch: ${var.lakebase_branch}
+            database: ${var.lakebase_database}
+            permission: CAN_CONNECT_AND_CREATE
+
+      config:
+        command:
+          - uvicorn
+          - main:app
+          - --host
+          - "0.0.0.0"
+          - --port
+          - "${DATABRICKS_APP_PORT}"
+          - --workers
+          - "1"
+          - --timeout-keep-alive
+          - "75"
+          - --no-access-log
+        env:
+          - name: DATABRICKS_WAREHOUSE_ID
+            valueFrom: sql-warehouse
+          - name: INV_LLM_ENDPOINT
+            valueFrom: serving-endpoint
+          - name: INV_UC_CATALOG
+            value: ${var.uc_catalog}
+          - name: INV_UC_SCHEMA
+            value: ${var.uc_schema}
+          - name: INV_UC_VOLUME
+            value: ${var.uc_volume}
+          - name: INV_GENERIC_WAREHOUSE
+            value: "B06VRAC"
+          - name: INV_GENERIC_LOCATION
+            value: "GENERIQUE"
+          - name: INV_LOG_LEVEL
+            value: "INFO"
+
+      lifecycle:
+        started: true
+
+  jobs:
+    inventory_publish_campaign:
+      name: "[inventaire] Publication campagne vers Delta"
+      description: >-
+        Copie idempotente des données opérationnelles Lakebase d'une campagne
+        vers les tables Delta (snapshots immuables, analyses, archivage).
+      tasks:
+        - task_key: publish
+          spark_python_task:
+            python_file: ../jobs/publish_campaign_to_delta.py
+            parameters:
+              - "--catalog"
+              - ${var.uc_catalog}
+              - "--schema"
+              - ${var.uc_schema}
+              - "--campaign-code"
+              - "{{job.parameters.campaign_code}}"
+          environment_key: serverless_env
+      parameters:
+        - name: campaign_code
+          default: ""
+      environments:
+        - environment_key: serverless_env
+          spec:
+            client: "3"
+            dependencies:
+              - psycopg[binary]~=3.2.0
+      queue:
+        enabled: true
+
+targets:
+  dev:
+    default: true
+    mode: development
+    variables:
+      warehouse_id: ${var.warehouse_id}
+  prod:
+    mode: production
+    variables:
+      warehouse_id: ${var.warehouse_id}

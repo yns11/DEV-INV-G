@@ -1,0 +1,301 @@
+/* =============================================================================
+   Design tokens
+   -----------------------------------------------------------------------------
+   One source of truth for colour, type, space and elevation. Components never
+   hard-code a hex value or a pixel size — they reference a token, so a change
+   here propagates everywhere and light/dark stay in step by construction.
+
+   Colour is semantic, never decorative (IBCS): a hue means a *state*, and the
+   same state always looks the same. Variance colours are deliberately separate
+   from status colours, because "negative" and "bad" are not the same thing —
+   a negative variance on a scrap account is good news.
+   ============================================================================= */
+
+:root {
+  /* ---- Type scale: 1.200 (minor third) on a 16 px base -------------------- */
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, monospace;
+
+  --text-2xs: 0.6875rem;  /* 11 px — table meta, badges                       */
+  --text-xs: 0.75rem;     /* 12 px — labels, captions                         */
+  --text-sm: 0.8125rem;   /* 13 px — dense table body                         */
+  --text-base: 0.875rem;  /* 14 px — UI default; data apps read better at 14  */
+  --text-md: 1rem;        /* 16 px — prose                                    */
+  --text-lg: 1.125rem;    /* 18 px — card titles                             */
+  --text-xl: 1.375rem;    /* 22 px — page titles                             */
+  --text-2xl: 1.75rem;    /* 28 px — KPI values                              */
+  --text-3xl: 2.25rem;    /* 36 px — hero KPI                                */
+
+  --leading-tight: 1.2;
+  --leading-snug: 1.35;
+  --leading-normal: 1.55;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ---- Space scale: 4 px base, doubling ---------------------------------- */
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* ---- Radii & elevation -------------------------------------------------- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 999px;
+
+  --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.06);
+  --shadow-sm: 0 1px 3px rgb(15 23 42 / 0.08), 0 1px 2px rgb(15 23 42 / 0.04);
+  --shadow-md: 0 4px 12px rgb(15 23 42 / 0.08), 0 2px 4px rgb(15 23 42 / 0.04);
+  --shadow-lg: 0 12px 32px rgb(15 23 42 / 0.12), 0 4px 8px rgb(15 23 42 / 0.06);
+
+  --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- Layout ------------------------------------------------------------- */
+  --sidebar-width: 248px;
+  --header-height: 56px;
+  --content-max: 1680px;
+
+  --z-sticky: 10;
+  --z-header: 20;
+  --z-drawer: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+}
+
+/* ---- Light theme ---------------------------------------------------------- */
+:root,
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --bg-raised: #ffffff;
+  --bg-sunken: #eef0f4;
+  --bg-inset: #f9fafb;
+  --bg-hover: #f1f3f7;
+  --bg-active: #e7eaf0;
+  --bg-inverse: #0f172a;
+
+  --fg: #0f172a;
+  --fg-muted: #55617a;
+  --fg-subtle: #7c8699;
+  --fg-inverse: #f8fafc;
+  --fg-on-accent: #ffffff;
+
+  --border: #dfe3ea;
+  --border-strong: #c3cad6;
+  --border-focus: #2563eb;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff4ff;
+  --accent-border: #bfd3fe;
+
+  /* Status — the campaign lifecycle */
+  --status-preparation: #7c3aed;
+  --status-preparation-soft: #f3edff;
+  --status-counting: #2563eb;
+  --status-counting-soft: #eff4ff;
+  --status-analysis: #b45309;
+  --status-analysis-soft: #fef5e6;
+  --status-closed: #475569;
+  --status-closed-soft: #eef1f5;
+
+  /* Semantic feedback */
+  --success: #067647;
+  --success-soft: #e8f6ef;
+  --success-border: #a9dcc4;
+  --warning: #b45309;
+  --warning-soft: #fef5e6;
+  --warning-border: #f2ce93;
+  --danger: #b42318;
+  --danger-soft: #fdeceb;
+  --danger-border: #f4b8b2;
+  --info: #0e7490;
+  --info-soft: #e6f5f9;
+  --info-border: #a5d8e6;
+
+  /* Variance — direction only. "Higher is good?" is decided per metric, so
+     these are named by sign, never by judgement. */
+  --variance-positive: #067647;
+  --variance-negative: #b42318;
+  --variance-neutral: #7c8699;
+
+  /* Data provenance — the source of a quantity, per the specification */
+  --source-import: #0e7490;
+  --source-manual: #7c3aed;
+  --source-scan: #b45309;
+  --source-system: #64748b;
+
+  /* Categorical palette for charts: distinguishable in both themes and for
+     the most common colour-vision deficiencies. */
+  --cat-1: #2563eb;
+  --cat-2: #0891b2;
+  --cat-3: #7c3aed;
+  --cat-4: #b45309;
+  --cat-5: #059669;
+  --cat-6: #be185d;
+  --cat-7: #4d7c0f;
+  --cat-8: #64748b;
+
+  --grid-line: #e6e9ef;
+  --chart-axis: #98a2b3;
+}
+
+/* ---- Dark theme ----------------------------------------------------------- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0f18;
+    --bg-raised: #131a26;
+    --bg-sunken: #080b12;
+    --bg-inset: #172030;
+    --bg-hover: #1b2434;
+    --bg-active: #222d40;
+    --bg-inverse: #f8fafc;
+
+    --fg: #e8edf5;
+    --fg-muted: #9aa7bd;
+    --fg-subtle: #6d7a91;
+    --fg-inverse: #0f172a;
+    --fg-on-accent: #ffffff;
+
+    --border: #232e40;
+    --border-strong: #35425a;
+    --border-focus: #60a5fa;
+
+    --accent: #60a5fa;
+    --accent-hover: #93c5fd;
+    --accent-soft: #16233a;
+    --accent-border: #2c4568;
+
+    --status-preparation: #c4b5fd;
+    --status-preparation-soft: #241d3d;
+    --status-counting: #93c5fd;
+    --status-counting-soft: #16233a;
+    --status-analysis: #fcd34d;
+    --status-analysis-soft: #2e2413;
+    --status-closed: #cbd5e1;
+    --status-closed-soft: #1c2534;
+
+    --success: #4ade80;
+    --success-soft: #10281c;
+    --success-border: #1f5137;
+    --warning: #fbbf24;
+    --warning-soft: #2e2413;
+    --warning-border: #5c4718;
+    --danger: #f87171;
+    --danger-soft: #2d1616;
+    --danger-border: #642626;
+    --info: #38bdf8;
+    --info-soft: #10262f;
+    --info-border: #1d4d5e;
+
+    --variance-positive: #4ade80;
+    --variance-negative: #f87171;
+    --variance-neutral: #94a3b8;
+
+    --source-import: #38bdf8;
+    --source-manual: #c4b5fd;
+    --source-scan: #fbbf24;
+    --source-system: #94a3b8;
+
+    --cat-1: #60a5fa;
+    --cat-2: #22d3ee;
+    --cat-3: #c4b5fd;
+    --cat-4: #fbbf24;
+    --cat-5: #4ade80;
+    --cat-6: #f472b6;
+    --cat-7: #a3e635;
+    --cat-8: #94a3b8;
+
+    --grid-line: #1e2836;
+    --chart-axis: #64748b;
+
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.5), 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-md: 0 4px 12px rgb(0 0 0 / 0.5), 0 2px 4px rgb(0 0 0 / 0.3);
+    --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.6), 0 4px 8px rgb(0 0 0 / 0.4);
+  }
+}
+
+/* The explicit toggle must win over the media query, in both directions. */
+:root[data-theme="dark"] {
+  --bg: #0b0f18;
+  --bg-raised: #131a26;
+  --bg-sunken: #080b12;
+  --bg-inset: #172030;
+  --bg-hover: #1b2434;
+  --bg-active: #222d40;
+  --bg-inverse: #f8fafc;
+
+  --fg: #e8edf5;
+  --fg-muted: #9aa7bd;
+  --fg-subtle: #6d7a91;
+  --fg-inverse: #0f172a;
+
+  --border: #232e40;
+  --border-strong: #35425a;
+  --border-focus: #60a5fa;
+
+  --accent: #60a5fa;
+  --accent-hover: #93c5fd;
+  --accent-soft: #16233a;
+  --accent-border: #2c4568;
+
+  --status-preparation: #c4b5fd;
+  --status-preparation-soft: #241d3d;
+  --status-counting: #93c5fd;
+  --status-counting-soft: #16233a;
+  --status-analysis: #fcd34d;
+  --status-analysis-soft: #2e2413;
+  --status-closed: #cbd5e1;
+  --status-closed-soft: #1c2534;
+
+  --success: #4ade80;
+  --success-soft: #10281c;
+  --success-border: #1f5137;
+  --warning: #fbbf24;
+  --warning-soft: #2e2413;
+  --warning-border: #5c4718;
+  --danger: #f87171;
+  --danger-soft: #2d1616;
+  --danger-border: #642626;
+  --info: #38bdf8;
+  --info-soft: #10262f;
+  --info-border: #1d4d5e;
+
+  --variance-positive: #4ade80;
+  --variance-negative: #f87171;
+  --variance-neutral: #94a3b8;
+
+  --source-import: #38bdf8;
+  --source-manual: #c4b5fd;
+  --source-scan: #fbbf24;
+  --source-system: #94a3b8;
+
+  --cat-1: #60a5fa;
+  --cat-2: #22d3ee;
+  --cat-3: #c4b5fd;
+  --cat-4: #fbbf24;
+  --cat-5: #4ade80;
+  --cat-6: #f472b6;
+  --cat-7: #a3e635;
+  --cat-8: #94a3b8;
+
+  --grid-line: #1e2836;
+  --chart-axis: #64748b;
+
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.5), 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 0.5), 0 2px 4px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.6), 0 4px 8px rgb(0 0 0 / 0.4);
+}

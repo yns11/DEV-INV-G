@@ -76,15 +76,27 @@ class _CredentialProvider:
             return self._token
 
     def _mint(self) -> str:
-        """Ask Databricks for a database credential for this app's identity."""
+        """Ask Databricks for a database credential for this app's identity.
+
+        Lakebase Autoscaling mints the token against an *endpoint resource
+        path*, published to the container as ``LAKEBASE_ENDPOINT`` when a
+        ``postgres`` resource is attached to the app. The retired provisioned
+        tier used instance names instead; that call is kept as a fallback for
+        workspaces whose migration has not completed yet, and can be deleted
+        once every environment reports an endpoint.
+        """
         try:
             from databricks.sdk import WorkspaceClient
 
             client = WorkspaceClient()
-            credential = client.database.generate_database_credential(
-                request_id=f"{self._settings.app_name}-{int(time.time())}",
-                instance_names=[self._settings.pg_host or ""],
-            )
+            endpoint = self._settings.lakebase_endpoint
+            if endpoint:
+                credential = client.postgres.generate_database_credential(endpoint)
+            else:  # pragma: no cover - legacy provisioned instances only
+                credential = client.database.generate_database_credential(
+                    request_id=f"{self._settings.app_name}-{int(time.time())}",
+                    instance_names=[self._settings.pg_host or ""],
+                )
             token = getattr(credential, "token", None)
             if not token:
                 raise UpstreamError(
@@ -96,7 +108,7 @@ class _CredentialProvider:
         except Exception as exc:  # pragma: no cover - depends on the workspace
             raise UpstreamError(
                 "Impossible d'obtenir un credential Lakebase. Vérifiez que la "
-                "ressource « database » est bien attachée à l'application.",
+                "ressource « postgres » est bien attachée à l'application.",
                 cause=str(exc),
             ) from exc
 
@@ -114,7 +126,7 @@ class Database:
         if not self._settings.lakebase_configured:
             raise UpstreamError(
                 "Lakebase n'est pas configuré (PGHOST / PGDATABASE / PGUSER absents). "
-                "Attachez une ressource « database » à l'application."
+                "Attachez une ressource « postgres » à l'application."
             )
         self._credentials = _CredentialProvider(self._settings)
         self._pool = self._build_pool()

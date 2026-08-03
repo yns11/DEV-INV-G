@@ -23,7 +23,7 @@ sont communes à toutes les variantes sauf la variante A.
 |---|---|---|
 | Python | 3.11 | `python3 --version` |
 | Node.js | 20 | `node --version` |
-| Databricks CLI | 0.240 | `databricks --version` |
+| Databricks CLI | 0.294 (ou 1.x) | `databricks --version` |
 | Git | 2.30 | `git --version` |
 
 Installation du CLI Databricks :
@@ -41,7 +41,10 @@ winget install Databricks.DatabricksCLI
 
 > ⚠️ L'ancien CLI (`pip install databricks-cli`, version 0.1x) **n'est pas
 > compatible** : il ne connaît ni `databricks apps`, ni `databricks bundle`.
-> Vérifiez que `databricks --version` renvoie `v0.2xx.x`.
+> En deçà de la version 0.294, le groupe `databricks postgres` et la clé de
+> ressource `postgres` (Lakebase Autoscaling) sont également absents ; le
+> `bundle validate` signale alors `unknown field: postgres`. Vérifiez que
+> `databricks --version` renvoie `v0.29x.x` ou `v1.x.x`.
 
 ### 1.2 Droits requis dans le workspace
 
@@ -130,49 +133,65 @@ Vous devez voir 9 tables et 4 vues (`v_variance`, `v_campaign_kpi`,
 # Lister les projets existants — réutilisez-en un si possible
 databricks postgres list-projects --profile PROD
 
-# Ou en créer un : la branche `production` et la base `databricks_postgres`
-# sont provisionnées automatiquement
-databricks postgres create-project --json '{
-  "name": "inventaire",
-  "display_name": "Campagnes Inventaire"
-}' --profile PROD
+# Ou en créer un : la branche `production`, l'endpoint `primary` et la base
+# `databricks_postgres` sont provisionnés automatiquement
+databricks postgres create-project inventaire \
+    --json '{"spec": {"display_name": "Campagnes Inventaire"}}' --profile PROD
 
-# Relever le nom de la branche et de la base
-databricks postgres list-branches --project-name inventaire --profile PROD
-databricks postgres list-databases --project-name inventaire \
-    --branch production --profile PROD
+# Relever les identifiants de branche et de base
+databricks postgres list-branches  projects/inventaire --profile PROD
+databricks postgres list-databases projects/inventaire/branches/production --profile PROD
 ```
 
 **Sans CLI** : **Compute → Lakebase → Create project**.
 
-#### Où lire les deux valeurs dans la console
+#### Les trois identifiants attendus par `databricks.yml`
 
-Ouvrez **Compute → Lakebase → votre projet → Tables** :
+L'application est rattachée à Lakebase par des **chemins de ressource**, pas par
+des libellés d'affichage :
 
 ```
-Projects  ›  inventaire  ›  production          ← la branche
+branch   = projects/<projet>/branches/<branche>
+database = projects/<projet>/branches/<branche>/databases/<base>
+```
+
+La console donne les deux premiers directement (**Compute → Lakebase → votre
+projet → Tables**) :
+
+```
+Projects  ›  inventaire  ›  production          ← projet, puis branche
                               ▲
    ┌─────────────────────────────────────┐
-   │ 🗄  databricks_postgres          ▾  │      ← la base de données
+   │ 🗄  databricks_postgres          ▾  │      ← nom PostgreSQL de la base
    ├─────────────────────────────────────┤
    │ 🔲 Schema                            │
    │ ⚙  public                        ▾  │      ← schémas existants
    └─────────────────────────────────────┘
 ```
 
-- le **troisième élément du fil d'Ariane** est la branche → `lakebase_branch` ;
-- le sélecteur **Database** est la base → `lakebase_database`.
+- le **deuxième élément du fil d'Ariane** est le projet → `lakebase_project` ;
+- le **troisième** est la branche → `lakebase_branch` ;
+- pour la base, **ne recopiez pas le libellé du sélecteur**. Les identifiants de
+  ressource suivent la norme RFC 1123 (minuscules, chiffres et tirets, jamais de
+  souligné) : le sélecteur affiche le nom PostgreSQL `databricks_postgres`, alors
+  que l'identifiant de ressource attendu est `databricks-postgres`. Prenez-le
+  dans le dernier segment du champ `name` renvoyé par `list-databases`.
 
 Pour un projet créé avec les valeurs par défaut, cela donne :
 
 ```yaml
+lakebase_project:  inventaire
 lakebase_branch:   production
-lakebase_database: databricks_postgres
+lakebase_database: databricks-postgres
 ```
+
+Le nom PostgreSQL de la base (`databricks_postgres`) n'a pas à être déclaré :
+la plateforme l'injecte dans le conteneur sous `PGDATABASE`, avec `PGHOST`,
+`PGUSER`, `PGPORT` et `LAKEBASE_ENDPOINT`.
 
 > Ne renseignez **pas** le schéma dans `databricks.yml`. Au premier démarrage,
 > l'application crée son propre schéma `inventory` à côté de `public` et
-> `__db_system`, et y applique ses migrations. C'est la ressource `database`
+> `__db_system`, et y applique ses migrations. C'est la ressource `postgres`
 > déclarée avec `CAN_CONNECT_AND_CREATE` qui lui en donne le droit.
 > Si votre organisation impose un autre nom de schéma, passez-le par la variable
 > d'environnement `INV_PG_SCHEMA`.
@@ -310,8 +329,9 @@ jamais être committées) :
 ```bash
 export BUNDLE_VAR_warehouse_id="$WAREHOUSE_ID"
 export BUNDLE_VAR_llm_endpoint="$LLM_ENDPOINT"
+export BUNDLE_VAR_lakebase_project="inventaire"
 export BUNDLE_VAR_lakebase_branch="production"
-export BUNDLE_VAR_lakebase_database="databricks_postgres"
+export BUNDLE_VAR_lakebase_database="databricks-postgres"
 export BUNDLE_VAR_uc_catalog="emotors_data_champions"
 ```
 
@@ -441,7 +461,12 @@ Dans l'onglet **Resources** de l'app, ajoutez :
 |---|---|---|---|
 | SQL warehouse | votre warehouse | `CAN_USE` | `sql-warehouse` |
 | Serving endpoint | votre endpoint LLM | `CAN_QUERY` | `serving-endpoint` |
-| Database (Lakebase) | branche + base | `CAN_CONNECT_AND_CREATE` | `database` |
+| Postgres (Lakebase) | chemins branche + base | `CAN_CONNECT_AND_CREATE` | `postgres` |
+
+> La clé de ressource est `postgres`. L'ancienne clé `database`
+> (`instance_name` / `database_name`) désigne une instance *provisionnée*, un
+> palier qui n'existe plus : le déploiement échoue alors sur
+> « Database instance \<nom\> does not exist ».
 
 La plateforme accorde automatiquement ces permissions au service principal de
 l'application.
@@ -484,7 +509,9 @@ cat > update.json <<'JSON'
     "resources": [
       {"name": "sql-warehouse",    "sql_warehouse":    {"id": "<ID>", "permission": "CAN_USE"}},
       {"name": "serving-endpoint", "serving_endpoint": {"name": "<NOM>", "permission": "CAN_QUERY"}},
-      {"name": "database",         "database":         {"branch": "production", "database": "databricks_postgres", "permission": "CAN_CONNECT_AND_CREATE"}}
+      {"name": "postgres",         "postgres":         {"branch": "projects/inventaire/branches/production",
+                                                        "database": "projects/inventaire/branches/production/databases/databricks-postgres",
+                                                        "permission": "CAN_CONNECT_AND_CREATE"}}
     ]
   }
 }
@@ -641,8 +668,12 @@ Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur
 |---|---|---|
 | **502 Bad Gateway** | L'app n'écoute pas sur `DATABRICKS_APP_PORT`, ou sur `localhost` | Vérifiez `app.yaml` : `--host 0.0.0.0 --port ${DATABRICKS_APP_PORT}` |
 | `ModuleNotFoundError` au démarrage | Dépendance absente de `app/requirements.txt` | Ajoutez-la et redéployez ; aucun paquet système n'est installable |
-| `/api/health` → `ready: false` | Lakebase non attaché ou permissions manquantes | Vérifiez la ressource `database` et `CAN_CONNECT_AND_CREATE` |
-| `Lakebase n'est pas configuré` | `PGHOST` / `PGDATABASE` / `PGUSER` absents | La ressource `database` n'est pas attachée à l'app |
+| `/api/health` → `ready: false` | Lakebase non attaché ou permissions manquantes | Vérifiez la ressource `postgres` et `CAN_CONNECT_AND_CREATE` |
+| `Lakebase n'est pas configuré` | `PGHOST` / `PGDATABASE` / `PGUSER` absents | La ressource `postgres` n'est pas attachée à l'app |
+| `Database instance <nom> does not exist` | Ressource déclarée avec l'ancienne clé `database` | Utilisez la clé `postgres` avec des chemins de ressource complets (§2.3) |
+| `unknown field: branch` au `bundle validate` | Idem — clé `database` au lieu de `postgres` | Voir §2.3 |
+| `Use 'value_from' instead of 'valueFrom'` | `databricks.yml` attend le snake_case | `value_from` dans `databricks.yml`, `valueFrom` dans `app.yaml` |
+| `path ... is not contained in sync root path` | Chemin de fichier remontant au-dessus de la racine du bundle | Les chemins de `databricks.yml` sont relatifs à son propre répertoire : `./jobs/...`, jamais `../jobs/...` |
 | `password authentication failed` après ~1 h | Jeton Lakebase expiré | Normalement géré automatiquement ; si cela persiste, redémarrez l'app et ouvrez un ticket |
 | **404 sur toutes les pages sauf `/api/...`** | SPA non construite | `make build-frontend` puis redéployez ; `app/static/index.html` doit exister |
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |

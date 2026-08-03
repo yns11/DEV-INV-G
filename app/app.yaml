@@ -52,6 +52,7 @@ env:
   - name: INV_ENV
     value: "prod"
 
-  # Lakebase connection variables (PGHOST / PGDATABASE / PGUSER / PGPORT and,
-  # for password auth, PGPASSWORD) are injected automatically once a Lakebase
-  # database resource is attached to the app. Do not declare them here.
+  # Lakebase connection variables (PGHOST / PGDATABASE / PGUSER / PGPORT,
+  # LAKEBASE_ENDPOINT and, for password auth, PGPASSWORD) are injected
+  # automatically once the `postgres` resource is attached to the app. Do not
+  # declare them here.

@@ -19,17 +19,34 @@ variables:
   llm_endpoint:
     description: Serving endpoint (vision-capable LLM) used to read scanned counting sheets.
     default: databricks-claude-sonnet-4-5
+  # --- Lakebase (Postgres Autoscaling) --------------------------------------
+  # The app resource is addressed by *resource paths*, not by display names:
+  #   branch   = projects/<project>/branches/<branch>
+  #   database = projects/<project>/branches/<branch>/databases/<database>
+  # Every id is RFC 1123 (lowercase letters, digits, hyphens — no underscore),
+  # which is why the database id is `databricks-postgres` while the Postgres
+  # database it points at is `databricks_postgres`. Read the exact ids with:
+  #   databricks postgres list-projects  --profile <PROFILE>
+  #   databricks postgres list-branches  projects/<project> --profile <PROFILE>
+  #   databricks postgres list-databases projects/<project>/branches/<branch> ...
+  lakebase_project:
+    description: >-
+      Lakebase project id — the second element of the console breadcrumb
+      (Projects › <projet> › <branche>). Confirm with `databricks postgres
+      list-projects`.
+    default: inventaire
   lakebase_branch:
     description: >-
-      Lakebase (Postgres) branch that stores the operational data. This is the
-      branch shown in the Lakebase breadcrumb (Projects › <projet> › <branche>);
-      a new project auto-provisions it as `production`.
+      Lakebase branch id — the third element of the breadcrumb. A new project
+      auto-provisions it as `production`.
     default: production
   lakebase_database:
     description: >-
-      Lakebase database inside the branch — the value of the "Database" selector
-      in the Lakebase console. Auto-provisioned as `databricks_postgres`.
-    default: databricks_postgres
+      Lakebase database *id* (last segment of the `name` returned by
+      `list-databases`). The auto-provisioned database is `databricks-postgres`;
+      its Postgres name (`databricks_postgres`) is injected at runtime as
+      PGDATABASE and never needs to be declared here.
+    default: databricks-postgres
   uc_catalog:
     description: Existing Unity Catalog catalog (cannot be created by this project).
     default: emotors_data_champions
@@ -59,12 +76,14 @@ resources:
           serving_endpoint:
             name: ${var.llm_endpoint}
             permission: CAN_QUERY
-        - name: database
-          database:
-            # Lakebase (Autoscaling project). See docs/03-deployment-guide.md
-            # §4 for the `postgres` vs legacy `database` resource-key nuance.
-            branch: ${var.lakebase_branch}
-            database: ${var.lakebase_database}
+        # Lakebase Autoscaling uses the `postgres` key. The legacy `database`
+        # key (instance_name / database_name) addresses a *provisioned*
+        # instance, a tier that no longer exists; it fails at deploy time with
+        # "Database instance <name> does not exist".
+        - name: postgres
+          postgres:
+            branch: projects/${var.lakebase_project}/branches/${var.lakebase_branch}
+            database: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/databases/${var.lakebase_database}
             permission: CAN_CONNECT_AND_CREATE
 
       config:
@@ -81,10 +100,13 @@ resources:
           - "75"
           - --no-access-log
         env:
+          # In databricks.yml the field is snake_case (`value_from`); the CLI
+          # silently ignores the camelCase `valueFrom` spelling used by
+          # app.yaml, which would leave the variable unset at runtime.
           - name: DATABRICKS_WAREHOUSE_ID
-            valueFrom: sql-warehouse
+            value_from: sql-warehouse
           - name: INV_LLM_ENDPOINT
-            valueFrom: serving-endpoint
+            value_from: serving-endpoint
           - name: INV_UC_CATALOG
             value: ${var.uc_catalog}
           - name: INV_UC_SCHEMA
@@ -97,6 +119,8 @@ resources:
             value: "GENERIQUE"
           - name: INV_LOG_LEVEL
             value: "INFO"
+          - name: INV_ENV
+            value: ${bundle.target}
 
       lifecycle:
         started: true
@@ -110,7 +134,9 @@ resources:
       tasks:
         - task_key: publish
           spark_python_task:
-            python_file: ../jobs/publish_campaign_to_delta.py
+            # Relative to this file's directory (the bundle root). A `../`
+            # prefix escapes the sync root and fails validation.
+            python_file: ./jobs/publish_campaign_to_delta.py
             parameters:
               - "--catalog"
               - ${var.uc_catalog}
@@ -139,5 +165,10 @@ targets:
       warehouse_id: ${var.warehouse_id}
   prod:
     mode: production
+    # `mode: production` requires an explicit, single-copy root path; recent
+    # CLI versions refuse to deploy without one. This is the same location the
+    # CLI would derive by default, spelled out.
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     variables:
       warehouse_id: ${var.warehouse_id}

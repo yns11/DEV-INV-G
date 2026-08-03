@@ -4,7 +4,8 @@ Every workspace-specific value is read from the environment so that nothing
 identifying a workspace, warehouse or database ever lands in source control.
 On Databricks Apps the platform injects the resource-backed variables
 (``DATABRICKS_WAREHOUSE_ID``, ``PGHOST``, ...) from the ``app.yaml`` /
-``databricks.yml`` ``valueFrom`` declarations.
+``databricks.yml`` resource declarations (``valueFrom`` in the former,
+``value_from`` in the latter).
 
 Local development uses the same names, loaded from a ``.env`` file — see
 ``.env.example`` and ``docs/03-deployment-guide.md``.
@@ -57,6 +58,10 @@ class Settings(BaseSettings):
     pg_user: str | None = Field(default=None, alias="PGUSER")
     pg_password: str | None = Field(default=None, alias="PGPASSWORD")
     pg_sslmode: str = Field(default="require", alias="PGSSLMODE")
+    #: Lakebase endpoint resource path
+    #: (``projects/<p>/branches/<b>/endpoints/<e>``), injected alongside the
+    #: PG* variables. It is what the OAuth credential is minted against.
+    lakebase_endpoint: str | None = Field(default=None, alias="LAKEBASE_ENDPOINT")
     pg_schema: str = Field(default="inventory", alias="INV_PG_SCHEMA")
     pg_pool_min: int = Field(default=1, alias="INV_PG_POOL_MIN")
     pg_pool_max: int = Field(default=8, alias="INV_PG_POOL_MAX")

@@ -18,7 +18,7 @@ pydantic~=2.9.0
 pydantic-settings~=2.6.0
 
 # --- Databricks platform -----------------------------------------------------
-databricks-sdk~=0.38.0          # WorkspaceClient, Config, OAuth token federation
+databricks-sdk>=0.81,<1.0       # WorkspaceClient + w.postgres (Lakebase Autoscaling)
 databricks-sql-connector~=3.4.0 # Delta / Unity Catalog reads through a SQL warehouse
 
 # --- Lakebase (PostgreSQL OLTP) ---------------------------------------------

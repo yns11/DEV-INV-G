@@ -20,10 +20,15 @@ variables:
     description: Serving endpoint (vision-capable LLM) used to read scanned counting sheets.
     default: databricks-claude-sonnet-4-5
   lakebase_branch:
-    description: Lakebase (Postgres) branch that stores the operational data.
-    default: main
+    description: >-
+      Lakebase (Postgres) branch that stores the operational data. This is the
+      branch shown in the Lakebase breadcrumb (Projects › <projet> › <branche>);
+      a new project auto-provisions it as `production`.
+    default: production
   lakebase_database:
-    description: Lakebase database name inside the branch.
+    description: >-
+      Lakebase database inside the branch — the value of the "Database" selector
+      in the Lakebase console. Auto-provisioned as `databricks_postgres`.
     default: databricks_postgres
   uc_catalog:
     description: Existing Unity Catalog catalog (cannot be created by this project).

@@ -130,7 +130,7 @@ Vous devez voir 9 tables et 4 vues (`v_variance`, `v_campaign_kpi`,
 # Lister les projets existants — réutilisez-en un si possible
 databricks postgres list-projects --profile PROD
 
-# Ou en créer un : la branche `main` et la base `databricks_postgres`
+# Ou en créer un : la branche `production` et la base `databricks_postgres`
 # sont provisionnées automatiquement
 databricks postgres create-project --json '{
   "name": "inventaire",
@@ -139,14 +139,43 @@ databricks postgres create-project --json '{
 
 # Relever le nom de la branche et de la base
 databricks postgres list-branches --project-name inventaire --profile PROD
-databricks postgres list-databases --project-name inventaire --branch main --profile PROD
+databricks postgres list-databases --project-name inventaire \
+    --branch production --profile PROD
 ```
 
 **Sans CLI** : **Compute → Lakebase → Create project**.
 
-Notez la branche (typiquement `main`) et la base (typiquement
-`databricks_postgres`) : ce sont les valeurs de `lakebase_branch` et
-`lakebase_database` dans `databricks.yml`.
+#### Où lire les deux valeurs dans la console
+
+Ouvrez **Compute → Lakebase → votre projet → Tables** :
+
+```
+Projects  ›  inventaire  ›  production          ← la branche
+                              ▲
+   ┌─────────────────────────────────────┐
+   │ 🗄  databricks_postgres          ▾  │      ← la base de données
+   ├─────────────────────────────────────┤
+   │ 🔲 Schema                            │
+   │ ⚙  public                        ▾  │      ← schémas existants
+   └─────────────────────────────────────┘
+```
+
+- le **troisième élément du fil d'Ariane** est la branche → `lakebase_branch` ;
+- le sélecteur **Database** est la base → `lakebase_database`.
+
+Pour un projet créé avec les valeurs par défaut, cela donne :
+
+```yaml
+lakebase_branch:   production
+lakebase_database: databricks_postgres
+```
+
+> Ne renseignez **pas** le schéma dans `databricks.yml`. Au premier démarrage,
+> l'application crée son propre schéma `inventory` à côté de `public` et
+> `__db_system`, et y applique ses migrations. C'est la ressource `database`
+> déclarée avec `CAN_CONNECT_AND_CREATE` qui lui en donne le droit.
+> Si votre organisation impose un autre nom de schéma, passez-le par la variable
+> d'environnement `INV_PG_SCHEMA`.
 
 > 💡 Créez un projet Lakebase **dédié** à l'application. Le schéma `inventory`
 > y sera créé au premier démarrage, et le service principal de l'app en sera
@@ -281,7 +310,7 @@ jamais être committées) :
 ```bash
 export BUNDLE_VAR_warehouse_id="$WAREHOUSE_ID"
 export BUNDLE_VAR_llm_endpoint="$LLM_ENDPOINT"
-export BUNDLE_VAR_lakebase_branch="main"
+export BUNDLE_VAR_lakebase_branch="production"
 export BUNDLE_VAR_lakebase_database="databricks_postgres"
 export BUNDLE_VAR_uc_catalog="emotors_data_champions"
 ```
@@ -455,7 +484,7 @@ cat > update.json <<'JSON'
     "resources": [
       {"name": "sql-warehouse",    "sql_warehouse":    {"id": "<ID>", "permission": "CAN_USE"}},
       {"name": "serving-endpoint", "serving_endpoint": {"name": "<NOM>", "permission": "CAN_QUERY"}},
-      {"name": "database",         "database":         {"branch": "main", "database": "databricks_postgres", "permission": "CAN_CONNECT_AND_CREATE"}}
+      {"name": "database",         "database":         {"branch": "production", "database": "databricks_postgres", "permission": "CAN_CONNECT_AND_CREATE"}}
     ]
   }
 }

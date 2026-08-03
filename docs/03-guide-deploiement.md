@@ -187,7 +187,21 @@ lakebase_database: databricks-postgres
 
 Le nom PostgreSQL de la base (`databricks_postgres`) n'a pas à être déclaré :
 la plateforme l'injecte dans le conteneur sous `PGDATABASE`, avec `PGHOST`,
-`PGUSER`, `PGPORT` et `LAKEBASE_ENDPOINT`.
+`PGUSER`, `PGPORT`, `PGSSLMODE` et `PGAPPNAME`.
+
+> Ce que la plateforme n'injecte **pas**, c'est le chemin de ressource de
+> l'endpoint — et c'est pourtant la seule clé acceptée pour obtenir un
+> credential Lakebase. `databricks.yml` publie donc `INV_LAKEBASE_BRANCH`, à
+> partir des mêmes variables que la ressource, et l'application retrouve son
+> endpoint en listant ceux de la branche et en comparant `PGHOST`. Si le
+> service principal n'a pas le droit de les lister, court-circuitez la
+> recherche :
+>
+> ```bash
+> databricks postgres list-endpoints projects/inventaire/branches/production --profile PROD
+> # puis, en variable d'environnement de l'app :
+> #   INV_LAKEBASE_ENDPOINT=projects/inventaire/branches/production/endpoints/primary
+> ```
 
 > Ne renseignez **pas** le schéma dans `databricks.yml`. Au premier démarrage,
 > l'application crée son propre schéma `inventory` à côté de `public` et
@@ -744,6 +758,8 @@ Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur
 | **502 Bad Gateway** | L'app n'écoute pas sur `DATABRICKS_APP_PORT`, ou sur `localhost` | La commande est `python main.py` ; `main.py` lit `DATABRICKS_APP_PORT` et se lie à `0.0.0.0`. Vérifiez la ligne `Uvicorn running on http://0.0.0.0:<port>` dans les logs |
 | `ModuleNotFoundError` au démarrage | Dépendance absente de `app/requirements.txt` | Ajoutez-la et redéployez ; aucun paquet système n'est installable |
 | `/api/health` → `ready: false` | Lakebase non attaché ou permissions manquantes | Vérifiez la ressource `postgres` et `CAN_CONNECT_AND_CREATE` |
+| `Database instance '<hôte>.database....cloud.databricks.com' not found` | Appel de l'API du palier *provisionné* avec un nom d'hôte | Corrigé : le credential est désormais émis contre le chemin de ressource de l'endpoint (§2.3). Vérifiez que `INV_LAKEBASE_BRANCH` figure bien dans les variables de l'app |
+| `Impossible de lister les endpoints de « projects/... »` | `CAN_CONNECT_AND_CREATE` sur la base n'autorise pas à énumérer les endpoints du projet | Donnez au service principal l'accès au projet Lakebase, ou court-circuitez la recherche en fixant `INV_LAKEBASE_ENDPOINT` (relevé par `databricks postgres list-endpoints projects/<projet>/branches/<branche>`) |
 | `Lakebase n'est pas configuré` | `PGHOST` / `PGDATABASE` / `PGUSER` absents | La ressource `postgres` n'est pas attachée à l'app |
 | `Database instance <nom> does not exist` | Ressource déclarée avec l'ancienne clé `database` | Utilisez la clé `postgres` avec des chemins de ressource complets (§2.3) |
 | `unknown field: branch` au `bundle validate` | Idem — clé `database` au lieu de `postgres` | Voir §2.3 |

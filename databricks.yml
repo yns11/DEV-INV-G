@@ -127,6 +127,13 @@ resources:
             value: "INFO"
           - name: INV_ENV
             value: ${bundle.target}
+          # Attaching the `postgres` resource injects PGHOST/PGDATABASE/PGUSER
+          # but NOT the endpoint resource path, and only that path can mint a
+          # database credential. The app recovers it by listing this branch's
+          # endpoints and matching PGHOST. Built from the same variables as the
+          # resource above, so the two cannot drift apart.
+          - name: INV_LAKEBASE_BRANCH
+            value: projects/${var.lakebase_project}/branches/${var.lakebase_branch}
 
       lifecycle:
         started: true

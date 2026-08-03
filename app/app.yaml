@@ -49,6 +49,13 @@ env:
   - name: INV_ENV
     value: "prod"
 
+  # Chemin de ressource de la branche Lakebase. La plateforme n'injecte pas le
+  # chemin de l'endpoint, indispensable pour obtenir un credential ; l'app le
+  # retrouve en listant les endpoints de cette branche et en comparant PGHOST.
+  # Adaptez le nom du projet si le vôtre ne s'appelle pas « inventaire ».
+  - name: INV_LAKEBASE_BRANCH
+    value: "projects/inventaire/branches/production"
+
   # Lakebase connection variables (PGHOST / PGDATABASE / PGUSER / PGPORT,
   # LAKEBASE_ENDPOINT and, for password auth, PGPASSWORD) are injected
   # automatically once the `postgres` resource is attached to the app. Do not

@@ -55,6 +55,8 @@ class _CredentialProvider:
         self._token: str | None = None
         self._expires_at: float = 0.0
         self._static = settings.pg_password
+        #: Endpoint resource path, resolved lazily and then reused.
+        self._endpoint: str | None = None
 
     @property
     def is_static(self) -> bool:
@@ -75,28 +77,99 @@ class _CredentialProvider:
             log.info("Lakebase credential refreshed")
             return self._token
 
+    def _resolve_endpoint(self, client: Any) -> str:
+        """Find the endpoint resource path backing ``PGHOST``.
+
+        Attaching a ``postgres`` resource publishes connection *parameters*
+        (PGHOST, PGDATABASE, PGUSER, ...) but not the endpoint's resource path,
+        and only that path can be used to mint a credential. It is recovered
+        here by listing the branch's endpoints and matching PGHOST against the
+        hosts each one advertises — direct or pooled, read-write or read-only.
+        Matching beats assuming the auto-provisioned name ``primary``, which
+        stops being true the moment somebody adds a replica or renames it.
+
+        Resolved once per process and cached: the mapping cannot change without
+        the app being restarted with a different PGHOST.
+        """
+        if self._endpoint is not None:
+            return self._endpoint
+
+        branch = self._settings.lakebase_branch
+        if not branch:
+            raise UpstreamError(
+                "Endpoint Lakebase inconnu : renseignez INV_LAKEBASE_BRANCH "
+                "(projects/<projet>/branches/<branche>) ou INV_LAKEBASE_ENDPOINT."
+            )
+
+        try:
+            endpoints = list(client.postgres.list_endpoints(branch))
+        except Exception as exc:
+            # Typically a permission gap: CAN_CONNECT_AND_CREATE on the database
+            # does not imply the right to enumerate the project's endpoints.
+            raise UpstreamError(
+                f"Impossible de lister les endpoints de « {branch} ». Donnez au "
+                "service principal l'accès au projet Lakebase, ou renseignez "
+                "INV_LAKEBASE_ENDPOINT pour éviter cette recherche.",
+                cause=str(exc),
+            ) from exc
+
+        host = (self._settings.pg_host or "").lower()
+        fallback: str | None = None
+        for endpoint in endpoints:
+            status = getattr(endpoint, "status", None)
+            hosts = getattr(status, "hosts", None)
+            advertised = {
+                str(getattr(hosts, attr, "") or "").lower()
+                for attr in (
+                    "host",
+                    "read_only_host",
+                    "read_only_pooled_host",
+                    "read_write_pooled_host",
+                )
+            }
+            if host and host in advertised:
+                self._endpoint = endpoint.name
+                return endpoint.name
+            # Keep the first read-write endpoint in case PGHOST is a form the
+            # API does not advertise; better a working guess than a hard stop.
+            if fallback is None and "READ_WRITE" in str(
+                getattr(status, "endpoint_type", "")
+            ):
+                fallback = endpoint.name
+
+        if fallback:
+            log.warning(
+                "PGHOST %s not advertised by any endpoint of %s — falling back "
+                "to the read-write endpoint %s",
+                host,
+                branch,
+                fallback,
+            )
+            self._endpoint = fallback
+            return fallback
+
+        raise UpstreamError(
+            f"Aucun endpoint Lakebase de la branche « {branch} » ne correspond "
+            f"à PGHOST ({host}). Vérifiez que la ressource « postgres » pointe "
+            "sur la bonne branche, ou renseignez INV_LAKEBASE_ENDPOINT."
+        )
+
     def _mint(self) -> str:
         """Ask Databricks for a database credential for this app's identity.
 
-        Lakebase Autoscaling mints the token against an *endpoint resource
-        path*, published to the container as ``LAKEBASE_ENDPOINT`` when a
-        ``postgres`` resource is attached to the app. The retired provisioned
-        tier used instance names instead; that call is kept as a fallback for
-        workspaces whose migration has not completed yet, and can be deleted
-        once every environment reports an endpoint.
+        Lakebase Autoscaling mints the token against an endpoint resource path
+        (see :meth:`_resolve_endpoint`). The retired provisioned tier used
+        instance names instead; calling that API with a hostname fails with
+        ``Database instance '<host>' not found``, so it is not attempted.
         """
         try:
             from databricks.sdk import WorkspaceClient
 
             client = WorkspaceClient()
-            endpoint = self._settings.lakebase_endpoint
-            if endpoint:
-                credential = client.postgres.generate_database_credential(endpoint)
-            else:  # pragma: no cover - legacy provisioned instances only
-                credential = client.database.generate_database_credential(
-                    request_id=f"{self._settings.app_name}-{int(time.time())}",
-                    instance_names=[self._settings.pg_host or ""],
-                )
+            endpoint = self._settings.lakebase_endpoint or self._resolve_endpoint(
+                client
+            )
+            credential = client.postgres.generate_database_credential(endpoint)
             token = getattr(credential, "token", None)
             if not token:
                 raise UpstreamError(

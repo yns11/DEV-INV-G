@@ -59,9 +59,16 @@ class Settings(BaseSettings):
     pg_password: str | None = Field(default=None, alias="PGPASSWORD")
     pg_sslmode: str = Field(default="require", alias="PGSSLMODE")
     #: Lakebase endpoint resource path
-    #: (``projects/<p>/branches/<b>/endpoints/<e>``), injected alongside the
-    #: PG* variables. It is what the OAuth credential is minted against.
-    lakebase_endpoint: str | None = Field(default=None, alias="LAKEBASE_ENDPOINT")
+    #: (``projects/<p>/branches/<b>/endpoints/<e>``) — what the OAuth credential
+    #: is minted against. The platform does **not** publish it: attaching a
+    #: `postgres` resource injects PGHOST/PGDATABASE/PGUSER/PGPORT/PGSSLMODE and
+    #: nothing more. Left empty, the endpoint is discovered from
+    #: :attr:`lakebase_branch` by matching PGHOST; set it to skip that lookup.
+    lakebase_endpoint: str | None = Field(default=None, alias="INV_LAKEBASE_ENDPOINT")
+    #: Branch resource path (``projects/<p>/branches/<b>``) used for that
+    #: discovery. Declared in `databricks.yml` from the same variables as the
+    #: `postgres` resource, so the two can never point at different branches.
+    lakebase_branch: str | None = Field(default=None, alias="INV_LAKEBASE_BRANCH")
     pg_schema: str = Field(default="inventory", alias="INV_PG_SCHEMA")
     pg_pool_min: int = Field(default=1, alias="INV_PG_POOL_MIN")
     pg_pool_max: int = Field(default=8, alias="INV_PG_POOL_MAX")

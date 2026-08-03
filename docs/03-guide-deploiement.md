@@ -361,11 +361,31 @@ databricks bundle validate -t prod --profile PROD \
 > vert suivi d'un `deploy` qui échoue sur
 > `no value assigned to required variable warehouse_id`.
 >
-> ⚠️ Sous PowerShell, une variable non définie s'étend en chaîne **vide** sans
-> avertissement : `--var="lakebase_branch=$lakebase_branch"` écrase alors le
-> défaut `production` par du vide, et l'app est déployée avec une ressource
-> Lakebase invalide. Vérifiez vos variables (`echo $env:WAREHOUSE_ID`) ou
-> passez par le fichier d'override, qui ne souffre pas de ce problème.
+> ⚠️ Sous PowerShell comme sous bash, une variable non définie s'étend en
+> chaîne **vide** sans avertissement. `--var="warehouse_id=$WAREHOUSE_ID"` avec
+> `$WAREHOUSE_ID` non défini transmet une valeur vide : le `validate` reste vert
+> — une valeur *a* été assignée — et l'échec ne survient qu'au `deploy`, côté
+> API (`Invalid SQL warehouse resource sql-warehouse: ID  is invalid`). Même
+> piège sur `lakebase_branch`, où le vide écrase le défaut `production`.
+> Vérifiez d'abord vos variables (`echo $WAREHOUSE_ID`, ou `echo $env:...` si
+> elles viennent de l'environnement Windows), ou passez par le fichier
+> d'override — la valeur y est écrite en clair, donc visible.
+
+**Variante sans identifiant à recopier.** Un bundle sait résoudre un warehouse
+par son **nom**. Le nom est stable et lisible, une faute de frappe échoue
+proprement au `validate` (`warehouse named ... not found`), et il n'y a plus
+d'identifiant vide possible. Remplacez dans `databricks.yml` :
+
+```yaml
+variables:
+  warehouse_id:
+    description: SQL warehouse utilisé pour toutes les lectures Delta.
+    lookup:
+      warehouse: "Serverless Starter Warehouse"   # ← le nom exact du vôtre
+```
+
+Le nom exact se lit avec `databricks warehouses list --profile PROD`. Plus
+aucun `--var` n'est alors nécessaire pour cette variable.
 
 > 🚫 Ne redéclarez **jamais** une variable dans un `targets:` en la faisant
 > pointer sur elle-même (`warehouse_id: ${var.warehouse_id}`) : le CLI y voit
@@ -706,6 +726,7 @@ Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur
 | `path ... is not contained in sync root path` | Chemin de fichier remontant au-dessus de la racine du bundle | Les chemins de `databricks.yml` sont relatifs à son propre répertoire : `./jobs/...`, jamais `../jobs/...` |
 | `cycle detected in field resolution: variables.X.default -> var.X -> var.X` | Une cible redéclare `X: ${var.X}` | Supprimez l'override : une variable ne peut pas se référencer elle-même (§4.1) |
 | `no value assigned to required variable warehouse_id` au `deploy` alors que le `validate` passait | `--var` n'a été passé qu'au `validate` | Répétez `--var` sur chaque commande, ou utilisez `variable-overrides.json` (§4.1) |
+| `Invalid SQL warehouse resource sql-warehouse: ID  is invalid` (400) | Valeur **vide** transmise à `warehouse_id` : la variable du shell référencée par `--var` n'était pas définie | Le `validate` ne détecte pas ce cas. Vérifiez la variable, ou passez au fichier d'override / au `lookup` par nom (§4.1) |
 | `password authentication failed` après ~1 h | Jeton Lakebase expiré | Normalement géré automatiquement ; si cela persiste, redémarrez l'app et ouvrez un ticket |
 | **404 sur toutes les pages sauf `/api/...`** | SPA non construite | `make build-frontend` puis redéployez ; `app/static/index.html` doit exister |
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |

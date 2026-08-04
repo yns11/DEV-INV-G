@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { api } from '../lib/api'
+import { GRID_ROW_CEILING, api } from '../lib/api'
 import type { GridContract, Overview, Threshold } from '../lib/types'
 import { ITEM_TYPE_LABELS, moneyShort, numShort, percent } from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
@@ -82,7 +82,7 @@ function ItemsTab({
   const [search, setSearch] = useState('')
   const query = useQuery({
     queryKey: ['items', campaignId, search],
-    queryFn: () => api.items(campaignId, { limit: 500, search: search || undefined }),
+    queryFn: () => api.items(campaignId, { limit: GRID_ROW_CEILING, search: search || undefined }),
   })
 
   const columns: Column[] = [
@@ -325,7 +325,7 @@ function BookStockTab({
   const showError = useErrorToast()
   const query = useQuery({
     queryKey: ['book-stock', campaignId],
-    queryFn: () => api.bookStock(campaignId, { limit: 500 }),
+    queryFn: () => api.bookStock(campaignId, { limit: GRID_ROW_CEILING }),
   })
 
   const freeze = useMutation({

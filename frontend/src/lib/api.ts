@@ -59,6 +59,16 @@ export class ApiError extends Error {
 
 const BASE = '/api'
 
+/**
+ * Rows a grid asks for in one go — the server's own ceiling.
+ *
+ * Views are not paginated: a stock referential read half-way is a referential
+ * you cannot trust, and a counter looking for one article should not have to
+ * wonder whether it is on page 2. The ceiling stays as a safety valve for the
+ * 6 GB container, and the grids say plainly when it truncates.
+ */
+export const GRID_ROW_CEILING = 20_000
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
     ...init,
@@ -194,6 +204,8 @@ export const api = {
     request<{ total: number; offset: number; limit: number; rows: Array<Record<string, unknown>> }>(
       `/campaigns/${id}/items${qs(params)}`,
     ),
+  // No ceiling here: the endpoint returns the whole structure, which is what
+  // a nomenclature read half-way would make unusable anyway.
   boms: (id: string, parent?: string) =>
     request<Array<Record<string, unknown>>>(`/campaigns/${id}/boms${qs({ parent })}`),
   bomHealth: (id: string) =>

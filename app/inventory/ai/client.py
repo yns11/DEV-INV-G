@@ -71,6 +71,8 @@ class LlmClient:
         self._endpoint = endpoint or self._settings.llm_endpoint
         self._timeout = timeout
         self._client: Any | None = None
+        #: Cleared the first time the endpoint refuses `temperature`.
+        self._sends_temperature = True
 
     # ------------------------------------------------------------------ setup
 
@@ -145,14 +147,19 @@ class LlmClient:
                 {"role": "user", "content": content if images else user},
             ],
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "timeout": self._timeout,
         }
+        # Reasoning models reject `temperature` outright rather than ignoring
+        # it — Claude Opus 4.8 answers 400 "does not support the temperature
+        # parameter". Which models do is not something the endpoint advertises,
+        # so it is learned on the first refusal and remembered for the process.
+        if self._sends_temperature:
+            kwargs["temperature"] = temperature
         if response_json:
             kwargs["response_format"] = {"type": "json_object"}
 
         try:
-            completion = self._openai().chat.completions.create(**kwargs)
+            completion = self._call(kwargs)
         except Exception as exc:
             if _is_transient(exc):
                 log.warning("Transient LLM error, retrying: %s", exc)
@@ -170,6 +177,26 @@ class LlmClient:
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             model=getattr(completion, "model", self._endpoint) or self._endpoint,
         )
+
+    def _call(self, kwargs: dict[str, Any]) -> Any:
+        """Send the completion, dropping `temperature` if the model refuses it.
+
+        Retried once and only once: the flag makes every later call skip the
+        parameter, so a model that dislikes it costs a single wasted round-trip
+        per process rather than one per request.
+        """
+        try:
+            return self._openai().chat.completions.create(**kwargs)
+        except Exception as exc:
+            if "temperature" not in kwargs or not _rejects_temperature(exc):
+                raise
+            log.info(
+                "Model %s rejects the temperature parameter — retrying without it",
+                self._endpoint,
+            )
+            self._sends_temperature = False
+            kwargs.pop("temperature")
+            return self._openai().chat.completions.create(**kwargs)
 
     def complete_json(
         self,
@@ -229,6 +256,20 @@ def _extract_json(text: str) -> dict[str, Any] | None:
         if isinstance(parsed, list):
             return {"items": parsed}
     return None
+
+
+def _rejects_temperature(exc: BaseException) -> bool:
+    """Is this the endpoint saying it will not accept `temperature`?
+
+    Matched on the message because the platform returns a plain 400 with no
+    machine-readable code: `BAD_REQUEST: Model <name> does not support the
+    temperature parameter`. Kept narrow on purpose — a broader match would
+    silently swallow other 400s and hide real prompt defects.
+    """
+    text = str(exc).lower()
+    return "temperature" in text and (
+        "does not support" in text or "unsupported" in text or "not supported" in text
+    )
 
 
 def _is_transient(exc: BaseException) -> bool:

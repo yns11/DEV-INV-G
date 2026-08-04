@@ -243,6 +243,53 @@ class ReportService:
             ],
         )
 
+        # -- referentials ------------------------------------------------------
+        # The dossier is an archive, not a summary: an écart is only auditable
+        # against the referential that produced it, and that referential is
+        # frozen per campaign. Shipping the analysis without it would force the
+        # reader back into the ERP — exactly the round-trip this file removes.
+        sheets["Articles"] = (
+            ["Article", "Désignation", "Nom de recherche", "Groupe", "Cycle de vie",
+             "Type", "Catégorie", "Programme", "Spécificité", "Unité",
+             "Prix standard €", "Exclusions"],
+            [
+                [i.item_number, i.name, i.search_name, i.item_group,
+                 i.lifecycle_state, str(i.item_type), i.category, i.program,
+                 str(i.commonality), i.unit, float(i.std_price),
+                 ", ".join(str(e) for e in i.exclusions)]
+                for i in ctx.referentials.list_items(campaign.id)
+            ],
+        )
+        sheets["Nomenclatures"] = (
+            ["Composé", "Désignation composé", "Composant",
+             "Désignation composant", "Quantité par"],
+            [
+                [l.parent_item,
+                 items[l.parent_item].name if l.parent_item in items else "",
+                 l.child_item,
+                 items[l.child_item].name if l.child_item in items else "",
+                 float(l.qty_per)]
+                for l in ctx.referentials.list_bom_links(campaign.id)
+            ],
+        )
+        sheets["Emplacements"] = (
+            ["Entrepôt", "Emplacement", "Type", "Statut", "Zone", "Origine"],
+            [
+                [loc.warehouse_id, loc.location_id, str(loc.type),
+                 str(loc.status), loc.zone, str(loc.source)]
+                for loc in ctx.referentials.list_locations(campaign.id)
+            ],
+        )
+        sheets["Seuils"] = (
+            ["Type d'article", "Valeur absolue €", "Écart relatif qté",
+             "Plancher qté", "Tolérance IRA"],
+            [
+                [str(t.item_type), float(t.value_abs_eur), float(t.qty_relative),
+                 float(t.qty_abs_floor), float(t.ira_tolerance)]
+                for t in campaign.thresholds
+            ],
+        )
+
         # -- book stock snapshot ----------------------------------------------
         sheets["Stock livre"] = (
             ["Article", "Désignation", "Entrepôt", "Emplacement", "Quantité",

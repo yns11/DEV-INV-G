@@ -151,10 +151,18 @@ class ImportService:
 
         The user always sees what will happen before it happens — the single
         biggest behavioural difference from pasting into a spreadsheet.
+
+        The payload is built by :meth:`ImportOutcome.as_dict`, exactly like the
+        commit path. Serialising a dry run through a second, similar-looking
+        function is how the two shapes silently diverged once already: the
+        preview omitted ``warnings``, and the client — which cannot tell the two
+        responses apart — crashed on the missing key.
         """
         _, result = self.parse(contract_key, **kwargs)
+        outcome = _base_outcome(contract_key, result)
+        outcome.rows_accepted = len(result.rows)
         return {
-            **result.as_report(),
+            **outcome.as_dict(),
             "sample": [_jsonable(r) for r in result.rows[:limit]],
         }
 

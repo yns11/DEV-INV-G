@@ -186,6 +186,31 @@ class _CredentialProvider:
             ) from exc
 
 
+def _connection_class(credentials: _CredentialProvider) -> type[psycopg.Connection]:
+    """A connection class that fetches the current token as it dials.
+
+    The pool opens connections from a fixed ``kwargs`` dict, so a password
+    written there at start-up is the password every later connection uses —
+    including the ones the pool opens on its own to refill itself or to replace
+    one retired by ``max_lifetime``. An hour in, the token has expired and each
+    of those background attempts fails with ``OAuth: User is not authorized``,
+    filling the log with warnings while foreground requests limp along on a
+    refresh-after-failure retry.
+
+    Reading the credential at dial time removes the staleness entirely: the
+    provider hands out a cached token and mints a new one shortly before the old
+    expires, so every connection — foreground or background — starts valid.
+    """
+
+    class _LakebaseConnection(psycopg.Connection):  # type: ignore[type-arg]
+        @classmethod
+        def connect(cls, conninfo: str = "", **kwargs: Any) -> Any:
+            kwargs["password"] = credentials.get()
+            return super().connect(conninfo, **kwargs)
+
+    return _LakebaseConnection
+
+
 class Database:
     """Thin, explicit wrapper around a psycopg connection pool.
 
@@ -229,6 +254,7 @@ class Database:
         return ConnectionPool(
             conninfo="",
             kwargs=self._connection_kwargs(),
+            connection_class=_connection_class(self._credentials),
             min_size=s.pg_pool_min,
             max_size=s.pg_pool_max,
             max_lifetime=_CONNECTION_MAX_LIFETIME_S,

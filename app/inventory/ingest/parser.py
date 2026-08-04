@@ -88,18 +88,10 @@ class ParseResult:
     def ok(self) -> bool:
         return not self.errors and not self.missing_columns
 
-    def as_report(self) -> dict[str, Any]:
-        return {
-            "contract": self.contract_key,
-            "rowsReceived": self.rows_received,
-            "rowsAccepted": len(self.rows),
-            "rowsRejected": len(self.errors),
-            "missingColumns": self.missing_columns,
-            "unknownColumns": self.unknown_columns,
-            "duplicateKeys": self.duplicate_keys[:50],
-            "errors": [e.as_dict() for e in self.errors[:200]],
-            "truncatedErrors": max(0, len(self.errors) - 200),
-        }
+    # Deliberately no `as_report()` here. A parse result is turned into a
+    # client payload by `ImportOutcome.as_dict()` and by nothing else: a second
+    # serialiser for the same DTO drifted from the first, and the client — which
+    # cannot tell a dry run from a commit — crashed on the key it lost.
 
 
 # --------------------------------------------------------------------------- #

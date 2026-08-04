@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { api } from './lib/api'
 import { Alert, Badge, Button, Icons } from './components/ui'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { CampaignsPage } from './features/Campaigns'
 import { CampaignShell } from './features/CampaignShell'
 import { Dashboard } from './features/Dashboard'
@@ -126,26 +127,30 @@ export function App() {
             </Alert>
           )}
 
-          <Routes>
-            <Route path="/" element={<Navigate to="/campagnes" replace />} />
-            <Route path="/campagnes" element={<CampaignsPage />} />
-            <Route path="/campagnes/:campaignId" element={<CampaignShell />}>
-              <Route index element={<Dashboard />} />
-              <Route path="preparation" element={<Preparation />} />
-              <Route path="comptage" element={<Counting />} />
-              <Route path="generique" element={<Generic />} />
-              <Route path="analyse" element={<Analysis />} />
-              <Route path="audit" element={<Audit />} />
-            </Route>
-            <Route
-              path="*"
-              element={
-                <Alert tone="warning" title="Page introuvable">
-                  Cette adresse ne correspond à aucun écran.
-                </Alert>
-              }
-            />
-          </Routes>
+          {/* Scoped to the routed screen so a crash never takes the shell —
+              and therefore the navigation — down with it. */}
+          <ErrorBoundary resetKey={location.pathname}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/campagnes" replace />} />
+              <Route path="/campagnes" element={<CampaignsPage />} />
+              <Route path="/campagnes/:campaignId" element={<CampaignShell />}>
+                <Route index element={<Dashboard />} />
+                <Route path="preparation" element={<Preparation />} />
+                <Route path="comptage" element={<Counting />} />
+                <Route path="generique" element={<Generic />} />
+                <Route path="analyse" element={<Analysis />} />
+                <Route path="audit" element={<Audit />} />
+              </Route>
+              <Route
+                path="*"
+                element={
+                  <Alert tone="warning" title="Page introuvable">
+                    Cette adresse ne correspond à aucun écran.
+                  </Alert>
+                }
+              />
+            </Routes>
+          </ErrorBoundary>
         </div>
       </main>
     </div>

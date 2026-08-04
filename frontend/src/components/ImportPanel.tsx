@@ -246,7 +246,19 @@ function ImportReport({
   onConfirm?: () => void
   done?: boolean
 }) {
-  const blocked = result.missingColumns.length > 0
+  // Defaults on every collection: this payload crosses the network, and a
+  // single missing array used to unmount the whole application. The server
+  // contract is pinned by a test, but a client that blanks the screen when an
+  // API evolves is a client that is too brittle to deploy.
+  const {
+    missingColumns = [],
+    unknownColumns = [],
+    duplicateKeys = [],
+    warnings = [],
+    errors = [],
+    details = {},
+  } = result
+  const blocked = missingColumns.length > 0
   const sample = (result as unknown as { sample?: Array<Record<string, unknown>> }).sample ?? []
 
   return (
@@ -292,7 +304,7 @@ function ImportReport({
       <div className="stack">
         {blocked && (
           <Alert tone="danger" title="Colonnes obligatoires absentes">
-            Le fichier ne contient pas : <strong>{result.missingColumns.join(', ')}</strong>.
+            Le fichier ne contient pas : <strong>{missingColumns.join(', ')}</strong>.
             Téléchargez le modèle pour obtenir la structure attendue.
           </Alert>
         )}
@@ -305,10 +317,10 @@ function ImportReport({
           </Alert>
         )}
 
-        {result.warnings.length > 0 && (
-          <Alert tone="warning" title={`${result.warnings.length} correction(s) automatique(s)`}>
+        {warnings.length > 0 && (
+          <Alert tone="warning" title={`${warnings.length} correction(s) automatique(s)`}>
             <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
-              {result.warnings.slice(0, 8).map((warning, index) => (
+              {warnings.slice(0, 8).map((warning, index) => (
                 <li key={index}>
                   Ligne {warning.line} — {warning.message}
                 </li>
@@ -317,21 +329,21 @@ function ImportReport({
           </Alert>
         )}
 
-        {result.unknownColumns.length > 0 && (
+        {unknownColumns.length > 0 && (
           <Alert tone="info" title="Colonnes ignorées">
-            {result.unknownColumns.join(', ')} — ces colonnes ne sont pas utilisées par
+            {unknownColumns.join(', ')} — ces colonnes ne sont pas utilisées par
             cette grille et n’empêchent pas l’import.
           </Alert>
         )}
 
-        {result.duplicateKeys.length > 0 && (
-          <Alert tone="warning" title={`${result.duplicateKeys.length} doublon(s) de clé`}>
-            {result.duplicateKeys.slice(0, 5).join(' · ')}
-            {result.duplicateKeys.length > 5 && ' …'}
+        {duplicateKeys.length > 0 && (
+          <Alert tone="warning" title={`${duplicateKeys.length} doublon(s) de clé`}>
+            {duplicateKeys.slice(0, 5).join(' · ')}
+            {duplicateKeys.length > 5 && ' …'}
           </Alert>
         )}
 
-        {result.errors.length > 0 && (
+        {errors.length > 0 && (
           <div className="card" style={{ borderColor: 'var(--danger-border)' }}>
             <div className="card__head">
               <h3 className="card__title" style={{ fontSize: 'var(--text-base)' }}>
@@ -352,7 +364,7 @@ function ImportReport({
                   </tr>
                 </thead>
                 <tbody>
-                  {result.errors.map((error, index) => (
+                  {errors.map((error, index) => (
                     <tr key={index}>
                       <td className="num">{error.line}</td>
                       <td className="mono">{error.column}</td>
@@ -366,10 +378,10 @@ function ImportReport({
           </div>
         )}
 
-        {Object.keys(result.details ?? {}).length > 0 && (
+        {Object.keys(details).length > 0 && (
           <Card title="Effets de cet import" className="card">
             <dl className="kv">
-              {Object.entries(result.details).map(([key, value]) => (
+              {Object.entries(details).map(([key, value]) => (
                 <div key={key} style={{ display: 'contents' }}>
                   <dt>{DETAIL_LABELS[key] ?? key}</dt>
                   <dd className="num">

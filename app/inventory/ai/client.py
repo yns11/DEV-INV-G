@@ -71,8 +71,8 @@ class LlmClient:
         self._endpoint = endpoint or self._settings.llm_endpoint
         self._timeout = timeout
         self._client: Any | None = None
-        #: Cleared the first time the endpoint refuses `temperature`.
-        self._sends_temperature = True
+        #: Parameters this endpoint has refused, learned from its own 400s.
+        self._dropped: set[str] = set()
 
     # ------------------------------------------------------------------ setup
 
@@ -149,14 +149,14 @@ class LlmClient:
             "max_tokens": max_tokens,
             "timeout": self._timeout,
         }
-        # Reasoning models reject `temperature` outright rather than ignoring
-        # it — Claude Opus 4.8 answers 400 "does not support the temperature
-        # parameter". Which models do is not something the endpoint advertises,
-        # so it is learned on the first refusal and remembered for the process.
-        if self._sends_temperature:
+        if "temperature" not in self._dropped:
             kwargs["temperature"] = temperature
-        if response_json:
+        if response_json and "response_format" not in self._dropped:
             kwargs["response_format"] = {"type": "json_object"}
+        for name in self._dropped:
+            kwargs.pop(name, None)
+        if "max_tokens" in self._dropped:
+            kwargs["max_completion_tokens"] = max_tokens
 
         try:
             completion = self._call(kwargs)
@@ -164,8 +164,18 @@ class LlmClient:
             if _is_transient(exc):
                 log.warning("Transient LLM error, retrying: %s", exc)
                 raise _TransientLlmError(str(exc)) from exc
+            # The provider's own words, verbatim and at ERROR level. Without
+            # them a model refusal is indistinguishable from a missing
+            # resource, and diagnosing it means reading the container logs and
+            # guessing — which cost this project two full rounds.
+            reason = _provider_message(exc)
+            log.error(
+                "Refus du modèle %s : %s", self._endpoint, reason,
+                extra={"llm_endpoint": self._endpoint},
+            )
             raise UpstreamError(
-                f"Appel au modèle « {self._endpoint} » impossible.", cause=str(exc)
+                f"Appel au modèle « {self._endpoint} » impossible : {reason}",
+                cause=str(exc),
             ) from exc
 
         choice = completion.choices[0] if completion.choices else None
@@ -179,24 +189,45 @@ class LlmClient:
         )
 
     def _call(self, kwargs: dict[str, Any]) -> Any:
-        """Send the completion, dropping `temperature` if the model refuses it.
+        """Send the completion, negotiating away the parameters the model refuses.
 
-        Retried once and only once: the flag makes every later call skip the
-        parameter, so a model that dislikes it costs a single wasted round-trip
-        per process rather than one per request.
+        Serving endpoints do not advertise which optional parameters a model
+        accepts; they answer a plain 400 naming the offender — Claude Opus 4.8
+        rejects ``temperature``, other reasoning models reject ``max_tokens``
+        (renamed ``max_completion_tokens``) or ``response_format``. Rather than
+        maintain a table of model quirks that ages badly, the refusal is read
+        and applied: the parameter is dropped or renamed, the call is retried,
+        and the lesson is remembered for the process so the cost is a handful of
+        round-trips at start-up rather than one per request.
+
+        Bounded by the number of negotiable parameters, so a model that refuses
+        everything still terminates instead of looping.
         """
-        try:
-            return self._openai().chat.completions.create(**kwargs)
-        except Exception as exc:
-            if "temperature" not in kwargs or not _rejects_temperature(exc):
-                raise
-            log.info(
-                "Model %s rejects the temperature parameter — retrying without it",
-                self._endpoint,
-            )
-            self._sends_temperature = False
-            kwargs.pop("temperature")
-            return self._openai().chat.completions.create(**kwargs)
+        for _ in range(len(_NEGOTIABLE) + 1):
+            try:
+                return self._openai().chat.completions.create(**kwargs)
+            except Exception as exc:
+                offender = _unsupported_parameter(exc)
+                if offender is None or offender not in kwargs:
+                    raise
+                replacement = _NEGOTIABLE.get(offender)
+                value = kwargs.pop(offender)
+                self._dropped.add(offender)
+                if replacement and replacement not in kwargs:
+                    kwargs[replacement] = value
+                    log.info(
+                        "Model %s refuses %r — retrying with %r",
+                        self._endpoint, offender, replacement,
+                    )
+                else:
+                    log.info(
+                        "Model %s refuses %r — retrying without it",
+                        self._endpoint, offender,
+                    )
+        raise UpstreamError(
+            f"Le modèle « {self._endpoint} » a refusé tous les paramètres "
+            "négociables de l'appel."
+        )
 
     def complete_json(
         self,
@@ -258,18 +289,57 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _rejects_temperature(exc: BaseException) -> bool:
-    """Is this the endpoint saying it will not accept `temperature`?
+#: Optional parameters a model may refuse, mapped to their replacement (or
+#: ``None`` when the call simply goes without). ``max_tokens`` is the one that
+#: cannot merely be dropped: a completion still needs a ceiling, and newer
+#: models expect it under the name OpenAI renamed it to.
+_NEGOTIABLE: dict[str, str | None] = {
+    "temperature": None,
+    "top_p": None,
+    "presence_penalty": None,
+    "frequency_penalty": None,
+    "response_format": None,
+    "max_tokens": "max_completion_tokens",
+}
+
+_UNSUPPORTED_RE = re.compile(
+    r"(?:does not support|doesn't support|not supported|unsupported)[^.]*",
+    re.IGNORECASE,
+)
+
+
+def _unsupported_parameter(exc: BaseException) -> str | None:
+    """The parameter this 400 says the model will not accept, if any.
 
     Matched on the message because the platform returns a plain 400 with no
-    machine-readable code: `BAD_REQUEST: Model <name> does not support the
-    temperature parameter`. Kept narrow on purpose — a broader match would
-    silently swallow other 400s and hide real prompt defects.
+    machine-readable field: ``BAD_REQUEST: Model <name> does not support the
+    temperature parameter``. The match is anchored on an explicit refusal
+    phrase *and* a known parameter name, so an unrelated 400 — a malformed
+    prompt, an image the model cannot read — still surfaces as itself instead
+    of being silently retried into a different error.
     """
-    text = str(exc).lower()
-    return "temperature" in text and (
-        "does not support" in text or "unsupported" in text or "not supported" in text
-    )
+    fragment = _UNSUPPORTED_RE.search(str(exc))
+    if fragment is None:
+        return None
+    text = fragment.group(0).lower()
+    # Longest first: "max_tokens" must win over a substring match.
+    for name in sorted(_NEGOTIABLE, key=len, reverse=True):
+        if name in text or name.replace("_", " ") in text:
+            return name
+    return None
+
+
+def _provider_message(exc: BaseException) -> str:
+    """The upstream explanation, stripped of the SDK's wrapping."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        message = body.get("message") or body.get("error_code")
+        if message:
+            return str(message)
+    text = str(exc)
+    # `Error code: 400 - {'error_code': ..., 'message': 'BAD_REQUEST: ...'}`
+    match = re.search(r"'message':\s*'([^']+)'", text)
+    return match.group(1) if match else text[:400]
 
 
 def _is_transient(exc: BaseException) -> bool:

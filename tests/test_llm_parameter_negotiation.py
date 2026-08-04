@@ -10,7 +10,7 @@ production, and why it is pinned here.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -18,7 +18,7 @@ from inventory.ai.client import LlmClient, _provider_message, _unsupported_param
 from inventory.errors import UpstreamError
 
 
-class _Refusal(Exception):
+class _RefusalError(Exception):
     """Shaped like the SDK's BadRequestError: the body carries the message."""
 
     def __init__(self, message: str) -> None:
@@ -35,7 +35,7 @@ class _Completions:
         self.calls.append(dict(kwargs))
         for name in sorted(self._refuses):
             if name in kwargs:
-                raise _Refusal(
+                raise _RefusalError(
                     f"BAD_REQUEST: Model eu.anthropic.x does not support "
                     f"the {name} parameter."
                 )
@@ -47,7 +47,7 @@ class _Completions:
             message = _Message()
 
         class _Completion:
-            choices = [_Choice()]
+            choices: ClassVar[list[Any]] = [_Choice()]
             usage = None
             model = "x"
 
@@ -97,7 +97,7 @@ def test_an_unrelated_400_is_not_retried_away() -> None:
 
     class _Boom:
         def create(self, **_: Any) -> Any:
-            raise _Refusal("BAD_REQUEST: image exceeds the maximum size")
+            raise _RefusalError("BAD_REQUEST: image exceeds the maximum size")
 
     client._client = type("_Api", (), {"chat": type("_Chat", (), {"completions": _Boom()})()})()
     with pytest.raises(UpstreamError) as excinfo:
@@ -107,7 +107,7 @@ def test_an_unrelated_400_is_not_retried_away() -> None:
 
 def test_the_error_carries_the_provider_wording() -> None:
     """The message the user and the log see must name the real cause."""
-    assert _provider_message(_Refusal("BAD_REQUEST: nope")) == "BAD_REQUEST: nope"
+    assert _provider_message(_RefusalError("BAD_REQUEST: nope")) == "BAD_REQUEST: nope"
 
 
 @pytest.mark.parametrize(
@@ -122,4 +122,4 @@ def test_the_error_carries_the_provider_wording() -> None:
     ],
 )
 def test_refusal_detection(message: str, expected: str | None) -> None:
-    assert _unsupported_parameter(_Refusal(message)) == expected
+    assert _unsupported_parameter(_RefusalError(message)) == expected

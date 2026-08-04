@@ -15,9 +15,11 @@
  */
 
 import { useRef, useState } from 'react'
-import { api, download, downloads } from '../lib/api'
+import { api, downloads } from '../lib/api'
 import type { GridContract, ImportResult } from '../lib/types'
-import { Alert, Badge, Button, Card, Icons, useErrorToast, useToast } from './ui'
+import {
+  Alert, Badge, Button, Card, Icons, useDownload, useErrorToast, useToast,
+} from './ui'
 import { DataGrid, columnsFromContract } from './DataGrid'
 
 type Stage =
@@ -51,6 +53,7 @@ export function ImportPanel({
   const fileInput = useRef<HTMLInputElement>(null)
   const toast = useToast()
   const showError = useErrorToast()
+  const startDownload = useDownload()
 
   const validate = async (source: { file?: File; text?: string }) => {
     setStage({ kind: 'validating' })
@@ -107,7 +110,7 @@ export function ImportPanel({
             <Button
               size="sm"
               icon={<Icons.download size={13} />}
-              onClick={() => download(downloads.gridTemplate(campaignId, contract.key))}
+              onClick={() => startDownload(downloads.gridTemplate(campaignId, contract.key))}
             >
               Télécharger le modèle
             </Button>

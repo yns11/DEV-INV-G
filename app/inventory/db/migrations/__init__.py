@@ -21,6 +21,12 @@ log = logging.getLogger(__name__)
 
 __all__ = ["MIGRATIONS_DIR", "discover", "apply_all", "applied_versions"]
 
+#: Advisory-lock key guarding the migration ledger. Any constant works as long
+#: as it is stable and unique to this concern; it is namespaced by the database,
+#: not by the schema, so a second application sharing the database would only
+#: ever wait on it briefly at start-up.
+_LOCK_KEY = 0x1E5E_4F03
+
 MIGRATIONS_DIR = Path(__file__).parent
 
 _BOOTSTRAP = """
@@ -80,6 +86,19 @@ def apply_all(db: Database, *, directory: Path | None = None) -> list[str]:
         started = time.monotonic()
         statement = path.read_text(encoding="utf-8")
         with db.transaction() as conn, conn.cursor() as cur:
+            # Serialise across containers. A rolling deploy overlaps the old and
+            # the new instance, and both run this at start-up: without the lock
+            # they execute the same script concurrently and the loser dies on a
+            # duplicate key in the ledger, leaving an app that never becomes
+            # ready. The lock is transaction-scoped, so it is released whatever
+            # happens next.
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
+            # Re-read inside the lock: the instance that waited must not replay
+            # a migration the winner has just committed.
+            cur.execute("SELECT 1 FROM schema_migration WHERE version = %s", (version,))
+            if cur.fetchone():
+                log.info("Migration %s applied concurrently by another instance", version)
+                continue
             # No parameters, so psycopg happily runs the whole multi-statement
             # script; the surrounding transaction makes it all-or-nothing.
             cur.execute(statement)  # type: ignore[arg-type]

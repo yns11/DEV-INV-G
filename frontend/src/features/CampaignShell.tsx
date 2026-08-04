@@ -10,7 +10,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { NavLink, Outlet, useParams } from 'react-router-dom'
-import { api, download, downloads } from '../lib/api'
+import { api, downloads } from '../lib/api'
 import type { CampaignStatus, Overview, Permissions } from '../lib/types'
 import {
   CAMPAIGN_STATUS_LABELS,
@@ -19,17 +19,7 @@ import {
   percent,
 } from '../lib/format'
 import {
-  Alert,
-  Badge,
-  Button,
-  ErrorState,
-  Icons,
-  Modal,
-  Progress,
-  Skeleton,
-  Stepper,
-  useErrorToast,
-  useToast,
+  Alert, Badge, Button, ErrorState, Icons, Modal, Progress, Skeleton, Stepper, useDownload, useErrorToast, useToast,
 } from '../components/ui'
 
 const PHASES: Array<{ id: CampaignStatus; label: string }> = [
@@ -138,6 +128,7 @@ export function CampaignShell() {
 }
 
 function CampaignHeader({ overview }: { overview: Overview }) {
+  const startDownload = useDownload()
   const { campaign, journalProgress, genericProgress, counts } = overview
   const [transitionTarget, setTransitionTarget] = useState<CampaignStatus | null>(null)
   const next = NEXT_PHASE[campaign.status]
@@ -170,7 +161,7 @@ function CampaignHeader({ overview }: { overview: Overview }) {
         <div className="row-wrap">
           <Button
             icon={<Icons.download size={14} />}
-            onClick={() => download(downloads.campaignWorkbook(campaign.id))}
+            onClick={() => startDownload(downloads.campaignWorkbook(campaign.id))}
           >
             Exporter le dossier
           </Button>

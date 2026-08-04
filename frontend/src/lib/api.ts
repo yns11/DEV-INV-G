@@ -100,13 +100,47 @@ const qs = (params: Record<string, string | number | boolean | undefined>) => {
 }
 
 /** Trigger a browser download without leaving the SPA. */
-export function download(path: string): void {
+/**
+ * Fetch a file and hand it to the browser, surfacing server refusals.
+ *
+ * Navigating an anchor straight at the URL is simpler, but it makes every
+ * refusal invisible: printing an empty counting sheet answers 422 with a
+ * perfectly clear message ("cette feuille ne contient aucune ligne"), and the
+ * user saw nothing happen at all. Fetching first means an error can be raised
+ * as an ApiError and shown like any other.
+ */
+export async function download(path: string): Promise<void> {
+  const response = await fetch(`${BASE}${path}`, { headers: { accept: '*/*' } })
+  if (!response.ok) {
+    let body: { code?: string; message?: string; details?: Record<string, unknown> } = {}
+    try {
+      body = await response.json()
+    } catch {
+      body = {}
+    }
+    throw new ApiError(
+      response.status,
+      body.code ?? 'download_failed',
+      body.message ?? `Téléchargement impossible (HTTP ${response.status}).`,
+      body.details ?? {},
+    )
+  }
+
+  // Content-Disposition carries the server-chosen filename; fall back to the
+  // last path segment so the file is never called "download".
+  const disposition = response.headers.get('content-disposition') ?? ''
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)
+  const filename = decodeURIComponent(match?.[1] ?? path.split('/').pop() ?? 'export')
+
+  const url = URL.createObjectURL(await response.blob())
   const anchor = document.createElement('a')
-  anchor.href = `${BASE}${path}`
+  anchor.href = url
+  anchor.download = filename
   anchor.rel = 'noopener'
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()
+  URL.revokeObjectURL(url)
 }
 
 export const api = {

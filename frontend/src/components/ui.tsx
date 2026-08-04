@@ -21,8 +21,25 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { ApiError } from '../lib/api'
+import { ApiError, download } from '../lib/api'
 import { DASH } from '../lib/format'
+
+/**
+ * Download a file, reporting a server refusal as a toast.
+ *
+ * Every download goes through this: a refusal that leaves the screen unchanged
+ * reads as "the button is broken", when the server has in fact explained
+ * itself (an empty counting sheet, a report the campaign is not ready for).
+ */
+export function useDownload() {
+  const showError = useErrorToast()
+  return useCallback(
+    (path: string, fallback = 'Téléchargement impossible') => {
+      void download(path).catch((error: unknown) => showError(error, fallback))
+    },
+    [showError],
+  )
+}
 
 // --------------------------------------------------------------------------- //
 // Icons — inline SVG, no icon-font dependency

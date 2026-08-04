@@ -1153,27 +1153,36 @@ class SheetRepository(_Base):
     def replace_sheet_lines(
         self, sheet_id: str, lines: Sequence[CountSheetLine], *, actor: str
     ) -> int:
-        """Overwrite a sheet's content — used after an AI extraction."""
+        """Make the sheet's content exactly *lines* — grid save, AI extraction.
+
+        Deletion is logical (``deleted_at``), so an id survives its row: it can
+        never be re-inserted, only revived. Wiping the sheet and re-inserting
+        therefore violated the primary key as soon as the payload carried the
+        ids it had just been served — which is what a grid always sends back.
+
+        The two steps below are the correct reading of "replace": retire the
+        lines that are *no longer* there, and upsert the ones that are. Ids stay
+        stable across saves, which is what the grid and optimistic concurrency
+        both rely on, and a line that leaves the sheet keeps its audit trail.
+        """
+        # `sheet_id` is authoritative: the AI extractor builds lines without
+        # knowing which sheet they will land on.
+        owned = [
+            l if l.sheet_id == sheet_id else l.model_copy(update={"sheet_id": sheet_id})
+            for l in lines
+        ]
+        kept = [str(l.id) for l in owned]
         with self.db.transaction() as conn, conn.cursor() as cur:
             cur.execute(
                 "UPDATE count_sheet_line SET deleted_at = now(), updated_by = %s "
-                "WHERE sheet_id = %s AND deleted_at IS NULL",
-                (actor, sheet_id),
+                "WHERE sheet_id = %s AND deleted_at IS NULL "
+                # ::uuid[] — the ids arrive as text and the column is uuid.
+                "AND NOT (id = ANY(%s::uuid[]))",
+                (actor, sheet_id, kept),
             )
-            if lines:
-                cur.executemany(
-                    "INSERT INTO count_sheet_line (id, sheet_id, campaign_id, "
-                    "item_number, section, qty_imported, qty_manual, unit, source, "
-                    "confidence, comment, display_order, updated_by, updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())",
-                    [
-                        (l.id, sheet_id, l.campaign_id, l.item_number, str(l.section),
-                         l.qty_imported, l.qty_manual, l.unit, str(l.source),
-                         l.confidence, l.comment, l.display_order, actor)
-                        for l in lines
-                    ],
-                )
-        return len(lines)
+            if owned:
+                self.upsert_sheet_lines(owned, actor=actor, conn=conn)
+        return len(owned)
 
     # -- arbitration ---------------------------------------------------------
 

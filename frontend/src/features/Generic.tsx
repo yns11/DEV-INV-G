@@ -8,7 +8,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { api, download, downloads } from '../lib/api'
+import { api, downloads } from '../lib/api'
 import type {
   Arbitration,
   ConsolidationLine,
@@ -31,19 +31,7 @@ import {
 import { CompositionBar } from '../components/charts'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
 import {
-  Alert,
-  AsyncBoundary,
-  Badge,
-  Button,
-  Card,
-  EmptyState,
-  Field,
-  Icons,
-  Modal,
-  Skeleton,
-  Tabs,
-  useErrorToast,
-  useToast,
+  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Field, Icons, Modal, Skeleton, Tabs, useDownload, useErrorToast, useToast,
 } from '../components/ui'
 
 type Tab = 'zones' | 'arbitration' | 'consolidation'
@@ -106,6 +94,7 @@ export function Generic() {
 // --------------------------------------------------------------------------- //
 
 function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Overview }) {
+  const startDownload = useDownload()
   const queryClient = useQueryClient()
   const toast = useToast()
   const showError = useErrorToast()
@@ -146,13 +135,13 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
         </Button>
         <Button
           icon={<Icons.printer size={14} />}
-          onClick={() => download(downloads.allCountingSheets(campaignId, 1))}
+          onClick={() => startDownload(downloads.allCountingSheets(campaignId, 1))}
         >
           Imprimer toutes les feuilles n°1
         </Button>
         <Button
           icon={<Icons.printer size={14} />}
-          onClick={() => download(downloads.allCountingSheets(campaignId, 2))}
+          onClick={() => startDownload(downloads.allCountingSheets(campaignId, 2))}
         >
           Feuilles n°2
         </Button>
@@ -226,7 +215,7 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                         size="sm"
                         variant="ghost"
                         icon={<Icons.printer size={13} />}
-                        onClick={() => download(downloads.countingSheet(campaignId, sheet.id))}
+                        onClick={() => startDownload(downloads.countingSheet(campaignId, sheet.id))}
                         aria-label="Imprimer"
                         title="Imprimer cette feuille"
                       />
@@ -378,6 +367,7 @@ function SheetModal({
   const queryClient = useQueryClient()
   const toast = useToast()
   const showError = useErrorToast()
+  const startDownload = useDownload()
   const [draft, setDraft] = useState<Array<Record<string, unknown>> | null>(null)
   const [scanning, setScanning] = useState(false)
 
@@ -514,7 +504,7 @@ function SheetModal({
         <>
           <Button
             icon={<Icons.printer size={14} />}
-            onClick={() => download(downloads.countingSheet(campaignId, sheet.id))}
+            onClick={() => startDownload(downloads.countingSheet(campaignId, sheet.id))}
           >
             Imprimer
           </Button>

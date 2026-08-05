@@ -30,6 +30,7 @@ import {
 } from '../lib/format'
 import { CompositionBar } from '../components/charts'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
+import { parseSheetLines } from '../lib/pasteSheetLines'
 import {
   Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Field, Icons, Modal, Skeleton, Tabs, useDownload, useErrorToast, useToast,
 } from '../components/ui'
@@ -369,6 +370,7 @@ function SheetModal({
   const showError = useErrorToast()
   const startDownload = useDownload()
   const [draft, setDraft] = useState<Array<Record<string, unknown>> | null>(null)
+  const [pasteText, setPasteText] = useState('')
   const [scanning, setScanning] = useState(false)
 
   const query = useQuery({
@@ -431,6 +433,50 @@ function SheetModal({
   })
 
   const rows = draft ?? (query.data?.lines as Array<Record<string, unknown>>) ?? []
+
+  /**
+   * Append a pasted block to the draft.
+   *
+   * Appended, never substituted: a paste is an addition to what the counter
+   * already has in front of them, and silently replacing their work would be
+   * the one unrecoverable mistake here. Nothing is written until "Enregistrer",
+   * so the grid stays the place where the result is checked.
+   */
+  const appendPasted = (text: string) => {
+    const { lines, rejected, headerSkipped } = parseSheetLines(text)
+    if (lines.length === 0) {
+      toast.error(
+        'Aucune ligne exploitable dans ce collage',
+        'Chaque ligne doit contenir une référence article.',
+      )
+      return
+    }
+    const base = draft ?? rows
+    setDraft([
+      ...base,
+      ...lines.map((line, index) => ({
+        item_number: line.item_number,
+        section: line.section,
+        unit: line.unit,
+        qty: line.qty,
+        // Same provenance as a hand-typed line — because that is what it is.
+        // Left unset, the grid rendered "undefined" in the Source column.
+        source: 'MANUAL',
+        display_order: base.length + index,
+      })),
+    ])
+    setPasteText('')
+    toast.success(
+      `${lines.length} ligne(s) ajoutée(s)`,
+      [
+        headerSkipped ? 'ligne d’en-tête ignorée' : '',
+        rejected.length ? `${rejected.length} ligne(s) sans référence ignorée(s)` : '',
+        'rien n’est enregistré avant « Enregistrer »',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    )
+  }
 
   const columns: Column[] = [
     { key: 'item_number', label: 'Référence', width: 170, editable: true },
@@ -558,12 +604,59 @@ function SheetModal({
               telle. Pour déclarer une absence de stock, saisissez explicitement 0.
             </Alert>
 
+            {editable && (
+              <details open={rows.length === 0}>
+                <summary
+                  style={{
+                    cursor: 'pointer',
+                    fontSize: 'var(--text-sm)',
+                    fontWeight: 'var(--weight-medium)',
+                  }}
+                >
+                  Coller plusieurs lignes depuis Excel
+                </summary>
+                <div className="stack" style={{ marginTop: 'var(--space-3)' }}>
+                  <textarea
+                    className="textarea mono"
+                    value={pasteText}
+                    onChange={(event) => setPasteText(event.target.value)}
+                    placeholder={
+                      'Un article par ligne. L’ordre des colonnes est libre :\n' +
+                      'article, unité et section sont reconnus à leur contenu.\n\n' +
+                      'P-00324093\tPCE\tWIP\n' +
+                      'P-00311002\tBord de ligne'
+                    }
+                  />
+                  <div className="row">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={!pasteText.trim()}
+                      onClick={() => appendPasted(pasteText)}
+                    >
+                      Ajouter les lignes collées
+                    </Button>
+                    {pasteText && (
+                      <Button variant="ghost" size="sm" onClick={() => setPasteText('')}>
+                        Effacer
+                      </Button>
+                    )}
+                    <span className="subtle">
+                      Section par défaut : bord de ligne · unité : PCE · quantités
+                      laissées vides
+                    </span>
+                  </div>
+                </div>
+              </details>
+            )}
+
             <DataGrid
               columns={columns}
               rows={rows}
               getRowId={(row, index) => String(row.id ?? index)}
               editable={editable && Boolean(draft)}
               onRowsChange={setDraft}
+              onPaste={editable ? appendPasted : undefined}
               searchPlaceholder="Filtrer les lignes…"
               maxHeight={420}
               toolbar={

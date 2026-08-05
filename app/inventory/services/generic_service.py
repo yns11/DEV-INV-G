@@ -338,8 +338,9 @@ class GenericService:
         extractor = SheetExtractor()
 
         if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
+            # Rasterised, not split: the endpoint accepts images only.
             images = render_pdf_pages(payload)
-            mime = "application/pdf"
+            mime = "image/png"
         else:
             images = [payload]
             mime = content_type or "image/png"

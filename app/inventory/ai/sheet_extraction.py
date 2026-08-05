@@ -328,30 +328,41 @@ def _clean_time(value: Any) -> str | None:
     return text or None
 
 
-def render_pdf_pages(payload: bytes, *, max_pages: int = 12) -> list[bytes]:
-    """Split a scanned PDF into per-page PDFs for the vision model.
+def render_pdf_pages(
+    payload: bytes, *, max_pages: int = 12, dpi: int = 150
+) -> list[bytes]:
+    """Rasterise a scanned PDF into one PNG per page for the vision model.
 
-    The Databricks Apps container has no system packages, so no Poppler and no
-    rasteriser: each page is emitted as a single-page PDF, which vision-capable
-    endpoints accept. Images uploaded directly bypass this entirely.
+    The chat-completions API carries images and only images: a page handed over
+    as ``application/pdf`` in an ``image_url`` block is refused, which is why
+    scans uploaded as PDF failed while the same page uploaded as a photo went
+    through. Splitting the document into single-page PDFs — the previous
+    approach — changed nothing, because the payload was still a PDF.
 
-    :param max_pages: guard against a 200-page scan blowing the token budget in
-        one request.
+    Rendering is done by ``pypdfium2``: self-contained manylinux wheels with the
+    PDFium engine bundled, so it works in a container with no system packages
+    and no root, unlike Poppler-based tooling.
+
+    :param max_pages: guard against a 200-page scan blowing the token budget.
+    :param dpi: 150 keeps a handwritten quantity legible while staying well
+        under the per-request payload budget; 300 doubles the bytes for no
+        measurable gain on the counting sheets this reads.
     """
-    from pypdf import PdfReader, PdfWriter
+    import pypdfium2
 
-    reader = PdfReader(io.BytesIO(payload))
-    pages: list[bytes] = []
-    for index, page in enumerate(reader.pages):
-        if index >= max_pages:
-            log.warning(
-                "Scan truncated at %d pages (document has %d)", max_pages,
-                len(reader.pages),
-            )
-            break
-        writer = PdfWriter()
-        writer.add_page(page)
-        buffer = io.BytesIO()
-        writer.write(buffer)
-        pages.append(buffer.getvalue())
-    return pages
+    document = pypdfium2.PdfDocument(payload)
+    try:
+        total = len(document)
+        if total > max_pages:
+            log.warning("Scan truncated at %d pages (document has %d)", max_pages, total)
+        pages: list[bytes] = []
+        for index in range(min(total, max_pages)):
+            image = document[index].render(scale=dpi / 72).to_pil()
+            buffer = io.BytesIO()
+            # PNG rather than JPEG: a counting sheet is line art and text, where
+            # JPEG artefacts land exactly on the strokes the model must read.
+            image.save(buffer, format="PNG", optimize=True)
+            pages.append(buffer.getvalue())
+        return pages
+    finally:
+        document.close()

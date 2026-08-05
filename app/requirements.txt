@@ -42,7 +42,10 @@ scipy~=1.14.0
 openpyxl~=3.1.5                 # .xlsx read (ERP exports) and write (downloads)
 XlsxWriter~=3.2.0               # fast streaming .xlsx writer for large exports
 reportlab~=4.2.0                # printable counting sheets (PDF)
-pypdf~=5.1.0                    # split / inspect uploaded scanned sheets
+pypdf~=5.1.0                    # inspect uploaded scanned sheets
+pypdfium2~=5.12                 # rasterise scanned PDFs for the vision model;
+                                # bundles PDFium in the wheel, so no Poppler and
+                                # no system package in the app container
 
 # --- Misc --------------------------------------------------------------------
 tenacity~=9.0.0                 # retry policy for serving-endpoint calls

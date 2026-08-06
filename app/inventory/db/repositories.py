@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -54,6 +54,7 @@ from ..domain.models import (
     Item,
     Location,
     LocationKey,
+    Manager,
     Thresholds,
     VarianceAnalysis,
     Warehouse,
@@ -548,6 +549,89 @@ class ReferentialRepository(_Base):
             conn=conn,
         )
 
+    # -- managers & perimeters -----------------------------------------------
+
+    def list_managers(self, campaign_id: str) -> list[Manager]:
+        rows = self._fetch_all(
+            "SELECT campaign_id, code, label, actor, active, display_order "
+            "FROM manager WHERE campaign_id = %s ORDER BY display_order, code",
+            (campaign_id,),
+        )
+        return [
+            Manager(
+                campaign_id=str(r["campaign_id"]), code=r["code"], label=r["label"],
+                actor=r["actor"], active=r["active"],
+                display_order=r["display_order"],
+            )
+            for r in rows
+        ]
+
+    def upsert_managers(
+        self, managers: Iterable[Manager], *, actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        return self._execute_many(
+            "INSERT INTO manager (campaign_id, code, label, actor, active, "
+            "display_order, updated_by, updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s, now()) "
+            "ON CONFLICT (campaign_id, code) DO UPDATE SET "
+            "label = EXCLUDED.label, actor = EXCLUDED.actor, "
+            "active = EXCLUDED.active, display_order = EXCLUDED.display_order, "
+            "updated_by = EXCLUDED.updated_by, updated_at = now()",
+            [
+                (m.campaign_id, m.code, m.label, m.actor, m.active,
+                 m.display_order, actor)
+                for m in managers
+            ],
+            conn=conn,
+        )
+
+    def warehouse_assignments(self, campaign_id: str) -> dict[str, str]:
+        """``{warehouse_id: manager_code}``, including the reserved ``AUTRES`` key."""
+        rows = self._fetch_all(
+            "SELECT warehouse_id, manager_code FROM warehouse_manager "
+            "WHERE campaign_id = %s",
+            (campaign_id,),
+        )
+        return {r["warehouse_id"]: r["manager_code"] for r in rows}
+
+    def set_warehouse_assignments(
+        self,
+        campaign_id: str,
+        assignments: Mapping[str, str],
+        *,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Assign warehouses to managers; an empty code clears the assignment.
+
+        Clearing has to delete the row rather than store an empty string: the
+        ``AUTRES`` fallback answers "no explicit assignment", and a row holding
+        ``''`` would silently shadow it.
+        """
+        cleared = [w for w, code in assignments.items() if not code]
+        assigned = [(campaign_id, w, code, actor)
+                    for w, code in assignments.items() if code]
+        written = 0
+        if cleared:
+            written += self._execute(
+                "DELETE FROM warehouse_manager WHERE campaign_id = %s "
+                "AND warehouse_id = ANY(%s::text[])",
+                (campaign_id, cleared),
+                conn=conn,
+            )
+        if assigned:
+            written += self._execute_many(
+                "INSERT INTO warehouse_manager (campaign_id, warehouse_id, "
+                "manager_code, updated_by, updated_at) VALUES (%s,%s,%s,%s, now()) "
+                "ON CONFLICT (campaign_id, warehouse_id) DO UPDATE SET "
+                "manager_code = EXCLUDED.manager_code, "
+                "updated_by = EXCLUDED.updated_by, updated_at = now()",
+                assigned,
+                conn=conn,
+            )
+        return written
+
     @staticmethod
     def _item(row: dict[str, Any]) -> Item:
         return Item(
@@ -996,25 +1080,34 @@ class JournalRepository(_Base):
 class SheetRepository(_Base):
     """Zones, counting sheets, their lines and arbitration decisions."""
 
-    def list_zones(self, campaign_id: str) -> list[Zone]:
+    _ZONE_COLUMNS = (
+        "id, campaign_id, code, label, sector, display_order, passes, free_entry, "
+        "manager_code"
+    )
+
+    def list_zones(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> list[Zone]:
         rows = self._fetch_all(
-            "SELECT id, campaign_id, code, label, sector, display_order FROM zone "
+            f"SELECT {self._ZONE_COLUMNS} FROM zone "
             "WHERE campaign_id = %s AND deleted_at IS NULL "
             "ORDER BY display_order, code",
             (campaign_id,),
+            conn=conn,
         )
-        return [
-            Zone(id=str(r["id"]), campaign_id=str(r["campaign_id"]), code=r["code"],
-                 label=r["label"], sector=r["sector"], display_order=r["display_order"])
-            for r in rows
-        ]
+        return [self._zone(r) for r in rows]
 
-    def create_zone(self, zone: Zone, *, actor: str) -> Zone:
+    def create_zone(
+        self, zone: Zone, *, actor: str, conn: psycopg.Connection | None = None
+    ) -> Zone:
         self._execute(
             "INSERT INTO zone (id, campaign_id, code, label, sector, display_order, "
-            "updated_by, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s, now())",
+            "passes, free_entry, manager_code, updated_by, updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())",
             (zone.id, zone.campaign_id, zone.code, zone.label, zone.sector,
-             zone.display_order, actor),
+             zone.display_order, zone.passes, zone.free_entry, zone.manager_code,
+             actor),
+            conn=conn,
         )
         return zone
 
@@ -1024,7 +1117,52 @@ class SheetRepository(_Base):
             (actor, zone_id),
         )
 
-    def list_sheets(self, campaign_id: str, *, zone_id: str | None = None) -> list[CountSheet]:
+    def update_zones(
+        self,
+        campaign_id: str,
+        zone_ids: Sequence[str],
+        *,
+        actor: str,
+        passes: int | None = None,
+        free_entry: bool | None = None,
+        manager_code: str | None = None,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Set one attribute on a batch of zones — the shape the UI works in.
+
+        Assigning a manager or switching a whole sector to a single count is a
+        selection-wide action; issuing one statement per zone would turn a
+        forty-zone campaign into forty round trips.
+        """
+        if not zone_ids:
+            return 0
+        sets = ["updated_by = %s", "updated_at = now()"]
+        params: list[Any] = [actor]
+        for column, value in (
+            ("passes", passes),
+            ("free_entry", free_entry),
+            ("manager_code", manager_code),
+        ):
+            if value is not None:
+                sets.append(f"{column} = %s")
+                params.append(value)
+        if len(sets) == 2:
+            return 0
+        params += [campaign_id, list(zone_ids)]
+        return self._execute(
+            f"UPDATE zone SET {', '.join(sets)} WHERE campaign_id = %s "
+            "AND id = ANY(%s::uuid[]) AND deleted_at IS NULL",
+            params,
+            conn=conn,
+        )
+
+    def list_sheets(
+        self,
+        campaign_id: str,
+        *,
+        zone_id: str | None = None,
+        conn: psycopg.Connection | None = None,
+    ) -> list[CountSheet]:
         clauses = ["campaign_id = %s"]
         params: list[Any] = [campaign_id]
         if zone_id:
@@ -1035,8 +1173,48 @@ class SheetRepository(_Base):
             "started_at, ended_at, evidence_path, extraction_confidence, updated_at "
             f"FROM count_sheet WHERE {' AND '.join(clauses)} ORDER BY zone_id, pass_no",
             params,
+            conn=conn,
         )
         return [self._sheet(r) for r in rows]
+
+    def zones_with_counted_pass(
+        self, campaign_id: str, zone_ids: Sequence[str], pass_no: SheetPass
+    ) -> list[str]:
+        """Zone ids whose sheet for *pass_no* already carries a typed quantity.
+
+        Dropping a pass would delete its sheet; doing that once somebody has
+        counted on it would erase a real count. This is the query that lets the
+        refusal name the zones concerned instead of failing abstractly.
+        """
+        if not zone_ids:
+            return []
+        rows = self._fetch_all(
+            "SELECT DISTINCT s.zone_id FROM count_sheet s "
+            "JOIN count_sheet_line l ON l.sheet_id = s.id AND l.deleted_at IS NULL "
+            "WHERE s.campaign_id = %s AND s.pass_no = %s "
+            "AND s.zone_id = ANY(%s::uuid[]) "
+            "AND (l.qty_manual IS NOT NULL OR l.qty_imported IS NOT NULL)",
+            (campaign_id, str(pass_no), list(zone_ids)),
+        )
+        return [str(r["zone_id"]) for r in rows]
+
+    def delete_sheets_for_pass(
+        self,
+        campaign_id: str,
+        zone_ids: Sequence[str],
+        pass_no: SheetPass,
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Remove a pass's sheets. ``ON DELETE CASCADE`` takes their lines with them."""
+        if not zone_ids:
+            return 0
+        return self._execute(
+            "DELETE FROM count_sheet WHERE campaign_id = %s AND pass_no = %s "
+            "AND zone_id = ANY(%s::uuid[])",
+            (campaign_id, str(pass_no), list(zone_ids)),
+            conn=conn,
+        )
 
     def get_sheet(self, sheet_id: str) -> CountSheet:
         row = self._fetch_one(
@@ -1050,13 +1228,20 @@ class SheetRepository(_Base):
         return self._sheet(row)
 
     def ensure_sheets(
-        self, campaign_id: str, zone_id: str, passes: Sequence[SheetPass], *, actor: str
+        self,
+        campaign_id: str,
+        zone_id: str,
+        passes: Sequence[SheetPass],
+        *,
+        actor: str,
+        conn: psycopg.Connection | None = None,
     ) -> int:
         return self._execute_many(
             "INSERT INTO count_sheet (id, campaign_id, zone_id, pass_no, updated_by, "
             "updated_at) VALUES (%s,%s,%s,%s,%s, now()) "
             "ON CONFLICT (zone_id, pass_no) DO NOTHING",
             [(new_id(), campaign_id, zone_id, str(p), actor) for p in passes],
+            conn=conn,
         )
 
     def update_sheet(
@@ -1098,11 +1283,14 @@ class SheetRepository(_Base):
         "unit, source, confidence, comment, display_order, row_version"
     )
 
-    def list_sheet_lines(self, sheet_id: str) -> list[CountSheetLine]:
+    def list_sheet_lines(
+        self, sheet_id: str, *, conn: psycopg.Connection | None = None
+    ) -> list[CountSheetLine]:
         rows = self._fetch_all(
             f"SELECT {self._SHEET_LINE_COLUMNS} FROM count_sheet_line "
             "WHERE sheet_id = %s AND deleted_at IS NULL ORDER BY display_order, id",
             (sheet_id,),
+            conn=conn,
         )
         return [self._sheet_line(r) for r in rows]
 
@@ -1236,6 +1424,25 @@ class SheetRepository(_Base):
             conn=conn,
         )
 
+    def delete_arbitrations(
+        self, campaign_id: str, zone_ids: Sequence[str],
+        *, conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Drop a zone's pass-1/pass-2 comparison.
+
+        Called when a zone drops to a single count: the comparison no longer has
+        two sides, and leaving the rows behind would keep the zone showing
+        "arbitrages en attente" for a decision that cannot be made.
+        """
+        if not zone_ids:
+            return 0
+        return self._execute(
+            "DELETE FROM arbitration WHERE campaign_id = %s "
+            "AND zone_id = ANY(%s::uuid[])",
+            (campaign_id, list(zone_ids)),
+            conn=conn,
+        )
+
     def decide_arbitration(
         self, arbitration_id: str, qty: Decimal, *, actor: str, comment: str = ""
     ) -> None:
@@ -1246,6 +1453,15 @@ class SheetRepository(_Base):
         )
         if n == 0:
             raise NotFoundError("Arbitrage introuvable.", arbitrationId=arbitration_id)
+
+    @staticmethod
+    def _zone(row: dict[str, Any]) -> Zone:
+        return Zone(
+            id=str(row["id"]), campaign_id=str(row["campaign_id"]), code=row["code"],
+            label=row["label"], sector=row["sector"],
+            display_order=row["display_order"], passes=row["passes"],
+            free_entry=row["free_entry"], manager_code=row["manager_code"],
+        )
 
     @staticmethod
     def _sheet(row: dict[str, Any]) -> CountSheet:

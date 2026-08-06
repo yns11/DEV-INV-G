@@ -73,16 +73,20 @@ def line(sheet_id: str, number: str, section: CountSection, qty) -> CountSheetLi
 
 
 def zone_counts(
-    *, code="Z1", rows_1, rows_2=None, status=SheetStatus.DONE, arbitrations=()
+    *, code="Z1", rows_1, rows_2=None, status=SheetStatus.DONE, arbitrations=(),
+    passes=2,
 ) -> ZoneCounts:
-    zone = Zone(id=next_id(), campaign_id="c", code=code)
+    zone = Zone(id=next_id(), campaign_id="c", code=code, passes=passes)
     s1 = sheet(zone.id, SheetPass.PASS_1, status)
-    s2 = sheet(zone.id, SheetPass.PASS_2, status)
-    lines = {
-        s1.id: [line(s1.id, *row) for row in rows_1],
-        s2.id: [line(s2.id, *row) for row in (rows_2 if rows_2 is not None else rows_1)],
-    }
-    return ZoneCounts(zone=zone, sheets=[s1, s2], lines_by_sheet=lines,
+    lines = {s1.id: [line(s1.id, *row) for row in rows_1]}
+    sheets = [s1]
+    if passes >= 2:
+        s2 = sheet(zone.id, SheetPass.PASS_2, status)
+        sheets.append(s2)
+        lines[s2.id] = [
+            line(s2.id, *row) for row in (rows_2 if rows_2 is not None else rows_1)
+        ]
+    return ZoneCounts(zone=zone, sheets=sheets, lines_by_sheet=lines,
                       arbitrations=arbitrations)
 
 
@@ -296,3 +300,37 @@ class TestUnknownItem:
         assert any(f.code == "UNKNOWN_ITEM" for f in result.findings)
         # …but the quantity is still posted: losing it would be worse.
         assert result.lines[0].item_number == "NOUVEAU"
+
+
+class TestSinglePassZones:
+    """A zone counted once is not a zone missing a count.
+
+    The number of passes is carried by the zone, not by the campaign: a
+    metrology room with three references does not need the dispositif a line
+    side needs, and telling it that "only one team counted" every single time
+    turned the warning into noise nobody reads.
+    """
+
+    def test_single_pass_zone_is_resolved_without_a_warning(self):
+        zone = zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)], passes=1)
+        retained, findings = resolve_zone_quantities(zone)
+        assert retained[("VIS", CountSection.LINE_SIDE)] == Decimal("100.000000")
+        assert findings == []
+
+    def test_two_pass_zone_still_warns_when_a_pass_is_missing(self):
+        zone = zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)], rows_2=[])
+        _, findings = resolve_zone_quantities(zone)
+        assert [f.code for f in findings] == ["SINGLE_PASS_ONLY"]
+
+    def test_single_pass_zone_contributes_once_its_only_sheet_is_done(self):
+        result = run(
+            zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)], passes=1)
+        )
+        assert result.zones_skipped == []
+        assert result.lines[0].qty == Decimal("100.000000")
+
+    def test_a_two_pass_zone_with_one_done_sheet_is_still_skipped(self):
+        zone = zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)])
+        zone.sheets[1].status = SheetStatus.ENCODING
+        result = run(zone)
+        assert result.zones_skipped == [zone.zone.code]

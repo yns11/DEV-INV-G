@@ -35,9 +35,10 @@ from ..domain.models import (
     CountSheetLine,
     Zone,
 )
-from ..domain.workflow import assert_sheet_transition, derive_zone_status
+from ..domain.workflow import assert_sheet_transition, derive_zone_status, passes_for
 from ..errors import ConflictError, NotFoundError, ValidationError
 from .context import ENGINE_VERSION, ServiceContext, utcnow
+from .manager_service import Perimeter
 
 log = logging.getLogger(__name__)
 
@@ -52,10 +53,20 @@ class GenericService:
 
     # ------------------------------------------------------------------ read
 
-    def list_zones(self, campaign: Campaign) -> list[dict[str, Any]]:
-        """Zones with their derived status and per-pass progress."""
+    def list_zones(
+        self, campaign: Campaign, *, perimeter: Perimeter | None = None
+    ) -> list[dict[str, Any]]:
+        """Zones with their derived status and per-pass progress.
+
+        :param perimeter: when given, only the zones assigned to that manager are
+            returned. Filtering here rather than in the browser is the point: a
+            client-side filter would still ship every zone of the site to every
+            workstation, which is unacceptable the moment a contractor counts one.
+        """
         ctx = self.ctx
         zones = ctx.sheets.list_zones(campaign.id)
+        if perimeter is not None:
+            zones = [z for z in zones if perimeter.covers_zone(z.id)]
         sheets = ctx.sheets.list_sheets(campaign.id)
         lines = ctx.sheets.lines_by_sheet(campaign.id)
         arbitrations = ctx.sheets.list_arbitrations(campaign.id)
@@ -73,7 +84,7 @@ class GenericService:
             zone_sheets = by_zone.get(zone.id, [])
             status = derive_zone_status(
                 zone_sheets,
-                passes_required=campaign.config.generic_passes,
+                passes_required=zone.passes,
                 pending_arbitrations=pending.get(zone.id, 0),
             )
             out.append({
@@ -125,12 +136,22 @@ class GenericService:
         label: str = "",
         sector: str = "",
         display_order: int = 0,
+        passes: int | None = None,
+        free_entry: bool = True,
+        manager_code: str = "",
     ) -> Zone:
         """Create a zone and its counting sheets.
 
-        Allowed in both PREPARATION and COUNTING: the specification explicitly
-        keeps this open during counting, because a physical area nobody had
-        listed is routinely discovered on the day.
+        Allowed in both PREPARATION and COUNTING: preparation is precisely when
+        one decides what to count, and a physical area nobody had listed is
+        routinely discovered on the day of the inventory.
+
+        :param free_entry: this endpoint creates a zone with **no** pre-printed
+            article list, which is the definition of a free-entry sheet — the
+            counter writes down what they find. Defaulting to ``True`` is what
+            keeps the interface from presenting a deliberate blank sheet as an
+            unprepared one. Loading a list through the ``count_sheets`` import
+            clears the flag.
         """
         ctx = self.ctx
         ctx.guard(campaign, "zones")
@@ -142,6 +163,9 @@ class GenericService:
             label=label,
             sector=sector,
             display_order=display_order,
+            passes=campaign.config.generic_passes if passes is None else passes,
+            free_entry=free_entry,
+            manager_code=manager_code,
         )
         if zone.code in existing:
             raise ConflictError(
@@ -150,8 +174,7 @@ class GenericService:
             )
         ctx.sheets.create_zone(zone, actor=ctx.actor)
         ctx.sheets.ensure_sheets(
-            campaign.id, zone.id, _passes(campaign.config.generic_passes),
-            actor=ctx.actor,
+            campaign.id, zone.id, passes_for(zone.passes), actor=ctx.actor,
         )
         ctx.record(
             campaign_id=campaign.id,
@@ -162,6 +185,80 @@ class GenericService:
             after=zone.model_dump(mode="json"),
         )
         return zone
+
+    def set_zone_passes(
+        self, campaign: Campaign, zone_ids: Sequence[str], passes: int
+    ) -> dict[str, Any]:
+        """Set how many independent counts a selection of zones requires.
+
+        Dropping to one count **deletes** the second sheet, so the operation is
+        refused when that sheet already carries a quantity: bringing a zone back
+        to a single count after the fact would erase a real count. The refusal
+        names the zones concerned, because "some zone somewhere" is not
+        actionable on inventory day.
+
+        Raising back to two recreates the second sheet, empty.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "zones")
+        if passes not in (1, 2):
+            raise ValidationError(
+                "Le nombre de comptages doit être 1 ou 2.", passes=passes
+            )
+        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
+        unknown = [z for z in zone_ids if z not in zones]
+        if unknown:
+            raise NotFoundError("Zone(s) introuvable(s).", zoneIds=unknown)
+        targets = [z for z in zone_ids if zones[z].passes != passes]
+        if not targets:
+            return {"updated": 0, "sheetsRemoved": 0, "sheetsCreated": 0}
+
+        removed = created = 0
+        if passes == 1:
+            counted = ctx.sheets.zones_with_counted_pass(
+                campaign.id, targets, SheetPass.PASS_2
+            )
+            if counted:
+                codes = sorted(zones[z].code for z in counted)
+                raise ConflictError(
+                    "Impossible de ramener à un seul comptage : le comptage n°2 "
+                    f"porte déjà des quantités saisies sur {', '.join(codes)}. "
+                    "Effacez ces quantités si le second comptage doit être "
+                    "abandonné.",
+                    zones=codes,
+                )
+
+        with ctx.db.transaction() as conn:
+            updated = ctx.sheets.update_zones(
+                campaign.id, targets, actor=ctx.actor, passes=passes, conn=conn
+            )
+            if passes == 1:
+                removed = ctx.sheets.delete_sheets_for_pass(
+                    campaign.id, targets, SheetPass.PASS_2, conn=conn
+                )
+                ctx.sheets.delete_arbitrations(campaign.id, targets, conn=conn)
+            else:
+                for zone_id in targets:
+                    created += ctx.sheets.ensure_sheets(
+                        campaign.id, zone_id, passes_for(2),
+                        actor=ctx.actor, conn=conn,
+                    )
+                    self._mirror_pass_1_lines(campaign, zone_id, conn=conn)
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.UPDATE,
+                entity_type="zone",
+                summary=(
+                    f"{updated} zone(s) passée(s) à {passes} comptage(s) "
+                    f"({removed} feuille(s) supprimée(s), {created} créée(s))."
+                ),
+                after={
+                    "passes": passes,
+                    "zones": sorted(zones[z].code for z in targets),
+                },
+                conn=conn,
+            )
+        return {"updated": updated, "sheetsRemoved": removed, "sheetsCreated": created}
 
     def delete_zone(self, campaign: Campaign, zone_id: str) -> None:
         ctx = self.ctx
@@ -322,18 +419,27 @@ class GenericService:
         if sheet.campaign_id != campaign.id:
             raise NotFoundError("Feuille introuvable dans cette campagne.")
 
+        zone = next(
+            (z for z in ctx.sheets.list_zones(campaign.id) if z.id == sheet.zone_id),
+            None,
+        )
         expected_lines = ctx.sheets.list_sheet_lines(sheet_id)
         if not expected_lines:
+            # The pre-printed list is what makes the extraction accurate and a
+            # hallucinated reference detectable. A free-entry sheet has none by
+            # design, so say that rather than asking the user to prepare a list
+            # they deliberately chose not to have.
             raise ValidationError(
+                "Cette feuille est en saisie libre : elle n'a aucune liste "
+                "d'articles attendue, et le modèle ne peut pas contrôler ce "
+                "qu'il lit. Saisissez les lignes à la main, ou chargez la liste "
+                "d'articles de la zone avant d'importer un scan."
+                if zone is not None and zone.free_entry else
                 "Cette feuille n'a aucune ligne pré-imprimée. Créez d'abord sa "
                 "liste d'articles (ou dupliquez-la d'une campagne précédente) "
                 "avant d'importer un scan."
             )
 
-        zone = next(
-            (z for z in ctx.sheets.list_zones(campaign.id) if z.id == sheet.zone_id),
-            None,
-        )
         items = ctx.referentials.items_by_number(campaign.id)
         extractor = SheetExtractor()
 
@@ -393,6 +499,11 @@ class GenericService:
         """
         ctx = self.ctx
         zone_counts = self._zone_counts(campaign, zone_id)
+        # A single-pass zone has nothing to compare: there is no second opinion,
+        # so producing arbitration lines would manufacture a decision nobody can
+        # make and block the consolidation for ever.
+        if zone_counts.passes_required < 2:
+            return []
         lines = build_arbitration_lines(
             zone_counts, campaign_id=campaign.id, id_factory=new_id
         )
@@ -530,7 +641,6 @@ class GenericService:
             ],
             items=items,
             bom=bom,
-            passes_required=campaign.config.generic_passes,
             arbitration_tolerance=campaign.config.arbitration_tolerance,
             require_done_zones=not preview,
         )
@@ -753,6 +863,46 @@ class GenericService:
 
     # --------------------------------------------------------------- helpers
 
+    def _mirror_pass_1_lines(
+        self, campaign: Campaign, zone_id: str, *, conn: Any = None
+    ) -> int:
+        """Give a freshly recreated pass-2 sheet pass 1's article list, blank.
+
+        Recreating the sheet alone would hand the second counter a blank page:
+        the two counters must be asked about the same articles, or the
+        arbitration compares a count against nothing. Quantities are of course
+        not copied — that would not be a second count.
+        """
+        ctx = self.ctx
+        sheets = {
+            s.pass_no: s
+            for s in ctx.sheets.list_sheets(campaign.id, zone_id=zone_id, conn=conn)
+        }
+        first, second = sheets.get(SheetPass.PASS_1), sheets.get(SheetPass.PASS_2)
+        if first is None or second is None:
+            return 0
+        existing = {
+            (l.item_number, l.section)
+            for l in ctx.sheets.list_sheet_lines(second.id, conn=conn)
+        }
+        blanks = [
+            CountSheetLine(
+                id=new_id(),
+                sheet_id=second.id,
+                campaign_id=campaign.id,
+                item_number=line.item_number,
+                section=line.section,
+                unit=line.unit,
+                source=DataSource.SYSTEM,
+                display_order=line.display_order,
+            )
+            for line in ctx.sheets.list_sheet_lines(first.id, conn=conn)
+            if (line.item_number, line.section) not in existing
+        ]
+        if not blanks:
+            return 0
+        return ctx.sheets.upsert_sheet_lines(blanks, actor=ctx.actor, conn=conn)
+
     def _zone_counts(self, campaign: Campaign, zone_id: str) -> ZoneCounts:
         ctx = self.ctx
         zone = next(
@@ -766,11 +916,6 @@ class GenericService:
             lines_by_sheet=ctx.sheets.lines_by_sheet(campaign.id),
             arbitrations=ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id),
         )
-
-
-def _passes(count: int) -> list[SheetPass]:
-    order = [SheetPass.PASS_1, SheetPass.PASS_2]
-    return order[: max(1, min(count, 2))]
 
 
 def _section(value: Any) -> CountSection:

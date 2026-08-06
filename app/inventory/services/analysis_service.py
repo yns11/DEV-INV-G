@@ -22,6 +22,7 @@ from ..domain.controls import (
     check_book_stock,
     check_referentials,
     check_variances,
+    check_zones,
     summarise,
 )
 from ..domain.enums import AuditAction
@@ -189,6 +190,14 @@ class AnalysisService:
         items = ctx.referentials.items_by_number(campaign.id)
         bom_links = ctx.referentials.list_bom_links(campaign.id)
         findings = check_referentials(items=items, bom_links=bom_links)
+
+        zones = ctx.sheets.list_zones(campaign.id)
+        if zones:
+            findings += check_zones(
+                zones=zones,
+                sheets=ctx.sheets.list_sheets(campaign.id),
+                lines_by_sheet=ctx.sheets.lines_by_sheet(campaign.id),
+            )
 
         book_stock = ctx.book_stock.list(campaign.id)
         if book_stock:

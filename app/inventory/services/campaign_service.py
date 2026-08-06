@@ -15,6 +15,7 @@ from ..domain.workflow import (
     campaign_transition_blockers,
     derive_zone_status,
     mutability_of,
+    passes_for,
 )
 from ..errors import ConflictError, ValidationError
 from .context import ENGINE_VERSION, ServiceContext, utcnow
@@ -104,12 +105,30 @@ class CampaignService:
         zone_states = {
             zone.code: derive_zone_status(
                 sheets_by_zone.get(zone.id, ()),
-                passes_required=campaign.config.generic_passes,
+                passes_required=zone.passes,
                 pending_arbitrations=pending_by_zone.get(zone.id, 0),
             )
             for zone in zones
         }
         zones_done = sum(1 for s in zone_states.values() if str(s) == "DONE")
+
+        # The header carries the focus switch, so it also carries the count of
+        # what the switch would leave on screen. Announcing "0 journal, 0 zone"
+        # up front is what stops an empty perimeter from being read as an empty
+        # campaign.
+        from .manager_service import ManagerService
+
+        perimeter = ManagerService(ctx).perimeter(campaign)
+        journals = ctx.journals.list(campaign_id)
+        perimeter_payload = {
+            **perimeter.as_dict(),
+            "journalCount": sum(
+                1 for j in journals if perimeter.covers_warehouse(j.warehouse_id)
+            ) if perimeter.resolved else 0,
+            "zoneCount": sum(
+                1 for z in zones if perimeter.covers_zone(z.id)
+            ) if perimeter.resolved else 0,
+        }
 
         return {
             "campaign": campaign,
@@ -134,6 +153,7 @@ class CampaignService:
                 "items": ctx.referentials.count_items(campaign_id),
                 "bookStockLines": ctx.book_stock.count(campaign_id),
             },
+            "perimeter": perimeter_payload,
         }
 
     # ---------------------------------------------------------------- create
@@ -226,6 +246,18 @@ class CampaignService:
         for location in locations:
             location.campaign_id = target.id
 
+        # Managers and their perimeters are staffing, and staffing is stable
+        # between two campaigns of the same site: re-typing the five names and
+        # forty zone assignments every quarter is exactly the kind of work this
+        # application exists to remove.
+        managers = [
+            m.model_copy(update={"campaign_id": target.id})
+            for m in ctx.referentials.list_managers(source_campaign_id)
+        ]
+        warehouse_assignments = ctx.referentials.warehouse_assignments(
+            source_campaign_id
+        )
+
         copied_zones = 0
         copied_lines = 0
         with ctx.db.transaction() as conn:
@@ -233,6 +265,12 @@ class CampaignService:
             ctx.referentials.upsert_bom_links(bom_links, actor=ctx.actor, conn=conn)
             ctx.referentials.upsert_warehouses(warehouses, actor=ctx.actor, conn=conn)
             ctx.referentials.upsert_locations(locations, actor=ctx.actor, conn=conn)
+            if managers:
+                ctx.referentials.upsert_managers(managers, actor=ctx.actor, conn=conn)
+            if warehouse_assignments:
+                ctx.referentials.set_warehouse_assignments(
+                    target.id, warehouse_assignments, actor=ctx.actor, conn=conn
+                )
 
             if include_zones:
                 source_lines = ctx.sheets.lines_by_sheet(source_campaign_id)
@@ -246,9 +284,12 @@ class CampaignService:
                         update={"id": new_id(), "campaign_id": target.id}
                     )
                     ctx.sheets.create_zone(new_zone, actor=ctx.actor)
+                    # The zone's own count requirement travels with it: a
+                    # single-pass metrology room does not become a double-count
+                    # zone because the campaign default says so.
                     ctx.sheets.ensure_sheets(
-                        target.id, new_zone.id,
-                        _passes(target.config.generic_passes), actor=ctx.actor,
+                        target.id, new_zone.id, passes_for(new_zone.passes),
+                        actor=ctx.actor,
                     )
                     copied_zones += 1
 
@@ -437,7 +478,7 @@ class CampaignService:
         return {
             zone.id: derive_zone_status(
                 by_zone.get(zone.id, ()),
-                passes_required=campaign.config.generic_passes,
+                passes_required=zone.passes,
                 pending_arbitrations=pending.get(zone.id, 0),
             )
             for zone in zones
@@ -448,13 +489,6 @@ def _allowed_targets(status: CampaignStatus) -> set[CampaignStatus]:
     from ..domain.workflow import CAMPAIGN_TRANSITIONS
 
     return set(CAMPAIGN_TRANSITIONS[status])
-
-
-def _passes(count: int) -> list[Any]:
-    from ..domain.enums import SheetPass
-
-    order = [SheetPass.PASS_1, SheetPass.PASS_2]
-    return order[: max(1, min(count, 2))]
 
 
 def _pick_template_sheet(sheets) -> Any:

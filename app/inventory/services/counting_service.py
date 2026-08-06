@@ -18,6 +18,7 @@ from ..domain.enums import (
 from ..domain.models import Campaign, CountJournalLine, LocationKey
 from ..errors import ConflictError, NotFoundError, ValidationError
 from .context import ServiceContext, utcnow
+from .manager_service import Perimeter
 
 log = logging.getLogger(__name__)
 
@@ -38,15 +39,25 @@ class CountingService:
         *,
         status: JournalStatus | None = None,
         warehouse_id: str | None = None,
+        perimeter: Perimeter | None = None,
     ) -> list[dict[str, Any]]:
         """Journals enriched with their line count and counted quantity.
 
         The enrichment is done with two queries, not one per journal: the
         counting screen shows every journal of the site at once and must stay
         responsive on the day of the inventory.
+
+        :param perimeter: when given, only the journals whose warehouse belongs
+            to that manager are returned. The filtering happens here, before the
+            response is built: doing it in the browser would still send every
+            journal of the site to every workstation.
         """
         ctx = self.ctx
         journals = ctx.journals.list(campaign_id, status=status, warehouse_id=warehouse_id)
+        if perimeter is not None:
+            journals = [
+                j for j in journals if perimeter.covers_warehouse(j.warehouse_id)
+            ]
         lines_by_journal = ctx.journals.lines_by_journal(campaign_id)
         locations = ctx.referentials.locations_by_key(campaign_id)
 

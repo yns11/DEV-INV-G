@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from decimal import Decimal
+from typing import ClassVar
 
 import pytest
 
@@ -14,14 +15,15 @@ from inventory.domain.enums import (
     ExclusionScope,
     ItemType,
 )
+from inventory.domain.models import Item
 from inventory.domain.quantities import to_decimal
 from inventory.ingest import (
     get_contract,
     map_adjustments,
     map_book_stock,
+    map_count_sheets,
     map_items,
     map_journal_lines,
-    map_sheet_lines,
     normalise_header,
     parse_clipboard,
     parse_rows,
@@ -118,16 +120,14 @@ class TestParsing:
 
 class TestClipboard:
     def test_paste_without_header_uses_the_contract_order(self):
-        contract = get_contract("count_sheet_lines")
-        result = parse_clipboard(
-            contract, "P-001\tVIS M6\tBDL\t2 725\tPCE", has_header=False
-        )
+        contract = get_contract("count_sheets")
+        result = parse_clipboard(contract, "FI ASSY\tP-001\tBDL\tPCE", has_header=False)
+        assert result.rows[0]["sheet_code"] == "FI ASSY"
         assert result.rows[0]["item_number"] == "P-001"
-        assert result.rows[0]["qty"] == Decimal("2725")
 
     def test_paste_with_header_is_detected(self):
-        contract = get_contract("count_sheet_lines")
-        text = "Référence\tDésignation\tSection\tComptage\n" "P-001\tVIS\tBDL\t12"
+        contract = get_contract("count_sheets")
+        text = "Feuille\tArticle\tSection\tUnité\n" "FI ASSY\tP-001\tBDL\tPCE"
         result = parse_clipboard(contract, text)
         assert len(result.rows) == 1
         assert result.rows[0]["item_number"] == "P-001"
@@ -258,7 +258,12 @@ class TestJournalMapping:
         assert errors[0].column == "counted_quantity"
 
 
-class TestSheetLineMapping:
+class TestCountSheetMapping:
+    ITEMS: ClassVar[dict[str, Item]] = {
+        "P-1": Item(campaign_id="c", item_number="P-1"),
+        "P-2": Item(campaign_id="c", item_number="P-2"),
+    }
+
     @pytest.mark.parametrize(
         ("legacy", "expected"),
         [
@@ -274,43 +279,70 @@ class TestSheetLineMapping:
         ],
     )
     def test_legacy_section_labels_resolve(self, legacy, expected):
-        lines, errors = map_sheet_lines(
-            "c", "s", [{"item_number": "P-1", "section": legacy, "qty": "5"}],
-            source=DataSource.MANUAL, id_factory=next_id,
+        """The same vocabulary as the client-side paste, so both accept one file."""
+        rows, errors = map_count_sheets(
+            [{"sheet_code": "Z1", "item_number": "P-1", "section": legacy}],
+            items=self.ITEMS,
         )
         assert errors == []
-        assert lines[0].section is expected
+        assert rows[0].section is expected
 
     def test_unknown_section_is_an_error_not_a_silent_default(self):
         """Defaulting would skip a BOM explosion and lose a whole assembly."""
-        lines, errors = map_sheet_lines(
-            "c", "s", [{"item_number": "P-1", "section": "???", "qty": "5"}],
-            source=DataSource.MANUAL, id_factory=next_id,
+        rows, errors = map_count_sheets(
+            [{"sheet_code": "Z1", "item_number": "P-1", "section": "???"}],
+            items=self.ITEMS,
         )
-        assert lines == []
+        assert rows == []
         assert errors[0].column == "section"
 
-    def test_blank_quantity_stays_blank(self):
-        lines, _ = map_sheet_lines(
-            "c", "s", [{"item_number": "P-1", "section": "BDL", "qty": None}],
-            source=DataSource.MANUAL, id_factory=next_id,
+    def test_blank_section_defaults_to_the_line_side(self):
+        rows, errors = map_count_sheets(
+            [{"sheet_code": "Z1", "item_number": "P-1", "section": None}],
+            items=self.ITEMS,
         )
-        assert lines[0].is_counted is False
-        assert lines[0].qty_manual is None
+        assert errors == []
+        assert rows[0].section is CountSection.LINE_SIDE
 
-    def test_manual_and_imported_values_land_in_different_columns(self):
-        manual, _ = map_sheet_lines(
-            "c", "s", [{"item_number": "P-1", "section": "BDL", "qty": "5"}],
-            source=DataSource.MANUAL, id_factory=next_id,
+    def test_unknown_article_is_a_row_error_not_a_new_article(self):
+        """The referential is the truth of the campaign; an import cannot extend it."""
+        rows, errors = map_count_sheets(
+            [{"sheet_code": "Z1", "item_number": "INCONNU"}], items=self.ITEMS
         )
-        imported, _ = map_sheet_lines(
-            "c", "s", [{"item_number": "P-1", "section": "BDL", "qty": "5"}],
-            source=DataSource.SCAN_AI, id_factory=next_id,
+        assert rows == []
+        assert errors[0].column == "item_number"
+        assert "référentiel" in errors[0].message
+
+    def test_missing_sheet_code_is_rejected(self):
+        rows, errors = map_count_sheets(
+            [{"sheet_code": "", "item_number": "P-1"}], items=self.ITEMS
         )
-        assert manual[0].qty_manual == Decimal("5.000000")
-        assert manual[0].qty_imported is None
-        assert imported[0].qty_imported == Decimal("5.000000")
-        assert imported[0].qty_manual is None
+        assert rows == []
+        assert errors[0].column == "sheet_code"
+
+    def test_keys_are_normalised(self):
+        rows, _ = map_count_sheets(
+            [{"sheet_code": " fi  assy ", "item_number": " p-1 ", "unit": "pce"}],
+            items=self.ITEMS,
+        )
+        assert rows[0].sheet_code == "FI ASSY"
+        assert rows[0].item_number == "P-1"
+        assert rows[0].unit == "PCE"
+
+    def test_one_article_twice_in_two_sections_is_legitimate(self):
+        """A part can sit both at the line side and inside an assembly."""
+        rows, errors = map_count_sheets(
+            [
+                {"sheet_code": "Z1", "item_number": "P-1", "section": "BDL"},
+                {"sheet_code": "Z1", "item_number": "P-1", "section": "WIP"},
+            ],
+            items=self.ITEMS,
+        )
+        assert errors == []
+        assert {r.key for r in rows} == {
+            ("P-1", CountSection.LINE_SIDE),
+            ("P-1", CountSection.WIP),
+        }
 
 
 class TestAdjustmentMapping:

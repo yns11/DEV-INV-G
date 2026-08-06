@@ -29,18 +29,23 @@ from ..domain.enums import (
 from ..domain.models import (
     Campaign,
     CountJournalLine,
+    CountSheetLine,
     LocationKey,
     Warehouse,
+    Zone,
 )
+from ..domain.workflow import passes_for
 from ..errors import ConflictError, ValidationError
 from ..ingest import (
     GridContract,
     ParseResult,
+    PreparedSheetRow,
     RowError,
     get_contract,
     map_adjustments,
     map_bom_links,
     map_book_stock,
+    map_count_sheets,
     map_items,
     map_journal_lines,
     map_locations,
@@ -640,6 +645,146 @@ class ImportService:
             "journalsInProgress": len(partially) + len(in_progress),
             "disabledLocationsSkipped": sorted(str(k) for k in disabled),
         }
+        return outcome
+
+    # ----------------------------------------------------------- count sheets
+
+    def import_count_sheets(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
+        """Load the ``[feuille, article, section]`` list the sheets will carry.
+
+        This is the preparation-time counterpart of printing: it decides *what*
+        each zone will be asked to count, months before anybody counts it.
+
+        Four rules, each of which exists because its opposite lost data once:
+
+        * a sheet code nobody has seen creates its zone (and the zone's passes);
+          a known code is **completed**, never recreated — reloading a corrected
+          file must not wipe a list somebody has been curating;
+        * an article absent from the campaign's referential is a row error, not
+          an article created on the fly (see :func:`map_count_sheets`);
+        * sections go through the same vocabulary as the client-side paste, so a
+          file accepted on one side is accepted on the other;
+        * lines land on **every** counting pass of the zone, with empty
+          quantities. Pre-filling only pass 1 would leave the second counter
+          blind and turn the arbitration into a comparison against nothing.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "count_sheets")
+        _, parsed = self.parse("count_sheets", **kwargs)
+        outcome = _base_outcome("count_sheets", parsed)
+        if not parsed.rows:
+            return outcome
+
+        items = ctx.referentials.items_by_number(campaign.id)
+        if not items:
+            raise ValidationError(
+                "Le référentiel articles de cette campagne est vide : chargez-le "
+                "avant les feuilles de comptage. Un import de feuilles ne crée "
+                "jamais d'article."
+            )
+
+        prepared, errors = map_count_sheets(parsed.rows, items=items)
+        outcome.errors.extend(errors)
+        outcome.rows_rejected += len(errors)
+        if not prepared:
+            return outcome
+
+        by_code: dict[str, list[PreparedSheetRow]] = {}
+        for row in prepared:
+            by_code.setdefault(row.sheet_code, []).append(row)
+
+        source = _source_of(kwargs.get("mode", "file"))
+        created_zones: list[str] = []
+        completed_zones: list[str] = []
+        lines_created = 0
+
+        with ctx.db.transaction() as conn:
+            # Read back through the transaction's own connection: the zones
+            # created below are invisible to another pooled connection until it
+            # commits, and their sheets would be looked up on an empty set.
+            zones = {z.code: z for z in ctx.sheets.list_zones(campaign.id, conn=conn)}
+            next_order = max((z.display_order for z in zones.values()), default=0)
+
+            for offset, code in enumerate(sorted(by_code), start=1):
+                rows = by_code[code]
+                zone = zones.get(code)
+                if zone is None:
+                    zone = Zone(
+                        id=new_id(),
+                        campaign_id=campaign.id,
+                        code=code,
+                        display_order=next_order + offset,
+                        passes=campaign.config.generic_passes,
+                    )
+                    ctx.sheets.create_zone(zone, actor=ctx.actor, conn=conn)
+                    ctx.sheets.ensure_sheets(
+                        campaign.id, zone.id, passes_for(zone.passes),
+                        actor=ctx.actor, conn=conn,
+                    )
+                    created_zones.append(code)
+                else:
+                    completed_zones.append(code)
+                    if zone.free_entry:
+                        # A zone that receives a pre-printed list is no longer a
+                        # free-entry sheet, whatever it was created as.
+                        ctx.sheets.update_zones(
+                            campaign.id, [zone.id], actor=ctx.actor,
+                            free_entry=False, conn=conn,
+                        )
+
+                for sheet in ctx.sheets.list_sheets(
+                    campaign.id, zone_id=zone.id, conn=conn
+                ):
+                    existing = ctx.sheets.list_sheet_lines(sheet.id, conn=conn)
+                    known = {(l.item_number, l.section) for l in existing}
+                    order = max((l.display_order for l in existing), default=-1)
+                    new_lines: list[CountSheetLine] = []
+                    for row in rows:
+                        if row.key in known:
+                            continue
+                        known.add(row.key)
+                        order += 1
+                        new_lines.append(
+                            CountSheetLine(
+                                id=new_id(),
+                                sheet_id=sheet.id,
+                                campaign_id=campaign.id,
+                                item_number=row.item_number,
+                                section=row.section,
+                                # Both quantities left unset: a prepared line is
+                                # not a counted line, and a blank cell is not a
+                                # zero anywhere in this application.
+                                unit=row.unit,
+                                source=source,
+                                display_order=order,
+                            )
+                        )
+                    if new_lines:
+                        lines_created += ctx.sheets.upsert_sheet_lines(
+                            new_lines, actor=ctx.actor, conn=conn
+                        )
+
+            outcome.rows_accepted = len(prepared)
+            outcome.details = {
+                "zonesCreated": created_zones,
+                "zonesCompleted": sorted(set(completed_zones)),
+                "sheetLinesCreated": lines_created,
+            }
+            outcome.batch_id = self._record_batch(
+                campaign.id, "count_sheets", outcome, conn=conn, **kwargs
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.IMPORT,
+                entity_type="count_sheet_line",
+                summary=(
+                    f"Import de {len(prepared)} ligne(s) de feuille sur "
+                    f"{len(by_code)} feuille(s) ; {len(created_zones)} zone(s) "
+                    f"créée(s) ; {lines_created} ligne(s) pré-imprimée(s)."
+                ),
+                after=outcome.details,
+                conn=conn,
+            )
         return outcome
 
     # --------------------------------------------------------------- helpers

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from ...domain.enums import JournalStatus
 from ...domain.models import LocationKey
 from ...services import CountingService
-from ..deps import CampaignDep, counting_service
+from ..deps import CampaignDep, Ctx, counting_service, resolve_perimeter
 from ..schemas import JournalLineRequest, JournalStatusRequest, LocationStatusRequest
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/counting", tags=["comptage"])
@@ -20,11 +20,29 @@ Service = Annotated[CountingService, Depends(counting_service)]
 @router.get("/journals", summary="Lister les journaux de comptage")
 def list_journals(
     campaign: CampaignDep,
+    ctx: Ctx,
     service: Service,
     status: Annotated[JournalStatus | None, Query()] = None,
     warehouse_id: Annotated[str | None, Query(alias="warehouseId")] = None,
+    focus: Annotated[bool, Query()] = False,
+    manager: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
-    return service.list_journals(campaign.id, status=status, warehouse_id=warehouse_id)
+    """Every journal of the campaign, or only those in the caller's perimeter.
+
+    ``focus=true`` keeps the journals whose warehouse is assigned to the manager
+    the signed-in identity resolves to. It is a **filter, not a permission**: the
+    same actions remain available on the journals it hides, and a manager keeps
+    the right to act outside their perimeter.
+
+    Filtering here rather than in the browser is the whole point — a client-side
+    filter would still ship the site's entire counting state to every workstation.
+    """
+    return service.list_journals(
+        campaign.id,
+        status=status,
+        warehouse_id=warehouse_id,
+        perimeter=resolve_perimeter(campaign, ctx, focus=focus, manager=manager),
+    )
 
 
 @router.get("/progress", summary="Avancement du comptage")

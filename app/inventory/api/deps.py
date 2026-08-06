@@ -16,6 +16,8 @@ from ..services import (
     CountingService,
     GenericService,
     ImportService,
+    ManagerService,
+    Perimeter,
     ReportService,
     ServiceContext,
 )
@@ -34,7 +36,9 @@ __all__ = [
     "generic_service",
     "analysis_service",
     "import_service",
+    "manager_service",
     "report_service",
+    "resolve_perimeter",
 ]
 
 
@@ -117,6 +121,26 @@ def analysis_service(ctx: Ctx) -> AnalysisService:
 
 def import_service(ctx: Ctx) -> ImportService:
     return ImportService(ctx)
+
+
+def manager_service(ctx: Ctx) -> ManagerService:
+    return ManagerService(ctx)
+
+
+def resolve_perimeter(
+    campaign: Campaign, ctx: ServiceContext, *, focus: bool, manager: str | None
+) -> Perimeter | None:
+    """The perimeter a focused read should filter with, or ``None``.
+
+    ``None`` means "no filtering at all", which is what every read does by
+    default. An *unresolved* perimeter — the signed-in user is not registered as
+    a manager — is deliberately **not** ``None``: it filters everything out, so
+    the interface can say "aucun objet ne vous est affecté" instead of showing a
+    full list that silently ignored the switch.
+    """
+    if not focus:
+        return None
+    return ManagerService(ctx).perimeter(campaign, manager_code=manager)
 
 
 def report_service(ctx: Ctx) -> ReportService:

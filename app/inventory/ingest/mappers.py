@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -30,7 +31,6 @@ from ..domain.models import (
     AdjustmentLine,
     BomLink,
     BookStockLine,
-    CountSheetLine,
     Item,
     Location,
     Zone,
@@ -40,11 +40,12 @@ from .parser import RowError
 
 __all__ = [
     "ImportedJournalLine",
+    "PreparedSheetRow",
     "map_items",
     "map_bom_links",
     "map_book_stock",
     "map_journal_lines",
-    "map_sheet_lines",
+    "map_count_sheets",
     "map_adjustments",
     "map_zones",
     "map_locations",
@@ -445,25 +446,71 @@ def map_journal_lines(
 # Counting sheets
 # --------------------------------------------------------------------------- #
 
-def map_sheet_lines(
-    campaign_id: str,
-    sheet_id: str,
+@dataclass(frozen=True, slots=True)
+class PreparedSheetRow:
+    """One ``[feuille, article, section]`` triple of a prepared sheet.
+
+    Deliberately *not* a :class:`CountSheetLine`: at mapping time the zone may
+    not exist yet, and the same triple will be materialised once per counting
+    pass of that zone. The service layer resolves the sheet ids and multiplies.
+    """
+
+    sheet_code: str
+    item_number: str
+    section: CountSection
+    unit: str = "PCE"
+
+    @property
+    def key(self) -> tuple[str, CountSection]:
+        return (self.item_number, self.section)
+
+
+def map_count_sheets(
     rows: Iterable[Mapping[str, Any]],
     *,
-    source: DataSource,
-    id_factory,
-    start_order: int = 0,
-) -> tuple[list[CountSheetLine], list[RowError]]:
-    """Build counting-sheet lines, resolving legacy section labels.
+    items: Mapping[str, Item],
+) -> tuple[list[PreparedSheetRow], list[RowError]]:
+    """Build the prepared content of the GENERIQUE sheets.
 
-    An unrecognised section is an **error**, never a default: silently treating
-    an unknown status as "line side" would skip a BOM explosion and quietly lose
-    the components of a whole assembly.
+    Two rules make this import safe to run against a campaign under preparation:
+
+    * an unrecognised section is an **error**, never a default — silently
+      treating an unknown status as "line side" would skip a BOM explosion and
+      quietly lose the components of a whole assembly;
+    * an article absent from the campaign's article referential is a **row
+      error**, not an article created on the fly. The referential is the truth
+      of the campaign, and loading sheets must not be able to extend it as a
+      side effect.
     """
-    lines: list[CountSheetLine] = []
+    out: list[PreparedSheetRow] = []
     errors: list[RowError] = []
     for offset, row in enumerate(rows):
         index = offset + 2
+
+        sheet_code = normalise_key(str(row.get("sheet_code") or ""))
+        if not sheet_code:
+            errors.append(
+                RowError(index, "sheet_code", row.get("sheet_code"),
+                         "La feuille (zone) est obligatoire.")
+            )
+            continue
+
+        item_number = normalise_key(str(row.get("item_number") or ""))
+        if not item_number:
+            errors.append(
+                RowError(index, "item_number", row.get("item_number"),
+                         "Le numéro d'article est obligatoire.")
+            )
+            continue
+        if item_number not in items:
+            errors.append(
+                RowError(index, "item_number", row.get("item_number"),
+                         f"L'article {item_number} est absent du référentiel de la "
+                         "campagne. Complétez le référentiel articles : un import "
+                         "de feuilles ne crée jamais d'article.")
+            )
+            continue
+
         raw_section = row.get("section")
         section = _resolve_section(raw_section)
         if section is None:
@@ -473,26 +520,16 @@ def map_sheet_lines(
                          "WIP_OK (ou les anciens libellés BDL / MOM waiting / MOM OK).")
             )
             continue
-        try:
-            qty = row.get("qty")
-            lines.append(
-                CountSheetLine(
-                    id=id_factory(),
-                    sheet_id=sheet_id,
-                    campaign_id=campaign_id,
-                    item_number=row["item_number"],
-                    section=section,
-                    qty_imported=qty if source is not DataSource.MANUAL else None,
-                    qty_manual=qty if source is DataSource.MANUAL else None,
-                    unit=row.get("unit") or "PCE",
-                    source=source,
-                    comment=row.get("comment") or "",
-                    display_order=start_order + offset,
-                )
+
+        out.append(
+            PreparedSheetRow(
+                sheet_code=sheet_code,
+                item_number=item_number,
+                section=section,
+                unit=normalise_key(str(row.get("unit") or "PCE")) or "PCE",
             )
-        except (ValueError, KeyError) as exc:
-            errors.append(RowError(index, "item_number", row.get("item_number"), str(exc)))
-    return lines, errors
+        )
+    return out, errors
 
 
 def _resolve_section(value: Any) -> CountSection | None:

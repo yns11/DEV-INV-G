@@ -118,17 +118,18 @@ class CampaignService:
         # campaign.
         from .manager_service import ManagerService
 
-        perimeter = ManagerService(ctx).perimeter(campaign)
-        journals = ctx.journals.list(campaign_id)
+        perimeter = ManagerService(ctx).perimeter(campaign, zones=zones)
         perimeter_payload = {
-            **perimeter.as_dict(),
-            "journalCount": sum(
-                1 for j in journals if perimeter.covers_warehouse(j.warehouse_id)
-            ) if perimeter.resolved else 0,
-            "zoneCount": sum(
-                1 for z in zones if perimeter.covers_zone(z.id)
-            ) if perimeter.resolved else 0,
+            **perimeter.as_dict(), "journalCount": 0, "zoneCount": 0
         }
+        if perimeter.resolved:
+            perimeter_payload["journalCount"] = sum(
+                1 for j in ctx.journals.list(campaign_id)
+                if perimeter.covers_warehouse(j.warehouse_id)
+            )
+            perimeter_payload["zoneCount"] = sum(
+                1 for z in zones if perimeter.covers_zone(z.id)
+            )
 
         return {
             "campaign": campaign,

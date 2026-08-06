@@ -333,26 +333,39 @@ class ManagerService:
     # ------------------------------------------------------------- perimeter
 
     def perimeter(
-        self, campaign: Campaign, *, manager_code: str | None = None
+        self,
+        campaign: Campaign,
+        *,
+        manager_code: str | None = None,
+        zones: Sequence[Any] | None = None,
     ) -> Perimeter:
         """The perimeter of the signed-in user, or of *manager_code*.
+
+        Resolution runs against the **stored** rows first, so a campaign where
+        nobody has configured a manager costs exactly one query and returns
+        immediately. That matters: this is called on every campaign overview,
+        which is rendered on every screen.
 
         :param manager_code: explicit override. Legitimate — one person often
             covers two slots, and focus is a display filter, not an entitlement
             — but the default is always the identity the platform forwarded,
             because that is the one nobody can spoof.
+        :param zones: already-loaded zones, to save a query when the caller has
+            them in hand.
         """
         ctx = self.ctx
-        managers = self.list_managers(campaign)
+        stored = ctx.referentials.list_managers(campaign.id)
         if manager_code:
             wanted = normalise_key(manager_code).replace(" ", "_")
-            manager = next((m for m in managers if m.code == wanted), None)
+            manager = next(
+                (m for m in self.list_managers(campaign) if m.code == wanted), None
+            )
             if manager is None:
                 raise NotFoundError("Gestionnaire introuvable.", code=manager_code)
         else:
             actor = (ctx.actor or "").strip().lower()
             manager = next(
-                (m for m in managers if m.actor and m.actor == actor and m.active),
+                (m for m in stored if m.actor and m.actor == actor and m.active),
                 None,
             )
         if manager is None:
@@ -362,6 +375,8 @@ class ManagerService:
         explicit = frozenset(
             w for w in assignments if w != CATCH_ALL_WAREHOUSE
         )
+        if zones is None:
+            zones = ctx.sheets.list_zones(campaign.id)
         return Perimeter(
             manager=manager,
             warehouse_ids=frozenset(
@@ -371,8 +386,7 @@ class ManagerService:
             catch_all=assignments.get(CATCH_ALL_WAREHOUSE) == manager.code,
             assigned_warehouses=explicit,
             zone_ids=frozenset(
-                z.id for z in ctx.sheets.list_zones(campaign.id)
-                if z.manager_code == manager.code
+                z.id for z in zones if z.manager_code == manager.code
             ),
         )
 

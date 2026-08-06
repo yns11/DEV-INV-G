@@ -178,6 +178,9 @@ export function ZonesAdminGrid({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [creating, setCreating] = useState(false)
 
+  // Same key shape as the GENERIQUE screen's unfiltered query, so the two
+  // share a cache entry and one invalidation refreshes both. Administration is
+  // deliberately never focus-filtered: you assign zones you do not yet own.
   const query = useQuery({
     queryKey: ['zones', campaignId, false],
     queryFn: () => api.zones(campaignId),
@@ -305,8 +308,7 @@ export function ZonesAdminGrid({
         }
       >
         {(zones) => (
-          <>
-            <DataGrid
+          <DataGrid
               columns={columns}
               rows={zones}
               getRowId={(row) => row.id}
@@ -360,15 +362,14 @@ export function ZonesAdminGrid({
                   </div>
                 ) : null
               }
-              footer={
-                <span>
-                  {zones.length} zone(s) ·{' '}
-                  {zones.filter((z) => z.passes === 1).length} à comptage unique ·{' '}
-                  {zones.filter((z) => z.free_entry).length} en saisie libre
-                </span>
-              }
-            />
-          </>
+            footer={
+              <span>
+                {zones.length} zone(s) ·{' '}
+                {zones.filter((z) => z.passes === 1).length} à comptage unique ·{' '}
+                {zones.filter((z) => z.free_entry).length} en saisie libre
+              </span>
+            }
+          />
         )}
       </AsyncBoundary>
 

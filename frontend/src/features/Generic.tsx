@@ -105,6 +105,13 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   const [openSheet, setOpenSheet] = useState<{ zone: Zone; sheet: Sheet } | null>(null)
 
   const [focus] = useFocusMode()
+  // A zone created here needs its manager straight away: with the focus switch
+  // on, a zone assigned to nobody would disappear from the list of the very
+  // person who just created it.
+  const managers = useQuery({
+    queryKey: ['managers', campaignId],
+    queryFn: () => api.managers(campaignId),
+  })
   const query = useQuery({
     queryKey: ['zones', campaignId, focus],
     // The filtering happens on the server: what the perimeter excludes never
@@ -275,7 +282,11 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
       </AsyncBoundary>
 
       {creating && (
-        <CreateZoneModal campaignId={campaignId} onClose={() => setCreating(false)} />
+        <CreateZoneModal
+          campaignId={campaignId}
+          managers={managers.data?.managers ?? []}
+          onClose={() => setCreating(false)}
+        />
       )}
       {openSheet && (
         <SheetModal

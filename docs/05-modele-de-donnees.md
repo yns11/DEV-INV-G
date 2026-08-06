@@ -44,8 +44,13 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           │    1 par emplacement actif      qty_imported / qty_manual séparées
           │
           ├─ zone ──── count_sheet ──── count_sheet_line
-          │              (2 par zone)         section : LINE_SIDE / WIP / WIP_OK
+          │  passes 1|2   (1 par passage)      section : LINE_SIDE / WIP / WIP_OK
+          │  free_entry
+          │  manager_code
           │        └─ arbitration           (comparaison n°1 vs n°2)
+          │
+          ├─ manager                      (5 postes, avec l'identité de chacun)
+          ├─ warehouse_manager            (entrepôt → gestionnaire, clé AUTRES)
           │
           ├─ consolidation_run ─┬─ consolidation_line   (journal GENERIQUE produit)
           │                     └─ wip_breakdown        (traçabilité de l'éclatement)
@@ -72,7 +77,59 @@ C'est ce qui permet de recharger l'export ERP autant de fois qu'on veut pendant
 la journée sans jamais détruire une correction. Une colonne unique obligerait à
 choisir entre « je perds les corrections » et « je ne rafraîchis plus ».
 
-### 3.2 Pourquoi l'audit est protégé au niveau du moteur
+### 3.2 Pourquoi le nombre de comptages appartient à la zone
+
+```sql
+ALTER TABLE zone ADD COLUMN passes SMALLINT NOT NULL DEFAULT 2
+    CHECK (passes IN (1, 2));
+```
+
+Porté par la campagne, il obligeait à compter deux fois **toutes** les zones ou
+aucune. Une salle de métrologie à trois références n'a pas besoin du dispositif
+d'un bord de ligne, et lui imposer un second comptage produisait surtout des
+feuilles vierges. Le défaut reste 2 : le double comptage est la règle, le
+comptage unique l'exception qu'on assume, zone par zone.
+
+Conséquences en cascade, toutes portées par la même colonne :
+
+* `resolve_zone_quantities` n'émet plus l'avertissement « un seul passage » pour
+  une zone qui n'en attendait qu'un — il n'a de sens que lorsque deux étaient
+  attendus ;
+* une zone à un passage ne produit aucune ligne d'arbitrage : il n'y a pas de
+  second avis à comparer, et en fabriquer un bloquerait la consolidation pour
+  une décision que personne ne peut prendre ;
+* ramener une zone à 1 supprime la feuille n°2, donc l'opération est **refusée**
+  — en nommant les zones — si cette feuille porte déjà une quantité saisie.
+  Repasser à 2 recrée la feuille *et* sa liste d'articles : la recréer vide
+  rendrait le second comptage aveugle.
+
+### 3.3 `free_entry` : une feuille vide voulue n'est pas une feuille oubliée
+
+Les deux se ressemblent exactement en base — une feuille sans ligne. Sans le
+drapeau, le contrôle de préparation `ZONE_WITHOUT_LINES` signalait les deux, et
+un avertissement qui se déclenche à tort finit par ne plus être lu.
+
+### 3.4 Gestionnaires et périmètres
+
+```sql
+manager           (campaign_id, code) + actor   -- l'identité transmise par le proxy
+warehouse_manager (campaign_id, warehouse_id) → manager_code
+zone.manager_code
+```
+
+`actor` est ce qui permet au serveur de résoudre « mon périmètre » sans que le
+client ne nomme jamais un gestionnaire — c'est ce qui rend le filtrage
+opposable. `warehouse_manager.warehouse_id` accepte la valeur réservée
+**`AUTRES`** : elle rattache d'un coup tout entrepôt sans affectation explicite,
+sinon un entrepôt découvert par un nouvel import de stock livre tomberait hors
+de tout périmètre sans que personne ne le voie. Aucune clé étrangère vers
+`warehouse` : le référentiel des entrepôts naît du stock livre, chargé *après*
+la préparation.
+
+Le périmètre est un **filtre, jamais une permission** : aucune écriture n'en
+dépend, et la matrice de gel reste la seule autorité sur ce qui est modifiable.
+
+### 3.5 Pourquoi l'audit est protégé au niveau du moteur
 
 ```sql
 CREATE OR REPLACE RULE audit_event_no_update AS ON UPDATE TO audit_event DO INSTEAD NOTHING;
@@ -82,7 +139,7 @@ CREATE OR REPLACE RULE audit_event_no_delete AS ON DELETE TO audit_event DO INST
 Une convention de code se contourne par accident. Une règle SQL, non : même un
 bug dans la couche service ne peut pas réécrire l'histoire.
 
-### 3.3 Concurrence
+### 3.6 Concurrence
 
 Toutes les tables mutables portent `row_version BIGINT`. Les écritures qui
 peuvent entrer en conflit (correction d'une ligne de comptage) comparent la
@@ -90,7 +147,7 @@ version attendue et renvoient un **409** plutôt qu'un dernier-arrivé-gagne
 silencieux. Le jour J, dix personnes travaillent en parallèle : c'est le moment
 où ça compte.
 
-### 3.4 Index
+### 3.7 Index
 
 Ils suivent les chemins réellement empruntés :
 

@@ -34,8 +34,20 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
 - **Rien ne disparaît en silence.** Un assemblage sans nomenclature, une ligne
   d'export corrompue, une case vide : chacun produit un message explicite et une
   résolution, jamais une quantité perdue.
+- **Les feuilles se préparent, elles ne s'improvisent pas.** Un fichier
+  `[feuille, article, section]` crée les zones et pré-imprime leur liste, sur les
+  deux passages. Un article absent du référentiel est une erreur de ligne, jamais
+  un article créé par effet de bord.
 - **Deux comptages, un arbitrage outillé.** Valorisé en euros, couvrant aussi les
-  articles comptés par une seule équipe.
+  articles comptés par une seule équipe. Le nombre de comptages appartient à la
+  zone : le double comptage est la règle, le comptage unique l'exception qu'on
+  assume, zone par zone.
+- **Chacun voit son périmètre, personne n'est cloisonné.** Entrepôts et zones
+  s'affectent à cinq gestionnaires ; l'interrupteur « Mon périmètre » filtre
+  côté serveur — ce qu'il exclut n'est jamais envoyé au poste. C'est un filtre,
+  jamais une habilitation : les actions restent identiques dans les deux modes.
+- **Un transfert entre bacs n'est pas une perte.** L'analyse s'ouvre sur l'écart
+  par référence et chiffre explicitement la part qui n'est qu'un déplacement.
 - **Le WIP est explorable.** Chaque quantité éclatée est traçable jusqu'à
   l'assemblage et la zone qui l'ont produite.
 - **L'IA propose, l'humain décide.** Lecture des feuilles scannées, suggestions
@@ -108,7 +120,7 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      132 tests, ~0,3 s, sans base de données
+tests/                      177 tests, ~0,7 s, sans base de données
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -125,6 +137,7 @@ Makefile                    Points d'entrée développeur
 | [`03-guide-deploiement.md`](docs/03-guide-deploiement.md) | Déploiement pas à pas : local, CLI, interface graphique, CI/CD, dépannage |
 | [`04-guide-utilisateur.md`](docs/04-guide-utilisateur.md) | Le processus vu par l'utilisateur, de la préparation à la clôture |
 | [`05-modele-de-donnees.md`](docs/05-modele-de-donnees.md) | Schémas, types, index, définition exacte des indicateurs |
+| [`05chantierv2.md`](docs/05chantierv2.md) | Conception du chantier V2 : feuilles préparées, périmètres, impressions |
 | [`06-top20-ameliorations.md`](docs/06-top20-ameliorations.md) | Revue critique : 20 améliorations priorisées, séquencées |
 
 ---
@@ -133,7 +146,7 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 132 tests, ~0,3 s, aucune base requise
+make test            # 177 tests, ~0,7 s, aucune base requise
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000

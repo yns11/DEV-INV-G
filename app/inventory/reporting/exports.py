@@ -166,14 +166,19 @@ def build_counting_sheet_pdf(
 
     Layout choices are operational, not decorative:
 
-    * the quantity column is wide and empty — people write in it with gloves on;
+    * the quantity column is wide and empty — people write in it with gloves on,
+      and the rows are deliberately tall for the same reason;
+    * margins are tight: every millimetre of paper recovered is a row that does
+      not spill onto a second page somebody has to keep track of;
     * sections are visually separated, because mixing a line-side component with
       a WIP assembly is precisely the confusion that produced wrong counts;
+    * the designation is truncated rather than wrapped — a counter identifies a
+      part by its reference, and a two-line cell halves the rows per page;
     * the sheet identity (campaign, zone, pass, sheet id) is repeated in the
       footer of every page, so a page separated from its stack is still
       traceable;
-    * a signature block closes the sheet — the paper remains the legal evidence
-      until the scan is archived.
+    * one identity line closes the header — name, times and signature side by
+      side rather than stacked.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -189,6 +194,7 @@ def build_counting_sheet_pdf(
         TableStyle,
     )
 
+    _side_margin = _SIDE_MARGIN_MM * mm
     buffer = io.BytesIO()
     styles = getSampleStyleSheet()
     cell_style = ParagraphStyle(
@@ -207,26 +213,28 @@ def build_counting_sheet_pdf(
     def draw_page(canvas, doc) -> None:
         canvas.saveState()
         canvas.setFont("Helvetica-Bold", 13)
-        canvas.drawString(18 * mm, A4[1] - 16 * mm, zone_label or zone_code)
+        canvas.drawString(_side_margin, A4[1] - 11 * mm, zone_label or zone_code)
         canvas.setFont("Helvetica", 9)
         canvas.drawString(
-            18 * mm, A4[1] - 21 * mm,
+            _side_margin, A4[1] - 16 * mm,
             f"{campaign_label} — comptage du {count_date:%d/%m/%Y} — "
             f"passage n°{pass_no}",
         )
         canvas.setStrokeColor(colors.HexColor("#CBD5E1"))
-        canvas.line(18 * mm, A4[1] - 24 * mm, A4[0] - 18 * mm, A4[1] - 24 * mm)
+        canvas.line(
+            _side_margin, A4[1] - 19 * mm, A4[0] - _side_margin, A4[1] - 19 * mm
+        )
 
         canvas.setFont("Helvetica", 7.5)
         canvas.setFillColor(colors.HexColor("#64748B"))
-        canvas.drawString(18 * mm, 12 * mm, footer_text)
-        canvas.drawRightString(A4[0] - 18 * mm, 12 * mm, f"Page {doc.page}")
+        canvas.drawString(_side_margin, 8 * mm, footer_text)
+        canvas.drawRightString(A4[0] - _side_margin, 8 * mm, f"Page {doc.page}")
         canvas.restoreState()
 
     doc = BaseDocTemplate(
         buffer, pagesize=A4,
-        leftMargin=18 * mm, rightMargin=18 * mm,
-        topMargin=30 * mm, bottomMargin=18 * mm,
+        leftMargin=_side_margin, rightMargin=_side_margin,
+        topMargin=24 * mm, bottomMargin=13 * mm,
         title=f"Feuille de comptage — {zone_code} — n°{pass_no}",
     )
     frame = Frame(
@@ -238,25 +246,29 @@ def build_counting_sheet_pdf(
 
     story: list[Any] = []
 
+    # One line, not two: the four fields fit side by side, and the 9 mm they
+    # give back is half a dozen extra rows on the page.
     identity = Table(
-        [
-            ["Nom / Prénom :", "", "Signature :", ""],
-            ["Heure de début :", "", "Heure de fin :", ""],
+        [["Nom / Prénom :", "", "Début :", "", "Fin :", "", "Signature :", ""]],
+        colWidths=[
+            26 * mm, 40 * mm, 15 * mm, 18 * mm, 12 * mm, 18 * mm, 20 * mm, 24 * mm,
         ],
-        colWidths=[32 * mm, 55 * mm, 28 * mm, 59 * mm],
-        rowHeights=[9 * mm, 9 * mm],
+        rowHeights=[9 * mm],
     )
     identity.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#334155")),
-        ("LINEBELOW", (1, 0), (1, -1), 0.5, colors.HexColor("#94A3B8")),
-        ("LINEBELOW", (3, 0), (3, -1), 0.5, colors.HexColor("#94A3B8")),
+        # Underline the fill-in cells only — the odd-indexed ones.
+        *[
+            ("LINEBELOW", (c, 0), (c, 0), 0.5, colors.HexColor("#94A3B8"))
+            for c in (1, 3, 5, 7)
+        ],
         ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     story.append(identity)
-    story.append(Spacer(1, 6 * mm))
+    story.append(Spacer(1, 4 * mm))
 
     by_section: dict[str, list[dict[str, Any]]] = {}
     for line in lines:
@@ -274,13 +286,16 @@ def build_counting_sheet_pdf(
         for line in section_lines:
             data.append([
                 Paragraph(str(line.get("item_number", "")), cell_style),
-                Paragraph(str(line.get("name", ""))[:70], cell_style),
+                Paragraph(_shorten(str(line.get("name", ""))), cell_style),
                 "",  # left blank on purpose: this is what the counter fills in
                 str(line.get("unit", "PCE")),
             ])
         table = Table(
             data,
-            colWidths=[34 * mm, 80 * mm, 34 * mm, 26 * mm],
+            colWidths=[36 * mm, 84 * mm, 38 * mm, 28 * mm],
+            # Tall rows: a figure written with gloves on, in a workshop, needs
+            # room. The header keeps its natural height.
+            rowHeights=[_BASE_ROW_HEIGHT] + [_ROW_HEIGHT] * len(section_lines),
             repeatRows=1,
         )
         table.setStyle(TableStyle([
@@ -293,21 +308,32 @@ def build_counting_sheet_pdf(
              [colors.white, colors.HexColor("#F8FAFC")]),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("ALIGN", (2, 0), (3, -1), "CENTER"),
-            ("TOPPADDING", (0, 1), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
         ]))
         story.append(table)
-        story.append(Spacer(1, 5 * mm))
-
-    story.append(Paragraph(
-        "<font size=7.5 color='#64748B'>Une case vide signifie « non compté » et "
-        "sera traitée comme telle. Pour déclarer une absence de stock, écrire "
-        "explicitement 0.</font>",
-        cell_style,
-    ))
+        story.append(Spacer(1, 4 * mm))
 
     doc.build(story)
     return buffer.getvalue()
+
+
+#: Side margin of the printable sheet, in millimetres. Tight on purpose: every
+#: millimetre of paper recovered is a row that stays on the first page.
+_SIDE_MARGIN_MM = 12
+
+#: Natural height of a body row before V2 — leading 10.5 pt plus 4 pt of padding
+#: above and below. Named so the 62 % increase below reads as a stated decision
+#: rather than a magic number nobody dares touch.
+_BASE_ROW_HEIGHT = 18.5
+_ROW_HEIGHT = _BASE_ROW_HEIGHT * 1.62
+
+#: Designations are truncated, not wrapped: a counter identifies a part by its
+#: reference, and letting a long label wrap onto a second line would halve the
+#: number of rows a page can hold.
+_NAME_MAX_CHARS = 32
+
+
+def _shorten(name: str) -> str:
+    return name if len(name) <= _NAME_MAX_CHARS else name[: _NAME_MAX_CHARS - 1] + "…"
 
 
 _SECTION_TITLES = {

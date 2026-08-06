@@ -174,6 +174,80 @@ class AnalysisService:
             })
         return out
 
+    def transfers(
+        self, campaign: Campaign, *, limit: int = 100
+    ) -> dict[str, Any]:
+        """How much of the site's variance is a move between bins, not a loss.
+
+        The per-location view answers "which bin do I go and recount?", and it
+        is the one the IRA is built on — so a pallet moved from one bin to
+        another shows up twice, once short and once over, and drags the
+        indicator down. That is a *location* accuracy problem, not a stock one.
+
+        The honest financial question is the per-reference one: what did the
+        site actually lose or gain, offsets allowed? This method measures the
+        gap between the two readings:
+
+        * ``netValue``      Σ |variance| per **reference** — the real exposure;
+        * ``grossValue``    Σ |variance| per reference **and location**;
+        * ``transferValue`` the difference, i.e. the part that cancels out
+          between two locations of the same reference.
+
+        A high transfer share means the count is disagreeing with the ERP about
+        *where* the stock is, not about how much of it there is. Worth fixing,
+        but not the same alarm — which is exactly why the per-reference view is
+        the one the analysis screen opens on.
+        """
+        by_item = {
+            line.item_number: line
+            for line in self.variances(campaign, granularity="item")
+        }
+        gross_by_item: dict[str, float] = {}
+        locations_by_item: dict[str, int] = {}
+        for line in self.variances(campaign, granularity="item_location"):
+            if line.variance_value == 0:
+                continue
+            gross_by_item[line.item_number] = gross_by_item.get(
+                line.item_number, 0.0
+            ) + abs(float(line.variance_value))
+            locations_by_item[line.item_number] = (
+                locations_by_item.get(line.item_number, 0) + 1
+            )
+
+        items = self.ctx.referentials.items_by_number(campaign.id)
+        rows: list[dict[str, Any]] = []
+        net_total = gross_total = 0.0
+        for item_number, gross in gross_by_item.items():
+            line = by_item.get(item_number)
+            net = abs(float(line.variance_value)) if line else 0.0
+            transfer = max(0.0, gross - net)
+            net_total += net
+            gross_total += gross
+            if transfer <= 0:
+                continue
+            item = items.get(item_number)
+            rows.append({
+                "itemNumber": item_number,
+                "name": item.name if item else "",
+                "netValue": round(net, 2),
+                "grossValue": round(gross, 2),
+                "transferValue": round(transfer, 2),
+                "transferShare": round(transfer / gross, 4) if gross else 0.0,
+                "locations": locations_by_item.get(item_number, 0),
+            })
+        rows.sort(key=lambda r: -r["transferValue"])
+        transfer_total = max(0.0, gross_total - net_total)
+        return {
+            "netValue": round(net_total, 2),
+            "grossValue": round(gross_total, 2),
+            "transferValue": round(transfer_total, 2),
+            "transferShare": (
+                round(transfer_total / gross_total, 4) if gross_total else 0.0
+            ),
+            "itemCount": len(rows),
+            "rows": rows[:limit],
+        }
+
     def pareto(
         self, campaign: Campaign, *, coverage: float = 0.8
     ) -> list[dict[str, Any]]:

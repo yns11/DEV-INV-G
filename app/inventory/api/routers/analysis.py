@@ -62,6 +62,23 @@ def aggregate(
     return service.aggregate(campaign, dimension, limit=limit)
 
 
+@router.get("/transfers", summary="Part de l'écart qui n'est qu'un transfert")
+def transfers(
+    campaign: CampaignDep,
+    service: Service,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+) -> dict[str, Any]:
+    """How much of the variance cancels out between two bins of one reference.
+
+    A pallet moved from one location to another appears twice in the
+    per-location view — short here, over there — and drags the IRA down without
+    a single part having been lost. This endpoint measures that part, which is
+    why the analysis screen opens on the per-reference reading rather than on
+    the reference/location one.
+    """
+    return service.transfers(campaign, limit=limit)
+
+
 @router.get("/pareto", summary="Courbe de Pareto des écarts")
 def pareto(
     campaign: CampaignDep,

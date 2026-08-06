@@ -105,12 +105,22 @@ class GenericService:
         return out
 
     def get_sheet(self, campaign: Campaign, sheet_id: str) -> dict[str, Any]:
+        """One sheet's content, ready for the grid.
+
+        A pass-2 sheet also carries the pass-1 quantity of each line. Having it
+        on screen is what turns encoding into a check — the encoder sees the
+        disagreement as they type it, instead of meeting it later in a list of
+        arbitrations detached from the paper. It is a screen-only column: the
+        printed sheet must never show the first count, or the second one stops
+        being independent.
+        """
         ctx = self.ctx
         sheet = ctx.sheets.get_sheet(sheet_id)
         if sheet.campaign_id != campaign.id:
             raise NotFoundError("Feuille introuvable dans cette campagne.")
         items = ctx.referentials.items_by_number(campaign.id)
         lines = ctx.sheets.list_sheet_lines(sheet_id)
+        pass_1 = self._pass_1_quantities(campaign, sheet)
         return {
             "sheet": sheet.model_dump(mode="json"),
             "lines": [
@@ -121,10 +131,38 @@ class GenericService:
                     "name": items[line.item_number].name
                     if line.item_number in items else "",
                     "known": line.item_number in items,
+                    "qtyPass1": pass_1.get((line.item_number, line.section)),
                 }
                 for line in lines
             ],
         }
+
+    def _pass_1_quantities(
+        self, campaign: Campaign, sheet: CountSheet
+    ) -> dict[tuple[str, CountSection], float]:
+        """Pass-1 quantities per (item, section), for a pass-2 sheet only."""
+        if sheet.pass_no is not SheetPass.PASS_2:
+            return {}
+        ctx = self.ctx
+        first = next(
+            (
+                s
+                for s in ctx.sheets.list_sheets(campaign.id, zone_id=sheet.zone_id)
+                if s.pass_no is SheetPass.PASS_1
+            ),
+            None,
+        )
+        if first is None:
+            return {}
+        totals: dict[tuple[str, CountSection], float] = {}
+        for line in ctx.sheets.list_sheet_lines(first.id):
+            if not line.is_counted:
+                continue
+            key = (line.item_number, line.section)
+            # A sheet may list the same article twice (two pallets); the
+            # comparison is against the zone's total, as the arbitration is.
+            totals[key] = totals.get(key, 0.0) + float(line.qty)
+        return totals
 
     # ----------------------------------------------------------------- zones
 

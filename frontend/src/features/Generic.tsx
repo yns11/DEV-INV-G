@@ -31,8 +31,10 @@ import {
 import { CompositionBar } from '../components/charts'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
 import { parseSheetLines } from '../lib/pasteSheetLines'
+import { useFocusMode } from '../lib/focus'
+import { CreateZoneModal } from './zones'
 import {
-  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Field, Icons, Modal, Skeleton, Tabs, useDownload, useErrorToast, useToast,
+  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Skeleton, Tabs, useDownload, useErrorToast, useToast,
 } from '../components/ui'
 
 type Tab = 'zones' | 'arbitration' | 'consolidation'
@@ -102,9 +104,12 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   const [creating, setCreating] = useState(false)
   const [openSheet, setOpenSheet] = useState<{ zone: Zone; sheet: Sheet } | null>(null)
 
+  const [focus] = useFocusMode()
   const query = useQuery({
-    queryKey: ['zones', campaignId],
-    queryFn: () => api.zones(campaignId),
+    queryKey: ['zones', campaignId, focus],
+    // The filtering happens on the server: what the perimeter excludes never
+    // reaches this browser at all.
+    queryFn: () => api.zones(campaignId, focus ? { focus: true } : {}),
     refetchInterval: 45_000,
   })
 
@@ -155,15 +160,18 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
         empty={
           <Card>
             <EmptyState
-              title="Aucune zone"
+              title={focus ? 'Aucune zone dans votre périmètre' : 'Aucune zone'}
               action={
-                <Button variant="primary" onClick={() => setCreating(true)}>
-                  Créer la première zone
-                </Button>
+                focus ? null : (
+                  <Button variant="primary" onClick={() => setCreating(true)}>
+                    Créer la première zone
+                  </Button>
+                )
               }
             >
-              Créez une zone par aire physique (bord de ligne, picking, métrologie…).
-              Chaque zone reçoit automatiquement deux feuilles de comptage.
+              {focus
+                ? 'Aucune zone ne vous est affectée. Coupez « Mon périmètre » pour voir toute la campagne — vous gardez le droit d’y agir.'
+                : 'Créez une zone par aire physique (bord de ligne, picking, métrologie…), ou chargez la grille « Feuilles de comptage » en préparation pour les créer avec leur liste d’articles.'}
             </EmptyState>
           </Card>
         }
@@ -179,6 +187,16 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                     <Badge tone={ZONE_TONE[zone.status] ?? 'neutral'} dot>
                       {toLabel(ZONE_STATUS_LABELS, zone.status)}
                     </Badge>
+                    {zone.passes === 1 && (
+                      <Badge tone="warning" title="Un seul comptage : aucun arbitrage possible">
+                        comptage unique
+                      </Badge>
+                    )}
+                    {zone.free_entry && (
+                      <Badge tone="info" title="Feuille volontairement vide : le compteur écrit ce qu’il trouve">
+                        saisie libre
+                      </Badge>
+                    )}
                   </span>
                 }
                 message={zone.sector || undefined}
@@ -282,74 +300,6 @@ const NEXT_SHEET_LABEL: Partial<Record<SheetStatus, string>> = {
   PENDING: 'Remettre au compteur',
   COUNTING: 'Feuille rendue',
   ENCODING: 'Terminer l’encodage',
-}
-
-function CreateZoneModal({
-  campaignId,
-  onClose,
-}: {
-  campaignId: string
-  onClose: () => void
-}) {
-  const queryClient = useQueryClient()
-  const toast = useToast()
-  const showError = useErrorToast()
-  const [form, setForm] = useState({ code: '', label: '', sector: '' })
-
-  const mutation = useMutation({
-    mutationFn: () => api.createZone(campaignId, form),
-    onSuccess: () => {
-      void queryClient.invalidateQueries()
-      toast.success('Zone créée', 'Ses deux feuilles de comptage sont prêtes.')
-      onClose()
-    },
-    onError: (error) => showError(error, 'Création impossible'),
-  })
-
-  return (
-    <Modal
-      title="Nouvelle zone GENERIQUE"
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Annuler
-          </Button>
-          <Button
-            variant="primary"
-            disabled={!form.code.trim() || mutation.isPending}
-            onClick={() => mutation.mutate()}
-          >
-            Créer
-          </Button>
-        </>
-      }
-    >
-      <div className="stack">
-        <Field label="Code de la zone" hint="Ex. FI ASSY M3.1, PICKING TRANSALLIANCE…">
-          <input
-            className="input"
-            value={form.code}
-            onChange={(event) => setForm({ ...form, code: event.target.value })}
-          />
-        </Field>
-        <Field label="Libellé">
-          <input
-            className="input"
-            value={form.label}
-            onChange={(event) => setForm({ ...form, label: event.target.value })}
-          />
-        </Field>
-        <Field label="Secteur" hint="Sert au dispatch des feuilles imprimées.">
-          <input
-            className="input"
-            value={form.sector}
-            onChange={(event) => setForm({ ...form, sector: event.target.value })}
-          />
-        </Field>
-      </div>
-    </Modal>
-  )
 }
 
 function SheetModal({
@@ -478,6 +428,8 @@ function SheetModal({
     )
   }
 
+  const isPass2 = sheet.pass_no === 'PASS_2'
+
   const columns: Column[] = [
     { key: 'item_number', label: 'Référence', width: 170, editable: true },
     { key: 'name', label: 'Désignation', width: 240, editable: false },
@@ -517,6 +469,43 @@ function SheetModal({
             ),
       value: (row) => (row.qty === null ? null : Number(row.qty)),
     },
+    // Screen only. The printed sheet must never carry the first count, or the
+    // second one stops being independent — but on screen, seeing the
+    // disagreement while typing is what turns encoding into a check.
+    ...(isPass2
+      ? [
+          {
+            key: 'qtyPass1',
+            label: 'Comptage n°1',
+            numeric: true,
+            width: 140,
+            editable: false,
+            render: (row: Record<string, unknown>) => {
+              const first = row.qtyPass1 as number | null
+              if (first === null || first === undefined) {
+                return <span className="subtle">non compté</span>
+              }
+              const second = row.qty === null || row.qty === undefined
+                ? null
+                : Number(row.qty)
+              const diverges = second !== null && second !== first
+              return (
+                <span className={`num${diverges ? ' neg' : ''}`} title={
+                  diverges
+                    ? 'Les deux comptages divergent : un arbitrage sera demandé.'
+                    : undefined
+                }>
+                  {numShort(first)}
+                </span>
+              )
+            },
+            value: (row: Record<string, unknown>) =>
+              row.qtyPass1 === null || row.qtyPass1 === undefined
+                ? null
+                : Number(row.qtyPass1),
+          } satisfies Column,
+        ]
+      : []),
     { key: 'unit', label: 'Unité', width: 90, editable: true },
     {
       key: 'source',
@@ -602,6 +591,13 @@ function SheetModal({
             <Alert tone="info" title="Règle de saisie">
               Une case vide signifie <strong>non compté</strong> et sera traitée comme
               telle. Pour déclarer une absence de stock, saisissez explicitement 0.
+              {isPass2 && (
+                <>
+                  {' '}
+                  La colonne « Comptage n°1 » est là pour repérer un écart pendant la
+                  saisie ; elle ne figure évidemment pas sur la feuille imprimée.
+                </>
+              )}
             </Alert>
 
             {editable && (
@@ -690,7 +686,11 @@ function ArbitrationTab({
   const showError = useErrorToast()
   const [zoneFilter, setZoneFilter] = useState<string>('')
 
-  const zones = useQuery({ queryKey: ['zones', campaignId], queryFn: () => api.zones(campaignId) })
+  const [focus] = useFocusMode()
+  const zones = useQuery({
+    queryKey: ['zones', campaignId, focus],
+    queryFn: () => api.zones(campaignId, focus ? { focus: true } : {}),
+  })
   const query = useQuery({
     queryKey: ['arbitrations', campaignId, zoneFilter],
     queryFn: () => api.arbitrations(campaignId, zoneFilter || undefined),

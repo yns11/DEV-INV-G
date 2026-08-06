@@ -60,9 +60,28 @@ export interface Permissions {
   analysis: boolean
 }
 
+/**
+ * What the signed-in user owns, as resolved by the server.
+ *
+ * `resolved` is false when the identity is not registered as a manager. The
+ * distinction matters: an unresolved perimeter is not "everything", it is
+ * "nothing", and the interface has to say so rather than show an empty list
+ * indistinguishable from a campaign without data.
+ */
+export interface PerimeterSummary {
+  resolved: boolean
+  managerCode: string | null
+  managerLabel: string | null
+  warehouses: string[]
+  catchAll: boolean
+  journalCount: number
+  zoneCount: number
+}
+
 export interface Overview {
   campaign: Campaign
   permissions: Permissions
+  perimeter: PerimeterSummary
   journalProgress: {
     total: number
     complete: number
@@ -250,9 +269,69 @@ export interface Zone {
   label: string
   sector: string
   display_order: number
+  /** Independent counts this zone requires — carried by the zone, not the campaign. */
+  passes: number
+  /** True when the sheet is deliberately blank: the counter writes what they find. */
+  free_entry: boolean
+  manager_code: string
   status: ZoneStatus
   pendingArbitrations: number
   sheets: Sheet[]
+}
+
+export interface Manager {
+  code: string
+  label: string
+  /** Identity forwarded by the platform; what resolves « mon périmètre ». */
+  actor: string
+  active: boolean
+  display_order: number
+  zoneCount: number
+  journalCount: number
+}
+
+export interface ManagerOverview {
+  managers: Manager[]
+  warehouses: Array<{
+    warehouseId: string
+    managerCode: string
+    journalCount: number
+    /** `AUTRES`: assigns every warehouse nobody named explicitly. */
+    isCatchAll: boolean
+    known: boolean
+  }>
+  zones: Array<{
+    id: string
+    code: string
+    label: string
+    sector: string
+    managerCode: string
+  }>
+}
+
+/**
+ * The part of the variance that is a move between bins rather than a loss.
+ *
+ * `grossValue` counts a moved pallet twice — short in one bin, over in the
+ * other — which is what drags the IRA down without anything being lost.
+ * `netValue` is the per-reference reading, and the difference between the two
+ * is the transfer.
+ */
+export interface TransferAnalysis {
+  netValue: number
+  grossValue: number
+  transferValue: number
+  transferShare: number
+  itemCount: number
+  rows: Array<{
+    itemNumber: string
+    name: string
+    netValue: number
+    grossValue: number
+    transferValue: number
+    transferShare: number
+    locations: number
+  }>
 }
 
 export interface SheetLine {
@@ -271,6 +350,8 @@ export interface SheetLine {
   display_order: number
   name: string
   known: boolean
+  /** Pass-1 quantity for the same (article, section); null on a pass-1 sheet. */
+  qtyPass1: number | null
 }
 
 export interface Arbitration {

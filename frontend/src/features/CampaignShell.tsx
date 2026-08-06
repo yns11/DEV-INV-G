@@ -18,8 +18,9 @@ import {
   label as toLabel,
   percent,
 } from '../lib/format'
+import { useFocusMode } from '../lib/focus'
 import {
-  Alert, Badge, Button, ErrorState, Icons, Modal, Progress, Skeleton, Stepper, useDownload, useErrorToast, useToast,
+  Alert, Badge, Button, ErrorState, Icons, Modal, Progress, Skeleton, Stepper, Switch, useDownload, useErrorToast, useToast,
 } from '../components/ui'
 
 const PHASES: Array<{ id: CampaignStatus; label: string }> = [
@@ -41,7 +42,7 @@ const SECTIONS: Array<{
   label: string
   icon: keyof typeof Icons
   enabled: (permissions: Permissions, overview: Overview) => boolean
-  badge?: (overview: Overview) => number | null
+  badge?: (overview: Overview, focus: boolean) => number | null
 }> = [
   { to: '', label: 'Tableau de bord', icon: 'dashboard', enabled: () => true },
   {
@@ -55,14 +56,23 @@ const SECTIONS: Array<{
     label: 'Journaux de comptage',
     icon: 'clipboard',
     enabled: (_p, o) => o.campaign.status !== 'PREPARATION',
-    badge: (o) => o.journalProgress.total - o.journalProgress.complete || null,
+    // Under focus the badge counts the perimeter, not the campaign: a "6" over
+    // a list of four is the kind of small lie that makes people stop trusting
+    // the numbers next to it.
+    badge: (o, focus) =>
+      focus
+        ? o.perimeter.journalCount || null
+        : o.journalProgress.total - o.journalProgress.complete || null,
   },
   {
     to: 'generique',
     label: 'GENERIQUE',
     icon: 'grid',
     enabled: () => true,
-    badge: (o) => o.genericProgress.pendingArbitrations || null,
+    badge: (o, focus) =>
+      focus
+        ? o.perimeter.zoneCount || null
+        : o.genericProgress.pendingArbitrations || null,
   },
   {
     to: 'analyse',
@@ -75,6 +85,7 @@ const SECTIONS: Array<{
 
 export function CampaignShell() {
   const { campaignId = '' } = useParams()
+  const [focus] = useFocusMode()
   const query = useQuery({
     queryKey: ['overview', campaignId],
     queryFn: () => api.overview(campaignId),
@@ -102,7 +113,7 @@ export function CampaignShell() {
         {SECTIONS.map((section) => {
           const Icon = Icons[section.icon]
           const enabled = section.enabled(overview.permissions, overview)
-          const badge = section.badge?.(overview)
+          const badge = section.badge?.(overview, focus)
           return (
             <NavLink
               key={section.to}
@@ -129,9 +140,11 @@ export function CampaignShell() {
 
 function CampaignHeader({ overview }: { overview: Overview }) {
   const startDownload = useDownload()
-  const { campaign, journalProgress, genericProgress, counts } = overview
+  const { campaign, journalProgress, genericProgress, counts, perimeter } = overview
   const [transitionTarget, setTransitionTarget] = useState<CampaignStatus | null>(null)
+  const [focus] = useFocusMode()
   const next = NEXT_PHASE[campaign.status]
+  const empty = perimeter.journalCount === 0 && perimeter.zoneCount === 0
 
   return (
     <header className="stack" style={{ gap: 'var(--space-4)' }}>
@@ -159,6 +172,7 @@ function CampaignHeader({ overview }: { overview: Overview }) {
           </p>
         </div>
         <div className="row-wrap">
+          <FocusSwitch overview={overview} />
           <Button
             icon={<Icons.download size={14} />}
             onClick={() => startDownload(downloads.campaignWorkbook(campaign.id))}
@@ -263,6 +277,42 @@ function CampaignHeader({ overview }: { overview: Overview }) {
         </div>
       </div>
 
+      {focus && (
+        <Alert
+          tone={perimeter.resolved && !empty ? 'info' : 'warning'}
+          title={
+            !perimeter.resolved
+              ? 'Vous n’êtes pas déclaré comme gestionnaire'
+              : empty
+                ? 'Aucun objet ne vous est affecté'
+                : `Mon périmètre — ${perimeter.managerLabel || perimeter.managerCode}`
+          }
+        >
+          {!perimeter.resolved ? (
+            <>
+              Votre identité n’est rattachée à aucun des cinq gestionnaires de cette
+              campagne, donc le filtre ne laisse rien passer. Déclarez-la dans
+              Préparation → Gestionnaires, ou désactivez « Mon périmètre ».
+            </>
+          ) : empty ? (
+            <>
+              Aucun entrepôt ni aucune zone n’est rattaché à{' '}
+              {perimeter.managerLabel || perimeter.managerCode}. Les listes sont vides
+              parce que votre périmètre l’est, pas parce que la campagne l’est.
+            </>
+          ) : (
+            <>
+              {perimeter.journalCount} journal(aux) et {perimeter.zoneCount} zone(s)
+              vous sont affectés
+              {perimeter.catchAll && ' (dont les entrepôts sans affectation explicite)'}.{' '}
+              <strong>Le focus est un filtre, pas une habilitation</strong> : vous
+              gardez le droit d’agir hors de votre périmètre, il suffit de couper
+              l’interrupteur pour tout revoir.
+            </>
+          )}
+        </Alert>
+      )}
+
       {transitionTarget && (
         <TransitionModal
           campaignId={campaign.id}
@@ -272,6 +322,38 @@ function CampaignHeader({ overview }: { overview: Overview }) {
         />
       )}
     </header>
+  )
+}
+
+/**
+ * The « Mon périmètre » switch.
+ *
+ * It carries its own counts, because the one thing a filter must never do is
+ * leave the user unable to tell "nothing is assigned to me" from "nothing
+ * exists". The banner under the header says which of the two it is.
+ */
+function FocusSwitch({ overview }: { overview: Overview }) {
+  const [focus, setFocus] = useFocusMode()
+  const { perimeter } = overview
+  const total = perimeter.journalCount + perimeter.zoneCount
+  return (
+    <Switch
+      checked={focus}
+      onChange={setFocus}
+      title={
+        perimeter.resolved
+          ? 'Filtre d’affichage : vos actions restent les mêmes dans les deux modes.'
+          : 'Votre identité n’est rattachée à aucun gestionnaire de cette campagne.'
+      }
+      label={
+        <span className="row" style={{ gap: 'var(--space-2)' }}>
+          Mon périmètre
+          <Badge tone={total > 0 ? 'accent' : 'neutral'}>
+            {perimeter.resolved ? total : 0}
+          </Badge>
+        </span>
+      }
+    />
   )
 }
 

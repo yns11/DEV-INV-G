@@ -8,12 +8,13 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 
 from ...errors import ValidationError
 from ...services import GenericService
-from ..deps import CampaignDep, generic_service
+from ..deps import CampaignDep, Ctx, generic_service, resolve_perimeter
 from ..schemas import (
     ArbitrationDecisionRequest,
     ReclassifyRequest,
     SheetLinesRequest,
     SheetTransitionRequest,
+    ZonePassesRequest,
     ZoneRequest,
 )
 
@@ -29,19 +30,37 @@ _ACCEPTED_SCAN_TYPES = {
 
 
 @router.get("/zones", summary="Zones et feuilles de comptage")
-def list_zones(campaign: CampaignDep, service: Service) -> list[dict[str, Any]]:
-    """Zones with their derived status and per-pass progress."""
-    return service.list_zones(campaign)
+def list_zones(
+    campaign: CampaignDep,
+    ctx: Ctx,
+    service: Service,
+    focus: Annotated[bool, Query()] = False,
+    manager: Annotated[str | None, Query()] = None,
+) -> list[dict[str, Any]]:
+    """Zones with their derived status and per-pass progress.
+
+    ``focus=true`` keeps only the zones assigned to the manager the signed-in
+    identity resolves to. Like everywhere else, it is a **filter, not a
+    permission**: nothing about what may be done to a zone changes with it.
+    """
+    return service.list_zones(
+        campaign,
+        perimeter=resolve_perimeter(campaign, ctx, focus=focus, manager=manager),
+    )
 
 
 @router.post("/zones", status_code=201, summary="Créer une zone")
 def create_zone(
     campaign: CampaignDep, payload: ZoneRequest, service: Service
 ) -> dict[str, Any]:
-    """Create a zone and its two counting sheets.
+    """Create a zone and its counting sheets.
 
-    Allowed during counting as well as preparation: a physical area nobody had
-    listed is routinely discovered on the day of the inventory.
+    Allowed in preparation — which is when one decides what to count — as well
+    as during counting, where a physical area nobody had listed is routinely
+    discovered on the day.
+
+    The zone is created with no pre-printed article list, so it is flagged as a
+    free-entry sheet unless the caller says otherwise.
     """
     zone = service.create_zone(
         campaign,
@@ -49,8 +68,24 @@ def create_zone(
         label=payload.label,
         sector=payload.sector,
         display_order=payload.display_order,
+        passes=payload.passes,
+        free_entry=payload.free_entry,
+        manager_code=payload.manager_code,
     )
     return zone.model_dump(mode="json")
+
+
+@router.post("/zones/passes", summary="Changer le nombre de comptages de zones")
+def set_zone_passes(
+    campaign: CampaignDep, payload: ZonePassesRequest, service: Service
+) -> dict[str, int]:
+    """Bulk switch between one and two independent counts.
+
+    Dropping to one deletes the second sheet, so the call is refused — naming
+    the zones — when that sheet already carries a quantity: a zone brought back
+    to a single count after the fact would lose a real count.
+    """
+    return service.set_zone_passes(campaign, payload.zone_ids, payload.passes)
 
 
 @router.delete("/zones/{zone_id}", summary="Supprimer une zone")

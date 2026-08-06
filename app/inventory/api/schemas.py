@@ -39,6 +39,12 @@ __all__ = [
     "JournalStatusRequest",
     "JournalLineRequest",
     "ZoneRequest",
+    "ZonePassesRequest",
+    "ZoneAssignmentRequest",
+    "ManagerRow",
+    "ManagerRowsRequest",
+    "WarehouseAssignment",
+    "WarehouseAssignmentRequest",
     "SheetTransitionRequest",
     "SheetLinesRequest",
     "ArbitrationDecisionRequest",
@@ -177,6 +183,49 @@ class ZoneRequest(ApiModel):
     label: str = Field(default="", max_length=200)
     sector: str = Field(default="", max_length=120)
     display_order: int = Field(default=0, alias="displayOrder")
+    passes: int | None = Field(default=None, ge=1, le=2)
+    #: A zone created here carries no pre-printed article list, which is what a
+    #: free-entry sheet *is*. Overridable for the caller who intends to load one
+    #: right after.
+    free_entry: bool = Field(default=True, alias="freeEntry")
+    manager_code: str = Field(default="", alias="managerCode")
+
+
+class ZonePassesRequest(ApiModel):
+    """Bulk change of how many independent counts a selection of zones needs."""
+
+    zone_ids: list[str] = Field(min_length=1, alias="zoneIds")
+    passes: int = Field(ge=1, le=2)
+
+
+class ZoneAssignmentRequest(ApiModel):
+    """Attach zones to a manager; an empty code detaches them."""
+
+    zone_ids: list[str] = Field(min_length=1, alias="zoneIds")
+    manager_code: str = Field(default="", alias="managerCode")
+
+
+class ManagerRow(ApiModel):
+    code: str = Field(min_length=1, max_length=60)
+    label: str = Field(default="", max_length=120)
+    #: Identity forwarded by the authentication proxy — usually an e-mail.
+    actor: str = Field(default="", max_length=200)
+    active: bool = True
+    display_order: int = Field(default=0, alias="displayOrder")
+
+
+class ManagerRowsRequest(ApiModel):
+    managers: list[ManagerRow] = Field(min_length=1)
+
+
+class WarehouseAssignment(ApiModel):
+    warehouse_id: str = Field(min_length=1, max_length=60, alias="warehouseId")
+    #: Empty clears the assignment and lets the ``AUTRES`` catch-all apply.
+    manager_code: str = Field(default="", alias="managerCode")
+
+
+class WarehouseAssignmentRequest(ApiModel):
+    assignments: list[WarehouseAssignment] = Field(min_length=1)
 
 
 class SheetTransitionRequest(ApiModel):

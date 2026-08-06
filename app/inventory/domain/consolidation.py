@@ -72,6 +72,16 @@ class ZoneCounts:
     #: Arbitration decisions recorded for this zone.
     arbitrations: Sequence[ArbitrationLine] = ()
 
+    @property
+    def passes_required(self) -> int:
+        """How many independent counts *this* zone expects.
+
+        Carried by the zone, not by the campaign: a single-pass zone cannot
+        produce an arbitration discrepancy, so it must not be told that one of
+        its two counts is missing.
+        """
+        return self.zone.passes
+
 
 @dataclass(slots=True)
 class ConsolidationInput:
@@ -81,8 +91,6 @@ class ConsolidationInput:
     zones: Sequence[ZoneCounts]
     items: Mapping[str, Item]
     bom: BomIndex
-    #: Number of independent counts the campaign requires per zone.
-    passes_required: int = 2
     #: Relative gap under which pass-2 is accepted without arbitration.
     arbitration_tolerance: Decimal = ZERO
     #: When False, zones that are not fully counted are skipped instead of
@@ -197,7 +205,7 @@ def build_arbitration_lines(
 def resolve_zone_quantities(
     zone: ZoneCounts,
     *,
-    passes_required: int = 2,
+    passes_required: int | None = None,
     arbitration_tolerance: Decimal = ZERO,
 ) -> tuple[dict[tuple[str, CountSection], Decimal], list[ControlFinding]]:
     """Retained quantity per (item, section) for one zone.
@@ -207,10 +215,17 @@ def resolve_zone_quantities(
     1. an explicit arbitration decision (``qty_arbitrated``);
     2. the two passes agree (or differ within *arbitration_tolerance*) → pass 2,
        which is the later and better-informed count;
-    3. only one pass exists (single-pass campaign, or the zone was counted once)
-       → that pass, flagged as a warning when two passes were expected;
+    3. only one pass exists (single-pass zone, or the zone was counted once)
+       → that pass, flagged as a warning **only when two passes were expected**;
     4. otherwise → the zone is not resolvable and a BLOCKER is emitted.
+
+    :param passes_required: overrides the zone's own :attr:`Zone.passes`. A zone
+        configured for a single count is not missing anything, so it must not be
+        told that "only one team counted" — that warning only means something
+        when two were expected.
     """
+    if passes_required is None:
+        passes_required = zone.passes_required
     findings: list[ControlFinding] = []
     by_pass: dict[SheetPass, dict[tuple[str, CountSection], Decimal]] = {}
     for sheet in zone.sheets:
@@ -316,16 +331,13 @@ def consolidate_generic(payload: ConsolidationInput) -> ConsolidationResult:
 
     for zone_counts in payload.zones:
         zone = zone_counts.zone
-        if payload.require_done_zones and not _zone_is_complete(
-            zone_counts, payload.passes_required
-        ):
+        if payload.require_done_zones and not _zone_is_complete(zone_counts):
             result.zones_skipped.append(zone.code)
             continue
         result.zones_included.append(zone.code)
 
         retained, zone_findings = resolve_zone_quantities(
             zone_counts,
-            passes_required=payload.passes_required,
             arbitration_tolerance=payload.arbitration_tolerance,
         )
         result.findings.extend(zone_findings)
@@ -436,14 +448,14 @@ def consolidate_generic(payload: ConsolidationInput) -> ConsolidationResult:
 # helpers
 # --------------------------------------------------------------------------- #
 
-def _zone_is_complete(zone: ZoneCounts, passes_required: int) -> bool:
-    """A zone contributes once every required pass is encoded and validated."""
+def _zone_is_complete(zone: ZoneCounts) -> bool:
+    """A zone contributes once every pass *it* requires is encoded and validated."""
     done = {
         sheet.pass_no
         for sheet in zone.sheets
         if sheet.status is SheetStatus.DONE
     }
-    if passes_required >= 2:
+    if zone.passes_required >= 2:
         return SheetPass.PASS_1 in done and SheetPass.PASS_2 in done
     return bool(done)
 

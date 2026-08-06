@@ -28,6 +28,7 @@ _TARGETS = {
     "boms": "import_boms",
     "book_stock": "import_book_stock",
     "count_journal_lines": "import_journal_lines",
+    "count_sheets": "import_count_sheets",
     "adjustments": "import_adjustments",
     "locations": "import_locations",
 }

@@ -24,6 +24,7 @@ from .enums import (
     ItemType,
     JournalStatus,
     LocationStatus,
+    SheetPass,
 )
 from .models import (
     BomLink,
@@ -32,10 +33,13 @@ from .models import (
     ControlFinding,
     CountJournal,
     CountJournalLine,
+    CountSheet,
+    CountSheetLine,
     Item,
     Location,
     LocationKey,
     VarianceLine,
+    Zone,
 )
 from .quantities import ZERO
 from .variance import is_material
@@ -45,6 +49,7 @@ __all__ = [
     "check_book_stock",
     "check_journals",
     "check_variances",
+    "check_zones",
     "run_all_controls",
     "summarise",
 ]
@@ -503,6 +508,78 @@ def check_variances(
 
 
 # --------------------------------------------------------------------------- #
+# GENERIQUE zones
+# --------------------------------------------------------------------------- #
+
+def check_zones(
+    *,
+    zones: Sequence[Zone],
+    sheets: Sequence[CountSheet],
+    lines_by_sheet: Mapping[str, Sequence[CountSheetLine]] | None = None,
+) -> list[ControlFinding]:
+    """Preparation controls on the GENERIQUE zones.
+
+    Two defects, both of which are cheap to fix in preparation and expensive to
+    discover on the morning of the count:
+
+    * a zone whose sheets carry no pre-printed article list — **unless** it is
+      declared as a free-entry sheet. That distinction is the whole reason
+      :attr:`Zone.free_entry` exists: a deliberately blank sheet and a sheet
+      somebody forgot to prepare look exactly alike otherwise, and flagging both
+      teaches people to ignore the warning;
+    * a zone missing one of the sheets its own ``passes`` requires — a second
+      counter with no sheet is a second count that will not happen.
+    """
+    lines_by_sheet = lines_by_sheet or {}
+    findings: list[ControlFinding] = []
+    sheets_by_zone: dict[str, list[CountSheet]] = defaultdict(list)
+    for sheet in sheets:
+        sheets_by_zone[sheet.zone_id].append(sheet)
+
+    for zone in zones:
+        zone_sheets = sheets_by_zone.get(zone.id, [])
+        expected = {SheetPass.PASS_1, SheetPass.PASS_2} if zone.passes >= 2 else {
+            SheetPass.PASS_1
+        }
+        missing = expected - {s.pass_no for s in zone_sheets}
+        if missing:
+            findings.append(
+                ControlFinding(
+                    code="ZONE_MISSING_SHEET",
+                    severity=ControlSeverity.WARNING,
+                    message=(
+                        f"Zone {zone.code} : la feuille de comptage "
+                        f"{', '.join(sorted(str(p) for p in missing))} manque alors "
+                        f"que la zone demande {zone.passes} comptage(s)."
+                    ),
+                    entity_type="zone",
+                    entity_id=zone.id,
+                    context={"passes": zone.passes},
+                )
+            )
+
+        if zone.free_entry:
+            continue
+        if any(lines_by_sheet.get(s.id) for s in zone_sheets):
+            continue
+        findings.append(
+            ControlFinding(
+                code="ZONE_WITHOUT_LINES",
+                severity=ControlSeverity.WARNING,
+                message=(
+                    f"Zone {zone.code} : aucune ligne pré-imprimée. Chargez sa "
+                    "liste d'articles, ou déclarez-la en saisie libre si le "
+                    "compteur doit écrire ce qu'il trouve."
+                ),
+                entity_type="zone",
+                entity_id=zone.id,
+                context={"remedy": "import_count_sheets_or_free_entry"},
+            )
+        )
+    return findings
+
+
+# --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
 
@@ -516,6 +593,9 @@ def run_all_controls(
     locations: Mapping[LocationKey, Location] | None = None,
     journals: Sequence[CountJournal] = (),
     lines_by_journal: Mapping[str, Sequence[CountJournalLine]] | None = None,
+    zones: Sequence[Zone] = (),
+    sheets: Sequence[CountSheet] = (),
+    lines_by_sheet: Mapping[str, Sequence[CountSheetLine]] | None = None,
     variances: Sequence[VarianceLine] = (),
 ) -> list[ControlFinding]:
     """Run every control applicable to the data that was supplied.
@@ -539,6 +619,10 @@ def run_all_controls(
             lines_by_journal=lines_by_journal or {},
             items=items,
             locations=locations,
+        )
+    if zones:
+        findings += check_zones(
+            zones=zones, sheets=sheets, lines_by_sheet=lines_by_sheet
         )
     if variances:
         findings += check_variances(campaign=campaign, variances=variances)

@@ -51,6 +51,7 @@ __all__ = [
     "BomLink",
     "Warehouse",
     "Location",
+    "Manager",
     "BookStockLine",
     "CountJournal",
     "CountJournalLine",
@@ -430,6 +431,39 @@ class Location(DomainModel):
         return self.status is LocationStatus.ACTIVE
 
 
+class Manager(DomainModel):
+    """One of the campaign's managers (« gestionnaire ») and their identity.
+
+    A manager is a *perimeter*, not a permission: warehouses and zones are
+    assigned to one so that each person can filter the screens down to their own
+    work. Everybody keeps the right to act everywhere — see the focus mode.
+
+    ``actor`` is the signed-in identity forwarded by the platform (an email).
+    It is what lets the server resolve "my perimeter" without the client ever
+    naming a manager, which is what makes the filtering trustworthy.
+    """
+
+    campaign_id: str
+    code: str
+    label: str = ""
+    actor: str = ""
+    active: bool = True
+    display_order: int = 0
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def _code(cls, v: Any) -> str:
+        key = normalise_key(str(v) if v is not None else "").replace(" ", "_")
+        if not key:
+            raise ValueError("manager code is required")
+        return key
+
+    @field_validator("actor", mode="before")
+    @classmethod
+    def _actor(cls, v: Any) -> str:
+        return str(v or "").strip().lower()
+
+
 class BookStockLine(DomainModel):
     """One line of the frozen ERP book stock (``stock livre``) snapshot."""
 
@@ -573,6 +607,17 @@ class Zone(DomainModel):
     #: Free-text owner/sector, used for dispatching printed sheets.
     sector: str = ""
     display_order: int = 0
+    #: Number of independent counts this zone requires. Two is the rule; one is
+    #: the assumed exception for an area where a second team adds nothing.
+    passes: int = Field(default=2, ge=1, le=2)
+    #: True when the sheet is deliberately blank — the counter writes down what
+    #: they find, there is no pre-printed article list. Distinguishing this from
+    #: "the list was never prepared" is what stops the preparation controls from
+    #: reporting a normal free-entry sheet as a defect.
+    free_entry: bool = False
+    #: Code of the manager (:class:`Manager`) this zone is assigned to; empty
+    #: when nobody owns it yet.
+    manager_code: str = ""
 
     @field_validator("code", mode="before")
     @classmethod

@@ -29,6 +29,7 @@ __all__ = [
     "Editable",
     "CAMPAIGN_TRANSITIONS",
     "mutability_of",
+    "passes_for",
     "assert_campaign_transition",
     "campaign_transition_blockers",
     "next_sheet_status",
@@ -265,6 +266,22 @@ SHEET_TRANSITIONS: dict[SheetStatus, frozenset[SheetStatus]] = {
 
 #: Sheet statuses that mean "pass 1 has produced usable data".
 _PASS_1_READY = frozenset({SheetStatus.ENCODING, SheetStatus.DONE})
+
+
+def passes_for(count: int) -> list[SheetPass]:
+    """The sheets a zone requiring *count* independent counts must carry.
+
+    Clamped to [1, 2] rather than trusted: the number reaches this function from
+    a stored column, a campaign default and an HTTP payload, and a zone with
+    zero sheets would be a zone nobody can count.
+
+    >>> passes_for(1)
+    [<SheetPass.PASS_1: 'PASS_1'>]
+    >>> passes_for(2)
+    [<SheetPass.PASS_1: 'PASS_1'>, <SheetPass.PASS_2: 'PASS_2'>]
+    """
+    order = [SheetPass.PASS_1, SheetPass.PASS_2]
+    return order[: max(1, min(count, 2))]
 
 
 def next_sheet_status(current: SheetStatus) -> SheetStatus | None:

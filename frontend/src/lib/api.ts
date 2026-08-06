@@ -28,10 +28,12 @@ import type {
   JournalStatus,
   Kpis,
   LocationStatus,
+  ManagerOverview,
   Me,
   Overview,
   SheetStatus,
   Threshold,
+  TransferAnalysis,
   TransitionReadiness,
   VarianceRow,
   WipBreakdownRow,
@@ -264,8 +266,13 @@ export const api = {
     }),
 
   // ---------------------------------------------------------------- counting
-  journals: (id: string, params: { status?: string; warehouseId?: string } = {}) =>
-    request<Journal[]>(`/campaigns/${id}/counting/journals${qs(params)}`),
+  // `focus` is a server-side filter: the browser asks for it, the server
+  // resolves who is asking and answers with that perimeter only. Nothing
+  // outside it is ever sent, which is the whole point.
+  journals: (
+    id: string,
+    params: { status?: string; warehouseId?: string; focus?: boolean } = {},
+  ) => request<Journal[]>(`/campaigns/${id}/counting/journals${qs(params)}`),
   journal: (id: string, journalId: string) =>
     request<JournalDetail>(`/campaigns/${id}/counting/journals/${journalId}`),
   countingControls: (id: string) =>
@@ -301,17 +308,26 @@ export const api = {
     ),
 
   // ---------------------------------------------------------------- GENERIQUE
-  zones: (id: string) => request<Zone[]>(`/campaigns/${id}/generic/zones`),
+  zones: (id: string, params: { focus?: boolean } = {}) =>
+    request<Zone[]>(`/campaigns/${id}/generic/zones${qs(params)}`),
   createZone: (id: string, body: {
     code: string
     label?: string
     sector?: string
     displayOrder?: number
+    passes?: 1 | 2
+    freeEntry?: boolean
+    managerCode?: string
   }) =>
     request<Zone>(`/campaigns/${id}/generic/zones`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  setZonePasses: (id: string, zoneIds: string[], passes: 1 | 2) =>
+    request<{ updated: number; sheetsRemoved: number; sheetsCreated: number }>(
+      `/campaigns/${id}/generic/zones/passes`,
+      { method: 'POST', body: JSON.stringify({ zoneIds, passes }) },
+    ),
   deleteZone: (id: string, zoneId: string) =>
     request<{ deleted: boolean }>(`/campaigns/${id}/generic/zones/${zoneId}`, {
       method: 'DELETE',
@@ -394,6 +410,27 @@ export const api = {
   wipBreakdown: (id: string, itemNumber: string) =>
     request<WipBreakdownRow[]>(`/campaigns/${id}/generic/wip/${itemNumber}`),
 
+  // ------------------------------------------------------------ gestionnaires
+  managers: (id: string) => request<ManagerOverview>(`/campaigns/${id}/managers`),
+  saveManagers: (id: string, managers: unknown[]) =>
+    request<Array<Record<string, unknown>>>(`/campaigns/${id}/managers`, {
+      method: 'PUT',
+      body: JSON.stringify({ managers }),
+    }),
+  assignWarehouses: (
+    id: string,
+    assignments: Array<{ warehouseId: string; managerCode: string }>,
+  ) =>
+    request<{ updated: number }>(`/campaigns/${id}/managers/warehouses`, {
+      method: 'POST',
+      body: JSON.stringify({ assignments }),
+    }),
+  assignZones: (id: string, zoneIds: string[], managerCode: string) =>
+    request<{ updated: number }>(`/campaigns/${id}/managers/zones`, {
+      method: 'POST',
+      body: JSON.stringify({ zoneIds, managerCode }),
+    }),
+
   // ---------------------------------------------------------------- analysis
   kpis: (id: string) => request<Kpis>(`/campaigns/${id}/analysis/kpis`),
   variances: (id: string, params: {
@@ -403,6 +440,8 @@ export const api = {
   } = {}) => request<VarianceRow[]>(`/campaigns/${id}/analysis/variances${qs(params)}`),
   aggregate: (id: string, dimension: string, limit = 200) =>
     request<AggregateRow[]>(`/campaigns/${id}/analysis/aggregate${qs({ dimension, limit })}`),
+  transfers: (id: string, limit = 100) =>
+    request<TransferAnalysis>(`/campaigns/${id}/analysis/transfers${qs({ limit })}`),
   pareto: (id: string, coverage = 0.8) =>
     request<AggregateRow[]>(`/campaigns/${id}/analysis/pareto${qs({ coverage })}`),
   controls: (id: string) => request<ControlsPayload>(`/campaigns/${id}/analysis/controls`),

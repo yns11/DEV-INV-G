@@ -11,6 +11,7 @@ from .context import ENGINE_VERSION, ServiceContext, utcnow
 from .counting_service import CountingService
 from .generic_service import GenericService
 from .import_service import ImportOutcome, ImportService
+from .manager_service import ManagerService, Perimeter
 from .report_service import ReportService
 
 __all__ = [
@@ -22,6 +23,8 @@ __all__ = [
     "GenericService",
     "ImportOutcome",
     "ImportService",
+    "ManagerService",
+    "Perimeter",
     "ReportService",
     "ServiceContext",
     "utcnow",

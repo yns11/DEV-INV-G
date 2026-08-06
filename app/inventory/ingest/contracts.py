@@ -266,37 +266,46 @@ COUNT_JOURNAL_LINES = GridContract(
     ),
 )
 
-COUNT_SHEET_LINES = GridContract(
-    key="count_sheet_lines",
-    title="Lignes de feuille de comptage (zone GENERIQUE)",
+COUNT_SHEETS = GridContract(
+    key="count_sheets",
+    title="Feuilles de comptage préparées",
     description=(
-        "Contenu d'une feuille de zone. La section décide de la règle de "
-        "consolidation appliquée."
+        "Contenu à pré-imprimer sur les feuilles GENERIQUE : une ligne par "
+        "couple feuille / article, avec la section qui décide de la règle de "
+        "consolidation."
     ),
     hint=(
-        "LINE_SIDE = composant en bord de ligne (compté tel quel) · "
-        "WIP = assemblage non déclaré (éclaté en nomenclature) · "
-        "WIP_OK = assemblage déclaré (compté tel quel). "
-        "Les anciens libellés « BDL », « MOM waiting » et « MOM OK » sont acceptés."
+        "Une feuille inconnue est créée avec ses passages ; une feuille connue "
+        "est complétée, jamais recréée. Un article absent du référentiel est "
+        "une erreur de ligne : l'import de feuilles n'étend jamais le "
+        "référentiel. Sections : LINE_SIDE = bord de ligne (compté tel quel) · "
+        "WIP = assemblage non déclaré (éclaté en nomenclature) · WIP_OK = "
+        "assemblage déclaré (compté tel quel). Les anciens libellés « BDL », "
+        "« MOM waiting » et « MOM OK » sont acceptés."
     ),
-    natural_key=("item_number", "section"),
+    # A same article legitimately appears twice on one sheet in two different
+    # sections (line side *and* WIP): it is the trio that must be unique, not
+    # the article.
+    natural_key=("sheet_code", "item_number", "section"),
     fields=(
-        FieldSpec("item_number", "Référence", required=True,
-                  aliases=("reference", "numero d'article", "article"), width=170),
-        FieldSpec("name", "Désignation",
-                  aliases=("designation", "description"), width=280),
+        FieldSpec("sheet_code", "Feuille", required=True,
+                  aliases=("feuille", "zone", "code feuille", "code zone",
+                           "sheet"), width=200),
+        FieldSpec("item_number", "Numéro d'article", required=True,
+                  aliases=("article", "reference", "ref", "item",
+                           "numero d'article"), width=170),
         FieldSpec("section", "Section", type="enum", choices=_SECTIONS,
                   default="LINE_SIDE",
-                  aliases=("source", "statut", "statut mom", "type"), width=150),
-        FieldSpec("qty", "Comptage", type="number",
-                  aliases=("comptage", "quantite", "qty"),
-                  help="Laisser vide si la ligne n'a pas été comptée : "
-                       "vide ≠ zéro.",
-                  width=130),
+                  aliases=("source", "statut", "statut mom", "type"),
+                  help="Vide = bord de ligne.", width=150),
         FieldSpec("unit", "Unité de comptage", default="PCE",
                   aliases=("unite de comptage", "unite", "unit"), width=140),
-        FieldSpec("comment", "Commentaire", aliases=("commentaire", "note"),
-                  width=240),
+    ),
+    examples=(
+        {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
+         "section": "LINE_SIDE", "unit": "PCE"},
+        {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
+         "section": "WIP", "unit": "PCE"},
     ),
 )
 
@@ -397,7 +406,7 @@ CONTRACTS: dict[str, GridContract] = {
         BOMS,
         BOOK_STOCK,
         COUNT_JOURNAL_LINES,
-        COUNT_SHEET_LINES,
+        COUNT_SHEETS,
         ADJUSTMENTS,
         ZONES,
         LOCATIONS,

@@ -639,6 +639,34 @@ export function Field({
   )
 }
 
+export function Switch({
+  checked,
+  onChange,
+  label,
+  title,
+  disabled = false,
+}: {
+  checked: boolean
+  onChange: (checked: boolean) => void
+  label: ReactNode
+  title?: string
+  disabled?: boolean
+}) {
+  return (
+    <label className="switch" title={title}>
+      <input
+        type="checkbox"
+        role="switch"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span className="switch__track" aria-hidden="true" />
+      <span className="switch__label">{label}</span>
+    </label>
+  )
+}
+
 export function SearchInput({
   value,
   onChange,

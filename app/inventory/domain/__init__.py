@@ -55,6 +55,7 @@ from .models import (
     Item,
     Location,
     LocationKey,
+    Manager,
     Thresholds,
     VarianceAnalysis,
     VarianceLine,
@@ -83,6 +84,7 @@ from .workflow import (
     campaign_transition_blockers,
     derive_zone_status,
     mutability_of,
+    passes_for,
 )
 
 __all__ = [
@@ -95,7 +97,7 @@ __all__ = [
     "AdjustmentLine", "ArbitrationLine", "AssignableCause", "AuditEvent", "BomLink",
     "BookStockLine", "Campaign", "CampaignConfig", "ConsolidatedLine",
     "ControlFinding", "CountJournal", "CountJournalLine", "CountSheet",
-    "CountSheetLine", "Item", "Location", "LocationKey", "Thresholds",
+    "CountSheetLine", "Item", "Location", "LocationKey", "Manager", "Thresholds",
     "VarianceAnalysis", "VarianceLine", "Warehouse", "WipBreakdown", "Zone",
     "normalise_key",
     # quantities
@@ -114,4 +116,5 @@ __all__ = [
     "CAMPAIGN_TRANSITIONS", "Editable", "arbitration_required",
     "assert_campaign_transition", "assert_sheet_transition",
     "campaign_transition_blockers", "derive_zone_status", "mutability_of",
+    "passes_for",
 ]

@@ -18,6 +18,7 @@ import {
 } from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
+import { useFocusMode } from '../lib/focus'
 import {
   Alert,
   AsyncBoundary,
@@ -104,9 +105,13 @@ function JournalsTab({
   const [openJournal, setOpenJournal] = useState<Journal | null>(null)
   const [statusFilter, setStatusFilter] = useState<JournalStatus | 'ALL'>('ALL')
 
+  const [focus] = useFocusMode()
   const query = useQuery({
-    queryKey: ['journals', campaignId],
-    queryFn: () => api.journals(campaignId),
+    queryKey: ['journals', campaignId, focus],
+    // Server-side: a journal outside the perimeter is not hidden here, it is
+    // never sent. Filtering in the browser would still ship the site's whole
+    // counting state to every workstation.
+    queryFn: () => api.journals(campaignId, focus ? { focus: true } : {}),
     refetchInterval: 45_000,
   })
 
@@ -284,9 +289,12 @@ function JournalsTab({
           query={query}
           isEmpty={() => rows.length === 0}
           empty={
-            <EmptyState title="Aucun journal">
-              Les journaux sont créés automatiquement au chargement du stock livre, un
-              par emplacement actif.
+            <EmptyState
+              title={focus ? 'Aucun journal dans votre périmètre' : 'Aucun journal'}
+            >
+              {focus
+                ? 'Aucun entrepôt ne vous est affecté. Coupez « Mon périmètre » pour voir toute la campagne — vous gardez le droit d’y agir.'
+                : 'Les journaux sont créés automatiquement au chargement du stock livre, un par emplacement actif.'}
             </EmptyState>
           }
         >

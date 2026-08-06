@@ -491,6 +491,20 @@ def _grid_rows(ctx: ServiceContext, campaign: Campaign, key: str) -> list[list[A
                 [z.code, z.label, z.sector, z.display_order]
                 for z in ctx.sheets.list_zones(campaign.id)
             ]
+        case "count_sheets":
+            # Pass 1 only: both passes carry the same article list by
+            # construction, and exporting it twice would re-import as duplicates.
+            from ..domain.enums import SheetPass
+
+            zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
+            lines_by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
+            return [
+                [zones[sheet.zone_id].code, line.item_number, str(line.section),
+                 line.unit]
+                for sheet in ctx.sheets.list_sheets(campaign.id)
+                if sheet.pass_no is SheetPass.PASS_1 and sheet.zone_id in zones
+                for line in lines_by_sheet.get(sheet.id, ())
+            ]
         case "adjustments":
             return [
                 [a.item_number,

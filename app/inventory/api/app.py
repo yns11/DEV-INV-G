@@ -30,7 +30,15 @@ from fastapi.staticfiles import StaticFiles
 
 from ..config import get_settings
 from ..errors import InventoryError
-from .routers import analysis, campaigns, counting, data, generic, reports
+from .routers import (
+    analysis,
+    campaigns,
+    counting,
+    data,
+    generic,
+    managers,
+    reports,
+)
 
 log = logging.getLogger("inventory")
 
@@ -299,6 +307,7 @@ def create_app() -> FastAPI:
         data.router,
         counting.router,
         generic.router,
+        managers.router,
         analysis.router,
         reports.router,
     )

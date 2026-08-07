@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from ...errors import ValidationError
 from ...services import GenericService
@@ -14,6 +14,7 @@ from ..schemas import (
     ReclassifyRequest,
     SheetLinesRequest,
     SheetTransitionRequest,
+    ZoneNegativeRequest,
     ZonePassesRequest,
     ZoneRequest,
 )
@@ -86,6 +87,23 @@ def set_zone_passes(
     to a single count after the fact would lose a real count.
     """
     return service.set_zone_passes(campaign, payload.zone_ids, payload.passes)
+
+
+@router.post("/zones/negative", summary="Autoriser les quantités négatives")
+def set_zone_negative(
+    campaign: CampaignDep, payload: ZoneNegativeRequest, service: Service
+) -> dict[str, int]:
+    """Lift the no-negative rule on the zones that legitimately need it.
+
+    A counted quantity is normally positive — one does not find minus twenty
+    screws in a bin — so a negative is refused as a typo. Correction sheets are
+    the exception, and this is where they are declared.
+    """
+    return {
+        "updated": service.set_zone_negative(
+            campaign, payload.zone_ids, payload.allowed
+        )
+    }
 
 
 @router.delete("/zones/{zone_id}", summary="Supprimer une zone")
@@ -185,6 +203,44 @@ async def extract_scan(
     )
 
 
+@router.post("/scan", summary="Extraire un scan de plusieurs feuilles par IA")
+async def extract_multi_scan(
+    campaign: CampaignDep,
+    service: Service,
+    file: Annotated[UploadFile, File()],
+    overwrite_reviewed: Annotated[bool, Form(alias="overwriteReviewed")] = False,
+) -> dict[str, Any]:
+    """Read a scan holding several counting sheets at once.
+
+    The whole stack goes on the scanner. Each page is routed to its sheet by the
+    identifier the application itself printed in the footer; a page whose footer
+    cannot be read is **reported, never attributed**.
+
+    A sheet whose AI-read values a human has already corrected is **skipped**:
+    that review is the most expensive step in the chain, and a second scan
+    silently overwriting it would be the one unrecoverable mistake here. Pass
+    ``overwriteReviewed=true`` to do it anyway — the report then says how many
+    corrections it cost.
+    """
+    content_type = (file.content_type or "").lower()
+    if content_type and content_type not in _ACCEPTED_SCAN_TYPES:
+        raise ValidationError(
+            f"Type de fichier non pris en charge : {content_type}. "
+            "Formats acceptés : PDF, PNG, JPEG, WEBP, TIFF.",
+            contentType=content_type,
+        )
+    payload = await file.read()
+    if not payload:
+        raise ValidationError("Le fichier reçu est vide.")
+    return service.extract_from_multi_scan(
+        campaign,
+        payload=payload,
+        filename=file.filename or "scan",
+        content_type=content_type,
+        overwrite_reviewed=overwrite_reviewed,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Arbitration
 # --------------------------------------------------------------------------- #
@@ -224,14 +280,19 @@ def decide_arbitration(
 
 
 @router.post(
-    "/zones/{zone_id}/arbitrations/accept-pass-2",
-    summary="Retenir le comptage n°2 pour tous les écarts d'une zone",
+    "/zones/{zone_id}/arbitrations/prefill-pass-2",
+    summary="Pré-remplir les écarts d'une zone avec le comptage n°2",
 )
-def accept_pass_2(
+def prefill_with_pass_2(
     campaign: CampaignDep, zone_id: str, service: Service
 ) -> dict[str, int]:
-    """One-click resolution, recorded as an explicit decision per line."""
-    return {"decided": service.accept_pass_2(campaign, zone_id)}
+    """Copy pass 2 into the open arbitrations — a shortcut, not a decision.
+
+    The quantities land in the fields; each one still has to be validated (or
+    changed) before the consolidation will use it. Lines already decided are
+    left untouched.
+    """
+    return {"proposed": service.prefill_with_pass_2(campaign, zone_id)}
 
 
 # --------------------------------------------------------------------------- #

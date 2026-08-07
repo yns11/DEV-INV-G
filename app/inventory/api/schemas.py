@@ -40,6 +40,7 @@ __all__ = [
     "JournalLineRequest",
     "ZoneRequest",
     "ZonePassesRequest",
+    "ZoneNegativeRequest",
     "ZoneAssignmentRequest",
     "ManagerRow",
     "ManagerRowsRequest",
@@ -196,6 +197,13 @@ class ZonePassesRequest(ApiModel):
 
     zone_ids: list[str] = Field(min_length=1, alias="zoneIds")
     passes: int = Field(ge=1, le=2)
+
+
+class ZoneNegativeRequest(ApiModel):
+    """Allow — or forbid again — negative counted quantities on a selection."""
+
+    zone_ids: list[str] = Field(min_length=1, alias="zoneIds")
+    allowed: bool
 
 
 class ZoneAssignmentRequest(ApiModel):

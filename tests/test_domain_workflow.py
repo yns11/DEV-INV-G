@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 from inventory.domain.enums import (
@@ -192,11 +194,12 @@ class TestZoneStatus:
 
 
 class TestArbitrationRequired:
-    def _line(self, q1, q2, arbitrated=None) -> ArbitrationLine:
+    def _line(self, q1, q2, arbitrated=None, decided=False) -> ArbitrationLine:
         return ArbitrationLine(
             id="a", campaign_id="c", zone_id="z", item_number="P-1",
             section="LINE_SIDE", qty_pass_1=q1, qty_pass_2=q2,
             qty_arbitrated=arbitrated,
+            decided_at=dt.datetime(2026, 6, 30, tzinfo=dt.UTC) if decided else None,
         )
 
     def test_agreement_needs_nothing(self):
@@ -205,8 +208,14 @@ class TestArbitrationRequired:
     def test_any_difference_requires_a_decision_by_default(self):
         assert len(arbitration_required([self._line(10, 11)])) == 1
 
-    def test_a_resolved_line_is_not_pending(self):
-        assert arbitration_required([self._line(10, 11, arbitrated=11)]) == []
+    def test_a_decided_line_is_not_pending(self):
+        assert arbitration_required(
+            [self._line(10, 11, arbitrated=11, decided=True)]
+        ) == []
+
+    def test_a_pre_filled_line_is_still_pending(self):
+        """A quantity sitting in a field is not a decision somebody made."""
+        assert len(arbitration_required([self._line(10, 11, arbitrated=11)])) == 1
 
     def test_tolerance_absorbs_a_small_relative_gap(self):
         from decimal import Decimal

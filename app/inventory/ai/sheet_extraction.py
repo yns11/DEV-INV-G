@@ -35,6 +35,8 @@ log = logging.getLogger(__name__)
 __all__ = [
     "ExpectedLine",
     "ExtractionResult",
+    "PageRouting",
+    "SheetCandidate",
     "SheetExtractor",
     "render_pdf_pages",
 ]
@@ -90,6 +92,68 @@ Transcris la feuille scannée et renvoie ce JSON :
 
 Renvoie une entrée dans "lines" pour CHAQUE référence attendue, même non comptée \
 (qty = null)."""
+
+
+_ROUTING_SYSTEM_PROMPT = """\
+Tu tries des pages scannées de feuilles de comptage d'inventaire. Chaque page \
+imprimée porte, en bas à gauche, une ligne d'identité de la forme :
+
+    <CODE CAMPAGNE> · zone <NOM DE ZONE> · comptage n°<1 ou 2> · feuille <identifiant>
+
+Ta seule tâche est de lire cette ligne sur chaque page et de rendre \
+l'identifiant de feuille. Tu ne transcris aucune quantité.
+
+Règles absolues :
+1. Tu ne rends qu'un identifiant présent dans la liste fournie. Si le pied de \
+page est illisible, coupé ou absent, tu rends null : une page mal attribuée \
+verse un comptage sur la mauvaise zone, ce qui est pire qu'une page non traitée.
+2. Si le pied de page est illisible mais que le titre de la page nomme sans \
+ambiguïté une seule zone de la liste et un seul numéro de comptage, tu peux \
+t'en servir, avec une confiance basse.
+
+Tu réponds exclusivement en JSON valide, sans texte autour."""
+
+_ROUTING_TEMPLATE = """\
+Feuilles attendues dans ce lot :
+{candidates}
+
+Pour chacune des {count} pages fournies, dans l'ordre, renvoie ce JSON :
+
+{{
+  "pages": [
+    {{
+      "page": <numéro de page, à partir de 1>,
+      "sheet": "<identifiant de feuille de la liste, ou null>",
+      "confidence": <nombre entre 0 et 1>,
+      "note": "<ce que tu as lu au pied de page, ou la raison du doute>"
+    }}
+  ]
+}}"""
+
+
+@dataclass(frozen=True, slots=True)
+class SheetCandidate:
+    """A sheet a scanned page might belong to, as printed in its footer."""
+
+    sheet_id: str
+    zone_code: str
+    pass_no: int
+
+    @property
+    def token(self) -> str:
+        """The identifier the printed footer actually carries."""
+        return self.sheet_id[:8]
+
+
+@dataclass(slots=True)
+class PageRouting:
+    """Which sheet each page of a multi-sheet scan belongs to."""
+
+    #: ``{sheet_id: [0-based page indexes]}``, in reading order.
+    pages_by_sheet: dict[str, list[int]] = field(default_factory=dict)
+    #: Pages whose footer could not be read — reported, never guessed.
+    unrouted: list[dict[str, Any]] = field(default_factory=list)
+    tokens_used: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +336,80 @@ class SheetExtractor:
         if confidences:
             result.mean_confidence = round(sum(confidences) / len(confidences), 4)
         return result
+
+    def route_pages(
+        self,
+        *,
+        images: Sequence[bytes],
+        candidates: Sequence[SheetCandidate],
+        image_mime: str = "image/png",
+    ) -> PageRouting:
+        """Work out which sheet each page of a multi-sheet scan belongs to.
+
+        The application printed these pages itself, so every one carries its
+        sheet's identifier in the footer. Reading that is a far smaller and far
+        safer job than guessing from the content — and it is what makes it
+        possible to drop a whole stack on the scanner instead of feeding sheets
+        one at a time.
+
+        A page whose footer cannot be read is **reported, never guessed**:
+        attributing a page to the wrong zone posts a count against stock that was
+        never there, which is worse than leaving the page for a human.
+        """
+        if not images:
+            raise ValidationError("Aucune page à analyser.")
+        if not candidates:
+            raise ValidationError(
+                "Aucune feuille de comptage ne peut recevoir ce scan : créez "
+                "d'abord les zones et leurs feuilles."
+            )
+
+        by_token = {c.token.upper(): c for c in candidates}
+        listing = "\n".join(
+            f"- {c.token} → zone « {c.zone_code} », comptage n°{c.pass_no}"
+            for c in candidates
+        )
+        payload, response = self._client.complete_json(
+            system=_ROUTING_SYSTEM_PROMPT,
+            user=_ROUTING_TEMPLATE.format(candidates=listing, count=len(images)),
+            images=images,
+            image_mime=image_mime,
+            max_tokens=4096,
+        )
+
+        routing = PageRouting(tokens_used=response.total_tokens)
+        seen_pages: set[int] = set()
+        for raw in payload.get("pages") or []:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                page = int(raw.get("page") or 0) - 1
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= page < len(images) or page in seen_pages:
+                continue
+            seen_pages.add(page)
+
+            token = str(raw.get("sheet") or "").strip().upper()
+            candidate = by_token.get(token)
+            if candidate is None:
+                routing.unrouted.append({
+                    "page": page + 1,
+                    "read": str(raw.get("sheet") or ""),
+                    "note": str(raw.get("note") or "Pied de page illisible."),
+                })
+                continue
+            routing.pages_by_sheet.setdefault(candidate.sheet_id, []).append(page)
+
+        for page in range(len(images)):
+            if page not in seen_pages:
+                routing.unrouted.append({
+                    "page": page + 1,
+                    "read": "",
+                    "note": "Le modèle n'a rien renvoyé pour cette page.",
+                })
+        routing.unrouted.sort(key=lambda u: u["page"])
+        return routing
 
     def expected_from_items(
         self, lines: Sequence[CountSheetLine], items: dict[str, Item]

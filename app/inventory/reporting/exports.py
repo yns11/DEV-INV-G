@@ -161,8 +161,11 @@ def build_counting_sheet_pdf(
     pass_no: int,
     lines: Sequence[dict[str, Any]],
     sheet_id: str = "",
+    filled: bool = False,
+    with_sources: bool = False,
+    blank_lines: int = 0,
 ) -> bytes:
-    """Render a printable counting sheet.
+    """Render a printable counting sheet, blank or filled.
 
     Layout choices are operational, not decorative:
 
@@ -175,10 +178,21 @@ def build_counting_sheet_pdf(
     * the designation is truncated rather than wrapped — a counter identifies a
       part by its reference, and a two-line cell halves the rows per page;
     * the sheet identity (campaign, zone, pass, sheet id) is repeated in the
-      footer of every page, so a page separated from its stack is still
-      traceable;
+      footer of every page, and the section title is repeated at the top of each
+      page a table spills onto, so a page separated from its stack still says
+      what it is *and* what is being counted on it;
     * one identity line closes the header — name, times and signature side by
       side rather than stacked.
+
+    :param filled: print the counted quantities. The blank sheet is the one
+        handed to a counter; the filled one is the record of what was written,
+        for a file or a signature. They are the same document with the quantity
+        column populated, so nobody has to reconcile two layouts.
+    :param with_sources: add the provenance and comment columns. Only meaningful
+        on a filled sheet — a blank one has neither.
+    :param blank_lines: rows to append per section for hand-written references,
+        for a free-entry sheet or simply to leave room. Ignored when *filled*:
+        a record of what was counted must not carry invitations to write more.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -200,11 +214,6 @@ def build_counting_sheet_pdf(
     cell_style = ParagraphStyle(
         "cell", parent=styles["BodyText"], fontSize=8.5, leading=10.5, spaceAfter=0
     )
-    section_style = ParagraphStyle(
-        "section", parent=styles["BodyText"], fontSize=9.5, leading=12,
-        textColor=colors.HexColor("#0F172A"), spaceBefore=4, spaceAfter=2,
-    )
-
     footer_text = (
         f"{campaign_code} · zone {zone_code} · comptage n°{pass_no}"
         + (f" · feuille {sheet_id[:8]}" if sheet_id else "")
@@ -270,70 +279,199 @@ def build_counting_sheet_pdf(
     story.append(identity)
     story.append(Spacer(1, 4 * mm))
 
+    quiet_style = ParagraphStyle(
+        "quiet", parent=cell_style, textColor=colors.HexColor("#94A3B8")
+    )
+    banner_style = ParagraphStyle(
+        "banner", parent=styles["BodyText"], fontSize=9.5, leading=11.5,
+        textColor=colors.white, spaceBefore=0, spaceAfter=0,
+    )
+
     by_section: dict[str, list[dict[str, Any]]] = {}
     for line in lines:
         by_section.setdefault(str(line.get("section", "LINE_SIDE")), []).append(line)
 
+    columns = _SOURCE_COLUMNS if with_sources else _PLAIN_COLUMNS
+    widths = [w * mm for w in (
+        _WIDTHS_WITH_SOURCES if with_sources else _WIDTHS_PLAIN
+    )]
+    # The designation column shrinks when the provenance columns appear, so the
+    # truncation has to shrink with it — a wrapped cell would blow through the
+    # fixed row height and undo the very legibility the tall rows buy.
+    name_width = (
+        _NAME_MAX_CHARS_WITH_SOURCES if with_sources else _NAME_MAX_CHARS
+    )
+
     for section in ("LINE_SIDE", "WIP", "WIP_OK"):
-        section_lines = by_section.get(section)
-        if not section_lines:
+        section_lines = by_section.get(section, [])
+        extras = 0 if filled else _blank_rows_for(section, blank_lines)
+        if not section_lines and not extras:
             continue
-        story.append(Paragraph(
+
+        # The section title travels *inside* the table as a repeated row rather
+        # than sitting above it as a paragraph. That is what makes it reappear
+        # at the top of every page the table spills onto: a second page landing
+        # on somebody's desk without saying whether it is line side or WIP is
+        # exactly how a component gets counted under the wrong rule.
+        banner = Paragraph(
             f"<b>{_SECTION_TITLES[section]}</b> — {_SECTION_HINTS[section]}",
-            section_style,
-        ))
-        data: list[list[Any]] = [["Référence", "Désignation", "Comptage", "Unité"]]
+            banner_style,
+        )
+        data: list[list[Any]] = [
+            [banner] + [""] * (len(columns) - 1),
+            list(columns),
+        ]
         for line in section_lines:
-            data.append([
-                Paragraph(str(line.get("item_number", "")), cell_style),
-                Paragraph(_shorten(str(line.get("name", ""))), cell_style),
-                "",  # left blank on purpose: this is what the counter fills in
-                str(line.get("unit", "PCE")),
-            ])
+            data.append(_body_row(
+                line, filled=filled, with_sources=with_sources,
+                cell=cell_style, quiet=quiet_style, paragraph=Paragraph,
+                name_width=name_width,
+            ))
+        data.extend([[""] * len(columns) for _ in range(extras)])
+
+        body_rows = len(data) - 2
         table = Table(
             data,
-            colWidths=[36 * mm, 84 * mm, 38 * mm, 28 * mm],
+            colWidths=widths,
             # Tall rows: a figure written with gloves on, in a workshop, needs
-            # room. The header keeps its natural height.
-            rowHeights=[_BASE_ROW_HEIGHT] + [_ROW_HEIGHT] * len(section_lines),
-            repeatRows=1,
+            # room. The two heading rows keep their natural height.
+            rowHeights=[_BANNER_ROW_HEIGHT, _BASE_ROW_HEIGHT]
+            + [_ROW_HEIGHT] * body_rows,
+            repeatRows=2,
         )
         table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("SPAN", (0, 0), (-1, 0)),
+            ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#1E293B")),
+            ("TEXTCOLOR", (0, 1), (-1, 1), colors.white),
+            ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+            ("GRID", (0, 1), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
+            ("BOX", (0, 0), (-1, 0), 0.4, colors.HexColor("#1E293B")),
+            ("LEFTPADDING", (0, 0), (-1, 0), 6),
+            ("ROWBACKGROUNDS", (0, 2), (-1, -1),
              [colors.white, colors.HexColor("#F8FAFC")]),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("ALIGN", (2, 0), (3, -1), "CENTER"),
+            # Quantity and unit centred; the trailing provenance columns are
+            # prose and stay left-aligned.
+            ("ALIGN", (2, 1), (3, -1), "CENTER"),
         ]))
         story.append(table)
         story.append(Spacer(1, 4 * mm))
 
+    if not story[2:]:
+        # Only the identity block: nothing to count and nothing to write on.
+        story.append(Paragraph(
+            "<i>Cette feuille ne contient aucune ligne.</i>", quiet_style
+        ))
+
     doc.build(story)
     return buffer.getvalue()
+
+
+def _body_row(
+    line: dict[str, Any],
+    *,
+    filled: bool,
+    with_sources: bool,
+    cell: Any,
+    quiet: Any,
+    paragraph: Any,
+    name_width: int,
+) -> list[Any]:
+    """One printed line — blank for a counter, or carrying what was counted."""
+    counted = line.get("qty") if filled else None
+    if not filled:
+        quantity: Any = ""  # left blank on purpose: the counter fills this in
+    elif counted is None:
+        # A record sheet must not leave the reader guessing: an empty cell and
+        # "counted zero" are different facts, and only the second closes a line.
+        quantity = paragraph("non compté", quiet)
+    else:
+        quantity = _fr_number(counted)
+
+    row: list[Any] = [
+        paragraph(str(line.get("item_number", "")), cell),
+        paragraph(_shorten(str(line.get("name", "")), name_width), cell),
+        quantity,
+        str(line.get("unit", "PCE")),
+    ]
+    if with_sources:
+        row.append(paragraph(
+            _SOURCE_LABELS.get(str(line.get("source", "")), str(line.get("source", ""))),
+            cell,
+        ))
+        row.append(paragraph(str(line.get("comment", "") or ""), cell))
+    return row
 
 
 #: Side margin of the printable sheet, in millimetres. Tight on purpose: every
 #: millimetre of paper recovered is a row that stays on the first page.
 _SIDE_MARGIN_MM = 12
 
-#: Natural height of a body row before V2 — leading 10.5 pt plus 4 pt of padding
-#: above and below. Named so the 62 % increase below reads as a stated decision
-#: rather than a magic number nobody dares touch.
+#: Natural height of a body row — leading 10.5 pt plus 4 pt of padding above and
+#: below. Named so the enlargement below reads as a stated decision rather than
+#: a magic number nobody dares touch: +62 % to write a figure with gloves on,
+#: then −6 % once the field trial said it was a shade generous.
 _BASE_ROW_HEIGHT = 18.5
-_ROW_HEIGHT = _BASE_ROW_HEIGHT * 1.62
+_ROW_HEIGHT = _BASE_ROW_HEIGHT * 1.62 * 0.94
+#: The repeated section banner needs one line of text, no more.
+_BANNER_ROW_HEIGHT = 14.0
+
+#: Column widths in millimetres, summing to the 186 mm of usable page. The
+#: reference, quantity and unit columns were each trimmed — 10 %, 5 % and 15 %
+#: — and every millimetre went to the designation, which is the only column
+#: whose content was being cut.
+_PLAIN_COLUMNS = ("Référence", "Désignation", "Comptage", "Unité")
+_WIDTHS_PLAIN = (32.4, 93.7, 36.1, 23.8)
+
+#: With provenance, the designation gives back what the two extra columns need.
+_SOURCE_COLUMNS = (*_PLAIN_COLUMNS, "Source", "Commentaire")
+_WIDTHS_WITH_SOURCES = (32.4, 56.0, 30.0, 18.0, 22.0, 27.6)
+
+#: Blank rows appended per section on a sheet handed to a counter, so an item
+#: nobody listed can be written down instead of being remembered.
+_BLANK_ROWS = {"LINE_SIDE": 7, "WIP": 4, "WIP_OK": 4}
+
+_SOURCE_LABELS = {
+    "MANUAL": "saisie",
+    "SCAN_AI": "IA",
+    "FILE_IMPORT": "import",
+    "ERP_IMPORT": "ERP",
+    "CONSOLIDATION": "consolidation",
+    "ARBITRATION": "arbitrage",
+    "SYSTEM": "système",
+}
 
 #: Designations are truncated, not wrapped: a counter identifies a part by its
 #: reference, and letting a long label wrap onto a second line would halve the
-#: number of rows a page can hold.
+#: number of rows a page can hold. The narrower layout gets a tighter budget.
 _NAME_MAX_CHARS = 32
+_NAME_MAX_CHARS_WITH_SOURCES = 20
 
 
-def _shorten(name: str) -> str:
-    return name if len(name) <= _NAME_MAX_CHARS else name[: _NAME_MAX_CHARS - 1] + "…"
+def _blank_rows_for(section: str, requested: int) -> int:
+    """How many empty rows a section gets on a sheet meant to be written on.
+
+    *requested* overrides the line-side default — that is the free-entry case,
+    where the whole sheet is blank rows and the user says how many. The two WIP
+    sections keep their standard allowance either way: an assembly found in a
+    corner has to have somewhere to go.
+    """
+    if requested and section == "LINE_SIDE":
+        return requested
+    return _BLANK_ROWS.get(section, 0)
+
+
+def _shorten(name: str, limit: int = _NAME_MAX_CHARS) -> str:
+    return name if len(name) <= limit else name[: limit - 1] + "…"
+
+
+def _fr_number(value: Any) -> str:
+    """A counted quantity, French-formatted, without trailing decimal noise."""
+    number = float(value)
+    text = f"{number:,.6f}".rstrip("0").rstrip(".") if number % 1 else f"{number:,.0f}"
+    # Thin space as the thousands separator, French convention.
+    return text.replace(",", " ")
 
 
 _SECTION_TITLES = {

@@ -44,6 +44,11 @@ log = logging.getLogger(__name__)
 
 __all__ = ["GenericService"]
 
+#: A stack of counting sheets fits in one scan; two hundred pages is somebody
+#: feeding the whole campaign at once, which would blow the token budget long
+#: before it finished.
+_MAX_SCAN_PAGES = 40
+
 
 class GenericService:
     """Use cases for the multi-zone GENERIQUE location."""
@@ -97,6 +102,11 @@ class GenericService:
                         "lineCount": len(lines.get(sheet.id, [])),
                         "countedLines": sum(
                             1 for l in lines.get(sheet.id, []) if l.is_counted
+                        ),
+                        # What a second, multi-sheet scan must not overwrite
+                        # without being told to.
+                        "correctedLines": sum(
+                            1 for l in lines.get(sheet.id, []) if l.was_ai_corrected
                         ),
                     }
                     for sheet in sorted(zone_sheets, key=lambda s: str(s.pass_no))
@@ -298,6 +308,43 @@ class GenericService:
             )
         return {"updated": updated, "sheetsRemoved": removed, "sheetsCreated": created}
 
+    def set_zone_negative(
+        self, campaign: Campaign, zone_ids: Sequence[str], allowed: bool
+    ) -> int:
+        """Allow — or forbid again — negative counted quantities on a selection.
+
+        Carried by the zone rather than the sheet: both passes of one area must
+        obey the same rule, otherwise the arbitration compares two counts that
+        were not allowed the same values.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "zones")
+        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
+        unknown = [z for z in zone_ids if z not in zones]
+        if unknown:
+            raise NotFoundError("Zone(s) introuvable(s).", zoneIds=unknown)
+
+        with ctx.db.transaction() as conn:
+            updated = ctx.sheets.update_zones(
+                campaign.id, list(zone_ids), actor=ctx.actor,
+                allow_negative=allowed, conn=conn,
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.UPDATE,
+                entity_type="zone",
+                summary=(
+                    f"{updated} zone(s) : quantités négatives "
+                    f"{'autorisées' if allowed else 'interdites'}"
+                ),
+                after={
+                    "allowNegative": allowed,
+                    "zones": sorted(zones[z].code for z in zone_ids),
+                },
+                conn=conn,
+            )
+        return updated
+
     def delete_zone(self, campaign: Campaign, zone_id: str) -> None:
         ctx = self.ctx
         ctx.guard(campaign, "zones")
@@ -378,12 +425,32 @@ class GenericService:
         if sheet.campaign_id != campaign.id:
             raise NotFoundError("Feuille introuvable dans cette campagne.")
 
+        zone = next(
+            (z for z in ctx.sheets.list_zones(campaign.id) if z.id == sheet.zone_id),
+            None,
+        )
+        allow_negative = bool(zone and zone.allow_negative)
+
         existing = {l.id: l for l in ctx.sheets.list_sheet_lines(sheet_id)}
         lines: list[CountSheetLine] = []
         for order, row in enumerate(rows):
             line_id = str(row.get("id") or "") or new_id()
             previous = existing.get(line_id)
             qty = row.get("qty")
+            if not allow_negative and qty not in (None, "") and Decimal(str(qty)) < 0:
+                # One does not find minus twenty screws in a bin: a negative is
+                # a typo until a human says otherwise, zone by zone. Catching it
+                # at the keyboard costs a second; catching it at the variance
+                # meeting costs an afternoon.
+                raise ValidationError(
+                    f"Quantité négative refusée sur « {row.get('item_number')} » : "
+                    f"la zone {zone.code if zone else ''} n'autorise pas les "
+                    "quantités négatives. Activez-les sur cette zone si la "
+                    "feuille sert à corriger un comptage déjà posté.",
+                    itemNumber=row.get("item_number"),
+                    qty=str(qty),
+                    zoneId=sheet.zone_id,
+                )
             lines.append(
                 CountSheetLine(
                     id=line_id,
@@ -525,6 +592,142 @@ class GenericService:
             "sheet": ctx.sheets.get_sheet(sheet_id).model_dump(mode="json"),
         }
 
+    def extract_from_multi_scan(
+        self,
+        campaign: Campaign,
+        *,
+        payload: bytes,
+        filename: str,
+        content_type: str,
+        overwrite_reviewed: bool = False,
+    ) -> dict[str, Any]:
+        """Read a scan holding **several** counting sheets in one pass.
+
+        The whole stack goes on the scanner and comes back as one PDF. Because
+        the application printed those pages, every one carries its sheet's
+        identifier in the footer: routing is reading that line, not guessing
+        from content. A page whose footer cannot be read is reported, never
+        attributed — a page filed under the wrong zone posts a count against
+        stock that was never there.
+
+        **Sheets a human has already corrected are skipped by default.** The
+        expensive, irreplaceable work in this whole chain is somebody sitting
+        down with the paper and fixing what the model misread; a second scan
+        that silently overwrote it would destroy exactly that. Overwriting stays
+        possible — it is an explicit choice, and the report names what it cost.
+        """
+        from ..ai import SheetCandidate, SheetExtractor, render_pdf_pages
+
+        ctx = self.ctx
+        ctx.guard(campaign, "count_sheets")
+
+        if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
+            images = render_pdf_pages(payload, max_pages=_MAX_SCAN_PAGES)
+            mime = "image/png"
+        else:
+            images = [payload]
+            mime = content_type or "image/png"
+
+        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
+        sheets = ctx.sheets.list_sheets(campaign.id)
+        lines_by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
+        items = ctx.referentials.items_by_number(campaign.id)
+
+        # Only sheets that carry a pre-printed list can be read: the expected
+        # articles are what keeps the model from inventing references.
+        candidates = [
+            SheetCandidate(
+                sheet_id=sheet.id,
+                zone_code=zones[sheet.zone_id].code,
+                pass_no=1 if sheet.pass_no is SheetPass.PASS_1 else 2,
+            )
+            for sheet in sheets
+            if sheet.zone_id in zones and lines_by_sheet.get(sheet.id)
+        ]
+        if not candidates:
+            raise ValidationError(
+                "Aucune feuille ne porte de liste d'articles : le modèle n'aurait "
+                "rien contre quoi vérifier ce qu'il lit. Chargez d'abord les "
+                "feuilles de comptage."
+            )
+
+        extractor = SheetExtractor()
+        routing = extractor.route_pages(
+            images=images, candidates=candidates, image_mime=mime
+        )
+
+        by_id = {s.id: s for s in sheets}
+        processed: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+
+        for sheet_id, pages in routing.pages_by_sheet.items():
+            sheet = by_id[sheet_id]
+            zone = zones[sheet.zone_id]
+            corrected = [
+                l for l in lines_by_sheet.get(sheet_id, ()) if l.was_ai_corrected
+            ]
+            if corrected and not overwrite_reviewed:
+                skipped.append({
+                    "sheetId": sheet_id,
+                    "zoneCode": zone.code,
+                    "passNo": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
+                    "pages": [p + 1 for p in pages],
+                    "correctedLines": len(corrected),
+                    "reason": (
+                        f"{len(corrected)} ligne(s) lues par l'IA puis corrigées à "
+                        "la main. Un nouveau scan les écraserait."
+                    ),
+                })
+                continue
+
+            result = extractor.extract(
+                campaign_id=campaign.id,
+                sheet_id=sheet_id,
+                zone_label=zone.label or zone.code,
+                pass_no=1 if sheet.pass_no is SheetPass.PASS_1 else 2,
+                expected=extractor.expected_from_items(
+                    lines_by_sheet.get(sheet_id, []), items
+                ),
+                images=[images[p] for p in pages],
+                image_mime=mime,
+                id_factory=new_id,
+            )
+            ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
+            ctx.sheets.update_sheet(
+                sheet_id,
+                status=SheetStatus.ENCODING,
+                counter_name=result.counter_name or None,
+                extraction_confidence=result.mean_confidence,
+                actor=ctx.actor,
+            )
+            processed.append({
+                "sheetId": sheet_id,
+                "zoneCode": zone.code,
+                "passNo": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
+                "pages": [p + 1 for p in pages],
+                "overwroteCorrections": len(corrected),
+                **result.as_report(),
+            })
+
+        report = {
+            "pages": len(images),
+            "sheetsProcessed": processed,
+            "sheetsSkipped": skipped,
+            "unroutedPages": routing.unrouted,
+        }
+        ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.IMPORT,
+            entity_type="count_sheet",
+            summary=(
+                f"Scan multi-feuilles « {filename} » : {len(images)} page(s), "
+                f"{len(processed)} feuille(s) lue(s), {len(skipped)} préservée(s), "
+                f"{len(routing.unrouted)} page(s) non attribuée(s)."
+            ),
+            after=report,
+        )
+        return report
+
     # ----------------------------------------------------------- arbitration
 
     def refresh_arbitrations(
@@ -569,6 +772,7 @@ class GenericService:
                 "gap": float(line.gap),
                 "divergent": divergent,
                 "needsDecision": divergent and not line.is_resolved,
+                "isProposed": line.is_proposed,
                 "unitCost": float(items[line.item_number].std_price)
                 if line.item_number in items else 0.0,
                 "gapValue": float(
@@ -602,36 +806,45 @@ class GenericService:
             after={"qty": str(qty), "comment": comment},
         )
 
-    def accept_pass_2(self, campaign: Campaign, zone_id: str) -> int:
-        """Pre-fill every open arbitration of a zone with the pass-2 quantity.
+    def prefill_with_pass_2(self, campaign: Campaign, zone_id: str) -> int:
+        """Copy the pass-2 quantity into every open arbitration of a zone.
 
-        The specification asks for this one-click shortcut. It is a *decision*,
-        not an automation: each line is stamped with the acting user and shows
-        up in the audit trail exactly like a hand-typed arbitration.
+        A convenience, not a decision. It saves typing the same figure forty
+        times; it does **not** say anybody looked at those forty lines. The
+        values land in the fields the user is about to work through, and each one
+        still has to be confirmed — the consolidation ignores a proposal until
+        somebody validates it.
+
+        Lines already decided are left alone: a bulk pre-fill must never quietly
+        overwrite a judgement somebody made line by line.
         """
         ctx = self.ctx
         ctx.guard(campaign, "count_sheets")
-        decided = 0
+        proposals: dict[str, Decimal] = {}
         for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id):
             if line.is_resolved or line.qty_pass_1 == line.qty_pass_2:
                 continue
             qty = line.qty_pass_2 if line.qty_pass_2 is not None else line.qty_pass_1
             if qty is None:
                 continue
-            ctx.sheets.decide_arbitration(
-                line.id, qty, actor=ctx.actor,
-                comment="Arbitrage groupé : comptage n°2 retenu.",
-            )
-            decided += 1
+            proposals[line.id] = qty
+
+        written = ctx.sheets.propose_arbitrations(
+            campaign.id, proposals,
+            comment="Pré-rempli avec le comptage n°2 — à valider.",
+        )
         ctx.record(
             campaign_id=campaign.id,
-            action=AuditAction.ARBITRATE,
+            action=AuditAction.UPDATE,
             entity_type="zone",
             entity_id=zone_id,
-            summary=f"{decided} arbitrage(s) résolu(s) par le comptage n°2",
-            after={"decided": decided},
+            summary=(
+                f"{written} arbitrage(s) pré-rempli(s) avec le comptage n°2 "
+                "(aucune validation)"
+            ),
+            after={"proposed": written},
         )
-        return decided
+        return written
 
     # --------------------------------------------------------- consolidation
 

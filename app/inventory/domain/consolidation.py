@@ -236,10 +236,13 @@ def resolve_zone_quantities(
 
     p1 = by_pass.get(SheetPass.PASS_1, {})
     p2 = by_pass.get(SheetPass.PASS_2, {})
+    # Only *decided* arbitrations count. A quantity pre-filled in bulk is a
+    # suggestion sitting in a field; posting it as if somebody had chosen it
+    # would defeat the point of asking.
     decisions = {
         (a.item_number, a.section): a.qty_arbitrated
         for a in zone.arbitrations
-        if a.qty_arbitrated is not None
+        if a.is_resolved and a.qty_arbitrated is not None
     }
 
     retained: dict[tuple[str, CountSection], Decimal] = {}

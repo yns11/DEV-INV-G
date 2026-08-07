@@ -1082,7 +1082,7 @@ class SheetRepository(_Base):
 
     _ZONE_COLUMNS = (
         "id, campaign_id, code, label, sector, display_order, passes, free_entry, "
-        "manager_code"
+        "manager_code, allow_negative"
     )
 
     def list_zones(
@@ -1102,11 +1102,11 @@ class SheetRepository(_Base):
     ) -> Zone:
         self._execute(
             "INSERT INTO zone (id, campaign_id, code, label, sector, display_order, "
-            "passes, free_entry, manager_code, updated_by, updated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())",
+            "passes, free_entry, manager_code, allow_negative, updated_by, updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())",
             (zone.id, zone.campaign_id, zone.code, zone.label, zone.sector,
              zone.display_order, zone.passes, zone.free_entry, zone.manager_code,
-             actor),
+             zone.allow_negative, actor),
             conn=conn,
         )
         return zone
@@ -1126,6 +1126,7 @@ class SheetRepository(_Base):
         passes: int | None = None,
         free_entry: bool | None = None,
         manager_code: str | None = None,
+        allow_negative: bool | None = None,
         conn: psycopg.Connection | None = None,
     ) -> int:
         """Set one attribute on a batch of zones — the shape the UI works in.
@@ -1142,6 +1143,7 @@ class SheetRepository(_Base):
             ("passes", passes),
             ("free_entry", free_entry),
             ("manager_code", manager_code),
+            ("allow_negative", allow_negative),
         ):
             if value is not None:
                 sets.append(f"{column} = %s")
@@ -1443,6 +1445,32 @@ class SheetRepository(_Base):
             conn=conn,
         )
 
+    def propose_arbitrations(
+        self,
+        campaign_id: str,
+        proposals: Mapping[str, Decimal],
+        *,
+        comment: str = "",
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Pre-fill quantities without deciding anything.
+
+        ``decided_at`` is deliberately left NULL — and cleared if a previous
+        proposal set it, which it never does. The value lands in the field the
+        user is about to look at; confirming it is still a separate gesture, and
+        the consolidation ignores it until then.
+        """
+        if not proposals:
+            return 0
+        return self._execute_many(
+            "UPDATE arbitration SET qty_arbitrated = %s, comment = %s, "
+            "decided_by = NULL, decided_at = NULL, updated_at = now() "
+            "WHERE id = %s AND campaign_id = %s",
+            [(qty, comment, arbitration_id, campaign_id)
+             for arbitration_id, qty in proposals.items()],
+            conn=conn,
+        )
+
     def decide_arbitration(
         self, arbitration_id: str, qty: Decimal, *, actor: str, comment: str = ""
     ) -> None:
@@ -1461,6 +1489,7 @@ class SheetRepository(_Base):
             label=row["label"], sector=row["sector"],
             display_order=row["display_order"], passes=row["passes"],
             free_entry=row["free_entry"], manager_code=row["manager_code"],
+            allow_negative=row["allow_negative"],
         )
 
     @staticmethod

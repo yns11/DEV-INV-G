@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 
 from ...services import ReportService
+from ...services.report_service import MAX_BLANK_LINES
 from ..deps import CampaignDep, report_service
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/reports", tags=["rapports"])
@@ -38,11 +39,33 @@ def _download(payload: bytes, filename: str, media_type: str) -> Response:
     )
 
 
+#: Shared print options. Printing is deliberately never gated on the campaign's
+#: phase: paper is wanted before the count, during it, and after it.
+_Filled = Annotated[bool, Query(alias="filled")]
+_WithSources = Annotated[bool, Query(alias="withSources")]
+_BlankLines = Annotated[int, Query(ge=0, le=MAX_BLANK_LINES, alias="blankLines")]
+
+
 @router.get("/counting-sheets/{sheet_id}.pdf", summary="Imprimer une feuille")
 def counting_sheet(
-    campaign: CampaignDep, sheet_id: str, service: Service
+    campaign: CampaignDep,
+    sheet_id: str,
+    service: Service,
+    filled: _Filled = False,
+    with_sources: _WithSources = False,
+    blank_lines: _BlankLines = 0,
 ) -> Response:
-    payload, filename = service.counting_sheet_pdf(campaign, sheet_id)
+    """The blank sheet handed to a counter, or the filled record of what it got.
+
+    ``filled=true`` prints the counted quantities and keeps only the lines that
+    carry one; ``withSources=true`` adds the provenance and comment columns.
+    ``blankLines`` (10–180) prints a free-entry sheet — one with no pre-printed
+    article list at all.
+    """
+    payload, filename = service.counting_sheet_pdf(
+        campaign, sheet_id,
+        filled=filled, with_sources=with_sources, blank_lines=blank_lines,
+    )
     return _download(payload, filename, "application/pdf")
 
 
@@ -51,9 +74,15 @@ def all_counting_sheets(
     campaign: CampaignDep,
     service: Service,
     pass_no: Annotated[int, Query(ge=1, le=2, alias="passNo")] = 1,
+    filled: _Filled = False,
+    with_sources: _WithSources = False,
+    blank_lines: _BlankLines = 0,
 ) -> Response:
     """One PDF with every zone's sheet, in zone order — the eve-of-inventory print."""
-    payload, filename = service.all_counting_sheets_pdf(campaign, pass_no=pass_no)
+    payload, filename = service.all_counting_sheets_pdf(
+        campaign, pass_no=pass_no,
+        filled=filled, with_sources=with_sources, blank_lines=blank_lines,
+    )
     return _download(payload, filename, "application/pdf")
 
 

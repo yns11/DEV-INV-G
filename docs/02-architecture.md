@@ -48,7 +48,7 @@ inventory.domain     règles métier pures — n'importe aucun driver, aucun fra
 **`inventory.domain` n'importe rien du reste.** C'est ce qui permet de tester
 l'intégralité des règles métier — éclatement BOM, consolidation, écarts,
 contrôles, machine à états — en 0,25 seconde sans base de données. La suite
-compte 177 tests ; c'est la propriété que le classeur Excel n'avait pas.
+compte 204 tests ; c'est la propriété que le classeur Excel n'avait pas.
 
 ### Ce que chaque couche a le droit de faire
 

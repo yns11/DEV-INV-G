@@ -261,6 +261,41 @@ export interface Sheet {
   extraction_confidence: number | null
   lineCount: number
   countedLines: number
+  /**
+   * Lines the model read and a human then typed over.
+   *
+   * The reason a multi-sheet scan skips this sheet by default: that review is
+   * the most expensive step in the chain, and re-reading the paper would undo
+   * it silently.
+   */
+  correctedLines: number
+}
+
+/** Outcome of reading a scan that holds several counting sheets. */
+export interface MultiScanReport {
+  pages: number
+  sheetsProcessed: Array<{
+    sheetId: string
+    zoneCode: string
+    passNo: number
+    pages: number[]
+    overwroteCorrections: number
+    counted: number
+    lowConfidence: string[]
+    unexpected: unknown[]
+    missing: string[]
+    meanConfidence: number | null
+  }>
+  sheetsSkipped: Array<{
+    sheetId: string
+    zoneCode: string
+    passNo: number
+    pages: number[]
+    correctedLines: number
+    reason: string
+  }>
+  /** Pages whose footer could not be read — reported, never guessed. */
+  unroutedPages: Array<{ page: number; read: string; note: string }>
 }
 
 export interface Zone {
@@ -274,6 +309,8 @@ export interface Zone {
   /** True when the sheet is deliberately blank: the counter writes what they find. */
   free_entry: boolean
   manager_code: string
+  /** Whether a negative counted quantity is accepted on this zone's sheets. */
+  allow_negative: boolean
   status: ZoneStatus
   pendingArbitrations: number
   sheets: Sheet[]
@@ -371,6 +408,8 @@ export interface Arbitration {
   unitCost: number
   divergent: boolean
   needsDecision: boolean
+  /** A quantity is pre-filled and waiting for somebody to confirm or change it. */
+  isProposed: boolean
 }
 
 export interface ConsolidationLine {

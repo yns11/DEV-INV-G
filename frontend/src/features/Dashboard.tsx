@@ -9,7 +9,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useOutletContext } from 'react-router-dom'
 import { api } from '../lib/api'
-import type { Finding, Overview } from '../lib/types'
+import type { Finding, Kpis, Overview } from '../lib/types'
 import {
   SEVERITY_LABELS,
   moneyShort,
@@ -17,17 +17,14 @@ import {
   percent,
   signClass,
   signedMoney,
-  signedNum,
 } from '../lib/format'
 import { VarianceBars } from '../components/charts'
 import {
   Alert,
   AsyncBoundary,
-  Badge,
   Card,
   EmptyState,
   Icons,
-  Kpi,
   Skeleton,
 } from '../components/ui'
 
@@ -65,99 +62,7 @@ export function Dashboard() {
 
       {hasBookStock && (
         <>
-          <AsyncBoundary
-            query={kpis}
-            skeleton={
-              <div className="grid grid--kpi">
-                {Array.from({ length: 5 }, (_, i) => (
-                  <div key={i} className="kpi">
-                    <Skeleton height={52} />
-                  </div>
-                ))}
-              </div>
-            }
-          >
-            {(data) => (
-              <>
-                <div className="grid grid--kpi">
-                  <Kpi
-                    label="Stock livre"
-                    value={moneyShort(data.bookValue)}
-                    compare={<span className="num">{numShort(data.bookQty)} unités</span>}
-                    source={`Snapshot ERP gelé · ${data.lineCount.toLocaleString('fr-FR')} couples article/emplacement`}
-                    hero
-                  />
-                  <Kpi
-                    label="Écart net"
-                    value={signedMoney(data.netVarianceValue)}
-                    tone={signClass(data.netVarianceValue) as 'pos' | 'neg' | 'neutral'}
-                    compare={<span className="num">{signedNum(data.netVarianceQty)} unités</span>}
-                    hint="Somme signée des écarts : les surplus compensent les manques. Répond à « avons-nous gagné ou perdu de la valeur ? »"
-                    source="Compté − stock livre, hors ajustements"
-                  />
-                  <Kpi
-                    label="Écart brut (absolu)"
-                    value={moneyShort(data.grossVarianceValue)}
-                    tone="neg"
-                    compare={
-                      <>
-                        <Badge tone="neutral">sans compensation</Badge>
-                        <span>{data.materialLineCount} ligne(s) au-delà des seuils</span>
-                      </>
-                    }
-                    hint="Somme des écarts en valeur absolue. Répond à « combien nous sommes-nous trompés ? » — c’est l’indicateur à piloter."
-                    source="Σ |écart| sur toutes les lignes"
-                  />
-                  <Kpi
-                    label="Fiabilité brute"
-                    value={percent(data.grossReliabilityValue, 2)}
-                    compare={
-                      <span>
-                        fiabilité nette{' '}
-                        <strong className="num">{percent(data.netReliabilityValue, 2)}</strong>
-                      </span>
-                    }
-                    hint="1 − Σ|écart €| / Σ stock livre €. La fiabilité nette (compensée) est toujours plus flatteuse : les deux sont affichées."
-                    source="En valeur, sur le périmètre actif"
-                  />
-                  <Kpi
-                    label="IRA"
-                    value={percent(data.ira, 2)}
-                    compare={
-                      <span className="num">
-                        {data.accurateLineCount.toLocaleString('fr-FR')} /{' '}
-                        {data.lineCount.toLocaleString('fr-FR')} enregistrements exacts
-                      </span>
-                    }
-                    hint="Inventory Record Accuracy : part des couples article/emplacement dont l’écart tient dans la tolérance du type d’article. Standard WMS."
-                    source="Tolérance définie par type d’article"
-                  />
-                </div>
-
-                {(data.countedOnlyCount > 0 || data.bookOnlyCount > 0) && (
-                  <div className="grid grid--2">
-                    {data.bookOnlyCount > 0 && (
-                      <Alert tone="danger" title={`${data.bookOnlyCount} couple(s) jamais comptés`}>
-                        Du stock livre existe sur ces couples article/emplacement sans
-                        aucun comptage. Ils seront soldés à zéro si l’inventaire est
-                        clôturé en l’état.{' '}
-                        <Link to="analyse">Voir la liste</Link>
-                      </Alert>
-                    )}
-                    {data.countedOnlyCount > 0 && (
-                      <Alert
-                        tone="warning"
-                        title={`${data.countedOnlyCount} couple(s) comptés hors ERP`}
-                      >
-                        Du stock a été compté là où l’ERP n’en voyait aucun. À vérifier
-                        avant ajustement.
-                      </Alert>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </AsyncBoundary>
+          <CoverageAlerts query={kpis} />
 
           <div className="grid grid--2">
             <AsyncBoundary
@@ -197,6 +102,35 @@ export function Dashboard() {
             <TopVariances campaignId={campaignId} />
           </div>
         </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The two facts that only show up as counts, and only matter when non-zero.
+ *
+ * The headline figures moved into the campaign header's carousel, where they
+ * are visible from every screen. What is left here is what needs a sentence
+ * rather than a number: stock the ERP never saw, and stock nobody counted.
+ */
+function CoverageAlerts({ query }: { query: { data: Kpis | undefined } }) {
+  const data = query.data
+  if (!data || (data.countedOnlyCount === 0 && data.bookOnlyCount === 0)) return null
+  return (
+    <div className="grid grid--2">
+      {data.bookOnlyCount > 0 && (
+        <Alert tone="danger" title={`${data.bookOnlyCount} couple(s) jamais comptés`}>
+          Du stock livre existe sur ces couples article/emplacement sans aucun
+          comptage. Ils seront soldés à zéro si l’inventaire est clôturé en l’état.{' '}
+          <Link to="analyse">Voir la liste</Link>
+        </Alert>
+      )}
+      {data.countedOnlyCount > 0 && (
+        <Alert tone="warning" title={`${data.countedOnlyCount} couple(s) comptés hors ERP`}>
+          Du stock a été compté là où l’ERP n’en voyait aucun. À vérifier avant
+          ajustement.
+        </Alert>
       )}
     </div>
   )

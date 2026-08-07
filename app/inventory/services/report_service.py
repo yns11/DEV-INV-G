@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..domain.enums import AuditAction, SheetPass
-from ..domain.models import Campaign
+from ..domain.models import Campaign, CountSheetLine, Item
 from ..errors import NotFoundError, ValidationError
 from ..reporting.exports import (
     build_counting_sheet_pdf,
@@ -30,8 +31,23 @@ class ReportService:
 
     # ------------------------------------------------------- printable sheets
 
-    def counting_sheet_pdf(self, campaign: Campaign, sheet_id: str) -> tuple[bytes, str]:
-        """Render one printable counting sheet."""
+    def counting_sheet_pdf(
+        self,
+        campaign: Campaign,
+        sheet_id: str,
+        *,
+        filled: bool = False,
+        with_sources: bool = False,
+        blank_lines: int = 0,
+    ) -> tuple[bytes, str]:
+        """Render one printable counting sheet, blank or filled.
+
+        Printing is never gated on the campaign's phase. A sheet is a paper
+        artefact: it is wanted before the count to hand out, during to reprint a
+        page somebody lost, and after — filled — to file or to sign. Refusing to
+        print a closed campaign's sheet would only send people back to a
+        screenshot.
+        """
         ctx = self.ctx
         sheet = ctx.sheets.get_sheet(sheet_id)
         if sheet.campaign_id != campaign.id:
@@ -43,21 +59,13 @@ class ReportService:
         if zone is None:
             raise NotFoundError("Zone introuvable.")
 
+        blank_lines = _validated_blank_lines(blank_lines)
         items = ctx.referentials.items_by_number(campaign.id)
-        lines = [
-            {
-                "item_number": line.item_number,
-                "name": items[line.item_number].name
-                if line.item_number in items else "",
-                "section": str(line.section),
-                "unit": line.unit,
-            }
-            for line in ctx.sheets.list_sheet_lines(sheet_id)
-        ]
-        if not lines:
+        lines = _printable_lines(ctx.sheets.list_sheet_lines(sheet_id), items)
+        if not lines and not blank_lines:
             raise ValidationError(
-                "Cette feuille ne contient aucune ligne : ajoutez d'abord les "
-                "articles à compter."
+                "Cette feuille ne contient aucune ligne. Indiquez un nombre de "
+                "lignes vides à imprimer, ou chargez sa liste d'articles."
             )
 
         pass_no = 1 if sheet.pass_no is SheetPass.PASS_1 else 2
@@ -70,30 +78,43 @@ class ReportService:
             pass_no=pass_no,
             lines=lines,
             sheet_id=sheet.id,
+            filled=filled,
+            with_sources=with_sources,
+            blank_lines=blank_lines,
         )
         filename = (
-            f"feuille-comptage_{_slug(zone.code)}_passage-{pass_no}_"
-            f"{campaign.code}.pdf"
+            f"feuille-comptage{'-remplie' if filled else ''}_{_slug(zone.code)}_"
+            f"passage-{pass_no}_{campaign.code}.pdf"
         )
         ctx.record(
             campaign_id=campaign.id,
             action=AuditAction.EXPORT,
             entity_type="count_sheet",
             entity_id=sheet_id,
-            summary=f"Impression de la feuille {zone.code} — passage n°{pass_no}",
+            summary=(
+                f"Impression {'de la feuille remplie' if filled else 'de la feuille'} "
+                f"{zone.code} — passage n°{pass_no}"
+            ),
         )
         return payload, filename
 
     def all_counting_sheets_pdf(
-        self, campaign: Campaign, *, pass_no: int = 1
+        self,
+        campaign: Campaign,
+        *,
+        pass_no: int = 1,
+        filled: bool = False,
+        with_sources: bool = False,
+        blank_lines: int = 0,
     ) -> tuple[bytes, str]:
         """One PDF containing every zone's sheet for a given pass.
 
         This is what gets printed on the eve of the inventory — one job, one
-        stack of paper, in zone order.
+        stack of paper, in zone order — and, once counted, what gets filed.
         """
         ctx = self.ctx
         target_pass = SheetPass.PASS_1 if pass_no == 1 else SheetPass.PASS_2
+        blank_lines = _validated_blank_lines(blank_lines)
         zones = ctx.sheets.list_zones(campaign.id)
         sheets = {
             (s.zone_id, s.pass_no): s
@@ -107,17 +128,11 @@ class ReportService:
             sheet = sheets.get((zone.id, target_pass))
             if sheet is None:
                 continue
-            lines = [
-                {
-                    "item_number": line.item_number,
-                    "name": items[line.item_number].name
-                    if line.item_number in items else "",
-                    "section": str(line.section),
-                    "unit": line.unit,
-                }
-                for line in lines_by_sheet.get(sheet.id, [])
-            ]
-            if not lines:
+            lines = _printable_lines(lines_by_sheet.get(sheet.id, []), items)
+            # A free-entry zone has nothing pre-printed and is exactly the one
+            # that needs paper: it is included as long as blank rows were asked
+            # for.
+            if not lines and not blank_lines:
                 continue
             documents.append(build_counting_sheet_pdf(
                 campaign_label=f"{campaign.code} — {campaign.label}",
@@ -128,11 +143,16 @@ class ReportService:
                 pass_no=pass_no,
                 lines=lines,
                 sheet_id=sheet.id,
+                filled=filled,
+                with_sources=with_sources,
+                blank_lines=blank_lines,
             ))
 
         if not documents:
             raise ValidationError(
-                "Aucune zone ne contient de lignes à imprimer pour ce passage."
+                "Aucune zone ne contient de lignes à imprimer pour ce passage. "
+                "Indiquez un nombre de lignes vides pour imprimer des feuilles "
+                "de saisie libre."
             )
 
         merged = _merge_pdfs(documents)
@@ -141,11 +161,14 @@ class ReportService:
             action=AuditAction.EXPORT,
             entity_type="count_sheet",
             summary=(
-                f"Impression groupée de {len(documents)} feuille(s) — "
-                f"passage n°{pass_no}"
+                f"Impression groupée de {len(documents)} feuille(s) "
+                f"{'remplie(s) ' if filled else ''}— passage n°{pass_no}"
             ),
         )
-        return merged, f"feuilles-comptage_passage-{pass_no}_{campaign.code}.pdf"
+        return merged, (
+            f"feuilles-comptage{'-remplies' if filled else ''}_"
+            f"passage-{pass_no}_{campaign.code}.pdf"
+        )
 
     # -------------------------------------------------------- journal export
 
@@ -456,6 +479,51 @@ class ReportService:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+#: Bounds on the number of blank rows a free-entry sheet may be printed with.
+#: Ten is the fewest worth walking to the printer for; 180 fills four A4 pages,
+#: past which somebody is printing a notebook rather than a counting sheet.
+MIN_BLANK_LINES, MAX_BLANK_LINES = 10, 180
+
+
+def _validated_blank_lines(requested: int) -> int:
+    if not requested:
+        return 0
+    if not MIN_BLANK_LINES <= requested <= MAX_BLANK_LINES:
+        raise ValidationError(
+            f"Le nombre de lignes vides doit être compris entre "
+            f"{MIN_BLANK_LINES} et {MAX_BLANK_LINES}.",
+            blankLines=requested,
+        )
+    return requested
+
+
+def _printable_lines(
+    lines: Sequence[CountSheetLine], items: Mapping[str, Item]
+) -> list[dict[str, Any]]:
+    """Sheet lines shaped for the PDF builder.
+
+    Every line that carries a reference is printed, counted or not. On a filled
+    sheet an uncounted line is rendered as « non compté » rather than dropped:
+    "this article was on the list and nobody counted it" is precisely the fact a
+    record has to carry, and silently omitting the row is how the legacy
+    workbook lost lines.
+    """
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.item_number:
+            continue
+        out.append({
+            "item_number": line.item_number,
+            "name": items[line.item_number].name if line.item_number in items else "",
+            "section": str(line.section),
+            "unit": line.unit,
+            "qty": float(line.qty) if line.is_counted else None,
+            "source": str(line.source),
+            "comment": line.comment,
+        })
+    return out
+
 
 def _grid_rows(ctx: ServiceContext, campaign: Campaign, key: str) -> list[list[Any]]:
     match key:

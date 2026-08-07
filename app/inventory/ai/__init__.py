@@ -10,6 +10,8 @@ from .sheet_extraction import (
     LOW_CONFIDENCE,
     ExpectedLine,
     ExtractionResult,
+    PageRouting,
+    SheetCandidate,
     SheetExtractor,
     render_pdf_pages,
 )
@@ -17,6 +19,6 @@ from .sheet_extraction import (
 __all__ = [
     "LlmClient", "LlmResponse", "get_llm_client",
     "CauseSuggestion", "InsightEngine",
-    "LOW_CONFIDENCE", "ExpectedLine", "ExtractionResult", "SheetExtractor",
-    "render_pdf_pages",
+    "LOW_CONFIDENCE", "ExpectedLine", "ExtractionResult", "PageRouting",
+    "SheetCandidate", "SheetExtractor", "render_pdf_pages",
 ]

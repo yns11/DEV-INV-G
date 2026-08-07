@@ -618,6 +618,12 @@ class Zone(DomainModel):
     #: Code of the manager (:class:`Manager`) this zone is assigned to; empty
     #: when nobody owns it yet.
     manager_code: str = ""
+    #: Whether a negative counted quantity is accepted on this zone's sheets.
+    #: Off by default: one does not find minus twenty screws in a bin, so a
+    #: negative is almost always a typo, and catching it at the keyboard is far
+    #: cheaper than explaining it at the variance meeting. Correction sheets are
+    #: the legitimate exception, and they say so.
+    allow_negative: bool = False
 
     @field_validator("code", mode="before")
     @classmethod
@@ -692,6 +698,17 @@ class CountSheetLine(DomainModel):
         """A blank cell is *not* a zero: it means the line was not counted."""
         return self.qty_manual is not None or self.qty_imported is not None
 
+    @property
+    def was_ai_corrected(self) -> bool:
+        """The model read this line and a human then typed over it.
+
+        ``confidence`` survives a manual edit — the extraction is kept beside
+        the correction, never replaced by it — so the two together are the
+        record that somebody reviewed the machine. That is what a second,
+        multi-sheet scan must not silently undo.
+        """
+        return self.confidence is not None and self.qty_manual is not None
+
 
 class ArbitrationLine(DomainModel):
     """A discrepancy between pass 1 and pass 2, and the quantity retained."""
@@ -717,7 +734,19 @@ class ArbitrationLine(DomainModel):
 
     @property
     def is_resolved(self) -> bool:
-        return self.qty_arbitrated is not None
+        """A human has *decided*, not merely been offered a value.
+
+        Resolution is stamped by ``decided_at``, never by the presence of a
+        quantity. Filling ``qty_arbitrated`` in bulk is a convenience — it saves
+        typing the same figure forty times — and treating that convenience as a
+        decision would post forty quantities nobody ever looked at.
+        """
+        return self.decided_at is not None
+
+    @property
+    def is_proposed(self) -> bool:
+        """A quantity is on the table, waiting for someone to confirm or change it."""
+        return self.qty_arbitrated is not None and self.decided_at is None
 
     @property
     def gap(self) -> Decimal:

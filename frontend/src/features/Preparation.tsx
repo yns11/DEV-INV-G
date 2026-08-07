@@ -421,7 +421,7 @@ function BookStockTab({
         disabled={!overview.permissions.bookStock || frozen}
         disabledReason={
           frozen
-            ? 'Le stock livre est gelé : créez une nouvelle campagne pour repartir d’un autre snapshot.'
+            ? undefined
             : 'Le chargement du stock livre se fait pendant la phase de comptage.'
         }
         onImported={() => void queryClient.invalidateQueries()}
@@ -473,12 +473,14 @@ function CountSheetsTab({
 
   return (
     <div className="stack">
+      {overview.permissions.countSheets && (
       <Alert tone="info" title="Décider quoi compter, avant le jour J">
         Une ligne par couple <strong>feuille / article</strong>. Une feuille inconnue
         est créée avec ses passages ; une feuille connue est complétée, jamais
         recréée. Les lignes sont posées sur <strong>les deux comptages</strong>,
         quantités vides : ne pré-remplir que le n°1 rendrait le n°2 aveugle.
       </Alert>
+      )}
 
       <ImportPanel
         campaignId={campaignId}
@@ -489,11 +491,13 @@ function CountSheetsTab({
         onImported={() => void queryClient.invalidateQueries()}
       />
 
-      <Alert tone="warning" title="Le référentiel articles fait foi">
-        Un article absent du référentiel produit une erreur de ligne : il n’est
-        <strong> jamais</strong> créé à la volée. Chargez-le d’abord dans l’onglet
-        Articles.
-      </Alert>
+      {overview.permissions.countSheets && (
+        <Alert tone="warning" title="Le référentiel articles fait foi">
+          Un article absent du référentiel produit une erreur de ligne : il n’est
+          <strong> jamais</strong> créé à la volée. Chargez-le d’abord dans l’onglet
+          Articles.
+        </Alert>
+      )}
 
       <ZonesAdminGrid
         campaignId={campaignId}

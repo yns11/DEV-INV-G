@@ -326,7 +326,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 177 tests, ~0,7 s, aucune base requise
+make test      # 204 tests, ~1 s, aucune base requise
 make lint      # ruff + tsc
 make check     # les deux
 ```

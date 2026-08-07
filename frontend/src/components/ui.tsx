@@ -87,6 +87,7 @@ export const Icons = {
   lock: svg(<><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>),
   refresh: svg(<><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></>),
   chevronRight: svg(<><path d="m9 6 6 6-6 6" /></>),
+  chevronLeft: svg(<><path d="m15 6-6 6 6 6" /></>),
   chevronDown: svg(<><path d="m6 9 6 6 6-6" /></>),
   sparkles: svg(<><path d="m12 3 1.8 4.9L19 9.6l-4.4 2.6L13.4 17 12 13.2 10.6 17 9.4 12.2 5 9.6l5.2-1.7L12 3Z" /><path d="M18 16.5 18.7 18l1.5.7-1.5.7L18 21l-.7-1.6-1.5-.7 1.5-.7L18 16.5Z" /></>),
   printer: svg(<><path d="M6 9V3h12v6" /><rect x="3" y="9" width="18" height="8" rx="2" /><path d="M7 17h10v4H7z" /></>),
@@ -636,6 +637,141 @@ export function Field({
       {hint && !error && <span className="field__hint">{hint}</span>}
       {error && <span className="field__error">{error}</span>}
     </label>
+  )
+}
+
+/**
+ * A slide deck for figures that do not all fit above the fold.
+ *
+ * The campaign header used to show three progress cards and nothing else, which
+ * meant the money — book value, net and gross variance, reliability — lived
+ * three clicks away in a tab. Stacking every board would push the actual work
+ * off the screen instead. So they take turns.
+ *
+ * Arrows and dots, no auto-play: a panel that moves on its own while somebody
+ * is reading it is a panel nobody trusts. The slide is remembered per key, so
+ * navigating away and back does not reset the board you were on.
+ */
+export function Carousel({
+  slides,
+  storageKey,
+}: {
+  slides: Array<{ id: string; label: string; content: ReactNode }>
+  storageKey?: string
+}) {
+  const [index, setIndex] = useState(() => {
+    if (!storageKey) return 0
+    try {
+      const saved = Number(window.localStorage.getItem(`carousel.${storageKey}`))
+      return Number.isInteger(saved) && saved >= 0 ? saved : 0
+    } catch {
+      return 0
+    }
+  })
+
+  const count = slides.length
+  const current = count ? Math.min(index, count - 1) : 0
+
+  // The boards are not the same height — three progress cards are taller than
+  // one row of figures. Sizing the viewport to the tallest would leave a band
+  // of empty page under the short ones; sizing it to the active slide keeps the
+  // page tight and still never jumps mid-read, because it only changes when the
+  // user moves.
+  const slideRefs = useRef<Array<HTMLDivElement | null>>([])
+  const [height, setHeight] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    const node = slideRefs.current[current]
+    if (!node) return
+    const measure = () => setHeight(node.offsetHeight)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [current, slides.length])
+
+  const go = (next: number) => {
+    const clamped = Math.max(0, Math.min(next, count - 1))
+    setIndex(clamped)
+    if (storageKey) {
+      try {
+        window.localStorage.setItem(`carousel.${storageKey}`, String(clamped))
+      } catch {
+        /* the carousel still works for this session */
+      }
+    }
+  }
+
+  if (count === 0) return null
+  if (count === 1) return <>{slides[0]!.content}</>
+
+  return (
+    <section
+      className="carousel"
+      aria-roledescription="carrousel"
+      aria-label="Indicateurs de la campagne"
+      onKeyDown={(event) => {
+        if (event.key === 'ArrowLeft') go(current - 1)
+        if (event.key === 'ArrowRight') go(current + 1)
+      }}
+    >
+      <div className="carousel__viewport" style={{ height }}>
+        <div
+          className="carousel__track"
+          style={{ transform: `translateX(-${current * 100}%)` }}
+        >
+          {slides.map((slide, i) => (
+            <div
+              key={slide.id}
+              ref={(node) => {
+                slideRefs.current[i] = node
+              }}
+              className="carousel__slide"
+              role="group"
+              aria-roledescription="diapositive"
+              aria-label={`${slide.label} — ${i + 1} sur ${count}`}
+              aria-hidden={i !== current}
+              // A hidden slide keeps its layout but leaves the tab order: a
+              // focus ring on something off-screen is a trap.
+              {...(i !== current ? { inert: '' } : {})}
+            >
+              {slide.content}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="carousel__nav">
+        <button
+          className="carousel__arrow"
+          onClick={() => go(current - 1)}
+          disabled={current === 0}
+          aria-label="Indicateurs précédents"
+        >
+          <Icons.chevronLeft size={15} />
+        </button>
+        <span className="carousel__label">{slides[current]!.label}</span>
+        <div className="carousel__dots" role="tablist">
+          {slides.map((slide, i) => (
+            <button
+              key={slide.id}
+              role="tab"
+              className={`carousel__dot${i === current ? ' carousel__dot--active' : ''}`}
+              aria-selected={i === current}
+              aria-label={slide.label}
+              onClick={() => go(i)}
+            />
+          ))}
+        </div>
+        <button
+          className="carousel__arrow"
+          onClick={() => go(current + 1)}
+          disabled={current === count - 1}
+          aria-label="Indicateurs suivants"
+        >
+          <Icons.chevronRight size={15} />
+        </button>
+      </div>
+    </section>
   )
 }
 

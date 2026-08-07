@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import itertools
 from decimal import Decimal
 
@@ -88,6 +89,16 @@ def zone_counts(
         ]
     return ZoneCounts(zone=zone, sheets=sheets, lines_by_sheet=lines,
                       arbitrations=arbitrations)
+
+
+def _decided(zone, qty, *, decided=True) -> ArbitrationLine:
+    return ArbitrationLine(
+        id="a1", campaign_id="c", zone_id=zone.zone.id, item_number="VIS",
+        section=CountSection.LINE_SIDE, qty_pass_1=100, qty_pass_2=90,
+        qty_arbitrated=qty,
+        decided_at=dt.datetime(2026, 6, 30, tzinfo=dt.UTC) if decided else None,
+        decided_by="alice" if decided else None,
+    )
 
 
 def run(*zones, require_done=True):
@@ -202,16 +213,26 @@ class TestTwoPassResolution:
             rows_1=[("VIS", CountSection.LINE_SIDE, 100)],
             rows_2=[("VIS", CountSection.LINE_SIDE, 90)],
         )
-        zone.arbitrations = [
-            ArbitrationLine(
-                id="a1", campaign_id="c", zone_id=zone.zone.id, item_number="VIS",
-                section=CountSection.LINE_SIDE, qty_pass_1=100, qty_pass_2=90,
-                qty_arbitrated=95,
-            )
-        ]
+        zone.arbitrations = [_decided(zone, 95)]
         retained, findings = resolve_zone_quantities(zone)
         assert retained[("VIS", CountSection.LINE_SIDE)] == Decimal("95.000000")
         assert findings == []
+
+    def test_a_pre_filled_quantity_does_not_unblock_the_consolidation(self):
+        """Bulk pre-fill saves typing; it does not say anybody looked.
+
+        Treating it as a decision would post forty quantities nobody chose,
+        which is exactly the silent automation the arbitration screen exists to
+        replace.
+        """
+        zone = zone_counts(
+            rows_1=[("VIS", CountSection.LINE_SIDE, 100)],
+            rows_2=[("VIS", CountSection.LINE_SIDE, 90)],
+        )
+        zone.arbitrations = [_decided(zone, 90, decided=False)]
+        retained, findings = resolve_zone_quantities(zone)
+        assert ("VIS", CountSection.LINE_SIDE) not in retained
+        assert findings[0].code == "ARBITRATION_PENDING"
 
     def test_tolerance_accepts_pass_two_without_a_decision(self):
         zone = zone_counts(

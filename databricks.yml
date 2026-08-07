@@ -27,7 +27,7 @@ variables:
     description: SQL warehouse used for all Delta / Unity Catalog reads.
   llm_endpoint:
     description: Serving endpoint (vision-capable LLM) used to read scanned counting sheets.
-    default: databricks-claude-sonnet-4-5
+    default: databricks-claude-opus-5
   # --- Lakebase (Postgres Autoscaling) --------------------------------------
   # The app resource is addressed by *resource paths*, not by display names:
   #   branch   = projects/<project>/branches/<branch>

@@ -12,6 +12,7 @@ import { api, downloads } from '../lib/api'
 import type {
   Arbitration,
   ConsolidationLine,
+  MultiScanReport,
   Overview,
   Sheet,
   SheetStatus,
@@ -34,7 +35,7 @@ import { parseSheetLines } from '../lib/pasteSheetLines'
 import { useFocusMode } from '../lib/focus'
 import { CreateZoneModal } from './zones'
 import {
-  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Skeleton, Tabs, useDownload, useErrorToast, useToast,
+  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Field, Icons, Modal, Skeleton, Switch, Tabs, useDownload, useErrorToast, useToast,
 } from '../components/ui'
 
 type Tab = 'zones' | 'arbitration' | 'consolidation'
@@ -97,11 +98,14 @@ export function Generic() {
 // --------------------------------------------------------------------------- //
 
 function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Overview }) {
-  const startDownload = useDownload()
   const queryClient = useQueryClient()
   const toast = useToast()
   const showError = useErrorToast()
   const [creating, setCreating] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const [printSheet, setPrintSheet] = useState<string | null>(null)
+  const [multiScan, setMultiScan] = useState<File | null>(null)
+  const [scanning, setScanning] = useState(false)
   const [openSheet, setOpenSheet] = useState<{ zone: Zone; sheet: Sheet } | null>(null)
 
   const [focus] = useFocusMode()
@@ -146,18 +150,24 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
         >
           Créer une zone
         </Button>
-        <Button
-          icon={<Icons.printer size={14} />}
-          onClick={() => startDownload(downloads.allCountingSheets(campaignId, 1))}
-        >
-          Imprimer toutes les feuilles n°1
+        <Button icon={<Icons.printer size={14} />} onClick={() => setPrinting(true)}>
+          Imprimer les feuilles
         </Button>
-        <Button
-          icon={<Icons.printer size={14} />}
-          onClick={() => startDownload(downloads.allCountingSheets(campaignId, 2))}
-        >
-          Feuilles n°2
-        </Button>
+        <label className="btn btn--secondary" style={{ cursor: 'pointer' }}>
+          <Icons.sparkles size={14} />
+          {scanning ? 'Lecture en cours…' : 'Importer un scan multi-feuilles'}
+          <input
+            type="file"
+            hidden
+            accept="application/pdf,image/*"
+            disabled={!editable || scanning}
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (file) setMultiScan(file)
+              event.target.value = ''
+            }}
+          />
+        </label>
       </div>
 
       <AsyncBoundary
@@ -236,14 +246,22 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                           IA {percent(sheet.extraction_confidence)}
                         </Badge>
                       )}
+                      {sheet.correctedLines > 0 && (
+                        <Badge
+                          tone="success"
+                          title="Un scan multi-feuilles préservera cette feuille plutôt que d’écraser ces corrections."
+                        >
+                          {sheet.correctedLines} corrigée(s) à la main
+                        </Badge>
+                      )}
                       <span className="spacer" />
                       <Button
                         size="sm"
                         variant="ghost"
                         icon={<Icons.printer size={13} />}
-                        onClick={() => startDownload(downloads.countingSheet(campaignId, sheet.id))}
+                        onClick={() => setPrintSheet(sheet.id)}
                         aria-label="Imprimer"
-                        title="Imprimer cette feuille"
+                        title="Imprimer cette feuille — vierge ou remplie"
                       />
                       <Button
                         size="sm"
@@ -288,6 +306,25 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
           onClose={() => setCreating(false)}
         />
       )}
+      {printing && (
+        <PrintModal campaignId={campaignId} onClose={() => setPrinting(false)} />
+      )}
+      {printSheet && (
+        <PrintModal
+          campaignId={campaignId}
+          sheetId={printSheet}
+          onClose={() => setPrintSheet(null)}
+        />
+      )}
+      {multiScan && (
+        <MultiScanModal
+          campaignId={campaignId}
+          file={multiScan}
+          zones={query.data ?? []}
+          onBusy={setScanning}
+          onClose={() => setMultiScan(null)}
+        />
+      )}
       {openSheet && (
         <SheetModal
           campaignId={campaignId}
@@ -329,10 +366,10 @@ function SheetModal({
   const queryClient = useQueryClient()
   const toast = useToast()
   const showError = useErrorToast()
-  const startDownload = useDownload()
   const [draft, setDraft] = useState<Array<Record<string, unknown>> | null>(null)
   const [pasteText, setPasteText] = useState('')
   const [scanning, setScanning] = useState(false)
+  const [printing, setPrinting] = useState(false)
 
   const query = useQuery({
     queryKey: ['sheet', campaignId, sheet.id],
@@ -548,10 +585,7 @@ function SheetModal({
       width={1180}
       footer={
         <>
-          <Button
-            icon={<Icons.printer size={14} />}
-            onClick={() => startDownload(downloads.countingSheet(campaignId, sheet.id))}
-          >
+          <Button icon={<Icons.printer size={14} />} onClick={() => setPrinting(true)}>
             Imprimer
           </Button>
           <span className="spacer" />
@@ -674,6 +708,14 @@ function SheetModal({
                 ) : null
               }
             />
+
+            {printing && (
+              <PrintModal
+                campaignId={campaignId}
+                sheetId={sheet.id}
+                onClose={() => setPrinting(false)}
+              />
+            )}
           </div>
         )}
       </AsyncBoundary>
@@ -717,16 +759,16 @@ function ArbitrationTab({
     onError: (error) => showError(error, 'Arbitrage impossible'),
   })
 
-  const acceptAll = useMutation({
-    mutationFn: (zoneId: string) => api.acceptPass2(campaignId, zoneId),
+  const prefillAll = useMutation({
+    mutationFn: (zoneId: string) => api.prefillWithPass2(campaignId, zoneId),
     onSuccess: (result) => {
       void queryClient.invalidateQueries()
       toast.success(
-        `${result.decided} arbitrage(s) résolu(s)`,
-        'Le comptage n°2 a été retenu ; chaque décision est tracée à votre nom.',
+        `${result.proposed} quantité(s) pré-remplie(s)`,
+        'Rien n’est validé : relisez chaque ligne, corrigez si besoin, puis validez.',
       )
     },
-    onError: (error) => showError(error, 'Arbitrage groupé impossible'),
+    onError: (error) => showError(error, 'Pré-remplissage impossible'),
   })
 
   const rows = query.data ?? []
@@ -765,16 +807,18 @@ function ArbitrationTab({
           actions={
             <Button
               size="sm"
-              variant="primary"
-              disabled={acceptAll.isPending}
-              onClick={() => acceptAll.mutate(zoneFilter)}
+              disabled={prefillAll.isPending}
+              onClick={() => prefillAll.mutate(zoneFilter)}
             >
-              Retenir le comptage n°2 partout
+              Pré-remplir avec le comptage n°2
             </Button>
           }
         >
-          Le comptage n°2 est le plus tardif et le mieux informé ; l’adopter en bloc
-          reste une décision explicite, enregistrée ligne par ligne dans l’audit.
+          Le comptage n°2 est le plus tardif et le mieux informé, donc c’est le
+          point de départ raisonnable. Le pré-remplissage <strong>ne valide
+          rien</strong> : il pose la quantité dans le champ, vous la relisez, la
+          corrigez si besoin, puis vous validez. Tant qu’une ligne n’est pas
+          validée, la consolidation l’ignore.
         </Alert>
       )}
 
@@ -844,10 +888,14 @@ function ArbitrationTable({
               </td>
               <td className="num">{moneyShort(row.gapValue)}</td>
               <td className="num">
-                {row.qty_arbitrated !== null ? (
-                  <strong>{numShort(row.qty_arbitrated)}</strong>
-                ) : (
+                {row.qty_arbitrated === null ? (
                   <span className="subtle">à décider</span>
+                ) : row.isProposed ? (
+                  <span className="subtle" title="Pré-rempli, pas encore validé">
+                    {numShort(row.qty_arbitrated)} · proposé
+                  </span>
+                ) : (
+                  <strong>{numShort(row.qty_arbitrated)}</strong>
                 )}
               </td>
               <td>
@@ -876,8 +924,13 @@ function ArbitrationActions({
   row: Arbitration
   onDecide: (input: { id: string; qty: number }) => void
 }) {
+  // A pre-filled quantity is what the user asked to see in the box; falling
+  // back to pass 2 keeps the shortcut available when nothing was pre-filled.
+  // Round-tripped through Number so the six stored decimals do not land in a
+  // field somebody is about to read and retype.
+  const initial = row.qty_arbitrated ?? row.qty_pass_2
   const [value, setValue] = useState<string>(
-    row.qty_pass_2 !== null ? String(row.qty_pass_2) : '',
+    initial === null || initial === undefined ? '' : String(Number(initial)),
   )
   return (
     <div className="row" style={{ gap: 'var(--space-1)' }}>
@@ -1249,6 +1302,378 @@ function WipModal({
           </div>
         )}
       </AsyncBoundary>
+    </Modal>
+  )
+}
+
+// --------------------------------------------------------------------------- //
+// Printing
+// --------------------------------------------------------------------------- //
+
+/**
+ * The print dialog.
+ *
+ * Three jobs share one document, and the difference between them is worth
+ * spelling out rather than hiding behind three buttons: the blank form handed
+ * to a counter, the record of what came back, and the free-entry sheet with
+ * nothing pre-printed at all.
+ */
+function PrintModal({
+  campaignId,
+  sheetId,
+  onClose,
+}: {
+  campaignId: string
+  sheetId?: string
+  onClose: () => void
+}) {
+  const startDownload = useDownload()
+  const [passNo, setPassNo] = useState<1 | 2>(1)
+  const [filled, setFilled] = useState(false)
+  const [withSources, setWithSources] = useState(false)
+  const [blankLines, setBlankLines] = useState('')
+
+  const lines = Number(blankLines)
+  const linesInvalid = blankLines !== '' && (!Number.isInteger(lines) || lines < 10 || lines > 180)
+
+  const print = () => {
+    const options = {
+      filled,
+      withSources: filled && withSources,
+      blankLines: filled || blankLines === '' ? undefined : lines,
+    }
+    startDownload(
+      sheetId
+        ? downloads.countingSheet(campaignId, sheetId, options)
+        : downloads.allCountingSheets(campaignId, passNo, options),
+    )
+    onClose()
+  }
+
+  return (
+    <Modal
+      title={sheetId ? 'Imprimer cette feuille' : 'Imprimer les feuilles de comptage'}
+      onClose={onClose}
+      width={640}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Annuler
+          </Button>
+          <Button
+            variant="primary"
+            icon={<Icons.printer size={14} />}
+            disabled={linesInvalid}
+            onClick={print}
+          >
+            Imprimer
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        {!sheetId && (
+          <Field label="Comptage">
+            <div className="chips">
+              {([1, 2] as const).map((value) => (
+                <button
+                  key={value}
+                  className={`chip${passNo === value ? ' chip--active' : ''}`}
+                  onClick={() => setPassNo(value)}
+                >
+                  Comptage n°{value}
+                </button>
+              ))}
+            </div>
+          </Field>
+        )}
+
+        <Field
+          label="Contenu"
+          hint="La feuille vierge est celle qu’on remet au compteur ; la feuille remplie est le relevé de ce qui est revenu."
+        >
+          <div className="chips">
+            <button
+              className={`chip${!filled ? ' chip--active' : ''}`}
+              onClick={() => setFilled(false)}
+            >
+              Vierge — références, unités, sections
+            </button>
+            <button
+              className={`chip${filled ? ' chip--active' : ''}`}
+              onClick={() => setFilled(true)}
+            >
+              Remplie — avec les quantités comptées
+            </button>
+          </div>
+        </Field>
+
+        {filled ? (
+          <Switch
+            checked={withSources}
+            onChange={setWithSources}
+            label="Ajouter les colonnes Source et Commentaire"
+          />
+        ) : (
+          <Field
+            label="Lignes vides supplémentaires (facultatif)"
+            hint="Pour une feuille de saisie libre, sans liste pré-imprimée. Entre 10 et 180."
+            error={linesInvalid ? 'Indiquez un entier entre 10 et 180.' : undefined}
+          >
+            <input
+              className="input num"
+              inputMode="numeric"
+              placeholder="ex. 40"
+              value={blankLines}
+              onChange={(event) => setBlankLines(event.target.value.trim())}
+            />
+          </Field>
+        )}
+
+        <Alert tone="info" title={filled ? 'Ce que porte le relevé' : 'Ce que porte la feuille'}>
+          {filled ? (
+            <>
+              Toutes les lignes qui portent une référence, y compris celles que
+              personne n’a comptées — elles s’impriment « non compté », parce que
+              c’est précisément le fait qu’un relevé doit garder. Aucune ligne vide
+              n’est ajoutée.
+            </>
+          ) : (
+            <>
+              La liste à parcourir, plus 7 lignes libres en bord de ligne et 4 par
+              section WIP : une pièce trouvée dans un coin doit avoir où être écrite.
+            </>
+          )}
+        </Alert>
+      </div>
+    </Modal>
+  )
+}
+
+// --------------------------------------------------------------------------- //
+// Multi-sheet scan
+// --------------------------------------------------------------------------- //
+
+/**
+ * Reading a whole stack of sheets in one go.
+ *
+ * The pages are routed to their sheets by the identifier the application itself
+ * printed in the footer. Two outcomes are surfaced loudly because both are ones
+ * a silent import would bury: a page nobody could attribute, and a sheet whose
+ * AI reading somebody has already corrected by hand.
+ */
+function MultiScanModal({
+  campaignId,
+  file,
+  zones,
+  onBusy,
+  onClose,
+}: {
+  campaignId: string
+  file: File
+  zones: Zone[]
+  onBusy: (busy: boolean) => void
+  onClose: () => void
+}) {
+  const queryClient = useQueryClient()
+  const showError = useErrorToast()
+  const [report, setReport] = useState<MultiScanReport | null>(null)
+
+  const atRisk = zones.flatMap((zone) =>
+    zone.sheets
+      .filter((sheet) => sheet.correctedLines > 0)
+      .map((sheet) => ({ zone, sheet })),
+  )
+
+  const scan = useMutation({
+    mutationFn: (overwrite: boolean) =>
+      api.scanMultipleSheets(campaignId, file, overwrite),
+    onMutate: () => onBusy(true),
+    onSuccess: (result) => {
+      onBusy(false)
+      void queryClient.invalidateQueries()
+      setReport(result)
+    },
+    onError: (error) => {
+      onBusy(false)
+      showError(error, 'Lecture du scan impossible')
+      onClose()
+    },
+  })
+
+  if (report) {
+    return (
+      <Modal
+        title="Scan multi-feuilles — résultat"
+        onClose={onClose}
+        width={840}
+        footer={
+          <Button variant="primary" onClick={onClose}>
+            Fermer
+          </Button>
+        }
+      >
+        <div className="stack">
+          <dl className="kv">
+            <dt>Pages lues</dt>
+            <dd className="num">{report.pages}</dd>
+            <dt>Feuilles renseignées</dt>
+            <dd className="num">{report.sheetsProcessed.length}</dd>
+            <dt>Feuilles préservées</dt>
+            <dd className="num">{report.sheetsSkipped.length}</dd>
+            <dt>Pages non attribuées</dt>
+            <dd className="num">{report.unroutedPages.length}</dd>
+          </dl>
+
+          {report.sheetsProcessed.length > 0 && (
+            <div className="table-wrap" style={{ maxHeight: 240 }}>
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Feuille</th>
+                    <th className="num">Pages</th>
+                    <th className="num">Quantités lues</th>
+                    <th className="num">Confiance</th>
+                    <th>À vérifier</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.sheetsProcessed.map((sheet) => (
+                    <tr key={sheet.sheetId}>
+                      <td>
+                        {sheet.zoneCode} — n°{sheet.passNo}
+                      </td>
+                      <td className="num">{sheet.pages.join(', ')}</td>
+                      <td className="num">{sheet.counted}</td>
+                      <td className="num">
+                        {sheet.meanConfidence === null
+                          ? '—'
+                          : percent(sheet.meanConfidence)}
+                      </td>
+                      <td className="subtle">
+                        {[
+                          sheet.lowConfidence.length
+                            ? `${sheet.lowConfidence.length} valeur(s) douteuse(s)`
+                            : '',
+                          sheet.missing.length
+                            ? `${sheet.missing.length} non lue(s)`
+                            : '',
+                          sheet.overwroteCorrections
+                            ? `${sheet.overwroteCorrections} correction(s) écrasée(s)`
+                            : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' · ') || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {report.sheetsSkipped.length > 0 && (
+            <Alert
+              tone="success"
+              title={`${report.sheetsSkipped.length} feuille(s) préservée(s)`}
+            >
+              Ces feuilles portent des valeurs lues par l’IA puis corrigées à la
+              main. Elles n’ont pas été relues : la correction humaine est ce qui
+              coûte le plus cher dans toute la chaîne.
+              <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
+                {report.sheetsSkipped.map((sheet) => (
+                  <li key={sheet.sheetId}>
+                    {sheet.zoneCode} — n°{sheet.passNo} · {sheet.correctedLines}{' '}
+                    ligne(s) corrigée(s)
+                  </li>
+                ))}
+              </ul>
+            </Alert>
+          )}
+
+          {report.unroutedPages.length > 0 && (
+            <Alert
+              tone="warning"
+              title={`${report.unroutedPages.length} page(s) non attribuée(s)`}
+            >
+              Leur pied de page n’a pas pu être lu. Elles sont signalées plutôt que
+              devinées : une page classée sur la mauvaise zone verserait un comptage
+              sur du stock qui n’a jamais existé. Ouvrez la feuille concernée et
+              importez ces pages une par une.
+              <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
+                {report.unroutedPages.map((page) => (
+                  <li key={page.page}>
+                    Page {page.page} — {page.note}
+                  </li>
+                ))}
+              </ul>
+            </Alert>
+          )}
+        </div>
+      </Modal>
+    )
+  }
+
+  return (
+    <Modal
+      title="Importer un scan de plusieurs feuilles"
+      onClose={scan.isPending ? () => {} : onClose}
+      width={700}
+      footer={
+        <>
+          <Button variant="ghost" disabled={scan.isPending} onClick={onClose}>
+            Annuler
+          </Button>
+          {atRisk.length > 0 && (
+            <Button
+              variant="danger"
+              disabled={scan.isPending}
+              onClick={() => scan.mutate(true)}
+            >
+              Lire et écraser les corrections
+            </Button>
+          )}
+          <Button
+            variant="primary"
+            disabled={scan.isPending}
+            onClick={() => scan.mutate(false)}
+          >
+            {scan.isPending ? 'Lecture en cours…' : 'Lire le scan'}
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <p>
+          <strong className="mono">{file.name}</strong> — chaque page sera rattachée
+          à sa feuille par l’identifiant que l’application a imprimé en pied de page.
+          Une page dont le pied est illisible est signalée, jamais devinée.
+        </p>
+
+        {atRisk.length > 0 ? (
+          <Alert
+            tone="warning"
+            title={`${atRisk.length} feuille(s) portent des corrections humaines`}
+          >
+            Elles seront <strong>préservées</strong> par défaut. « Lire et écraser »
+            les relit quand même — à n’utiliser que si le scan est plus récent que
+            les corrections.
+            <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
+              {atRisk.slice(0, 8).map(({ zone, sheet }) => (
+                <li key={sheet.id}>
+                  {zone.code} — comptage n°{sheet.pass_no === 'PASS_1' ? 1 : 2} ·{' '}
+                  {sheet.correctedLines} ligne(s) corrigée(s)
+                </li>
+              ))}
+            </ul>
+          </Alert>
+        ) : (
+          <Alert tone="info" title="Aucune correction humaine en jeu">
+            Aucune feuille ne porte encore de valeur IA corrigée à la main : la
+            lecture ne peut rien écraser.
+          </Alert>
+        )}
+      </div>
     </Modal>
   )
 }

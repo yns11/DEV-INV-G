@@ -30,6 +30,7 @@ import type {
   LocationStatus,
   ManagerOverview,
   Me,
+  MultiScanReport,
   Overview,
   SheetStatus,
   Threshold,
@@ -350,6 +351,21 @@ export const api = {
     request<{ deleted: boolean }>(`/campaigns/${id}/generic/lines/${lineId}`, {
       method: 'DELETE',
     }),
+  setZoneNegative: (id: string, zoneIds: string[], allowed: boolean) =>
+    request<{ updated: number }>(`/campaigns/${id}/generic/zones/negative`, {
+      method: 'POST',
+      body: JSON.stringify({ zoneIds, allowed }),
+    }),
+  /** A scan holding several sheets, routed by the footer the app printed. */
+  scanMultipleSheets: (id: string, file: File, overwriteReviewed = false) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('overwriteReviewed', String(overwriteReviewed))
+    return request<MultiScanReport>(`/campaigns/${id}/generic/scan`, {
+      method: 'POST',
+      body: form,
+    })
+  },
   scanSheet: (id: string, sheetId: string, file: File) => {
     const form = new FormData()
     form.append('file', file)
@@ -370,9 +386,11 @@ export const api = {
       `/campaigns/${id}/generic/arbitrations/${arbitrationId}`,
       { method: 'POST', body: JSON.stringify({ qty, comment }) },
     ),
-  acceptPass2: (id: string, zoneId: string) =>
-    request<{ decided: number }>(
-      `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/accept-pass-2`,
+  // Fills the fields; it does not decide. Each line still has to be validated
+  // before the consolidation will use it.
+  prefillWithPass2: (id: string, zoneId: string) =>
+    request<{ proposed: number }>(
+      `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/prefill-pass-2`,
       { method: 'POST' },
     ),
   wipWithoutBom: (id: string) =>
@@ -491,13 +509,29 @@ export const api = {
 }
 
 /** Download URLs, kept next to the API so paths live in one file. */
+/** Print options, shared by the single-sheet and whole-pass endpoints. */
+export type PrintOptions = {
+  /** Print the counted quantities — the record, rather than the blank form. */
+  filled?: boolean
+  /** Add the provenance and comment columns. */
+  withSources?: boolean
+  /** Blank rows for a free-entry sheet, 10–180. */
+  blankLines?: number
+}
+
+const printQuery = (options: PrintOptions) => ({
+  filled: options.filled ? true : undefined,
+  withSources: options.withSources ? true : undefined,
+  blankLines: options.blankLines || undefined,
+})
+
 export const downloads = {
   campaignWorkbook: (id: string) => `/campaigns/${id}/reports/campaign.xlsx`,
   gridTemplate: (id: string, key: string) => `/campaigns/${id}/reports/grids/${key}.xlsx`,
   journal: (id: string, journalId: string) =>
     `/campaigns/${id}/reports/journals/${journalId}.xlsx`,
-  countingSheet: (id: string, sheetId: string) =>
-    `/campaigns/${id}/reports/counting-sheets/${sheetId}.pdf`,
-  allCountingSheets: (id: string, passNo: number) =>
-    `/campaigns/${id}/reports/counting-sheets.pdf?passNo=${passNo}`,
+  countingSheet: (id: string, sheetId: string, options: PrintOptions = {}) =>
+    `/campaigns/${id}/reports/counting-sheets/${sheetId}.pdf${qs(printQuery(options))}`,
+  allCountingSheets: (id: string, passNo: number, options: PrintOptions = {}) =>
+    `/campaigns/${id}/reports/counting-sheets.pdf${qs({ passNo, ...printQuery(options) })}`,
 }

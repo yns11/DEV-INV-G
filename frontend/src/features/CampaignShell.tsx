@@ -7,7 +7,7 @@
  * disagree about what is editable.
  */
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { NavLink, Outlet, useParams } from 'react-router-dom'
 import { api, downloads } from '../lib/api'
@@ -15,12 +15,17 @@ import type { CampaignStatus, Overview, Permissions } from '../lib/types'
 import {
   CAMPAIGN_STATUS_LABELS,
   date as fmtDate,
-  label as toLabel,
+  moneyShort,
+  numShort,
   percent,
+  signClass,
+  signedMoney,
+  signedNum,
+  label as toLabel,
 } from '../lib/format'
 import { useFocusMode } from '../lib/focus'
 import {
-  Alert, Badge, Button, ErrorState, Icons, Modal, Progress, Skeleton, Stepper, Switch, useDownload, useErrorToast, useToast,
+  Alert, AsyncBoundary, Badge, Button, Carousel, ErrorState, Icons, Kpi, Modal, Progress, Skeleton, Stepper, Switch, useDownload, useErrorToast, useToast,
 } from '../components/ui'
 
 const PHASES: Array<{ id: CampaignStatus; label: string }> = [
@@ -140,7 +145,7 @@ export function CampaignShell() {
 
 function CampaignHeader({ overview }: { overview: Overview }) {
   const startDownload = useDownload()
-  const { campaign, journalProgress, genericProgress, counts, perimeter } = overview
+  const { campaign, perimeter } = overview
   const [transitionTarget, setTransitionTarget] = useState<CampaignStatus | null>(null)
   const [focus] = useFocusMode()
   const next = NEXT_PHASE[campaign.status]
@@ -193,89 +198,7 @@ function CampaignHeader({ overview }: { overview: Overview }) {
 
       <Stepper steps={PHASES} current={campaign.status} />
 
-      <div className="grid grid--3">
-        <div className="card">
-          <div className="card__body stack" style={{ gap: 'var(--space-3)' }}>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <strong style={{ fontSize: 'var(--text-sm)' }}>Avancement général</strong>
-              <span className="num" style={{ fontWeight: 600 }}>
-                {percent(journalProgress.ratio)}
-              </span>
-            </div>
-            <Progress
-              total={journalProgress.total}
-              segments={[
-                {
-                  label: 'Terminés',
-                  value: journalProgress.complete,
-                  color: 'var(--success)',
-                },
-                {
-                  label: 'En cours',
-                  value: journalProgress.running,
-                  color: 'var(--accent)',
-                },
-                {
-                  label: 'En attente',
-                  value: journalProgress.pending,
-                  color: 'var(--bg-active)',
-                },
-              ]}
-            />
-            <p className="subtle">
-              {journalProgress.complete} / {journalProgress.total} journaux de comptage
-              postés ou forcés au stock livre.
-            </p>
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card__body stack" style={{ gap: 'var(--space-3)' }}>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <strong style={{ fontSize: 'var(--text-sm)' }}>Avancement GENERIQUE</strong>
-              <span className="num" style={{ fontWeight: 600 }}>
-                {percent(genericProgress.ratio)}
-              </span>
-            </div>
-            <Progress
-              total={genericProgress.zones}
-              segments={[
-                { label: 'Zones terminées', value: genericProgress.done, color: 'var(--success)' },
-                {
-                  label: 'En cours',
-                  value: genericProgress.zones - genericProgress.done,
-                  color: 'var(--bg-active)',
-                },
-              ]}
-            />
-            <p className="subtle">
-              {genericProgress.done} / {genericProgress.zones} zones
-              {genericProgress.pendingArbitrations > 0 && (
-                <>
-                  {' '}
-                  · <strong className="neg">
-                    {genericProgress.pendingArbitrations} arbitrage(s) en attente
-                  </strong>
-                </>
-              )}
-            </p>
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card__body stack" style={{ gap: 'var(--space-3)' }}>
-            <strong style={{ fontSize: 'var(--text-sm)' }}>Dossier de campagne</strong>
-            <dl className="kv">
-              <dt>Articles</dt>
-              <dd className="num">{counts.items.toLocaleString('fr-FR')}</dd>
-              <dt>Lignes de stock livre</dt>
-              <dd className="num">{counts.bookStockLines.toLocaleString('fr-FR')}</dd>
-              <dt>Moteur de calcul</dt>
-              <dd className="mono">v{campaign.engine_version}</dd>
-            </dl>
-          </div>
-        </div>
-      </div>
+      <KpiCarousel overview={overview} />
 
       {focus && (
         <Alert
@@ -332,6 +255,218 @@ function CampaignHeader({ overview }: { overview: Overview }) {
  * leave the user unable to tell "nothing is assigned to me" from "nothing
  * exists". The banner under the header says which of the two it is.
  */
+/**
+ * The campaign's figures, a board at a time.
+ *
+ * Progress first — on inventory day the only question is what is still open —
+ * then the money, then the dossier. The stock and variance boards need the book
+ * stock to be frozen; before that they would show five dashes, so they are not
+ * offered at all rather than offered empty.
+ */
+function KpiCarousel({ overview }: { overview: Overview }) {
+  const { campaign, journalProgress, genericProgress, counts, perimeter } = overview
+  const hasBookStock = campaign.book_stock_frozen_at !== null
+
+  const kpis = useQuery({
+    queryKey: ['kpis', campaign.id],
+    queryFn: () => api.kpis(campaign.id),
+    enabled: hasBookStock,
+  })
+
+  const slides: Array<{ id: string; label: string; content: ReactNode }> = [
+    {
+      id: 'progress',
+      label: 'Avancement',
+      content: (
+        <div className="grid grid--3">
+          <div className="card">
+            <div className="card__body stack" style={{ gap: 'var(--space-3)' }}>
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <strong style={{ fontSize: 'var(--text-sm)' }}>Avancement général</strong>
+                <span className="num" style={{ fontWeight: 600 }}>
+                  {percent(journalProgress.ratio)}
+                </span>
+              </div>
+              <Progress
+                total={journalProgress.total}
+                segments={[
+                  { label: 'Terminés', value: journalProgress.complete, color: 'var(--success)' },
+                  { label: 'En cours', value: journalProgress.running, color: 'var(--accent)' },
+                  { label: 'En attente', value: journalProgress.pending, color: 'var(--bg-active)' },
+                ]}
+              />
+              <p className="subtle">
+                {journalProgress.complete} / {journalProgress.total} journaux de comptage
+                postés ou forcés au stock livre.
+              </p>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card__body stack" style={{ gap: 'var(--space-3)' }}>
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <strong style={{ fontSize: 'var(--text-sm)' }}>Avancement GENERIQUE</strong>
+                <span className="num" style={{ fontWeight: 600 }}>
+                  {percent(genericProgress.ratio)}
+                </span>
+              </div>
+              <Progress
+                total={genericProgress.zones}
+                segments={[
+                  { label: 'Zones terminées', value: genericProgress.done, color: 'var(--success)' },
+                  {
+                    label: 'En cours',
+                    value: genericProgress.zones - genericProgress.done,
+                    color: 'var(--bg-active)',
+                  },
+                ]}
+              />
+              <p className="subtle">
+                {genericProgress.done} / {genericProgress.zones} zones
+                {genericProgress.pendingArbitrations > 0 && (
+                  <>
+                    {' '}
+                    · <strong className="neg">
+                      {genericProgress.pendingArbitrations} arbitrage(s) en attente
+                    </strong>
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card__body stack" style={{ gap: 'var(--space-3)' }}>
+              <strong style={{ fontSize: 'var(--text-sm)' }}>Dossier de campagne</strong>
+              <dl className="kv">
+                <dt>Articles</dt>
+                <dd className="num">{counts.items.toLocaleString('fr-FR')}</dd>
+                <dt>Lignes de stock livre</dt>
+                <dd className="num">{counts.bookStockLines.toLocaleString('fr-FR')}</dd>
+                <dt>Gestionnaires affectés</dt>
+                <dd className="num">
+                  {perimeter.resolved
+                    ? perimeter.managerLabel || perimeter.managerCode
+                    : '—'}
+                </dd>
+                <dt>Moteur de calcul</dt>
+                <dd className="mono">v{campaign.engine_version}</dd>
+              </dl>
+            </div>
+          </div>
+        </div>
+      ),
+    },
+  ]
+
+  if (hasBookStock) {
+    slides.push({
+      id: 'stock',
+      label: 'Stock et écarts',
+      content: (
+        <AsyncBoundary
+          query={kpis}
+          skeleton={
+            <div className="grid grid--kpi">
+              {Array.from({ length: 5 }, (_, i) => (
+                <div key={i} className="kpi">
+                  <Skeleton height={52} />
+                </div>
+              ))}
+            </div>
+          }
+        >
+          {(data) => (
+            <div className="grid grid--kpi">
+              <Kpi
+                label="Stock livre"
+                value={moneyShort(data.bookValue)}
+                compare={<span className="num">{numShort(data.bookQty)} unités</span>}
+                hero
+              />
+              <Kpi
+                label="Écart net"
+                value={signedMoney(data.netVarianceValue)}
+                tone={signClass(data.netVarianceValue) as 'pos' | 'neg' | 'neutral'}
+                compare={<span className="num">{signedNum(data.netVarianceQty)} unités</span>}
+                hint="Somme signée : les surplus compensent les manques. Répond à « avons-nous gagné ou perdu ? »"
+              />
+              <Kpi
+                label="Écart brut"
+                value={moneyShort(data.grossVarianceValue)}
+                tone="neg"
+                compare={<span>{data.materialLineCount} ligne(s) au-delà des seuils</span>}
+                hint="Somme des écarts en valeur absolue. Répond à « combien nous sommes-nous trompés ? »"
+              />
+              <Kpi
+                label="Fiabilité brute"
+                value={percent(data.grossReliabilityValue, 2)}
+                compare={
+                  <span>
+                    nette <strong className="num">{percent(data.netReliabilityValue, 2)}</strong>
+                  </span>
+                }
+                hint="1 − Σ|écart €| / Σ stock livre €. La nette, compensée, est toujours plus flatteuse."
+              />
+              <Kpi
+                label="IRA"
+                value={percent(data.ira, 2)}
+                compare={
+                  <span className="num">
+                    {data.accurateLineCount.toLocaleString('fr-FR')} /{' '}
+                    {data.lineCount.toLocaleString('fr-FR')} exacts
+                  </span>
+                }
+                hint="Part des couples article/emplacement dont l’écart tient dans la tolérance. Standard WMS."
+              />
+            </div>
+          )}
+        </AsyncBoundary>
+      ),
+    })
+    slides.push({
+      id: 'coverage',
+      label: 'Couverture du comptage',
+      content: (
+        <AsyncBoundary query={kpis} skeleton={<Skeleton height={120} />}>
+          {(data) => (
+            <div className="grid grid--kpi">
+              <Kpi
+                label="Lignes analysées"
+                value={data.lineCount.toLocaleString('fr-FR')}
+                compare={<span>couples article / emplacement</span>}
+                hero
+              />
+              <Kpi
+                label="Comptés sans stock livre"
+                value={data.countedOnlyCount.toLocaleString('fr-FR')}
+                tone={data.countedOnlyCount ? 'neg' : 'neutral'}
+                compare={<span>stock trouvé là où l’ERP n’en voyait aucun</span>}
+                hint="À vérifier avant ajustement : souvent un emplacement mal saisi."
+              />
+              <Kpi
+                label="Jamais comptés"
+                value={data.bookOnlyCount.toLocaleString('fr-FR')}
+                tone={data.bookOnlyCount ? 'neg' : 'neutral'}
+                compare={<span>seront soldés à zéro à la clôture</span>}
+                hint="Du stock livre existe sans aucun comptage en face."
+              />
+              <Kpi
+                label="Écart résiduel"
+                value={moneyShort(data.residualValue)}
+                compare={<span>après ajustements postés</span>}
+                hint="Ce qui reste inexpliqué une fois les mouvements de correction pris en compte."
+              />
+            </div>
+          )}
+        </AsyncBoundary>
+      ),
+    })
+  }
+
+  return <Carousel slides={slides} storageKey={`campaign.${campaign.id}`} />
+}
+
 function FocusSwitch({ overview }: { overview: Overview }) {
   const [focus, setFocus] = useFocusMode()
   const { perimeter } = overview

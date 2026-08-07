@@ -202,6 +202,22 @@ export function ZonesAdminGrid({
     onError: (error) => showError(error, 'Changement impossible'),
   })
 
+  const setNegative = useMutation({
+    mutationFn: (allowed: boolean) =>
+      api.setZoneNegative(campaignId, [...selected], allowed),
+    onSuccess: (result, allowed) => {
+      void queryClient.invalidateQueries()
+      setSelected(new Set())
+      toast.success(
+        `${result.updated} zone(s) mise(s) à jour`,
+        allowed
+          ? 'Les quantités négatives y sont désormais acceptées.'
+          : 'Une quantité négative y sera de nouveau refusée à la saisie.',
+      )
+    },
+    onError: (error) => showError(error, 'Changement impossible'),
+  })
+
   const assign = useMutation({
     mutationFn: (managerCode: string) =>
       api.assignZones(campaignId, [...selected], managerCode),
@@ -250,6 +266,23 @@ export function ZonesAdminGrid({
         return <span className="num">{lines}</span>
       },
       value: (row) => row.sheets[0]?.lineCount ?? 0,
+    },
+    {
+      key: 'allow_negative',
+      label: 'Négatifs',
+      width: 120,
+      render: (row) =>
+        row.allow_negative ? (
+          <Badge
+            tone="warning"
+            title="Une quantité négative est acceptée sur cette zone — feuille de correction."
+          >
+            autorisés
+          </Badge>
+        ) : (
+          <span className="subtle">refusés</span>
+        ),
+      value: (row) => (row.allow_negative ? 1 : 0),
     },
     ...(managers.length > 0
       ? [
@@ -333,6 +366,22 @@ export function ZonesAdminGrid({
                       onClick={() => setPasses.mutate(2)}
                     >
                       Double comptage
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={setNegative.isPending}
+                      title="Pour une feuille de correction : un retour à retrancher d’un comptage déjà posté."
+                      onClick={() => setNegative.mutate(true)}
+                    >
+                      Autoriser les négatifs
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={setNegative.isPending}
+                      onClick={() => setNegative.mutate(false)}
+                    >
+                      Refuser les négatifs
                     </Button>
                     {managers.length > 0 && (
                       <select

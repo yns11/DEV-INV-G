@@ -93,14 +93,19 @@ export function ImportPanel({
 
   const reset = () => setStage({ kind: 'idle' })
 
+  // A locked panel is dead weight: the upload button refuses, the paste box
+  // refuses, and the column list describes a file nobody can load. Showing the
+  // reason alone says everything the panel would have, in one line.
+  if (disabled) {
+    return disabledReason ? (
+      <Alert tone="info" title={`${contract.title} — import verrouillé`}>
+        {disabledReason}
+      </Alert>
+    ) : null
+  }
+
   return (
     <div className="stack">
-      {disabled && disabledReason && (
-        <Alert tone="warning" title="Import verrouillé">
-          {disabledReason}
-        </Alert>
-      )}
-
       <Card
         title={contract.title}
         message={contract.description}
@@ -118,7 +123,7 @@ export function ImportPanel({
               size="sm"
               variant="primary"
               icon={<Icons.upload size={13} />}
-              disabled={disabled || stage.kind === 'validating' || stage.kind === 'importing'}
+              disabled={stage.kind === 'validating' || stage.kind === 'importing'}
               onClick={() => fileInput.current?.click()}
             >
               Charger un fichier
@@ -160,12 +165,6 @@ export function ImportPanel({
               </span>
             ))}
           </div>
-          {contract.naturalKey.length > 0 && (
-            <p className="subtle">
-              Clé naturelle : {contract.naturalKey.join(' + ')} — les doublons sur
-              cette clé sont signalés.
-            </p>
-          )}
         </div>
 
         <details style={{ marginTop: 'var(--space-4)' }}>
@@ -182,7 +181,6 @@ export function ImportPanel({
             <textarea
               className="textarea mono"
               value={pasteText}
-              disabled={disabled}
               onChange={(event) => setPasteText(event.target.value)}
               placeholder={
                 'Collez ici (Ctrl+V) un bloc copié depuis Excel.\n' +
@@ -193,7 +191,7 @@ export function ImportPanel({
               <Button
                 variant="primary"
                 size="sm"
-                disabled={disabled || !pasteText.trim()}
+                disabled={!pasteText.trim()}
                 onClick={() => void validate({ text: pasteText })}
               >
                 Analyser le collage

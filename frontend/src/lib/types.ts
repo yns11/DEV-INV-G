@@ -660,9 +660,35 @@ export interface AssistantTurn {
 
 export interface AssistantAnswer {
   answer: string
+  /** Which framing produced this answer — profiles can be switched mid-thread. */
+  profile: string
   tokensUsed: number
   contextBlocks: string[]
   attachmentsRead: string[]
   /** What the assistant will and will not answer, in its own words. */
   scopeNote: string
+}
+
+/**
+ * A framing of the assistant, served by the API rather than hard-coded here.
+ *
+ * `context` says how much of the campaign travels with a question: `none` (the
+ * open profile — answers rest on nothing from the application), `digest`, or
+ * `full`. `maxQuestionChars` of 0 means no ceiling.
+ */
+export interface AssistantProfile {
+  key: string
+  label: string
+  description: string
+  scopeNote: string
+  context: 'none' | 'digest' | 'full'
+  maxQuestionChars: number
+  maxAnswerTokens: number
+  temperature: number
+}
+
+export interface AssistantProfiles {
+  /** The profile used when the request names none — the deployment default. */
+  active: string
+  profiles: AssistantProfile[]
 }

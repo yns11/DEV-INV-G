@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     llm_endpoint: str = Field(
         default="databricks-claude-opus-4-8", alias="INV_LLM_ENDPOINT"
     )
+    #: How the campaign assistant is framed — ``libre``, ``campagne`` or
+    #: ``etendu`` (see :mod:`inventory.ai.assistant`). A runtime setting rather
+    #: than a code decision, so tightening or loosening it costs no deployment.
+    assistant_profile: str = Field(default="libre", alias="INV_ASSISTANT_PROFILE")
 
     # ------------------------------------------------------------ unity catalog
     uc_catalog: str = Field(default="emotors_data_champions", alias="INV_UC_CATALOG")

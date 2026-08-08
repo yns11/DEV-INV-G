@@ -573,6 +573,16 @@ Onglet **Environment**, ajoutez :
 | `INV_GENERIC_LOCATION` | `GENERIQUE` |
 | `INV_LOG_LEVEL` | `INFO` |
 | `INV_ENV` | `prod` |
+| `INV_ASSISTANT_PROFILE` | `libre`, `campagne` ou `etendu` — voir ci-dessous |
+
+`INV_ASSISTANT_PROFILE` décide de ce que l'assistant de campagne reçoit et de
+ce qu'on lui demande — de `libre` (aucun prompt système, aucun contexte de
+campagne, aucune limite de longueur) à `campagne` (un condensé comme seule
+source de vérité, périmètre limité à l'inventaire). C'est une variable
+d'environnement précisément pour que resserrer ou desserrer le cadrage soit un
+redémarrage, jamais une livraison de code. Les utilisateurs peuvent aussi
+choisir un profil par question depuis l'écran ; la valeur ci-dessus est celle
+qui s'applique par défaut.
 
 `DATABRICKS_WAREHOUSE_ID` et `INV_LLM_ENDPOINT` sont fournis par les ressources
 attachées (`valueFrom`), ne les saisissez pas à la main.

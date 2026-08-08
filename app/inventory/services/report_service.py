@@ -9,6 +9,7 @@ from typing import Any
 
 from ..domain.enums import AuditAction, SheetPass
 from ..domain.models import Campaign, CountSheetLine, Item
+from ..domain.printing import PrintMode, print_refusal
 from ..errors import NotFoundError, ValidationError
 from ..reporting.exports import (
     build_counting_sheet_pdf,
@@ -36,17 +37,17 @@ class ReportService:
         campaign: Campaign,
         sheet_id: str,
         *,
-        filled: bool = False,
+        mode: PrintMode = PrintMode.LIST,
         with_sources: bool = False,
         blank_lines: int = 0,
     ) -> tuple[bytes, str]:
-        """Render one printable counting sheet, blank or filled.
+        """Render one printable counting sheet in one of its three modes.
 
-        Printing is never gated on the campaign's phase. A sheet is a paper
-        artefact: it is wanted before the count to hand out, during to reprint a
-        page somebody lost, and after — filled — to file or to sign. Refusing to
-        print a closed campaign's sheet would only send people back to a
-        screenshot.
+        Printing is available from the very first phase: paper is prepared
+        *before* the count, which is exactly when the sheets are needed. What
+        the phase decides is not whether one can print but *what* — the record
+        with quantities does not exist until something has been counted. That
+        rule, and the free-entry one, live in :mod:`inventory.domain.printing`.
         """
         ctx = self.ctx
         sheet = ctx.sheets.get_sheet(sheet_id)
@@ -59,13 +60,23 @@ class ReportService:
         if zone is None:
             raise NotFoundError("Zone introuvable.")
 
-        blank_lines = _validated_blank_lines(blank_lines)
+        refusal = print_refusal(
+            mode, free_entry=zone.free_entry, status=campaign.status
+        )
+        if refusal:
+            raise ValidationError(refusal, zone=zone.code, mode=str(mode))
+
+        blank_lines = _validated_blank_lines(blank_lines, mode=mode)
         items = ctx.referentials.items_by_number(campaign.id)
-        lines = _printable_lines(ctx.sheets.list_sheet_lines(sheet_id), items)
-        if not lines and not blank_lines:
+        lines = (
+            []
+            if mode is PrintMode.BLANK
+            else _printable_lines(ctx.sheets.list_sheet_lines(sheet_id), items)
+        )
+        if mode is not PrintMode.BLANK and not lines:
             raise ValidationError(
-                "Cette feuille ne contient aucune ligne. Indiquez un nombre de "
-                "lignes vides à imprimer, ou chargez sa liste d'articles."
+                "Cette feuille ne porte aucune ligne. Chargez sa liste "
+                "d'articles, ou déclarez la zone en saisie libre."
             )
 
         pass_no = 1 if sheet.pass_no is SheetPass.PASS_1 else 2
@@ -78,12 +89,12 @@ class ReportService:
             pass_no=pass_no,
             lines=lines,
             sheet_id=sheet.id,
-            filled=filled,
+            mode=mode,
             with_sources=with_sources,
             blank_lines=blank_lines,
         )
         filename = (
-            f"feuille-comptage{'-remplie' if filled else ''}_{_slug(zone.code)}_"
+            f"feuille-comptage-{_MODE_SLUGS[mode]}_{_slug(zone.code)}_"
             f"passage-{pass_no}_{campaign.code}.pdf"
         )
         ctx.record(
@@ -92,8 +103,8 @@ class ReportService:
             entity_type="count_sheet",
             entity_id=sheet_id,
             summary=(
-                f"Impression {'de la feuille remplie' if filled else 'de la feuille'} "
-                f"{zone.code} — passage n°{pass_no}"
+                f"Impression {_MODE_LABELS[mode]} — {zone.code}, "
+                f"passage n°{pass_no}"
             ),
         )
         return payload, filename
@@ -103,18 +114,24 @@ class ReportService:
         campaign: Campaign,
         *,
         pass_no: int = 1,
-        filled: bool = False,
+        mode: PrintMode = PrintMode.LIST,
         with_sources: bool = False,
         blank_lines: int = 0,
     ) -> tuple[bytes, str]:
-        """One PDF containing every zone's sheet for a given pass.
+        """One PDF containing every printable zone's sheet for a given pass.
 
         This is what gets printed on the eve of the inventory — one job, one
         stack of paper, in zone order — and, once counted, what gets filed.
+
+        The batch only holds the zones the mode actually applies to: a free-entry
+        zone has no list to print without quantities, and a listed zone has no
+        business getting a blank grid. Silently mixing the two would hand out a
+        stack in which half the sheets ask the counter to rewrite a list the
+        application already has.
         """
         ctx = self.ctx
         target_pass = SheetPass.PASS_1 if pass_no == 1 else SheetPass.PASS_2
-        blank_lines = _validated_blank_lines(blank_lines)
+        blank_lines = _validated_blank_lines(blank_lines, mode=mode)
         zones = ctx.sheets.list_zones(campaign.id)
         sheets = {
             (s.zone_id, s.pass_no): s
@@ -124,15 +141,23 @@ class ReportService:
         items = ctx.referentials.items_by_number(campaign.id)
 
         documents: list[bytes] = []
+        refusals: list[str] = []
         for zone in zones:
             sheet = sheets.get((zone.id, target_pass))
             if sheet is None:
                 continue
-            lines = _printable_lines(lines_by_sheet.get(sheet.id, []), items)
-            # A free-entry zone has nothing pre-printed and is exactly the one
-            # that needs paper: it is included as long as blank rows were asked
-            # for.
-            if not lines and not blank_lines:
+            refusal = print_refusal(
+                mode, free_entry=zone.free_entry, status=campaign.status
+            )
+            if refusal:
+                refusals.append(refusal)
+                continue
+            lines = (
+                []
+                if mode is PrintMode.BLANK
+                else _printable_lines(lines_by_sheet.get(sheet.id, []), items)
+            )
+            if mode is not PrintMode.BLANK and not lines:
                 continue
             documents.append(build_counting_sheet_pdf(
                 campaign_label=f"{campaign.code} — {campaign.label}",
@@ -143,16 +168,18 @@ class ReportService:
                 pass_no=pass_no,
                 lines=lines,
                 sheet_id=sheet.id,
-                filled=filled,
+                mode=mode,
                 with_sources=with_sources,
                 blank_lines=blank_lines,
             ))
 
         if not documents:
+            # When every zone was turned away for the same reason, that reason
+            # is the answer — far more useful than "nothing to print".
             raise ValidationError(
-                "Aucune zone ne contient de lignes à imprimer pour ce passage. "
-                "Indiquez un nombre de lignes vides pour imprimer des feuilles "
-                "de saisie libre."
+                refusals[0]
+                if refusals
+                else f"Aucune feuille à imprimer {_MODE_LABELS[mode]} pour ce passage."
             )
 
         merged = _merge_pdfs(documents)
@@ -162,11 +189,11 @@ class ReportService:
             entity_type="count_sheet",
             summary=(
                 f"Impression groupée de {len(documents)} feuille(s) "
-                f"{'remplie(s) ' if filled else ''}— passage n°{pass_no}"
+                f"{_MODE_LABELS[mode]} — passage n°{pass_no}"
             ),
         )
         return merged, (
-            f"feuilles-comptage{'-remplies' if filled else ''}_"
+            f"feuilles-comptage-{_MODE_SLUGS[mode]}_"
             f"passage-{pass_no}_{campaign.code}.pdf"
         )
 
@@ -485,14 +512,32 @@ class ReportService:
 #: past which somebody is printing a notebook rather than a counting sheet.
 MIN_BLANK_LINES, MAX_BLANK_LINES = 10, 180
 
+#: Wording used in the audit trail and in file names, one per mode.
+_MODE_LABELS = {
+    PrintMode.BLANK: "sans références",
+    PrintMode.LIST: "sans quantités",
+    PrintMode.FILLED: "avec quantités",
+}
+_MODE_SLUGS = {
+    PrintMode.BLANK: "vierge",
+    PrintMode.LIST: "a-compter",
+    PrintMode.FILLED: "remplie",
+}
 
-def _validated_blank_lines(requested: int) -> int:
-    if not requested:
+
+def _validated_blank_lines(requested: int, *, mode: PrintMode) -> int:
+    """How many empty rows a free-entry sheet carries.
+
+    Only meaningful for the blank sheet; anywhere else the number is ignored
+    rather than refused, because it is the screen's leftover state, not a
+    decision the user made about *this* print.
+    """
+    if mode is not PrintMode.BLANK:
         return 0
     if not MIN_BLANK_LINES <= requested <= MAX_BLANK_LINES:
         raise ValidationError(
-            f"Le nombre de lignes vides doit être compris entre "
-            f"{MIN_BLANK_LINES} et {MAX_BLANK_LINES}.",
+            f"Indiquez un nombre de lignes entre {MIN_BLANK_LINES} et "
+            f"{MAX_BLANK_LINES}.",
             blankLines=requested,
         )
     return requested

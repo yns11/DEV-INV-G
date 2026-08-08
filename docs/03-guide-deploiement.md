@@ -225,11 +225,11 @@ databricks serving-endpoints list --profile PROD -o json \
 ```
 
 Les endpoints *pay-per-token* proposés par Databricks (par exemple
-`databricks-claude-sonnet-4-5`) conviennent et ne demandent aucun
+`databricks-claude-opus-4-8`) conviennent et ne demandent aucun
 provisionnement. Notez le nom exact.
 
 ```bash
-export LLM_ENDPOINT=databricks-claude-sonnet-4-5
+export LLM_ENDPOINT=databricks-claude-opus-4-8
 ```
 
 > Si aucun endpoint vision n'est disponible, l'application fonctionne
@@ -350,7 +350,7 @@ mkdir -p .databricks/bundle/prod
 cat > .databricks/bundle/prod/variable-overrides.json <<'JSON'
 {
   "warehouse_id":      "4b9b953939869799",
-  "llm_endpoint":      "databricks-claude-sonnet-4-5",
+  "llm_endpoint":      "databricks-claude-opus-4-8",
   "lakebase_project":  "inventaire",
   "lakebase_branch":   "production",
   "lakebase_database": "databricks-postgres",

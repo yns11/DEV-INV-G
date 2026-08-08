@@ -32,6 +32,7 @@ from ..config import get_settings
 from ..errors import InventoryError
 from .routers import (
     analysis,
+    assistant,
     campaigns,
     counting,
     data,
@@ -310,6 +311,7 @@ def create_app() -> FastAPI:
         managers.router,
         analysis.router,
         reports.router,
+        assistant.router,
     )
     for router in api_routers:
         app.include_router(router, prefix="/api")

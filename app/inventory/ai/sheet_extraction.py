@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import io
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from ..domain.enums import CountSection, DataSource
+from ..domain.enums import CountSection, DataSource, legacy_section_alias
 from ..domain.models import CountSheetLine, Item, normalise_key
 from ..domain.quantities import to_decimal
 from ..errors import ValidationError
@@ -92,6 +92,56 @@ Transcris la feuille scannée et renvoie ce JSON :
 
 Renvoie une entrée dans "lines" pour CHAQUE référence attendue, même non comptée \
 (qty = null)."""
+
+
+_FREE_ENTRY_SYSTEM_PROMPT = """\
+Tu es un opérateur de saisie expert en inventaire industriel. Tu transcris des \
+feuilles de comptage papier remplies à la main, dans une usine de moteurs \
+électriques.
+
+Cette feuille est une feuille de SAISIE LIBRE : elle a été imprimée vide, et le \
+compteur y a écrit lui-même la référence ET la quantité de chaque ligne.
+
+Règles absolues :
+1. Tu transcris UNIQUEMENT ce qui est écrit. Tu ne calcules rien, tu ne \
+complètes rien, tu ne corriges rien, et tu n'inventes aucune référence.
+2. Si la case « Comptage » d'une ligne est VIDE, tu renvoies null — jamais 0.
+3. Tu recopies la référence caractère par caractère, telle qu'elle est écrite, \
+même si elle te paraît incomplète ou fautive. La vérification est faite ensuite \
+contre le référentiel : une référence que tu « corriges » verse un comptage sur \
+le mauvais article.
+4. Si un caractère est ambigu (rature, surcharge, chiffre coupé), tu renvoies ta \
+meilleure lecture avec une confiance basse et tu décris le doute.
+5. Tu ignores les lignes entièrement vides.
+6. Les quantités sont des nombres. Les séparateurs de milliers (espace, point) \
+sont ignorés ; la virgule est un séparateur décimal.
+
+Tu réponds exclusivement en JSON valide, sans texte autour."""
+
+_FREE_ENTRY_TEMPLATE = """\
+Feuille de saisie libre : zone « {zone} », comptage n°{pass_no}.
+
+Aucune liste n'était pré-imprimée : lis chaque ligne écrite à la main.
+
+Renvoie ce JSON :
+
+{{
+  "counter_name": "<nom du compteur lu sur la feuille, ou null>",
+  "started_at": "<heure de début lue, format HH:MM, ou null>",
+  "ended_at": "<heure de fin lue, format HH:MM, ou null>",
+  "lines": [
+    {{
+      "item_number": "<référence exactement telle qu'écrite>",
+      "qty": <nombre ou null>,
+      "section": "<BDL, WIP ou WIP_OK selon le tableau où figure la ligne>",
+      "unit": "<unité lue, ou null>",
+      "confidence": <nombre entre 0 et 1>,
+      "note": "<doute de lecture, ou chaîne vide>"
+    }}
+  ]
+}}
+
+Renvoie les lignes dans l'ordre où elles apparaissent sur la feuille."""
 
 
 _ROUTING_SYSTEM_PROMPT = """\
@@ -195,7 +245,11 @@ class ExtractionResult:
             "startedAt": self.started_at,
             "endedAt": self.ended_at,
             "meanConfidence": self.mean_confidence,
-            "pages": self.pages,
+            # Deliberately *not* "pages": a multi-sheet scan merges this report
+            # with the routing, which owns "pages" as the list of page numbers
+            # that fed the sheet. Two different shapes under one name is how the
+            # screen ended up calling ``join`` on an integer.
+            "pagesRead": self.pages,
             "tokensUsed": self.tokens_used,
         }
 
@@ -330,6 +384,103 @@ class SheetExtractor:
                     display_order=order,
                     qty_imported=None,
                     qty_manual=None,
+                )
+            )
+
+        if confidences:
+            result.mean_confidence = round(sum(confidences) / len(confidences), 4)
+        return result
+
+    def extract_free_entry(
+        self,
+        *,
+        campaign_id: str,
+        sheet_id: str,
+        zone_label: str,
+        pass_no: int,
+        known_items: Mapping[str, Any],
+        images: Sequence[bytes],
+        image_mime: str = "image/png",
+        id_factory,
+    ) -> ExtractionResult:
+        """Read a sheet that was printed empty and filled in by hand.
+
+        There is no expected list to read against — that is what "free entry"
+        means — so the guard against invented articles moves one step later: the
+        model transcribes whatever reference it sees, and *this* method decides
+        whether it exists. A reference the campaign's referential does not know
+        is reported, never created. That is the same rule the grid import obeys,
+        for the same reason: an article created by a misreading becomes a
+        variance line nobody can explain.
+
+        :param known_items: the campaign's article referential, keyed by
+            normalised item number.
+        """
+        if not images:
+            raise ValidationError("Aucune page à analyser.")
+
+        payload, response = self._client.complete_json(
+            system=_FREE_ENTRY_SYSTEM_PROMPT,
+            user=_FREE_ENTRY_TEMPLATE.format(zone=zone_label, pass_no=pass_no),
+            images=images,
+            image_mime=image_mime,
+            max_tokens=8192,
+        )
+
+        result = ExtractionResult(
+            counter_name=str(payload.get("counter_name") or "").strip(),
+            started_at=_clean_time(payload.get("started_at")),
+            ended_at=_clean_time(payload.get("ended_at")),
+            pages=len(images),
+            tokens_used=response.total_tokens,
+        )
+
+        confidences: list[float] = []
+        seen: set[str] = set()
+
+        for order, raw in enumerate(payload.get("lines") or []):
+            if not isinstance(raw, dict):
+                continue
+            read = str(raw.get("item_number") or "").strip()
+            if not read:
+                continue
+            number = normalise_key(read)
+            item = known_items.get(number)
+            if item is None:
+                result.unexpected.append({
+                    "text": read,
+                    "qty": raw.get("qty"),
+                    "note": "Référence absente du référentiel articles.",
+                })
+                continue
+            if number in seen:
+                continue
+            seen.add(number)
+
+            qty = _clean_qty(raw.get("qty"))
+            confidence = _clean_confidence(raw.get("confidence"))
+            if qty is not None:
+                confidences.append(confidence)
+                if confidence < LOW_CONFIDENCE:
+                    result.low_confidence_items.append(number)
+
+            result.lines.append(
+                CountSheetLine(
+                    id=id_factory(),
+                    sheet_id=sheet_id,
+                    campaign_id=campaign_id,
+                    item_number=number,
+                    section=(
+                        legacy_section_alias(str(raw.get("section") or ""))
+                        or CountSection.LINE_SIDE
+                    ),
+                    qty_imported=qty,
+                    qty_manual=None,
+                    unit=str(raw.get("unit") or "") or getattr(item, "unit", "PCE"),
+                    source=DataSource.SCAN_AI,
+                    confidence=confidence,
+                    comment=str(raw.get("note") or "").strip(),
+                    display_order=order,
                 )
             )
 

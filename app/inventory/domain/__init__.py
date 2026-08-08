@@ -64,6 +64,12 @@ from .models import (
     Zone,
     normalise_key,
 )
+from .printing import (
+    BLANK_ROWS_PER_SECTION,
+    PrintMode,
+    available_print_modes,
+    print_refusal,
+)
 from .quantities import quantize_money, quantize_qty, safe_ratio, to_decimal
 from .variance import (
     CountedQty,
@@ -100,6 +106,8 @@ __all__ = [
     "CountSheetLine", "Item", "Location", "LocationKey", "Manager", "Thresholds",
     "VarianceAnalysis", "VarianceLine", "Warehouse", "WipBreakdown", "Zone",
     "normalise_key",
+    # printing
+    "BLANK_ROWS_PER_SECTION", "PrintMode", "available_print_modes", "print_refusal",
     # quantities
     "quantize_money", "quantize_qty", "safe_ratio", "to_decimal",
     # bom

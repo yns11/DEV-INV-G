@@ -35,6 +35,7 @@ from ..domain.models import (
     CountSheetLine,
     Zone,
 )
+from ..domain.printing import available_print_modes
 from ..domain.workflow import assert_sheet_transition, derive_zone_status, passes_for
 from ..errors import ConflictError, NotFoundError, ValidationError
 from .context import ENGINE_VERSION, ServiceContext, utcnow
@@ -96,6 +97,15 @@ class GenericService:
                 **zone.model_dump(mode="json"),
                 "status": str(status),
                 "pendingArbitrations": pending.get(zone.id, 0),
+                # Which of the three printable documents this zone can produce
+                # right now. Derived server-side so the screen never re-implements
+                # the matrix and drifts from what the endpoint will accept.
+                "printModes": [
+                    str(m)
+                    for m in available_print_modes(
+                        free_entry=zone.free_entry, status=campaign.status
+                    )
+                ],
                 "sheets": [
                     {
                         **sheet.model_dump(mode="json"),
@@ -512,9 +522,14 @@ class GenericService:
         """Read a scanned sheet with the vision model.
 
         The result lands in the grid as ``SCAN_AI`` values that a human reviews
-        and validates; nothing is posted automatically. Sheets keep their
-        pre-printed article list as the reference, which both improves accuracy
-        and makes hallucinated references detectable.
+        and validates; nothing is posted automatically.
+
+        A sheet with a pre-printed list is read *against* it: the model only has
+        to find the handwritten quantity next to a known reference, and anything
+        else it reads is provably a hallucination. A free-entry sheet has no such
+        list by design, so the same guard is applied one step later — the model
+        transcribes what it sees, and a reference the campaign's referential does
+        not know is reported instead of created.
         """
         from ..ai import SheetExtractor, render_pdf_pages
 
@@ -529,20 +544,12 @@ class GenericService:
             None,
         )
         expected_lines = ctx.sheets.list_sheet_lines(sheet_id)
-        if not expected_lines:
-            # The pre-printed list is what makes the extraction accurate and a
-            # hallucinated reference detectable. A free-entry sheet has none by
-            # design, so say that rather than asking the user to prepare a list
-            # they deliberately chose not to have.
+        free_entry = not expected_lines
+        if free_entry and not (zone is not None and zone.free_entry):
             raise ValidationError(
-                "Cette feuille est en saisie libre : elle n'a aucune liste "
-                "d'articles attendue, et le modèle ne peut pas contrôler ce "
-                "qu'il lit. Saisissez les lignes à la main, ou chargez la liste "
-                "d'articles de la zone avant d'importer un scan."
-                if zone is not None and zone.free_entry else
-                "Cette feuille n'a aucune ligne pré-imprimée. Créez d'abord sa "
-                "liste d'articles (ou dupliquez-la d'une campagne précédente) "
-                "avant d'importer un scan."
+                "Cette feuille n'a aucune ligne pré-imprimée et sa zone n'est "
+                "pas déclarée en saisie libre. Chargez sa liste d'articles, ou "
+                "passez la zone en saisie libre."
             )
 
         items = ctx.referentials.items_by_number(campaign.id)
@@ -556,15 +563,22 @@ class GenericService:
             images = [payload]
             mime = content_type or "image/png"
 
-        result = extractor.extract(
-            campaign_id=campaign.id,
-            sheet_id=sheet_id,
-            zone_label=(zone.label or zone.code) if zone else sheet.zone_id,
-            pass_no=1 if sheet.pass_no is SheetPass.PASS_1 else 2,
-            expected=extractor.expected_from_items(expected_lines, items),
-            images=images,
-            image_mime=mime,
-            id_factory=new_id,
+        common = {
+            "campaign_id": campaign.id,
+            "sheet_id": sheet_id,
+            "zone_label": (zone.label or zone.code) if zone else sheet.zone_id,
+            "pass_no": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
+            "images": images,
+            "image_mime": mime,
+            "id_factory": new_id,
+        }
+        result = (
+            extractor.extract_free_entry(known_items=items, **common)
+            if free_entry
+            else extractor.extract(
+                expected=extractor.expected_from_items(expected_lines, items),
+                **common,
+            )
         )
 
         ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
@@ -633,8 +647,11 @@ class GenericService:
         lines_by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
         items = ctx.referentials.items_by_number(campaign.id)
 
-        # Only sheets that carry a pre-printed list can be read: the expected
-        # articles are what keeps the model from inventing references.
+        # A sheet is readable either because it carries a pre-printed list, or
+        # because its zone is declared free entry — in which case what the model
+        # reads is checked against the article referential instead. A sheet that
+        # is neither is left out: the model would have nothing to be wrong
+        # against.
         candidates = [
             SheetCandidate(
                 sheet_id=sheet.id,
@@ -642,13 +659,13 @@ class GenericService:
                 pass_no=1 if sheet.pass_no is SheetPass.PASS_1 else 2,
             )
             for sheet in sheets
-            if sheet.zone_id in zones and lines_by_sheet.get(sheet.id)
+            if sheet.zone_id in zones
+            and (lines_by_sheet.get(sheet.id) or zones[sheet.zone_id].free_entry)
         ]
         if not candidates:
             raise ValidationError(
-                "Aucune feuille ne porte de liste d'articles : le modèle n'aurait "
-                "rien contre quoi vérifier ce qu'il lit. Chargez d'abord les "
-                "feuilles de comptage."
+                "Aucune feuille n'est lisible : elles n'ont ni liste d'articles "
+                "pré-imprimée, ni zone déclarée en saisie libre."
             )
 
         extractor = SheetExtractor()
@@ -680,17 +697,23 @@ class GenericService:
                 })
                 continue
 
-            result = extractor.extract(
-                campaign_id=campaign.id,
-                sheet_id=sheet_id,
-                zone_label=zone.label or zone.code,
-                pass_no=1 if sheet.pass_no is SheetPass.PASS_1 else 2,
-                expected=extractor.expected_from_items(
-                    lines_by_sheet.get(sheet_id, []), items
-                ),
-                images=[images[p] for p in pages],
-                image_mime=mime,
-                id_factory=new_id,
+            expected_lines = lines_by_sheet.get(sheet_id, [])
+            common = {
+                "campaign_id": campaign.id,
+                "sheet_id": sheet_id,
+                "zone_label": zone.label or zone.code,
+                "pass_no": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
+                "images": [images[p] for p in pages],
+                "image_mime": mime,
+                "id_factory": new_id,
+            }
+            result = (
+                extractor.extract_free_entry(known_items=items, **common)
+                if not expected_lines
+                else extractor.extract(
+                    expected=extractor.expected_from_items(expected_lines, items),
+                    **common,
+                )
             )
             ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
             ctx.sheets.update_sheet(
@@ -700,13 +723,17 @@ class GenericService:
                 extraction_confidence=result.mean_confidence,
                 actor=ctx.actor,
             )
+            # The per-sheet report is spread *first*: it carries its own
+            # ``pages`` key holding a count, and the page list is what the
+            # screen renders. Spreading it last silently replaced the list with
+            # an integer and crashed the report on ``pages.join``.
             processed.append({
+                **result.as_report(),
                 "sheetId": sheet_id,
                 "zoneCode": zone.code,
                 "passNo": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
                 "pages": [p + 1 for p in pages],
                 "overwroteCorrections": len(corrected),
-                **result.as_report(),
             })
 
         report = {

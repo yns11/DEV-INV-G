@@ -1,5 +1,8 @@
 """API routers, one per bounded area of the product."""
 
-from . import analysis, campaigns, counting, data, generic, reports
+from . import analysis, assistant, campaigns, counting, data, generic, managers, reports
 
-__all__ = ["analysis", "campaigns", "counting", "data", "generic", "reports"]
+__all__ = [
+    "analysis", "assistant", "campaigns", "counting", "data", "generic",
+    "managers", "reports",
+]

@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { api } from './lib/api'
+import { CAMPAIGN_STATUS_LABELS, label as toLabel } from './lib/format'
 import { Alert, Badge, Button, Icons } from './components/ui'
+import { CampaignNav } from './components/CampaignNav'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { CampaignsPage } from './features/Campaigns'
 import { CampaignShell } from './features/CampaignShell'
@@ -14,8 +16,14 @@ import { Counting } from './features/Counting'
 import { Generic } from './features/Generic'
 import { Analysis } from './features/Analysis'
 import { Audit } from './features/Audit'
+import { Assistant } from './features/Assistant'
 
 type Theme = 'light' | 'dark' | 'system'
+
+/** The campaign in the address bar, or `''` outside a campaign. */
+function campaignIdOf(pathname: string): string {
+  return pathname.match(/^\/campagnes\/([^/]+)/)?.[1] ?? ''
+}
 
 export function App() {
   const [theme, setTheme] = useState<Theme>(
@@ -36,8 +44,7 @@ export function App() {
     refetchInterval: 120_000,
   })
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, staleTime: Infinity })
-
-  const inCampaign = location.pathname.startsWith('/campagnes/')
+  const campaignId = campaignIdOf(location.pathname)
 
   return (
     <div className="app">
@@ -51,9 +58,9 @@ export function App() {
         </div>
 
         <nav className="sidebar__nav">
-          <div className="sidebar__section">Pilotage</div>
           <NavLink
             to="/campagnes"
+            end
             className={({ isActive }) =>
               `navlink${isActive || location.pathname === '/' ? ' navlink--active' : ''}`
             }
@@ -61,33 +68,10 @@ export function App() {
             <span className="navlink__icon">
               <Icons.scale size={17} />
             </span>
-            Campagnes
+            Toutes les campagnes
           </NavLink>
 
-          {inCampaign && (
-            <>
-              <div className="sidebar__section">Campagne courante</div>
-              <span className="navlink navlink--active" style={{ cursor: 'default' }}>
-                <span className="navlink__icon">
-                  <Icons.chevronRight size={15} />
-                </span>
-                Ouverte
-              </span>
-            </>
-          )}
-
-          <div className="sidebar__section">Aide</div>
-          <a
-            className="navlink"
-            href="/api/docs"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <span className="navlink__icon">
-              <Icons.info size={17} />
-            </span>
-            Documentation de l’API
-          </a>
+          {campaignId && <CampaignSidebar campaignId={campaignId} />}
         </nav>
 
         <div className="sidebar__footer stack" style={{ gap: 'var(--space-2)' }}>
@@ -101,29 +85,25 @@ export function App() {
               {health.data?.ready ? 'Connecté' : 'Dégradé'}
             </Badge>
             {health.data && <span className="subtle">v{health.data.version}</span>}
-          </div>
-        </div>
-      </aside>
-
-      <main className="main">
-        <header className="topbar">
-          <span className="spacer" />
-          <div className="row" style={{ gap: 'var(--space-1)' }}>
+            <span className="spacer" />
             <Button
               variant="ghost"
-              icon={theme === 'dark' ? <Icons.sun size={16} /> : <Icons.moon size={16} />}
+              size="sm"
+              icon={theme === 'dark' ? <Icons.sun size={15} /> : <Icons.moon size={15} />}
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
               aria-label="Basculer le thème"
               title={`Thème : ${theme}`}
             />
           </div>
-        </header>
+        </div>
+      </aside>
 
+      <main className="main">
         <div className="content stack" style={{ gap: 'var(--space-4)' }}>
           {health.data && !health.data.ready && (
-            <Alert tone="warning" title="Application en mode dégradé">
+            <Alert tone="warning" title="Mode dégradé">
               {health.data.startupError ??
-                'La base de données opérationnelle n’est pas joignable. Les écritures échoueront.'}
+                'Base de données injoignable : les écritures échoueront.'}
             </Alert>
           )}
 
@@ -135,6 +115,7 @@ export function App() {
               <Route path="/campagnes" element={<CampaignsPage />} />
               <Route path="/campagnes/:campaignId" element={<CampaignShell />}>
                 <Route index element={<Dashboard />} />
+                <Route path="assistant" element={<Assistant />} />
                 <Route path="preparation" element={<Preparation />} />
                 <Route path="comptage" element={<Counting />} />
                 <Route path="generique" element={<Generic />} />
@@ -154,5 +135,35 @@ export function App() {
         </div>
       </main>
     </div>
+  )
+}
+
+/**
+ * The open campaign's identity and navigation.
+ *
+ * It re-reads `/overview` under the key the campaign shell already uses, so the
+ * two share one cache entry and one request — the sidebar costs nothing extra.
+ */
+function CampaignSidebar({ campaignId }: { campaignId: string }) {
+  const query = useQuery({
+    queryKey: ['overview', campaignId],
+    queryFn: () => api.overview(campaignId),
+    refetchInterval: 60_000,
+  })
+  if (!query.data) return null
+  const { campaign } = query.data
+
+  return (
+    <>
+      <div className="sidebar__campaign">
+        <div className="sidebar__campaign-code truncate" title={campaign.label}>
+          {campaign.code}
+        </div>
+        <Badge tone={campaign.status} dot>
+          {toLabel(CAMPAIGN_STATUS_LABELS, campaign.status)}
+        </Badge>
+      </div>
+      <CampaignNav overview={query.data} />
+    </>
   )
 }

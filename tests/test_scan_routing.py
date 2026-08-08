@@ -14,7 +14,11 @@ from typing import Any
 import pytest
 
 from inventory.ai.client import LlmResponse
-from inventory.ai.sheet_extraction import SheetCandidate, SheetExtractor
+from inventory.ai.sheet_extraction import (
+    ExtractionResult,
+    SheetCandidate,
+    SheetExtractor,
+)
 from inventory.errors import ValidationError
 
 CANDIDATES = [
@@ -112,6 +116,26 @@ class TestRefusalToGuess:
             {"page": 2, "sheet": "bbbbbbbb"},
         ]})
         assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == [0]
+
+
+class TestReportShape:
+    """The per-sheet report and the routing are merged into one row on screen.
+
+    They must therefore not claim the same key with two different shapes. The
+    screen renders the page *list*; a per-sheet report claiming ``pages`` as a
+    *count* silently won the merge and crashed the whole result panel on
+    ``pages.join is not a function``.
+    """
+
+    def test_the_extraction_report_does_not_claim_the_page_list_key(self):
+        assert "pages" not in ExtractionResult(pages=3).as_report()
+
+    def test_it_still_says_how_many_pages_it_read(self):
+        assert ExtractionResult(pages=3).as_report()["pagesRead"] == 3
+
+    def test_merging_a_report_with_a_routing_keeps_the_page_list(self):
+        row = {**ExtractionResult(pages=2).as_report(), "pages": [4, 5]}
+        assert row["pages"] == [4, 5]
 
 
 class TestPreconditions:

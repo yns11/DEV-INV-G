@@ -47,8 +47,15 @@ inventory.domain     règles métier pures — n'importe aucun driver, aucun fra
 
 **`inventory.domain` n'importe rien du reste.** C'est ce qui permet de tester
 l'intégralité des règles métier — éclatement BOM, consolidation, écarts,
-contrôles, machine à états — en 0,25 seconde sans base de données. La suite
-compte 204 tests ; c'est la propriété que le classeur Excel n'avait pas.
+contrôles, machine à états, matrice d'impression — en une fraction de seconde
+sans base de données. La suite compte 250 tests ; c'est la propriété que le
+classeur Excel n'avait pas.
+
+Dernier arrivé dans cette couche : `domain/printing.py`, qui décide lequel des
+trois documents une feuille peut produire selon la zone et la phase. Une règle
+qui vit à la fois dans l'API, dans l'écran et dans les tests finit par vivre
+trois vies légèrement différentes ; celle-ci n'en a qu'une, et l'écran reçoit
+le résultat (`zone.printModes`) au lieu de le recalculer.
 
 ### Ce que chaque couche a le droit de faire
 

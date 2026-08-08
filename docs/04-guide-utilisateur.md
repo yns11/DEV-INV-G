@@ -4,6 +4,21 @@ Ce guide suit le déroulement réel d'une campagne, de la préparation à la cl�
 
 ---
 
+## Se repérer dans l'application
+
+Toute la navigation tient dans la **barre latérale**, sur trois niveaux :
+
+- la **phase** — Pilotage, Préparation, Comptage, Analyse, Traçabilité — qui
+  indique aussi où en est la campagne ;
+- la **section**, c'est-à-dire l'écran ;
+- la **sous-section**, dépliée sous la section ouverte. Elle figure dans
+  l'adresse : un lien vers « la grille des seuils » se copie et s'envoie.
+
+L'en-tête porte, sur tous les écrans, le carrousel d'indicateurs, l'interrupteur
+« Mon périmètre » et le passage à la phase suivante.
+
+---
+
 ## Le cycle de vie en un coup d'œil
 
 ```
@@ -183,15 +198,33 @@ qui demande, sans que le navigateur n'ait jamais à nommer un gestionnaire.
 - *Affectation zones* rattache les feuilles GENERIQUE, sur une sélection.
 
 > **Un périmètre n'est pas une habilitation.** L'interrupteur « Mon périmètre »
-> de la barre supérieure réduit le bruit ; il ne cloisonne rien. Chacun garde le
+> de l'en-tête réduit le bruit ; il ne cloisonne rien. Chacun garde le
 > droit d'agir hors de son périmètre — indispensable quand il faut couvrir un
 > collègue à 6 h du matin. Le filtrage se fait côté serveur : ce que le
 > périmètre exclut n'est jamais envoyé au poste.
 
 ### 1.8 Imprimer les feuilles
 
-**GENERIQUE → Imprimer toutes les feuilles n°1** produit un seul PDF, dans
-l'ordre des zones — à imprimer la veille.
+**GENERIQUE → Imprimer les feuilles** produit un seul PDF, dans l'ordre des
+zones — à imprimer la veille. Le même bouton existe sur chaque feuille prise
+isolément, pour rééditer une page perdue.
+
+Une feuille est **trois documents**, et l'écran n'offre que ceux qui existent :
+
+| Document | Pour quelle zone | Quand |
+|---|---|---|
+| **Sans quantités** — la liste d'articles, colonne de comptage vide | zone avec liste pré-imprimée | dès la préparation |
+| **Sans références** — une grille vide, *n* lignes (10 à 180) | zone en saisie libre | dès la préparation |
+| **Avec quantités** — le relevé de ce qui est revenu | les deux | à partir du comptage |
+
+Une zone dont la liste est connue ne se voit jamais proposer la grille vide :
+elle ferait réécrire à la main une liste que l'application détient déjà. Une
+zone en saisie libre n'a, symétriquement, aucune liste à imprimer.
+
+La feuille à compter reçoit quelques lignes libres par section — **5** en bord
+de ligne, **3** en WIP, **2** en WIP terminé : une pièce trouvée dans un coin
+doit avoir où être écrite. Le relevé rempli n'en reçoit aucune : inviter à
+écrire sur un relevé le rendrait discutable.
 
 La feuille porte les sections séparées visuellement, une colonne de comptage
 large, un bloc signature, et l'identité de la feuille rappelée en pied de
@@ -228,7 +261,7 @@ Puis **Geler le stock livre**. À partir de là, tout écart est reproductible.
 
 ### 2.2 Ne voir que son périmètre
 
-L'interrupteur **« Mon périmètre »** de la barre supérieure filtre les journaux
+L'interrupteur **« Mon périmètre »** de l'en-tête filtre les journaux
 et les zones sur ce qui vous est affecté (voir 1.7). Il porte le décompte des
 objets concernés, et le choix est mémorisé par navigateur.
 
@@ -328,6 +361,11 @@ Le modèle lit la feuille **en s'appuyant sur la liste d'articles pré-imprimée
 - une case vide reste vide — elle ne devient jamais 0 ;
 - chaque valeur porte une **confiance** ; celles sous 75 % sont mises en avant ;
 - les articles attendus mais non lus apparaissent en ligne vide, à saisir.
+
+Une feuille de **saisie libre** se scanne aussi, bien qu'elle n'ait aucune liste
+à confronter : le modèle recopie alors la référence telle qu'elle est écrite, et
+la garde se déplace d'un cran — c'est le **référentiel articles** qui tranche.
+Une référence qu'il ne connaît pas est signalée, jamais créée.
 
 Tout atterrit dans une grille modifiable, avec le badge *Extraction IA*.
 **Rien n'est posté automatiquement.**
@@ -478,7 +516,28 @@ fichier est une photographie en lecture seule.
 
 ---
 
-## 4. Clôture
+## 4. Interroger la campagne
+
+**Assistant** accepte une question en français et répond à partir des chiffres
+de *cette* campagne : avancement, écarts, contrôles, zones, feuilles. On peut y
+joindre un PDF, une image ou un fichier texte.
+
+Trois choses valent d'être sues avant de s'en servir :
+
+- **il ne voit qu'un condensé** de la campagne, assemblé par l'application — il
+  n'a ni accès à la base ni outil pour aller chercher autre chose. Chaque
+  réponse indique sur quels blocs elle s'appuie ;
+- **il ne modifie rien.** Aucune quantité, aucune cause, aucun statut ne change
+  parce qu'on a posé une question ;
+- **il ne sort pas de la campagne.** Une question hors sujet est déclinée en une
+  phrase — c'est un écran d'inventaire qui accepte de la prose, pas un
+  assistant généraliste.
+
+Vérifiez tout chiffre avant de le porter dans une décision.
+
+---
+
+## 5. Clôture
 
 **Passer à « Clôture »** gèle tout, définitivement.
 
@@ -488,7 +547,7 @@ dupliquez la campagne.
 
 ---
 
-## 5. Journal d'audit
+## 6. Journal d'audit
 
 **Journal d'audit** trace chaque action et chaque changement de statut, avec son
 auteur et son horodatage. La table est en **ajout seul** au niveau de la base :
@@ -500,7 +559,7 @@ fichier, empreinte, volumes acceptés et rejetés.
 
 ---
 
-## 6. Questions fréquentes
+## 7. Questions fréquentes
 
 **Puis-je modifier un article après le passage en comptage ?**
 Non. Les référentiels sont gelés pour que les exceptions signalées pendant le

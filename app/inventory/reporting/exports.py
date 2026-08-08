@@ -21,6 +21,8 @@ import io
 from collections.abc import Sequence
 from typing import Any
 
+from ..domain.printing import BLANK_ROWS_PER_SECTION, PrintMode
+
 __all__ = [
     "build_workbook",
     "build_counting_sheet_pdf",
@@ -161,11 +163,11 @@ def build_counting_sheet_pdf(
     pass_no: int,
     lines: Sequence[dict[str, Any]],
     sheet_id: str = "",
-    filled: bool = False,
+    mode: PrintMode = PrintMode.LIST,
     with_sources: bool = False,
     blank_lines: int = 0,
 ) -> bytes:
-    """Render a printable counting sheet, blank or filled.
+    """Render a printable counting sheet in one of its three modes.
 
     Layout choices are operational, not decorative:
 
@@ -184,15 +186,19 @@ def build_counting_sheet_pdf(
     * one identity line closes the header — name, times and signature side by
       side rather than stacked.
 
-    :param filled: print the counted quantities. The blank sheet is the one
-        handed to a counter; the filled one is the record of what was written,
-        for a file or a signature. They are the same document with the quantity
-        column populated, so nobody has to reconcile two layouts.
+    :param mode: which of the three documents to produce.
+        :attr:`~inventory.domain.printing.PrintMode.LIST` prints the article
+        list with an empty quantity column plus a few free rows per section —
+        the sheet handed to a counter.
+        :attr:`~inventory.domain.printing.PrintMode.FILLED` prints the same
+        layout with the counted quantities and *no* free rows: a record must
+        not carry invitations to write more.
+        :attr:`~inventory.domain.printing.PrintMode.BLANK` prints *blank_lines*
+        empty rows and nothing else — the free-entry sheet.
     :param with_sources: add the provenance and comment columns. Only meaningful
-        on a filled sheet — a blank one has neither.
-    :param blank_lines: rows to append per section for hand-written references,
-        for a free-entry sheet or simply to leave room. Ignored when *filled*:
-        a record of what was counted must not carry invitations to write more.
+        in :attr:`~inventory.domain.printing.PrintMode.FILLED`.
+    :param blank_lines: number of rows on a free-entry sheet. Exactly what was
+        asked for: somebody who says forty lines gets forty.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -302,9 +308,10 @@ def build_counting_sheet_pdf(
         _NAME_MAX_CHARS_WITH_SOURCES if with_sources else _NAME_MAX_CHARS
     )
 
+    filled = mode is PrintMode.FILLED
     for section in ("LINE_SIDE", "WIP", "WIP_OK"):
-        section_lines = by_section.get(section, [])
-        extras = 0 if filled else _blank_rows_for(section, blank_lines)
+        section_lines = [] if mode is PrintMode.BLANK else by_section.get(section, [])
+        extras = _blank_rows_for(section, mode=mode, requested=blank_lines)
         if not section_lines and not extras:
             continue
 
@@ -428,10 +435,6 @@ _WIDTHS_PLAIN = (32.4, 93.7, 36.1, 23.8)
 _SOURCE_COLUMNS = (*_PLAIN_COLUMNS, "Source", "Commentaire")
 _WIDTHS_WITH_SOURCES = (32.4, 56.0, 30.0, 18.0, 22.0, 27.6)
 
-#: Blank rows appended per section on a sheet handed to a counter, so an item
-#: nobody listed can be written down instead of being remembered.
-_BLANK_ROWS = {"LINE_SIDE": 7, "WIP": 4, "WIP_OK": 4}
-
 _SOURCE_LABELS = {
     "MANUAL": "saisie",
     "SCAN_AI": "IA",
@@ -449,17 +452,21 @@ _NAME_MAX_CHARS = 32
 _NAME_MAX_CHARS_WITH_SOURCES = 20
 
 
-def _blank_rows_for(section: str, requested: int) -> int:
-    """How many empty rows a section gets on a sheet meant to be written on.
+def _blank_rows_for(section: str, *, mode: PrintMode, requested: int) -> int:
+    """How many empty rows a section gets.
 
-    *requested* overrides the line-side default — that is the free-entry case,
-    where the whole sheet is blank rows and the user says how many. The two WIP
-    sections keep their standard allowance either way: an assembly found in a
-    corner has to have somewhere to go.
+    A record of what was counted gets none. A free-entry sheet is nothing *but*
+    empty rows, all in one table — the counter writes both the reference and the
+    quantity, so splitting a requested total across three sections would only
+    make the number they asked for come out wrong. The sheet handed to a counter
+    keeps a small allowance per section, so an article nobody listed has
+    somewhere to go.
     """
-    if requested and section == "LINE_SIDE":
-        return requested
-    return _BLANK_ROWS.get(section, 0)
+    if mode is PrintMode.FILLED:
+        return 0
+    if mode is PrintMode.BLANK:
+        return requested if section == "LINE_SIDE" else 0
+    return BLANK_ROWS_PER_SECTION.get(section, 0)
 
 
 def _shorten(name: str, limit: int = _NAME_MAX_CHARS) -> str:

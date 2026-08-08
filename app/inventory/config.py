@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     databricks_host: str | None = Field(default=None, alias="DATABRICKS_HOST")
     warehouse_id: str | None = Field(default=None, alias="DATABRICKS_WAREHOUSE_ID")
     llm_endpoint: str = Field(
-        default="databricks-claude-sonnet-4-5", alias="INV_LLM_ENDPOINT"
+        default="databricks-claude-opus-4-8", alias="INV_LLM_ENDPOINT"
     )
 
     # ------------------------------------------------------------ unity catalog

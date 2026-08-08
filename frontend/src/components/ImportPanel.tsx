@@ -1,13 +1,14 @@
 /**
  * The import surface, shared by every grid.
  *
- * The behaviour the specification asks for, in order:
+ * Three actions, and nothing else until one is used: download the template,
+ * load a file, or paste a block. The expected-columns list and the paste box
+ * appear on demand — permanently parked above every grid, they were a band of
+ * instructions people had already read.
  *
- *  1. the expected columns are shown **first**, as an empty grid, so nobody has
- *     to guess what a file must contain;
- *  2. a file (or a paste) is validated in a dry run and the result is displayed
- *     — accepted, rejected, why, on which line — *before* anything is written;
- *  3. only then does the user confirm the import.
+ * What does not change is the loop that matters: a file or a paste is validated
+ * in a dry run and the result is shown — accepted, rejected, why, on which line
+ * — *before* anything is written, and only then does the user confirm.
  *
  * That "see it before you commit it" loop is the single biggest behavioural
  * difference from pasting into a spreadsheet, and it is what stops a broken
@@ -50,6 +51,7 @@ export function ImportPanel({
 }) {
   const [stage, setStage] = useState<Stage>({ kind: 'idle' })
   const [pasteText, setPasteText] = useState('')
+  const [pasting, setPasting] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const toast = useToast()
   const showError = useErrorToast()
@@ -78,6 +80,7 @@ export function ImportPanel({
         : await api.importPaste(campaignId, target, source.text ?? '', { replace })
       setStage({ kind: 'done', result })
       setPasteText('')
+      setPasting(false)
       toast.success(
         `${result.rowsAccepted.toLocaleString('fr-FR')} ligne(s) importée(s)`,
         result.rowsRejected
@@ -93,9 +96,8 @@ export function ImportPanel({
 
   const reset = () => setStage({ kind: 'idle' })
 
-  // A locked panel is dead weight: the upload button refuses, the paste box
-  // refuses, and the column list describes a file nobody can load. Showing the
-  // reason alone says everything the panel would have, in one line.
+  // A locked panel is dead weight: every button in it would refuse. The reason
+  // alone says everything it would have, in one line.
   if (disabled) {
     return disabledReason ? (
       <Alert tone="info" title={`${contract.title} — import verrouillé`}>
@@ -104,87 +106,80 @@ export function ImportPanel({
     ) : null
   }
 
+  const busy = stage.kind === 'validating' || stage.kind === 'importing'
+
   return (
     <div className="stack">
-      <Card
-        title={contract.title}
-        message={contract.description}
-        actions={
-          <>
-            {extraActions}
-            <Button
-              size="sm"
-              icon={<Icons.download size={13} />}
-              onClick={() => startDownload(downloads.gridTemplate(campaignId, contract.key))}
-            >
-              Télécharger le modèle
+      {/* A row of actions rather than a permanent panel. Loading a file is one
+          click either way, and the expected-columns list only earns its space
+          when somebody is actually assembling a paste. */}
+      <div className="row-wrap">
+        {extraActions}
+        <Button
+          size="sm"
+          icon={<Icons.download size={13} />}
+          onClick={() => startDownload(downloads.gridTemplate(campaignId, contract.key))}
+        >
+          Télécharger le modèle
+        </Button>
+        <Button
+          size="sm"
+          variant="primary"
+          icon={<Icons.upload size={13} />}
+          disabled={busy}
+          onClick={() => fileInput.current?.click()}
+        >
+          Charger un fichier
+        </Button>
+        <Button
+          size="sm"
+          icon={<Icons.copy size={13} />}
+          disabled={busy}
+          onClick={() => setPasting((open) => !open)}
+        >
+          Copier / Coller
+        </Button>
+      </div>
+
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".xlsx,.xlsm,.csv,.tsv,.txt"
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file) void validate({ file })
+          event.target.value = ''
+        }}
+      />
+
+      {pasting && (
+        <Card
+          title={`Coller ${contract.title.toLowerCase()}`}
+          message={contract.hint || contract.description}
+          actions={
+            <Button variant="ghost" size="sm" onClick={() => setPasting(false)}>
+              Fermer
             </Button>
-            <Button
-              size="sm"
-              variant="primary"
-              icon={<Icons.upload size={13} />}
-              disabled={stage.kind === 'validating' || stage.kind === 'importing'}
-              onClick={() => fileInput.current?.click()}
-            >
-              Charger un fichier
-            </Button>
-          </>
-        }
-      >
-        <input
-          ref={fileInput}
-          type="file"
-          accept=".xlsx,.xlsm,.csv,.tsv,.txt"
-          hidden
-          onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file) void validate({ file })
-            event.target.value = ''
-          }}
-        />
-
-        {contract.hint && (
-          <Alert tone="info" title="Format attendu">
-            {contract.hint}
-          </Alert>
-        )}
-
-        <div className="stack" style={{ marginTop: 'var(--space-4)' }}>
-          <div className="row-wrap">
-            <strong style={{ fontSize: 'var(--text-sm)' }}>Colonnes attendues</strong>
-            <span className="subtle">
-              dans cet ordre — les en-têtes sont reconnus automatiquement, y compris
-              les variantes de l’export ERP
-            </span>
-          </div>
-          <div className="chips">
-            {contract.fields.map((field) => (
-              <span key={field.name} className="chip" title={field.aliases.join(' · ')}>
-                {field.label}
-                {field.required && <Badge tone="danger">requis</Badge>}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <details style={{ marginTop: 'var(--space-4)' }}>
-          <summary
-            style={{
-              cursor: 'pointer',
-              fontSize: 'var(--text-sm)',
-              fontWeight: 'var(--weight-medium)',
-            }}
-          >
-            Coller un bloc depuis Excel
-          </summary>
-          <div className="stack" style={{ marginTop: 'var(--space-3)' }}>
+          }
+        >
+          <div className="stack">
+            <div className="chips">
+              {contract.fields.map((field) => (
+                <span key={field.name} className="chip" title={field.aliases.join(' · ')}>
+                  {field.label}
+                  {field.required && <Badge tone="danger">requis</Badge>}
+                </span>
+              ))}
+            </div>
             <textarea
               className="textarea mono"
               value={pasteText}
+              autoFocus
               onChange={(event) => setPasteText(event.target.value)}
               placeholder={
                 'Collez ici (Ctrl+V) un bloc copié depuis Excel.\n' +
-                'Avec ou sans ligne d’en-tête : elle est détectée automatiquement.'
+                'La ligne d’en-tête est détectée automatiquement.'
               }
             />
             <div className="row">
@@ -203,12 +198,12 @@ export function ImportPanel({
               )}
             </div>
           </div>
-        </details>
-      </Card>
+        </Card>
+      )}
 
       {stage.kind === 'validating' && (
         <Alert tone="info" title="Analyse en cours…">
-          Le fichier est validé ligne par ligne. Rien n’est encore enregistré.
+          Validation ligne par ligne. Rien n’est encore enregistré.
         </Alert>
       )}
 

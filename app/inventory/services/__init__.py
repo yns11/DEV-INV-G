@@ -6,6 +6,7 @@ written — so no router and no repository has to remember any of that.
 """
 
 from .analysis_service import AnalysisService
+from .assistant_service import AssistantService
 from .campaign_service import DEFAULT_THRESHOLDS, CampaignService
 from .context import ENGINE_VERSION, ServiceContext, utcnow
 from .counting_service import CountingService
@@ -16,6 +17,7 @@ from .report_service import ReportService
 
 __all__ = [
     "AnalysisService",
+    "AssistantService",
     "CampaignService",
     "CountingService",
     "DEFAULT_THRESHOLDS",

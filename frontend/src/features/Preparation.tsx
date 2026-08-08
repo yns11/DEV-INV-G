@@ -8,6 +8,7 @@ import type { GridContract, Manager, Overview, Threshold } from '../lib/types'
 import { ITEM_TYPE_LABELS, moneyShort, numShort, percent } from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, type Column } from '../components/DataGrid'
+import { useSubSection } from '../lib/subsection'
 import { ZonesAdminGrid } from './zones'
 import {
   Alert,
@@ -17,7 +18,6 @@ import {
   Card,
   Icons,
   Skeleton,
-  Tabs,
   useErrorToast,
   useToast,
 } from '../components/ui'
@@ -32,10 +32,16 @@ type Tab =
   | 'journal_scope'
   | 'zone_scope'
 
+const TABS: Tab[] = [
+  'items', 'boms', 'book_stock', 'count_sheets',
+  'thresholds', 'managers', 'journal_scope', 'zone_scope',
+]
+
 export function Preparation() {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
-  const [tab, setTab] = useState<Tab>('items')
+  // The sidebar draws this level, so the screen only reads it.
+  const [tab] = useSubSection<Tab>('items', TABS)
 
   const contracts = useQuery({ queryKey: ['contracts'], queryFn: api.contracts })
   const contract = (key: string): GridContract | undefined =>
@@ -43,21 +49,6 @@ export function Preparation() {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
-      <Tabs<Tab>
-        value={tab}
-        onChange={setTab}
-        tabs={[
-          { id: 'items', label: 'Articles', count: overview.counts.items },
-          { id: 'boms', label: 'Nomenclatures' },
-          { id: 'book_stock', label: 'Stock livre', count: overview.counts.bookStockLines },
-          { id: 'count_sheets', label: 'Feuilles de comptage' },
-          { id: 'thresholds', label: 'Seuils' },
-          { id: 'managers', label: 'Gestionnaires' },
-          { id: 'journal_scope', label: 'Affectation journaux' },
-          { id: 'zone_scope', label: 'Affectation zones' },
-        ]}
-      />
-
       {contracts.isPending && <Skeleton height={240} />}
 
       {tab === 'items' && contract('items') && (
@@ -390,8 +381,7 @@ function BookStockTab({
     <div className="stack">
       {frozen ? (
         <Alert tone="success" title="Stock livre gelé">
-          Le snapshot est figé : tout écart calculé aujourd’hui sera recalculable à
-          l’identique dans six mois.
+          Tout écart calculé aujourd’hui restera recalculable à l’identique.
         </Alert>
       ) : (
         <Alert
@@ -474,11 +464,9 @@ function CountSheetsTab({
   return (
     <div className="stack">
       {overview.permissions.countSheets && (
-      <Alert tone="info" title="Décider quoi compter, avant le jour J">
-        Une ligne par couple <strong>feuille / article</strong>. Une feuille inconnue
-        est créée avec ses passages ; une feuille connue est complétée, jamais
-        recréée. Les lignes sont posées sur <strong>les deux comptages</strong>,
-        quantités vides : ne pré-remplir que le n°1 rendrait le n°2 aveugle.
+      <Alert tone="info" title="Une ligne par couple feuille / article">
+        Une feuille inconnue est créée, une feuille connue complétée. Les lignes sont
+        posées sur <strong>les deux comptages</strong>, quantités vides.
       </Alert>
       )}
 
@@ -493,9 +481,7 @@ function CountSheetsTab({
 
       {overview.permissions.countSheets && (
         <Alert tone="warning" title="Le référentiel articles fait foi">
-          Un article absent du référentiel produit une erreur de ligne : il n’est
-          <strong> jamais</strong> créé à la volée. Chargez-le d’abord dans l’onglet
-          Articles.
+          Un article absent du référentiel est rejeté, jamais créé à la volée.
         </Alert>
       )}
 
@@ -585,8 +571,8 @@ function ThresholdsTab({
       {!editable && (
         <div style={{ padding: 'var(--space-4)' }}>
           <Alert tone="info" title="Seuils gelés">
-            Les seuils sont figés depuis le passage en phase de comptage, pour que les
-            exceptions signalées pendant le comptage soient les mêmes qu’à l’analyse.
+            Figés au passage en comptage, pour que les exceptions signalées restent
+            les mêmes jusqu’à l’analyse.
           </Alert>
         </div>
       )}
@@ -742,10 +728,8 @@ function ManagersTab({
   return (
     <div className="stack">
       <Alert tone="info" title="Un périmètre, pas une habilitation">
-        Affecter un entrepôt ou une zone à un gestionnaire ne restreint aucune
-        action : c’est un filtre d’affichage, activé par l’interrupteur
-        « Mon périmètre » de la barre supérieure. Chacun garde le droit d’agir
-        partout — indispensable quand il faut couvrir un collègue à 6 h du matin.
+        Une affectation ne restreint aucune action : c’est le filtre « Mon périmètre ».
+        Chacun garde le droit d’agir partout.
       </Alert>
 
       <Card
@@ -771,9 +755,8 @@ function ManagersTab({
       >
         {!editable && (
           <div style={{ padding: 'var(--space-4)' }}>
-            <Alert tone="info" title="Référentiel gelé">
-              Les gestionnaires sont figés depuis le passage en phase de comptage,
-              comme le reste de la configuration de campagne.
+            <Alert tone="info" title="Gestionnaires gelés">
+              Figés au passage en comptage, comme le reste de la configuration.
             </Alert>
           </div>
         )}
@@ -874,11 +857,9 @@ function JournalScopeTab({
   return (
     <div className="stack">
       <Alert tone="info" title="Un journal suit son entrepôt">
-        Un journal de comptage est dans le périmètre d’un gestionnaire lorsque son
-        entrepôt lui est affecté. La ligne <strong>AUTRES</strong> n’est pas un
-        entrepôt : elle rattache d’un coup tous ceux qui n’ont pas d’affectation
-        explicite — sinon un entrepôt découvert par un nouvel import de stock livre
-        tomberait hors de tout périmètre sans que personne ne le voie.
+        Un journal suit son entrepôt. La ligne <strong>AUTRES</strong> rattache d’un
+        coup tous les entrepôts sans affectation explicite — sans elle, un entrepôt
+        découvert par un import tomberait hors de tout périmètre.
       </Alert>
 
       <Card title="Affectation des entrepôts" flush>
@@ -965,10 +946,8 @@ function ZoneScopeTab({
 
   return (
     <div className="stack">
-      <Alert tone="info" title="Rattacher les feuilles à leur gestionnaire">
-        Sélectionnez des zones, puis choisissez un gestionnaire dans la barre
-        d’outils. Comme partout, l’affectation ne restreint rien : elle nourrit le
-        filtre « Mon périmètre ».
+      <Alert tone="info" title="Rattacher les zones à leur gestionnaire">
+        Sélectionnez des zones, puis choisissez un gestionnaire dans la barre d’outils.
       </Alert>
 
       <ZonesAdminGrid

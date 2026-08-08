@@ -576,10 +576,8 @@ function LocationsTab({
   return (
     <div className="stack">
       <Alert tone="info" title="Périmètre de comptage">
-        Le référentiel est construit automatiquement à partir du stock livre. Désactiver
-        un emplacement le retire <strong>totalement</strong> du périmètre : son journal
-        est supprimé, ses quantités et sa valeur sortent de tous les indicateurs, et il
-        ne compte plus dans le dénominateur d’avancement.
+        Construit automatiquement à partir du stock livre. Désactiver un emplacement
+        supprime son journal et le sort de tous les indicateurs.
       </Alert>
 
       {selected.size > 0 && editable && (

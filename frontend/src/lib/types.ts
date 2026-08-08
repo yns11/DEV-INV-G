@@ -298,6 +298,22 @@ export interface MultiScanReport {
   unroutedPages: Array<{ page: number; read: string; note: string }>
 }
 
+/**
+ * Which of the three printable documents a sheet can produce.
+ *
+ * `blank` prints empty rows only (a free-entry zone), `list` prints the article
+ * list with the quantity column empty (the sheet handed to a counter), `filled`
+ * prints the counted quantities (the record). Which ones apply to a given zone
+ * right now is decided server-side and arrives as `Zone.printModes`.
+ */
+export type PrintMode = 'blank' | 'list' | 'filled'
+
+export const PRINT_MODE_LABELS: Record<PrintMode, string> = {
+  blank: 'Feuille vierge — sans références',
+  list: 'Feuille à compter — sans quantités',
+  filled: 'Relevé — avec les quantités',
+}
+
 export interface Zone {
   id: string
   code: string
@@ -313,6 +329,8 @@ export interface Zone {
   allow_negative: boolean
   status: ZoneStatus
   pendingArbitrations: number
+  /** What this zone can be printed as right now, in the order to offer them. */
+  printModes: PrintMode[]
   sheets: Sheet[]
 }
 
@@ -626,4 +644,25 @@ export interface Me {
   actor: string
   authenticated: boolean
   source: string
+}
+
+/**
+ * The campaign assistant.
+ *
+ * `contextBlocks` names what the answer was built from. Showing it is what lets
+ * somebody calibrate their trust in a given answer instead of taking the whole
+ * surface on faith — or dismissing it wholesale after one bad reply.
+ */
+export interface AssistantTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface AssistantAnswer {
+  answer: string
+  tokensUsed: number
+  contextBlocks: string[]
+  attachmentsRead: string[]
+  /** What the assistant will and will not answer, in its own words. */
+  scopeNote: string
 }

@@ -25,6 +25,7 @@ import {
   Card,
   EmptyState,
   Icons,
+  Progress,
   Skeleton,
 } from '../components/ui'
 
@@ -52,11 +53,12 @@ export function Dashboard() {
     <div className="stack" style={{ gap: 'var(--space-5)' }}>
       {!hasBookStock && (
         <Alert tone="info" title="Le stock livre n’est pas encore gelé">
-          Les indicateurs d’écart apparaîtront dès que le snapshot ERP sera chargé et
-          gelé, au début de la phase de comptage.{' '}
+          Les écarts apparaîtront une fois le stock livre chargé et gelé.{' '}
           <Link to="preparation">Aller aux référentiels</Link>
         </Alert>
       )}
+
+      <ProgressBoard overview={overview} />
 
       <ControlsBanner query={controls} />
 
@@ -108,11 +110,56 @@ export function Dashboard() {
 }
 
 /**
+ * How the counting is split, not just how far along it is.
+ *
+ * The header carries one percentage per stream; the useful question on
+ * inventory day is the one underneath it — how much is *running* versus how
+ * much has not been started. A bar answers that at a glance; two more numbers
+ * in the header would not.
+ */
+function ProgressBoard({ overview }: { overview: Overview }) {
+  const { journalProgress: j, genericProgress: g } = overview
+  if (j.total === 0 && g.zones === 0) return null
+
+  return (
+    <div className="grid grid--2">
+      {j.total > 0 && (
+        <Card title="Journaux de comptage">
+          <Progress
+            total={j.total}
+            segments={[
+              { label: 'Terminés', value: j.complete, color: 'var(--success)' },
+              { label: 'En cours', value: j.running, color: 'var(--accent)' },
+              { label: 'En attente', value: j.pending, color: 'var(--bg-active)' },
+            ]}
+          />
+        </Card>
+      )}
+      {g.zones > 0 && (
+        <Card title="Zones GENERIQUE">
+          <Progress
+            total={g.zones}
+            segments={[
+              { label: 'Terminées', value: g.done, color: 'var(--success)' },
+              {
+                label: 'En cours',
+                value: g.zones - g.done,
+                color: 'var(--bg-active)',
+              },
+            ]}
+          />
+        </Card>
+      )}
+    </div>
+  )
+}
+
+/**
  * The two facts that only show up as counts, and only matter when non-zero.
  *
- * The headline figures moved into the campaign header's carousel, where they
- * are visible from every screen. What is left here is what needs a sentence
- * rather than a number: stock the ERP never saw, and stock nobody counted.
+ * The headline figures live in the campaign header's carousel, visible from
+ * every screen. What is left here is what needs a sentence rather than a
+ * number: stock the ERP never saw, and stock nobody counted.
  */
 function CoverageAlerts({ query }: { query: { data: Kpis | undefined } }) {
   const data = query.data
@@ -121,8 +168,7 @@ function CoverageAlerts({ query }: { query: { data: Kpis | undefined } }) {
     <div className="grid grid--2">
       {data.bookOnlyCount > 0 && (
         <Alert tone="danger" title={`${data.bookOnlyCount} couple(s) jamais comptés`}>
-          Du stock livre existe sur ces couples article/emplacement sans aucun
-          comptage. Ils seront soldés à zéro si l’inventaire est clôturé en l’état.{' '}
+          Du stock livre sans comptage en face : soldé à zéro à la clôture.{' '}
           <Link to="analyse">Voir la liste</Link>
         </Alert>
       )}
@@ -155,8 +201,7 @@ function ControlsBanner({
   if (blockers.length === 0 && warnings === 0) {
     return (
       <Alert tone="success" title="Aucun point bloquant détecté">
-        Les contrôles de cohérence sur les référentiels, le stock livre et les comptages
-        ne remontent aucune anomalie.
+        Référentiels, stock livre et comptages : aucune anomalie.
       </Alert>
     )
   }

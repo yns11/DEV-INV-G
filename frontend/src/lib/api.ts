@@ -32,6 +32,7 @@ import type {
   Me,
   MultiScanReport,
   Overview,
+  PrintMode,
   SheetStatus,
   Threshold,
   TransferAnalysis,
@@ -41,6 +42,7 @@ import type {
   WipWithoutBom,
   Zone,
 } from './types'
+import type { AssistantAnswer, AssistantTurn } from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -509,21 +511,49 @@ export const api = {
 }
 
 /** Download URLs, kept next to the API so paths live in one file. */
-/** Print options, shared by the single-sheet and whole-pass endpoints. */
+/**
+ * Print options, shared by the single-sheet and whole-pass endpoints.
+ *
+ * `mode` is the whole contract: which of the three documents to produce. Which
+ * ones a zone can produce right now comes from the server as `zone.printModes`
+ * — the matrix is not re-implemented here.
+ */
 export type PrintOptions = {
-  /** Print the counted quantities — the record, rather than the blank form. */
-  filled?: boolean
-  /** Add the provenance and comment columns. */
+  mode?: PrintMode
+  /** Add the provenance and comment columns. Only meaningful with `filled`. */
   withSources?: boolean
-  /** Blank rows for a free-entry sheet, 10–180. */
+  /** Rows on a free-entry sheet, 10–180. Only meaningful with `blank`. */
   blankLines?: number
 }
 
 const printQuery = (options: PrintOptions) => ({
-  filled: options.filled ? true : undefined,
+  mode: options.mode ?? 'list',
   withSources: options.withSources ? true : undefined,
   blankLines: options.blankLines || undefined,
 })
+
+export const assistantApi = {
+  /** A question about the campaign, answered from the campaign's own figures. */
+  ask: (id: string, question: string, history: AssistantTurn[]) =>
+    request<AssistantAnswer>(`/campaigns/${id}/assistant/ask`, {
+      method: 'POST',
+      body: JSON.stringify({ question, history }),
+    }),
+  /** Same, with documents attached: images and PDFs are shown to the model. */
+  askWithFiles: (id: string, question: string, history: AssistantTurn[], files: File[]) => {
+    const form = new FormData()
+    form.append('question', question)
+    form.append('history', JSON.stringify(history))
+    files.forEach((file) => form.append('files', file))
+    return request<AssistantAnswer>(`/campaigns/${id}/assistant/ask-with-files`, {
+      method: 'POST',
+      body: form,
+    })
+  },
+  /** Exactly what the model is shown — so the answers can be calibrated. */
+  context: (id: string) =>
+    request<Record<string, unknown>>(`/campaigns/${id}/assistant/context`),
+}
 
 export const downloads = {
   campaignWorkbook: (id: string) => `/campaigns/${id}/reports/campaign.xlsx`,

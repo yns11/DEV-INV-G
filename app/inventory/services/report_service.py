@@ -74,9 +74,14 @@ class ReportService:
             else _printable_lines(ctx.sheets.list_sheet_lines(sheet_id), items)
         )
         if mode is not PrintMode.BLANK and not lines:
+            # A free-entry sheet nobody has typed into yet is the common case
+            # here, and telling its owner to "load an article list" would be
+            # advice against the whole point of the zone.
             raise ValidationError(
-                "Cette feuille ne porte aucune ligne. Chargez sa liste "
-                "d'articles, ou déclarez la zone en saisie libre."
+                "Rien n'a encore été saisi sur cette feuille : le relevé serait "
+                "vide. Imprimez-la vierge pour la faire remplir."
+                if zone.free_entry else
+                "Cette feuille ne porte aucune ligne. Chargez sa liste d'articles."
             )
 
         pass_no = 1 if sheet.pass_no is SheetPass.PASS_1 else 2
@@ -657,17 +662,31 @@ def _kpi_rows(kpis: Any) -> list[tuple[str, Any]]:
 
 
 def _merge_pdfs(documents: list[bytes]) -> bytes:
+    """Concatenate the per-zone sheets into the one stack that gets printed.
+
+    Uses ``pypdfium2``, which the scan pipeline already depends on, rather than
+    ``pypdf``: the latter imports ``cryptography`` at module load for encrypted
+    documents it will never meet here, and a batch print failing because of a
+    dependency of a feature it does not use is not a trade worth making.
+    """
     import io as _io
 
-    from pypdf import PdfReader, PdfWriter
+    import pypdfium2 as pdfium
 
-    writer = PdfWriter()
-    for document in documents:
-        for page in PdfReader(_io.BytesIO(document)).pages:
-            writer.add_page(page)
-    buffer = _io.BytesIO()
-    writer.write(buffer)
-    return buffer.getvalue()
+    merged = pdfium.PdfDocument.new()
+    sources = [pdfium.PdfDocument(_io.BytesIO(document)) for document in documents]
+    try:
+        for source in sources:
+            merged.import_pages(source)
+        buffer = _io.BytesIO()
+        merged.save(buffer)
+        return buffer.getvalue()
+    finally:
+        # The sources have to outlive the import calls — pdfium copies pages
+        # lazily — so they are closed only once the merge is written.
+        for source in sources:
+            source.close()
+        merged.close()
 
 
 def _slug(value: str) -> str:

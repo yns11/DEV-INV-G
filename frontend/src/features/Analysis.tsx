@@ -260,11 +260,11 @@ function VariancesTab({
                   : undefined
               }
               actions={
-                <div className="chips">
+                <div className="segmented">
                   {DIMENSIONS.map((option) => (
                     <button
                       key={option.id}
-                      className={`chip${dimension === option.id ? ' chip--active' : ''}`}
+                      className={`segmented__item${dimension === option.id ? ' segmented__item--active' : ''}`}
                       onClick={() => setDimension(option.id)}
                     >
                       {option.label}
@@ -311,21 +311,21 @@ function VariancesTab({
         }
         message={
           granularity === 'item'
-            ? 'La lecture de référence : un transfert entre deux emplacements n’est pas une perte, donc les emplacements sont agrégés. C’est ce chiffre qui dit ce que le site a réellement perdu ou gagné.'
-            : 'Vue opérationnelle : le détail par emplacement dit où aller recompter. Un article déplacé d’un bac à l’autre y apparaît deux fois — en moins ici, en plus là.'
+            ? 'Emplacements agrégés : ce que le site a réellement perdu ou gagné.'
+            : 'Où aller recompter. Un article déplacé apparaît deux fois — en moins ici, en plus là.'
         }
         actions={
           <div className="row-wrap">
-            <div className="chips">
+            <div className="segmented">
               <button
-                className={`chip${granularity === 'item' ? ' chip--active' : ''}`}
+                className={`segmented__item${granularity === 'item' ? ' segmented__item--active' : ''}`}
                 onClick={() => setGranularity('item')}
                 title="La perte ou le gain réel du site"
               >
                 Par référence
               </button>
               <button
-                className={`chip${granularity === 'item_location' ? ' chip--active' : ''}`}
+                className={`segmented__item${granularity === 'item_location' ? ' segmented__item--active' : ''}`}
                 onClick={() => setGranularity('item_location')}
                 title="Où aller recompter"
               >
@@ -415,8 +415,7 @@ function ExplainModal({
         {(data) => (
           <div className="stack">
             <Alert tone="info" title="Généré par IA — à vérifier">
-              Cette explication est une proposition fondée sur les chiffres de la
-              campagne. Elle n’affecte aucune donnée et ne remplace pas votre analyse.
+              Proposition fondée sur les chiffres de la campagne. Elle n’écrit rien.
             </Alert>
             <div style={{ whiteSpace: 'pre-wrap', fontSize: 'var(--text-base)' }}>
               {data.explanation}
@@ -1070,8 +1069,8 @@ function SummaryTab({ campaignId }: { campaignId: string }) {
           {(data) => (
             <div className="stack">
               <Alert tone="warning" title="Contenu généré par IA">
-                Vérifiez chaque chiffre avant diffusion : le texte est produit à partir
-                des données de la campagne, mais reste une rédaction automatique.
+                Rédaction automatique à partir des données de la campagne. Vérifiez
+                chaque chiffre avant diffusion.
               </Alert>
               <div style={{ whiteSpace: 'pre-wrap', lineHeight: 'var(--leading-normal)' }}>
                 {data.markdown}

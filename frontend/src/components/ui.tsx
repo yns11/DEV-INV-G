@@ -454,6 +454,14 @@ export function Kpi({
 // Tabs
 // --------------------------------------------------------------------------- //
 
+/**
+ * A horizontal choice *inside* a screen.
+ *
+ * Shaped as a segmented control rather than as underlined tabs, and that is the
+ * whole point: navigation now lives in the sidebar, so anything horizontal must
+ * read as a filter over the content, never as a second place to navigate. Two
+ * bars of identical shape were what made the old layout tiring to read.
+ */
 export function Tabs<T extends string>({
   tabs,
   value,
@@ -464,18 +472,18 @@ export function Tabs<T extends string>({
   onChange: (id: T) => void
 }) {
   return (
-    <div className="tabs" role="tablist">
+    <div className="segmented" role="tablist">
       {tabs.map((tab) => (
         <button
           key={tab.id}
           role="tab"
           aria-selected={value === tab.id}
-          className={`tab${value === tab.id ? ' tab--active' : ''}`}
+          className={`segmented__item${value === tab.id ? ' segmented__item--active' : ''}`}
           onClick={() => onChange(tab.id)}
         >
           {tab.label}
           {tab.count !== undefined && tab.count !== null && (
-            <span className="tab__count num">{tab.count}</span>
+            <span className="segmented__count num">{tab.count}</span>
           )}
         </button>
       ))}
@@ -825,36 +833,6 @@ export function SearchInput({
         onChange={(e) => onChange(e.target.value)}
       />
     </div>
-  )
-}
-
-export function Stepper({
-  steps,
-  current,
-}: {
-  steps: Array<{ id: string; label: string }>
-  current: string
-}) {
-  const index = steps.findIndex((s) => s.id === current)
-  return (
-    <nav className="stepper" aria-label="Étapes de la campagne">
-      {steps.map((step, i) => (
-        <span key={step.id} className="row" style={{ gap: 'var(--space-2)' }}>
-          {i > 0 && (
-            <span className="step__arrow" aria-hidden="true">
-              <Icons.chevronRight size={13} />
-            </span>
-          )}
-          <span
-            className={`step${i < index ? ' step--done' : ''}${i === index ? ' step--current' : ''}`}
-            aria-current={i === index ? 'step' : undefined}
-          >
-            <span className="step__index">{i < index ? '✓' : i + 1}</span>
-            {step.label}
-          </span>
-        </span>
-      ))}
-    </nav>
   )
 }
 

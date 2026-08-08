@@ -9,15 +9,18 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api, downloads } from '../lib/api'
+import { useSubSection } from '../lib/subsection'
 import type {
   Arbitration,
   ConsolidationLine,
   MultiScanReport,
   Overview,
+  PrintMode,
   Sheet,
   SheetStatus,
   Zone,
 } from '../lib/types'
+import { PRINT_MODE_LABELS } from '../lib/types'
 import {
   SECTION_HINTS,
   SECTION_LABELS,
@@ -35,7 +38,7 @@ import { parseSheetLines } from '../lib/pasteSheetLines'
 import { useFocusMode } from '../lib/focus'
 import { CreateZoneModal } from './zones'
 import {
-  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Field, Icons, Modal, Skeleton, Switch, Tabs, useDownload, useErrorToast, useToast,
+  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Field, Icons, Modal, Skeleton, Switch, useDownload, useErrorToast, useToast,
 } from '../components/ui'
 
 type Tab = 'zones' | 'arbitration' | 'consolidation'
@@ -55,35 +58,16 @@ const SHEET_TONE: Record<SheetStatus, string> = {
   DONE: 'success',
 }
 
+const TABS: Tab[] = ['zones', 'arbitration', 'consolidation']
+
 export function Generic() {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
-  const [tab, setTab] = useState<Tab>('zones')
+  // The sidebar draws this level, so the screen only reads it.
+  const [tab] = useSubSection<Tab>('zones', TABS)
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
-      <Alert tone="info" title="Un emplacement ERP, des dizaines de zones physiques">
-        {overview.campaign.config.generic_warehouse} /{' '}
-        {overview.campaign.config.generic_location} couvre bords de ligne, zones de
-        picking, qualité, métrologie et laboratoires. Chaque zone est comptée deux fois
-        par deux équipes indépendantes, arbitrée, puis l’ensemble est consolidé en un
-        seul journal INVV.
-      </Alert>
-
-      <Tabs<Tab>
-        value={tab}
-        onChange={setTab}
-        tabs={[
-          { id: 'zones', label: 'Zones & feuilles', count: overview.genericProgress.zones },
-          {
-            id: 'arbitration',
-            label: 'Arbitrages',
-            count: overview.genericProgress.pendingArbitrations || null,
-          },
-          { id: 'consolidation', label: 'Consolidation' },
-        ]}
-      />
-
       {tab === 'zones' && <ZonesTab campaignId={campaignId} overview={overview} />}
       {tab === 'arbitration' && <ArbitrationTab campaignId={campaignId} overview={overview} />}
       {tab === 'consolidation' && (
@@ -103,7 +87,7 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   const showError = useErrorToast()
   const [creating, setCreating] = useState(false)
   const [printing, setPrinting] = useState(false)
-  const [printSheet, setPrintSheet] = useState<string | null>(null)
+  const [printSheet, setPrintSheet] = useState<{ sheetId: string; zone: Zone } | null>(null)
   const [multiScan, setMultiScan] = useState<File | null>(null)
   const [scanning, setScanning] = useState(false)
   const [openSheet, setOpenSheet] = useState<{ zone: Zone; sheet: Sheet } | null>(null)
@@ -123,6 +107,19 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
     queryFn: () => api.zones(campaignId, focus ? { focus: true } : {}),
     refetchInterval: 45_000,
   })
+
+  // A batch print offers the modes at least one zone can actually produce, and
+  // says how many sheets each would yield — the two are the same question.
+  const batch = useMemo(() => {
+    const counts = { blank: 0, list: 0, filled: 0 } as Record<PrintMode, number>
+    for (const zone of query.data ?? []) {
+      for (const mode of zone.printModes ?? []) counts[mode] = (counts[mode] ?? 0) + 1
+    }
+    const modes = (['list', 'blank', 'filled'] as PrintMode[]).filter(
+      (m) => (counts[m] ?? 0) > 0,
+    )
+    return { modes, counts }
+  }, [query.data])
 
   const transition = useMutation({
     mutationFn: ({ sheetId, target, counterName }: {
@@ -259,7 +256,7 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                         size="sm"
                         variant="ghost"
                         icon={<Icons.printer size={13} />}
-                        onClick={() => setPrintSheet(sheet.id)}
+                        onClick={() => setPrintSheet({ sheetId: sheet.id, zone })}
                         aria-label="Imprimer"
                         title="Imprimer cette feuille — vierge ou remplie"
                       />
@@ -288,8 +285,8 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                   ))}
                   {zone.pendingArbitrations > 0 && (
                     <Alert tone="warning" title={`${zone.pendingArbitrations} écart(s) à arbitrer`}>
-                      Les deux comptages divergent. La consolidation restera bloquée
-                      tant qu’une quantité n’aura pas été retenue.
+                      La consolidation reste bloquée tant qu’une quantité n’est pas
+                      retenue.
                     </Alert>
                   )}
                 </div>
@@ -307,12 +304,18 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
         />
       )}
       {printing && (
-        <PrintModal campaignId={campaignId} onClose={() => setPrinting(false)} />
+        <PrintModal
+          campaignId={campaignId}
+          modes={batch.modes}
+          zonesByMode={batch.counts}
+          onClose={() => setPrinting(false)}
+        />
       )}
       {printSheet && (
         <PrintModal
           campaignId={campaignId}
-          sheetId={printSheet}
+          sheetId={printSheet.sheetId}
+          modes={printSheet.zone.printModes}
           onClose={() => setPrintSheet(null)}
         />
       )}
@@ -633,16 +636,9 @@ function SheetModal({
               </span>
             </div>
 
-            <Alert tone="info" title="Règle de saisie">
-              Une case vide signifie <strong>non compté</strong> et sera traitée comme
-              telle. Pour déclarer une absence de stock, saisissez explicitement 0.
-              {isPass2 && (
-                <>
-                  {' '}
-                  La colonne « Comptage n°1 » est là pour repérer un écart pendant la
-                  saisie ; elle ne figure évidemment pas sur la feuille imprimée.
-                </>
-              )}
+            <Alert tone="info" title="Case vide = non compté">
+              Pour déclarer une absence de stock, saisissez explicitement 0.
+              {isPass2 && ' La colonne « Comptage n°1 » n’est affichée qu’à l’écran.'}
             </Alert>
 
             {editable && (
@@ -713,6 +709,7 @@ function SheetModal({
               <PrintModal
                 campaignId={campaignId}
                 sheetId={sheet.id}
+                modes={zone.printModes}
                 onClose={() => setPrinting(false)}
               />
             )}
@@ -1089,8 +1086,8 @@ function ConsolidationTab({
             <div className="stack">
               {data.zonesSkipped.length > 0 && (
                 <Alert tone="warning" title={`${data.zonesSkipped.length} zone(s) non terminée(s)`}>
-                  {data.zonesSkipped.join(', ')} — elles ne contribueront pas tant que
-                  leurs deux comptages ne seront pas validés.
+                  {data.zonesSkipped.join(', ')} — sans contribution tant que leurs
+                  comptages ne sont pas validés.
                 </Alert>
               )}
               {blocking.length > 0 && (
@@ -1318,29 +1315,45 @@ function WipModal({
  * to a counter, the record of what came back, and the free-entry sheet with
  * nothing pre-printed at all.
  */
+/**
+ * Printing a counting sheet.
+ *
+ * A sheet is three different documents and only some of them exist at any given
+ * moment: a zone with a pre-printed list has nothing to gain from a blank grid,
+ * a free-entry zone has no list to print, and the record with quantities does
+ * not exist before anything has been counted. Which modes apply is decided
+ * server-side and arrives as `zone.printModes`; this dialog offers exactly
+ * those, so a choice on screen is never one the endpoint will refuse.
+ */
 function PrintModal({
   campaignId,
   sheetId,
+  modes,
+  zonesByMode,
   onClose,
 }: {
   campaignId: string
   sheetId?: string
+  modes: PrintMode[]
+  /** For the batch print: how many zones each mode would produce a sheet for. */
+  zonesByMode?: Record<PrintMode, number>
   onClose: () => void
 }) {
   const startDownload = useDownload()
   const [passNo, setPassNo] = useState<1 | 2>(1)
-  const [filled, setFilled] = useState(false)
+  const [mode, setMode] = useState<PrintMode>(modes[0] ?? 'list')
   const [withSources, setWithSources] = useState(false)
-  const [blankLines, setBlankLines] = useState('')
+  const [blankLines, setBlankLines] = useState('40')
 
   const lines = Number(blankLines)
-  const linesInvalid = blankLines !== '' && (!Number.isInteger(lines) || lines < 10 || lines > 180)
+  const linesInvalid =
+    mode === 'blank' && (!Number.isInteger(lines) || lines < 10 || lines > 180)
 
   const print = () => {
     const options = {
-      filled,
-      withSources: filled && withSources,
-      blankLines: filled || blankLines === '' ? undefined : lines,
+      mode,
+      withSources: mode === 'filled' && withSources,
+      blankLines: mode === 'blank' ? lines : undefined,
     }
     startDownload(
       sheetId
@@ -1350,11 +1363,26 @@ function PrintModal({
     onClose()
   }
 
+  if (modes.length === 0) {
+    return (
+      <Modal
+        title="Impression"
+        onClose={onClose}
+        width={520}
+        footer={<Button onClick={onClose}>Fermer</Button>}
+      >
+        <Alert tone="info" title="Rien à imprimer pour l’instant">
+          Aucune zone n’a de liste d’articles ni de saisie libre déclarée.
+        </Alert>
+      </Modal>
+    )
+  }
+
   return (
     <Modal
-      title={sheetId ? 'Imprimer cette feuille' : 'Imprimer les feuilles de comptage'}
+      title={sheetId ? 'Imprimer cette feuille' : 'Imprimer les feuilles'}
       onClose={onClose}
-      width={640}
+      width={600}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -1374,11 +1402,11 @@ function PrintModal({
       <div className="stack">
         {!sheetId && (
           <Field label="Comptage">
-            <div className="chips">
+            <div className="segmented">
               {([1, 2] as const).map((value) => (
                 <button
                   key={value}
-                  className={`chip${passNo === value ? ' chip--active' : ''}`}
+                  className={`segmented__item${passNo === value ? ' segmented__item--active' : ''}`}
                   onClick={() => setPassNo(value)}
                 >
                   Comptage n°{value}
@@ -1388,62 +1416,50 @@ function PrintModal({
           </Field>
         )}
 
-        <Field
-          label="Contenu"
-          hint="La feuille vierge est celle qu’on remet au compteur ; la feuille remplie est le relevé de ce qui est revenu."
-        >
+        <Field label="Document">
           <div className="chips">
-            <button
-              className={`chip${!filled ? ' chip--active' : ''}`}
-              onClick={() => setFilled(false)}
-            >
-              Vierge — références, unités, sections
-            </button>
-            <button
-              className={`chip${filled ? ' chip--active' : ''}`}
-              onClick={() => setFilled(true)}
-            >
-              Remplie — avec les quantités comptées
-            </button>
+            {modes.map((value) => (
+              <button
+                key={value}
+                className={`chip${mode === value ? ' chip--active' : ''}`}
+                onClick={() => setMode(value)}
+              >
+                {PRINT_MODE_LABELS[value]}
+                {zonesByMode && (
+                  <Badge tone="neutral">{zonesByMode[value] ?? 0} zone(s)</Badge>
+                )}
+              </button>
+            ))}
           </div>
         </Field>
 
-        {filled ? (
-          <Switch
-            checked={withSources}
-            onChange={setWithSources}
-            label="Ajouter les colonnes Source et Commentaire"
-          />
-        ) : (
+        {mode === 'blank' && (
           <Field
-            label="Lignes vides supplémentaires (facultatif)"
-            hint="Pour une feuille de saisie libre, sans liste pré-imprimée. Entre 10 et 180."
-            error={linesInvalid ? 'Indiquez un entier entre 10 et 180.' : undefined}
+            label="Nombre de lignes"
+            hint="Entre 10 et 180."
+            error={linesInvalid ? 'Entier entre 10 et 180.' : undefined}
           >
             <input
               className="input num"
               inputMode="numeric"
-              placeholder="ex. 40"
               value={blankLines}
               onChange={(event) => setBlankLines(event.target.value.trim())}
             />
           </Field>
         )}
 
-        <Alert tone="info" title={filled ? 'Ce que porte le relevé' : 'Ce que porte la feuille'}>
-          {filled ? (
-            <>
-              Toutes les lignes qui portent une référence, y compris celles que
-              personne n’a comptées — elles s’impriment « non compté », parce que
-              c’est précisément le fait qu’un relevé doit garder. Aucune ligne vide
-              n’est ajoutée.
-            </>
-          ) : (
-            <>
-              La liste à parcourir, plus 7 lignes libres en bord de ligne et 4 par
-              section WIP : une pièce trouvée dans un coin doit avoir où être écrite.
-            </>
-          )}
+        {mode === 'filled' && (
+          <Switch
+            checked={withSources}
+            onChange={setWithSources}
+            label="Ajouter les colonnes Source et Commentaire"
+          />
+        )}
+
+        <Alert tone="info" title={PRINT_MODE_LABELS[mode]}>
+          {mode === 'blank' && 'Une grille vide : le compteur écrit la référence et la quantité.'}
+          {mode === 'list' && 'La liste à parcourir, plus 5 lignes libres en bord de ligne, 3 en WIP et 2 en WIP terminé.'}
+          {mode === 'filled' && 'Toutes les lignes portant une référence, y compris « non compté ». Aucune ligne vide ajoutée.'}
         </Alert>
       </div>
     </Modal>
@@ -1577,9 +1593,8 @@ function MultiScanModal({
               tone="success"
               title={`${report.sheetsSkipped.length} feuille(s) préservée(s)`}
             >
-              Ces feuilles portent des valeurs lues par l’IA puis corrigées à la
-              main. Elles n’ont pas été relues : la correction humaine est ce qui
-              coûte le plus cher dans toute la chaîne.
+              Valeurs lues par l’IA puis corrigées à la main : elles n’ont pas été
+              relues.
               <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
                 {report.sheetsSkipped.map((sheet) => (
                   <li key={sheet.sheetId}>
@@ -1596,10 +1611,8 @@ function MultiScanModal({
               tone="warning"
               title={`${report.unroutedPages.length} page(s) non attribuée(s)`}
             >
-              Leur pied de page n’a pas pu être lu. Elles sont signalées plutôt que
-              devinées : une page classée sur la mauvaise zone verserait un comptage
-              sur du stock qui n’a jamais existé. Ouvrez la feuille concernée et
-              importez ces pages une par une.
+              Pied de page illisible : signalées plutôt que devinées. Ouvrez la
+              feuille concernée et importez ces pages une par une.
               <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
                 {report.unroutedPages.map((page) => (
                   <li key={page.page}>
@@ -1669,8 +1682,7 @@ function MultiScanModal({
           </Alert>
         ) : (
           <Alert tone="info" title="Aucune correction humaine en jeu">
-            Aucune feuille ne porte encore de valeur IA corrigée à la main : la
-            lecture ne peut rien écraser.
+            Aucune feuille ne porte de valeur IA corrigée à la main.
           </Alert>
         )}
       </div>

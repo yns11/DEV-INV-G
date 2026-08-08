@@ -42,7 +42,11 @@ import type {
   WipWithoutBom,
   Zone,
 } from './types'
-import type { AssistantAnswer, AssistantTurn } from './types'
+import type {
+  AssistantAnswer,
+  AssistantProfiles,
+  AssistantTurn,
+} from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -533,17 +537,27 @@ const printQuery = (options: PrintOptions) => ({
 })
 
 export const assistantApi = {
-  /** A question about the campaign, answered from the campaign's own figures. */
-  ask: (id: string, question: string, history: AssistantTurn[]) =>
+  /** The framings the server offers, and which one answers by default. */
+  profiles: (id: string) =>
+    request<AssistantProfiles>(`/campaigns/${id}/assistant/profiles`),
+  /** A question, answered under the given framing. */
+  ask: (id: string, question: string, history: AssistantTurn[], profile?: string) =>
     request<AssistantAnswer>(`/campaigns/${id}/assistant/ask`, {
       method: 'POST',
-      body: JSON.stringify({ question, history }),
+      body: JSON.stringify({ question, history, profile }),
     }),
   /** Same, with documents attached: images and PDFs are shown to the model. */
-  askWithFiles: (id: string, question: string, history: AssistantTurn[], files: File[]) => {
+  askWithFiles: (
+    id: string,
+    question: string,
+    history: AssistantTurn[],
+    files: File[],
+    profile?: string,
+  ) => {
     const form = new FormData()
     form.append('question', question)
     form.append('history', JSON.stringify(history))
+    if (profile) form.append('profile', profile)
     files.forEach((file) => form.append('files', file))
     return request<AssistantAnswer>(`/campaigns/${id}/assistant/ask-with-files`, {
       method: 'POST',
@@ -551,8 +565,10 @@ export const assistantApi = {
     })
   },
   /** Exactly what the model is shown — so the answers can be calibrated. */
-  context: (id: string) =>
-    request<Record<string, unknown>>(`/campaigns/${id}/assistant/context`),
+  context: (id: string, profile?: string) =>
+    request<Record<string, unknown>>(
+      `/campaigns/${id}/assistant/context${qs({ profile })}`,
+    ),
 }
 
 export const downloads = {

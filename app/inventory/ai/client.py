@@ -140,12 +140,17 @@ class LlmClient:
                 "image_url": {"url": f"data:{image_mime};base64,{encoded}"},
             })
 
+        # An empty system prompt means *no* system turn, not an empty one: some
+        # endpoints reject a blank system message, and "no instructions at all"
+        # is a configuration the assistant profiles deliberately offer.
+        messages: list[dict[str, Any]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": content if images else user})
+
         kwargs: dict[str, Any] = {
             "model": self._endpoint,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": content if images else user},
-            ],
+            "messages": messages,
             "max_tokens": max_tokens,
             "timeout": self._timeout,
         }

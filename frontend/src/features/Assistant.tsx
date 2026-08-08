@@ -5,19 +5,21 @@
  * button — because that is the one people already know and this screen has
  * nothing to teach them about its controls.
  *
- * Two things are deliberately *not* familiar. The scope is stated up front and
- * repeated in the empty state, because an assistant that silently declines
- * feels broken while one that says what it covers feels bounded. And each
- * answer carries what it was built from: a reply resting on figures the phase
- * has not produced yet is worth reading differently from one resting on the
- * whole dossier.
+ * Three things are deliberately *not* familiar. The framing is a visible choice
+ * rather than a hidden setting, because the same question gets a genuinely
+ * different answer under each one. The scope of the active framing is stated up
+ * front, because an assistant that silently declines feels broken while one that
+ * says what it covers feels bounded. And each answer carries the framing that
+ * produced it and what it was built from — an answer resting on nothing from the
+ * campaign has to be readable as such, especially in a thread where the mode was
+ * switched halfway.
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { assistantApi } from '../lib/api'
-import type { AssistantTurn, Overview } from '../lib/types'
+import type { AssistantProfile, AssistantTurn, Overview } from '../lib/types'
 import { Alert, Badge, Button, Card, Icons, useErrorToast } from '../components/ui'
 
 const MAX_FILES = 5
@@ -33,6 +35,8 @@ const SUGGESTIONS = [
 type Message = AssistantTurn & {
   /** Only on assistant turns: the context blocks the answer was built from. */
   blocks?: string[]
+  /** Which framing produced it — the picker can change between turns. */
+  profile?: string
   files?: string[]
 }
 
@@ -44,8 +48,19 @@ export function Assistant() {
   const [messages, setMessages] = useState<Message[]>([])
   const [draft, setDraft] = useState('')
   const [files, setFiles] = useState<File[]>([])
+  const [profile, setProfile] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const bottom = useRef<HTMLDivElement>(null)
+
+  const framings = useQuery({
+    queryKey: ['assistant-profiles', campaignId],
+    queryFn: () => assistantApi.profiles(campaignId),
+    staleTime: Infinity,
+  })
+  // Until the server has said which framing is deployed, follow it rather than
+  // guessing: a picker that starts on the wrong entry lies about the answers.
+  const active = profile ?? framings.data?.active ?? null
+  const current = framings.data?.profiles.find((p) => p.key === active) ?? null
 
   const ask = useMutation({
     mutationFn: async (question: string) => {
@@ -56,13 +71,20 @@ export function Assistant() {
         content: m.content,
       }))
       return files.length
-        ? assistantApi.askWithFiles(campaignId, question, history, files)
-        : assistantApi.ask(campaignId, question, history)
+        ? assistantApi.askWithFiles(
+            campaignId, question, history, files, active ?? undefined,
+          )
+        : assistantApi.ask(campaignId, question, history, active ?? undefined)
     },
     onSuccess: (result) => {
       setMessages((previous) => [
         ...previous,
-        { role: 'assistant', content: result.answer, blocks: result.contextBlocks },
+        {
+          role: 'assistant',
+          content: result.answer,
+          blocks: result.contextBlocks,
+          profile: result.profile,
+        },
       ])
     },
     onError: (error) => {
@@ -94,9 +116,18 @@ export function Assistant() {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-3)' }}>
+      {framings.data && (
+        <ProfilePicker
+          profiles={framings.data.profiles}
+          active={active}
+          deployed={framings.data.active}
+          onChange={setProfile}
+        />
+      )}
+
       <div className="chat">
         {messages.length === 0 && !ask.isPending && (
-          <EmptyConversation onPick={send} />
+          <EmptyConversation profile={current} onPick={send} />
         )}
 
         {messages.map((message, index) => (
@@ -106,7 +137,7 @@ export function Assistant() {
         {ask.isPending && (
           <div className="chat__row chat__row--assistant">
             <div className="chat__bubble chat__bubble--assistant subtle">
-              Lecture de la campagne…
+              {current?.context === 'none' ? 'Réflexion…' : 'Lecture de la campagne…'}
             </div>
           </div>
         )}
@@ -118,7 +149,11 @@ export function Assistant() {
           <textarea
             className="composer__input"
             rows={2}
-            placeholder="Posez une question sur cette campagne…"
+            placeholder={
+              current?.context === 'none'
+                ? 'Posez n’importe quelle question…'
+                : 'Posez une question sur cette campagne…'
+            }
             value={draft}
             disabled={ask.isPending}
             onChange={(event) => setDraft(event.target.value)}
@@ -192,27 +227,85 @@ export function Assistant() {
       </Card>
 
       <p className="subtle" style={{ fontSize: 'var(--text-xs)' }}>
-        L’assistant lit un condensé de cette campagne et ne modifie rien. Vérifiez tout
-        chiffre avant de l’utiliser dans une décision.
+        {current?.context === 'none'
+          ? 'Aucune donnée de la campagne n’est transmise dans ce mode.'
+          : 'L’assistant lit le contexte de cette campagne.'}{' '}
+        Il ne modifie rien. Vérifiez tout chiffre avant de l’utiliser dans une décision.
       </p>
     </div>
   )
 }
 
-function EmptyConversation({ onPick }: { onPick: (question: string) => void }) {
+/**
+ * Choosing how the assistant is framed.
+ *
+ * Visible rather than buried in configuration, because the same question gets a
+ * genuinely different answer in each mode — and somebody reading an answer needs
+ * to know which one produced it. The deployed default is marked, so switching
+ * away from it is a deliberate act.
+ */
+function ProfilePicker({
+  profiles,
+  active,
+  deployed,
+  onChange,
+}: {
+  profiles: AssistantProfile[]
+  active: string | null
+  deployed: string
+  onChange: (key: string) => void
+}) {
+  const current = profiles.find((p) => p.key === active)
   return (
-    <div className="stack" style={{ gap: 'var(--space-3)', padding: 'var(--space-4)' }}>
-      <Alert tone="info" title="Ce que l’assistant couvre">
-        Les données, l’avancement, les écarts, les contrôles et le fonctionnement de
-        cette campagne. Rien d’autre.
-      </Alert>
-      <div className="chips">
-        {SUGGESTIONS.map((question) => (
-          <button key={question} className="chip" onClick={() => onPick(question)}>
-            {question}
+    <div className="row-wrap" style={{ gap: 'var(--space-3)', alignItems: 'center' }}>
+      <div className="segmented">
+        {profiles.map((profile) => (
+          <button
+            key={profile.key}
+            className={`segmented__item${
+              active === profile.key ? ' segmented__item--active' : ''
+            }`}
+            title={profile.description}
+            onClick={() => onChange(profile.key)}
+          >
+            {profile.label}
+            {profile.key === deployed && (
+              <span className="segmented__count">défaut</span>
+            )}
           </button>
         ))}
       </div>
+      {current && <span className="subtle">{current.description}</span>}
+    </div>
+  )
+}
+
+function EmptyConversation({
+  profile,
+  onPick,
+}: {
+  profile: AssistantProfile | null
+  onPick: (question: string) => void
+}) {
+  const open = profile?.context === 'none'
+  return (
+    <div className="stack" style={{ gap: 'var(--space-3)', padding: 'var(--space-4)' }}>
+      <Alert
+        tone={open ? 'warning' : 'info'}
+        title={open ? 'Mode libre' : 'Ce que l’assistant couvre'}
+      >
+        {profile?.scopeNote ??
+          'Les données, l’avancement, les écarts et les contrôles de cette campagne.'}
+      </Alert>
+      {!open && (
+        <div className="chips">
+          {SUGGESTIONS.map((question) => (
+            <button key={question} className="chip" onClick={() => onPick(question)}>
+              {question}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -226,14 +319,21 @@ function Bubble({ message }: { message: Message }) {
         {message.files?.length ? (
           <div className="chat__meta">{message.files.join(' · ')}</div>
         ) : null}
-        {message.blocks?.length ? (
+        {!mine && (message.blocks?.length || message.profile) ? (
           <div className="chat__meta row-wrap" style={{ gap: 'var(--space-1)' }}>
-            <span>D’après :</span>
-            {message.blocks.map((block) => (
-              <Badge key={block} tone="neutral">
-                {block}
-              </Badge>
-            ))}
+            {message.profile && <Badge tone="accent">{message.profile}</Badge>}
+            {message.blocks?.length ? (
+              <>
+                <span>d’après :</span>
+                {message.blocks.map((block) => (
+                  <Badge key={block} tone="neutral">
+                    {block}
+                  </Badge>
+                ))}
+              </>
+            ) : (
+              <span>sans contexte de campagne</span>
+            )}
           </div>
         ) : null}
       </div>

@@ -1,8 +1,11 @@
 """Asking the campaign questions in plain French.
 
-One endpoint, deliberately read-only. It answers from a digest of *this*
-campaign and writes nothing back — which is what makes a conversational surface
-safe to put next to an inventory people are about to post to their ERP.
+Read-only, whatever the profile. How the assistant is framed — what it is told,
+how much of the campaign it sees, how long it may answer — is a setting served
+by ``/profiles`` and chosen per request, never a property of these handlers.
+What no profile changes is that nothing here writes back to the campaign, which
+is what makes a conversational surface safe to put next to an inventory people
+are about to post to their ERP.
 """
 
 from __future__ import annotations
@@ -14,7 +17,12 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel, Field
 
-from ...ai.assistant import MAX_QUESTION_CHARS, Attachment
+from ...ai.assistant import (
+    MAX_QUESTION_CHARS,
+    PROFILES,
+    Attachment,
+    profile_for,
+)
 from ...errors import ValidationError
 from ...services.assistant_service import (
     MAX_ATTACHMENT_BYTES,
@@ -44,22 +52,25 @@ class Turn(BaseModel):
 
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
-    history: list[Turn] = Field(default_factory=list, max_length=20)
+    history: list[Turn] = Field(default_factory=list, max_length=50)
+    #: Framing to answer under. Unknown or absent falls back to the configured
+    #: default rather than failing — the profile is a setting, not a contract.
+    profile: str | None = None
 
 
 @router.post("/ask", summary="Poser une question sur la campagne")
 def ask(campaign: CampaignDep, service: Service, body: Question) -> dict[str, Any]:
-    """Answer a question from the campaign's own figures.
+    """Answer a question, under the requested profile.
 
-    The model sees a digest assembled server-side — identity, phase, progress,
-    KPIs, largest variances, controls, zones, managers — and nothing else. It
-    holds no database handle and no tools, so it can only be right or wrong
-    about that digest; it can never change anything.
+    Whatever the profile ships as context, the model holds no database handle
+    and no tools: it can only be right or wrong about what it was given, and can
+    never change anything.
     """
     return service.ask(
         campaign,
         question=body.question,
         history=[t.model_dump() for t in body.history],
+        profile=body.profile,
     )
 
 
@@ -69,13 +80,16 @@ async def ask_with_files(
     service: Service,
     question: Annotated[str, Form()],
     history: Annotated[str, Form()] = "[]",
+    profile: Annotated[str | None, Form()] = None,
     files: Annotated[list[UploadFile], File()] = [],  # noqa: B006 — FastAPI form default
 ) -> dict[str, Any]:
     """Same question, with documents attached.
 
-    Images and PDFs are shown to the model, text files are inlined. Their
-    content is treated as data to read, never as instructions to follow — an
-    attached document is precisely where a prompt injection would ride in.
+    Images and PDFs are shown to the model, text files are inlined. In the
+    grounded profiles their content is explicitly framed as data to read rather
+    than instructions to follow — an attached document is precisely where a
+    prompt injection would ride in. The open profile drops that frame, which is
+    part of what "open" means.
     """
     if len(files) > MAX_ATTACHMENTS:
         raise ValidationError(
@@ -103,17 +117,47 @@ async def ask_with_files(
         question=question,
         history=_parse_history(history),
         attachments=attachments,
+        profile=profile,
     )
 
 
 @router.get("/context", summary="Ce que le modèle voit de la campagne")
-def context(campaign: CampaignDep, service: Service) -> dict[str, Any]:
-    """The digest itself, verbatim.
+def context(
+    campaign: CampaignDep, service: Service, profile: str | None = None
+) -> dict[str, Any]:
+    """The context itself, verbatim, as the given profile would ship it.
 
     An assistant whose inputs can be inspected is one whose answers people can
-    calibrate their trust in. This endpoint is what makes that possible.
+    calibrate their trust in. This endpoint is what makes that possible — and in
+    the open profile it returns ``{}``, which is the honest answer.
     """
-    return service.context(campaign)
+    return service.context(campaign, profile=profile_for(profile))
+
+
+@router.get("/profiles", summary="Les cadrages disponibles pour l'assistant")
+def profiles() -> dict[str, Any]:
+    """What framings exist, and which one answers by default.
+
+    Exposed so the screen can offer the choice instead of hard-coding a list
+    that drifts from the server's.
+    """
+    active = profile_for(None)
+    return {
+        "active": active.key,
+        "profiles": [
+            {
+                "key": p.key,
+                "label": p.label,
+                "description": p.description,
+                "scopeNote": p.scope_note,
+                "context": p.context,
+                "maxQuestionChars": p.max_question_chars,
+                "maxAnswerTokens": p.max_answer_tokens,
+                "temperature": p.temperature,
+            }
+            for p in PROFILES.values()
+        ],
+    }
 
 
 def _parse_history(raw: str) -> list[dict[str, str]]:
@@ -128,4 +172,4 @@ def _parse_history(raw: str) -> list[dict[str, str]]:
         {"role": str(t.get("role", "user")), "content": str(t.get("content", ""))}
         for t in parsed
         if isinstance(t, dict)
-    ][-20:]
+    ][-50:]

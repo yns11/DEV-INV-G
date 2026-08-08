@@ -518,20 +518,38 @@ fichier est une photographie en lecture seule.
 
 ## 4. Interroger la campagne
 
-**Assistant** accepte une question en français et répond à partir des chiffres
-de *cette* campagne : avancement, écarts, contrôles, zones, feuilles. On peut y
-joindre un PDF, une image ou un fichier texte.
+**Assistant** accepte une question en français. On peut y joindre un PDF, une
+image ou un fichier texte.
 
-Trois choses valent d'être sues avant de s'en servir :
+### 4.1 Choisir le cadrage
 
-- **il ne voit qu'un condensé** de la campagne, assemblé par l'application — il
-  n'a ni accès à la base ni outil pour aller chercher autre chose. Chaque
-  réponse indique sur quels blocs elle s'appuie ;
+Trois profils, sélectionnables en haut de l'écran. Ils changent ce que le modèle
+reçoit et ce qu'on lui demande — la même question n'obtient pas la même réponse
+selon le profil, et chaque réponse affiche celui qui l'a produite.
+
+| Profil | Contexte transmis | Cadrage | Pour quoi faire |
+|---|---|---|---|
+| **Libre** | aucun | aucun prompt système, aucune limite de longueur | Évaluer le modèle lui-même, sans influence de l'application |
+| **Campagne** | un condensé (une vingtaine de chiffres) | sujet limité à l'inventaire, réponses courtes | L'usage quotidien |
+| **Étendu** | le dossier complet | raisonnement libre, chiffres issus du dossier | Analyser, comparer, formuler des hypothèses |
+
+En **mode libre**, aucune donnée de la campagne ne quitte l'application : les
+réponses ne s'appuient sur rien de ce qu'elle contient. L'écran le dit, et les
+réponses portent la mention « sans contexte de campagne ».
+
+Le profil appliqué par défaut se règle par la variable d'environnement
+`INV_ASSISTANT_PROFILE` (`libre`, `campagne` ou `etendu`) ; il est marqué
+« défaut » dans le sélecteur. Le changer ne demande aucun redéploiement de code.
+
+### 4.2 Ce qui ne change jamais
+
+Quel que soit le profil :
+
+- **le modèle n'a ni base de données ni outil.** Il ne peut être juste ou faux
+  que sur ce qu'on lui a transmis ;
 - **il ne modifie rien.** Aucune quantité, aucune cause, aucun statut ne change
   parce qu'on a posé une question ;
-- **il ne sort pas de la campagne.** Une question hors sujet est déclinée en une
-  phrase — c'est un écran d'inventaire qui accepte de la prose, pas un
-  assistant généraliste.
+- **la question est tracée** dans le journal d'audit, avec le profil utilisé.
 
 Vérifiez tout chiffre avant de le porter dans une décision.
 

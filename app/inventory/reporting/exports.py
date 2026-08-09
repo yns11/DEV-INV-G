@@ -309,6 +309,7 @@ def build_counting_sheet_pdf(
     )
 
     filled = mode is PrintMode.FILLED
+    printed_a_section = False
     for section in ("LINE_SIDE", "WIP", "WIP_OK"):
         section_lines = [] if mode is PrintMode.BLANK else by_section.get(section, [])
         extras = _blank_rows_for(section, mode=mode, requested=blank_lines)
@@ -362,10 +363,16 @@ def build_counting_sheet_pdf(
             # prose and stay left-aligned.
             ("ALIGN", (2, 1), (3, -1), "CENTER"),
         ]))
+        # The gap goes *before* each table but the first, never after the last:
+        # a trailing spacer is still a flowable, so a table ending exactly at the
+        # bottom of a page pushed it onto a new one and the stack came out with a
+        # page carrying only a header and a footer.
+        if printed_a_section:
+            story.append(Spacer(1, 4 * mm))
         story.append(table)
-        story.append(Spacer(1, 4 * mm))
+        printed_a_section = True
 
-    if not story[2:]:
+    if not printed_a_section:
         # Only the identity block: nothing to count and nothing to write on.
         story.append(Paragraph(
             "<i>Cette feuille ne contient aucune ligne.</i>", quiet_style
@@ -477,8 +484,11 @@ def _fr_number(value: Any) -> str:
     """A counted quantity, French-formatted, without trailing decimal noise."""
     number = float(value)
     text = f"{number:,.6f}".rstrip("0").rstrip(".") if number % 1 else f"{number:,.0f}"
-    # Thin space as the thousands separator, French convention.
-    return text.replace(",", " ")
+    # A *no-break* space as the thousands separator, French convention. The
+    # narrow one typography would prefer (U+202F) is absent from Helvetica's
+    # Latin-1 encoding, and ReportLab draws a missing glyph as a black box:
+    # « 2■724 », right where the counter reads a digit.
+    return text.replace(",", " ")
 
 
 _SECTION_TITLES = {

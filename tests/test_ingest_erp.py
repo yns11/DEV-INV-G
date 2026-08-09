@@ -225,7 +225,7 @@ class TestReadingTheWholeTable:
 class TestFailures:
     def test_a_missing_table_says_so_instead_of_returning_nothing(self):
         with pytest.raises(ValidationError, match="introuvable"):
-            read_items([], state="FAILED", error="TABLE_OR_VIEW_NOT_FOUND: silvr_bom")
+            read_items([], state="FAILED", error="TABLE_OR_VIEW_NOT_FOUND: silver_bom")
 
     def test_any_other_refusal_surfaces_the_provider_s_own_words(self):
         with pytest.raises(UpstreamError, match="PERMISSION_DENIED"):
@@ -236,3 +236,29 @@ class TestFailures:
         rows, _ = read_items([["P-1", "CARTER"]])
         assert rows[0]["item_number"] == "P-1"
         assert rows[0]["std_price"] == 0.0
+
+
+class TestWhichTablesAreRead:
+    """The fully-qualified names, pinned.
+
+    They were mistyped once (``silvr_`` for ``silver_``), and a wrong table name
+    fails at read time with an error that looks like a permissions problem. A
+    test costs nothing and makes the next rename deliberate.
+    """
+
+    def test_the_default_tables_are_the_ones_the_dictionary_documents(self):
+        from inventory.config import get_settings
+
+        settings = get_settings()
+        assert settings.erp_items_fqn == (
+            "emotors_data_champions.silver_erp_ye.silver_base_article"
+        )
+        assert settings.erp_bom_fqn == (
+            "emotors_data_champions.silver_erp_ye.silver_bom"
+        )
+
+    def test_each_read_targets_its_own_table(self):
+        _, items = read_items([item_row()])
+        _, boms = read_boms([bom_row()])
+        assert "silver_base_article" in items.statements[0]
+        assert "silver_bom" in boms.statements[0]

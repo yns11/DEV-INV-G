@@ -57,9 +57,9 @@ class Settings(BaseSettings):
         default="emotors_data_champions.silver_erp_ye", alias="INV_ERP_SCHEMA"
     )
     erp_items_table: str = Field(
-        default="silvr_base_article", alias="INV_ERP_ITEMS_TABLE"
+        default="silver_base_article", alias="INV_ERP_ITEMS_TABLE"
     )
-    erp_bom_table: str = Field(default="silvr_bom", alias="INV_ERP_BOM_TABLE")
+    erp_bom_table: str = Field(default="silver_bom", alias="INV_ERP_BOM_TABLE")
 
     # ------------------------------------------------------------ unity catalog
     uc_catalog: str = Field(default="emotors_data_champions", alias="INV_UC_CATALOG")

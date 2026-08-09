@@ -74,8 +74,9 @@ n'aurait aucun sens.
 **Référentiels & seuils → Articles.** Trois sources, dans cet ordre :
 
 1. **Lire depuis l'ERP** — le référentiel est lu directement dans la table
-   silver `silvr_base_article` d'Unity Catalog. Rien n'est retapé, et l'aller-
-   retour export/ré-import qui produisait l'essentiel des erreurs disparaît.
+   `emotors_data_champions.silver_erp_ye.silver_base_article` d'Unity Catalog.
+   Rien n'est retapé, et l'aller-retour export/ré-import qui produisait
+   l'essentiel des erreurs de référentiel disparaît.
 2. **Charger un fichier** — un export Excel ou CSV, quand l'ERP n'est pas
    joignable ou que la liste vient d'ailleurs.
 3. **Copier / Coller** — un bloc collé depuis Excel.
@@ -103,8 +104,9 @@ c'est une décision de campagne, prise ici.
 ### 1.4 Charger les nomenclatures
 
 **Référentiels & seuils → Nomenclatures.** Mêmes trois sources, l'ERP en tête :
-la table `silvr_bom` fournit chaque lien parent → composant avec sa quantité, la
-désignation de l'assemblage étant jointe au passage.
+la table `emotors_data_champions.silver_erp_ye.silver_bom` fournit chaque lien
+parent → composant avec sa quantité, la désignation de l'assemblage étant jointe
+au passage.
 
 L'onglet **Santé des nomenclatures** signale immédiatement :
 

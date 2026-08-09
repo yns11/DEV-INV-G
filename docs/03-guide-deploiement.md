@@ -575,8 +575,8 @@ Onglet **Environment**, ajoutez :
 | `INV_ENV` | `prod` |
 | `INV_ASSISTANT_PROFILE` | `etendu` (seul profil livré) |
 | `INV_ERP_SCHEMA` | `emotors_data_champions.silver_erp_ye` |
-| `INV_ERP_ITEMS_TABLE` | `silvr_base_article` |
-| `INV_ERP_BOM_TABLE` | `silvr_bom` |
+| `INV_ERP_ITEMS_TABLE` | `silver_base_article` |
+| `INV_ERP_BOM_TABLE` | `silver_bom` |
 
 `INV_ASSISTANT_PROFILE` décide de ce que l'assistant de campagne reçoit et de
 ce qu'on lui demande. Un seul profil est livré — `etendu` : le dossier complet

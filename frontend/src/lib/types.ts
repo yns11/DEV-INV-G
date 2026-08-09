@@ -108,7 +108,15 @@ export interface Overview {
 export interface ErpSource {
   available: boolean
   reason: string | null
+  /**
+   * `uc` reads the silver tables live; `mirror` reads a local copy refreshed by
+   * a scheduled job — the fallback when the application's service principal
+   * cannot be granted access to the ERP's catalog.
+   */
+  source: 'uc' | 'mirror'
   tables: { items: string; boms: string }
+  /** Age of the local copy, per grid. Null when reading the ERP live. */
+  mirror: Record<string, { rows: number | null; syncedAt: string | null; stale: boolean | null }> | null
 }
 
 export interface Threshold {

@@ -59,6 +59,17 @@ variables:
   uc_catalog:
     description: Existing Unity Catalog catalog (cannot be created by this project).
     default: emotors_data_champions
+  erp_catalog:
+    description: Catalog holding the ERP silver tables, read by the mirror job.
+    default: emotors_data_champions
+  erp_schema:
+    description: Schema holding silver_base_article and silver_bom.
+    default: silver_erp_ye
+  erp_source:
+    description: >-
+      Where the app reads the referential: `uc` (live silver tables) or
+      `mirror` (local Lakebase copy fed by inventory_sync_erp_mirror).
+    default: uc
   uc_schema:
     description: Schema created by sql/00_unity_catalog.sql.
     default: inventory
@@ -119,6 +130,11 @@ resources:
             value: ${var.uc_schema}
           - name: INV_UC_VOLUME
             value: ${var.uc_volume}
+          # `uc` lit les tables silver en direct (exige USE CATALOG pour le
+          # service principal de l'App) ; `mirror` lit la copie locale
+          # alimentée par le job de synchronisation, sans aucun grant.
+          - name: INV_ERP_SOURCE
+            value: ${var.erp_source}
           - name: INV_GENERIC_WAREHOUSE
             value: "B06VRAC"
           - name: INV_GENERIC_LOCATION
@@ -161,6 +177,38 @@ resources:
       parameters:
         - name: campaign_code
           default: ""
+      environments:
+        - environment_key: serverless_env
+          spec:
+            client: "3"
+            dependencies:
+              - psycopg[binary]~=3.2.0
+      queue:
+        enabled: true
+
+    inventory_sync_erp_mirror:
+      name: "[inventaire] Synchronisation du miroir ERP"
+      description: >-
+        Copie les tables ERP silver vers le miroir local Lakebase de
+        l'application. À utiliser quand le service principal de l'App n'a pas
+        USE CATALOG sur le catalogue de l'ERP : le job tourne avec l'identité
+        qui a déjà ce droit. Positionner INV_ERP_SOURCE=mirror sur l'App.
+      tasks:
+        - task_key: sync
+          spark_python_task:
+            python_file: ./jobs/sync_erp_mirror.py
+            parameters:
+              - "--catalog"
+              - ${var.erp_catalog}
+              - "--schema"
+              - ${var.erp_schema}
+          environment_key: serverless_env
+      # Chaque nuit : un référentiel n'est pas un flux temps réel, et la copie
+      # doit être en place avant la journée de comptage, pas pendant.
+      schedule:
+        quartz_cron_expression: "0 30 4 * * ?"
+        timezone_id: Europe/Paris
+        pause_status: UNPAUSED
       environments:
         - environment_key: serverless_env
           spec:

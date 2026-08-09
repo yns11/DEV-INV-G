@@ -17,7 +17,7 @@ from inventory.errors import UpstreamError, ValidationError
 from inventory.ingest.erp import ErpReader
 
 #: Column order of the items query, so a row here reads like the table does.
-ITEM_COLUMNS = (
+ITEM_COLUMNS_FIXTURE = (
     "item_id", "item_name", "item_description", "search_name", "name_alias",
     "categorie", "programme", "item_group_id", "item_group_label",
     "std_cost_price", "std_price_unit", "std_unit",
@@ -34,7 +34,7 @@ def item_row(**overrides: Any) -> list[Any]:
         "std_price_unit": "1.0", "std_unit": "PCE",
     }
     base.update(overrides)
-    return [base[c] for c in ITEM_COLUMNS]
+    return [base[c] for c in ITEM_COLUMNS_FIXTURE]
 
 
 def bom_row(**overrides: Any) -> list[Any]:
@@ -365,3 +365,144 @@ class TestAMissingGrant:
 
     def test_the_fallback_is_named_so_the_load_is_not_blocked(self):
         assert "fichier" in self.refusal(self.REAL)
+
+
+class TestTheLocalMirror:
+    """Reading the copy instead of the catalogue.
+
+    The mirror exists for one situation: the application's service principal
+    cannot be granted USE CATALOG on the ERP's catalogue, and no catalogue owner
+    is reachable. The copy is fed by a job running under an identity that does
+    have the access.
+
+    What must not change is everything downstream. The mirror holds the ERP's
+    own column names, so the same translation runs on the same tuple order — a
+    mirror that translated on its own would be a second vocabulary to keep in
+    step, and it would drift.
+    """
+
+    def rows_from_mirror(self, monkeypatch, fetched, kind="items"):
+        """Run a fetch with the mirror as the source and a stubbed database."""
+        from inventory.config import get_settings
+        from inventory.ingest import erp
+
+        monkeypatch.setenv("INV_ERP_SOURCE", "mirror")
+        get_settings.cache_clear()
+        seen: dict = {}
+
+        def fake_rows(source, columns, *, order_by, limit, where=""):
+            seen.update(source=source, columns=list(columns),
+                        order_by=order_by, limit=limit, where=where)
+            return fetched
+
+        monkeypatch.setattr(erp, "_mirror_rows", fake_rows)
+        try:
+            reader = erp.ErpReader()
+            rows = (reader.fetch_items(limit=1000) if kind == "items"
+                    else reader.fetch_bom_links(limit=1000))
+        finally:
+            monkeypatch.delenv("INV_ERP_SOURCE", raising=False)
+            get_settings.cache_clear()
+        return rows, seen
+
+    def test_an_article_is_translated_exactly_as_it_would_be_from_the_catalogue(
+        self, monkeypatch
+    ):
+        """The one property that makes the mirror a source and not a fork."""
+        direct, _ = read_items([item_row(item_group_id="PFINI",
+                                         std_cost_price="250.0",
+                                         std_price_unit="100",
+                                         programme="Commun")])
+        mirrored, _ = self.rows_from_mirror(
+            monkeypatch,
+            [item_row(item_group_id="PFINI", std_cost_price="250.0",
+                      std_price_unit="100", programme="Commun")],
+        )
+        assert mirrored == direct
+        assert mirrored[0]["item_type"] == "FINISHED"
+        assert mirrored[0]["std_price"] == pytest.approx(2.5)
+        assert mirrored[0]["commonality"] == "COMMON"
+
+    def test_a_bom_link_is_translated_the_same_way_too(self, monkeypatch):
+        direct, _ = read_boms([bom_row()])
+        mirrored, _ = self.rows_from_mirror(monkeypatch, [bom_row()], kind="boms")
+        assert mirrored == direct
+
+    def test_the_mirror_tables_are_read_not_the_catalogue_ones(self, monkeypatch):
+        _, seen = self.rows_from_mirror(monkeypatch, [item_row()])
+        assert seen["source"] == "erp_base_article"
+        assert "emotors_data_champions" not in seen["source"]
+
+    def test_the_parent_designation_is_still_joined_in(self, monkeypatch):
+        """Same query shape, so the grid shows the same thing either way."""
+        _, seen = self.rows_from_mirror(monkeypatch, [bom_row()], kind="boms")
+        assert "LEFT JOIN erp_base_article" in seen["source"]
+
+    def test_the_read_stays_ordered_and_bounded(self, monkeypatch):
+        _, seen = self.rows_from_mirror(monkeypatch, [item_row()])
+        assert seen["order_by"] == "item_id"
+        assert seen["limit"] == 1000
+
+    def test_no_warehouse_is_needed(self, monkeypatch):
+        """That is the whole point: no SQL warehouse, no Unity Catalog grant."""
+        from inventory.config import get_settings
+        from inventory.ingest.erp import erp_available
+
+        monkeypatch.setenv("INV_ERP_SOURCE", "mirror")
+        monkeypatch.delenv("DATABRICKS_WAREHOUSE_ID", raising=False)
+        monkeypatch.setenv("PGHOST", "db.example")
+        monkeypatch.setenv("PGDATABASE", "inv")
+        monkeypatch.setenv("PGUSER", "app")
+        get_settings.cache_clear()
+        try:
+            assert erp_available() is True
+        finally:
+            for name in ("INV_ERP_SOURCE", "PGHOST", "PGDATABASE", "PGUSER"):
+                monkeypatch.delenv(name, raising=False)
+            get_settings.cache_clear()
+
+    def test_a_client_passed_in_still_reads_the_catalogue(self, monkeypatch):
+        """The tests above, and any explicit caller, must not be hijacked."""
+        from inventory.config import get_settings
+
+        monkeypatch.setenv("INV_ERP_SOURCE", "mirror")
+        get_settings.cache_clear()
+        try:
+            rows, client = read_items([item_row()])
+            assert "silver_base_article" in client.statements[0]
+            assert rows[0]["item_number"] == "P-00003436"
+        finally:
+            monkeypatch.delenv("INV_ERP_SOURCE", raising=False)
+            get_settings.cache_clear()
+
+
+class TestTheColumnContract:
+    """One declaration of the column order, read by both transports.
+
+    ``_item_row`` unpacks a tuple positionally. A column added to the catalogue
+    query but not to the mirror's — or the reverse — would shift every field by
+    one and load prices into unit codes, with nothing raising.
+    """
+
+    def test_the_catalogue_query_selects_the_declared_columns(self):
+        from inventory.ingest.erp import ITEM_COLUMNS
+
+        _, client = read_items([item_row()])
+        for column in ITEM_COLUMNS:
+            assert column in client.statements[0]
+
+    def test_the_declared_order_is_the_one_the_translation_unpacks(self):
+        """ITEM_COLUMNS is the contract; this is what makes it one."""
+        from inventory.ingest.erp import ITEM_COLUMNS, _item_row
+
+        row = _item_row([f"<{c}>" for c in ITEM_COLUMNS])
+        assert row["item_number"] == "<item_id>"
+        assert row["name"] == "<item_name>"
+        assert row["category"] == "<categorie>"
+        assert row["unit"] == "<std_unit>"
+
+    def test_the_test_fixture_declares_the_same_columns(self):
+        """Otherwise every row built here would be shifted, and pass anyway."""
+        from inventory.ingest.erp import ITEM_COLUMNS
+
+        assert ITEM_COLUMNS == ITEM_COLUMNS_FIXTURE

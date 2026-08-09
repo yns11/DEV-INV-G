@@ -591,6 +591,51 @@ Catalog de l'application : sans entrepôt ou sans `SELECT` sur ces tables,
 l'option apparaît désactivée avec sa raison, et le chargement par fichier reste
 disponible.
 
+### 8.3 bis — Quand le catalogue de l'ERP n'est pas ouvrable à l'application
+
+La lecture directe suppose que le **service principal de l'App** — pas vous —
+ait `USE CATALOG` sur le catalogue de l'ERP, puis `USE SCHEMA` et `SELECT`.
+Sans quoi le chargement échoue en nommant la commande à faire exécuter :
+
+```sql
+GRANT USE CATALOG ON CATALOG emotors_data_champions              TO `<sp-de-l-app>`;
+GRANT USE SCHEMA  ON SCHEMA  emotors_data_champions.silver_erp_ye TO `<sp-de-l-app>`;
+GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.silver_base_article TO `<sp-de-l-app>`;
+GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.silver_bom          TO `<sp-de-l-app>`;
+```
+
+Seul un propriétaire du catalogue peut les passer. Quand aucun n'est joignable
+— et un inventaire garde sa date —, `INV_ERP_SOURCE=mirror` renverse la
+contrainte : l'application lit une copie locale, dans sa propre base, alimentée
+par le job `inventory_sync_erp_mirror` qui tourne, lui, avec une identité ayant
+déjà accès à l'ERP.
+
+| `INV_ERP_SOURCE` | Lit | Exige |
+|---|---|---|
+| `uc` (défaut) | les tables silver, en direct | `USE CATALOG` + `SELECT` pour le SP de l'App |
+| `mirror` | `erp_base_article` / `erp_bom` (Lakebase) | que le job de synchronisation ait tourné |
+
+```bash
+# 1. déployer le job, puis l'exécuter une première fois
+databricks bundle deploy -t prod --profile PROD
+databricks bundle run inventory_sync_erp_mirror -t prod --profile PROD
+
+# 2. basculer l'application sur le miroir
+databricks apps deploy -t prod --profile PROD --var=erp_source=mirror
+```
+
+Le job est planifié à 4 h 30 (Europe/Paris) : un référentiel n'est pas un flux
+temps réel, et la copie doit être en place **avant** la journée de comptage.
+Le bouton « Lire depuis l'ERP » ne change ni de place ni de comportement ; il
+affiche à côté de lui la date de la copie, et la signale en orange au-delà de
+sept jours. L'historique d'import enregistre « … (miroir du JJ/MM/AAAA) » plutôt
+que la table seule : une campagne chargée sur une copie de trois semaines doit
+rester lisible six mois plus tard.
+
+Si le job échoue en cours de route, le miroir précédent reste intact — le
+remplacement se fait dans une seule transaction. Et un ERP qui ne renvoie aucun
+article n'écrase rien : le job s'arrête en erreur.
+
 `DATABRICKS_WAREHOUSE_ID` et `INV_LLM_ENDPOINT` sont fournis par les ressources
 attachées (`valueFrom`), ne les saisissez pas à la main.
 

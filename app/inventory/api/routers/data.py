@@ -134,20 +134,29 @@ def erp_source() -> dict[str, Any]:
     that can only fail is worse than no button.
     """
     from ...config import get_settings
-    from ...ingest.erp import erp_available
+    from ...ingest.erp import (
+        MIRROR_BOM_TABLE,
+        MIRROR_ITEMS_TABLE,
+        erp_available,
+        mirror_state,
+        reading_from_mirror,
+        unavailable_reason,
+    )
 
     settings = get_settings()
+    mirrored = reading_from_mirror()
     return {
         "available": erp_available(),
-        "reason": (
-            None
-            if erp_available()
-            else "Aucun entrepôt SQL n'est attaché à l'application."
+        "reason": unavailable_reason(),
+        "source": settings.erp_source,
+        "tables": (
+            {"items": MIRROR_ITEMS_TABLE, "boms": MIRROR_BOM_TABLE}
+            if mirrored
+            else {"items": settings.erp_items_fqn, "boms": settings.erp_bom_fqn}
         ),
-        "tables": {
-            "items": settings.erp_items_fqn,
-            "boms": settings.erp_bom_fqn,
-        },
+        # How old the copy is. Absent when reading the ERP live, where the
+        # question does not arise.
+        "mirror": mirror_state() if mirrored and erp_available() else None,
     }
 
 

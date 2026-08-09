@@ -26,6 +26,7 @@ no extra dependency, and the caller's own credentials govern what is readable.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 from collections.abc import Iterator, Sequence
@@ -37,7 +38,11 @@ from ..errors import UpstreamError, ValidationError
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ErpReader", "ERP_ITEM_TYPES", "erp_available"]
+__all__ = [
+    "ErpReader", "ERP_ITEM_TYPES", "erp_available", "unavailable_reason",
+    "reading_from_mirror", "mirror_state", "ITEM_COLUMNS",
+    "MIRROR_ITEMS_TABLE", "MIRROR_BOM_TABLE",
+]
 
 #: ERP functional group → the campaign's article type. Packaging never appears:
 #: the silver table already excludes ``EMBLG``, as does the data dictionary.
@@ -59,6 +64,32 @@ _COMMON_PROGRAMME = "COMMUN"
 #: referential read that has not answered in 50 s will not answer in 119.
 _STATEMENT_TIMEOUT = "50s"
 
+#: The article columns, in the order :func:`_item_row` unpacks them. Declared
+#: once because two transports now read them — Unity Catalog and the local
+#: mirror — and a column added to one query but not the other would shift every
+#: field of the tuple by one, silently loading prices into unit codes.
+ITEM_COLUMNS = (
+    "item_id", "item_name", "item_description", "search_name", "name_alias",
+    "categorie", "programme", "item_group_id", "item_group_label",
+    "std_cost_price", "std_price_unit", "std_unit",
+)
+
+#: Same contract for a bill-of-materials link. The parent designation is joined
+#: in from the article table, hence the aliases.
+_BOM_SELECT = (
+    "b.parent_itemid", "p.item_name AS parent_name", "b.child_itemid",
+    "b.child_qty", "b.child_unitid",
+)
+
+#: Mirror tables, in the application's own Lakebase schema (migration 005).
+MIRROR_ITEMS_TABLE = "erp_base_article"
+MIRROR_BOM_TABLE = "erp_bom"
+
+#: Past this age, the mirror is reported as stale. A referential is not a live
+#: feed — a week-old copy is usually fine — but a campaign counted against a
+#: month-old one has to say so on screen rather than in a log.
+MIRROR_STALE_AFTER_DAYS = 7
+
 
 class _OnWaitTimeout(StrEnum):
     """What the warehouse does when the wait expires.
@@ -74,13 +105,71 @@ class _OnWaitTimeout(StrEnum):
     CANCEL = "CANCEL"
 
 
+def reading_from_mirror() -> bool:
+    """Whether the ERP is read from the local mirror rather than from the ERP."""
+    return get_settings().erp_source == "mirror"
+
+
 def erp_available() -> bool:
     """Whether an ERP read can even be attempted.
 
     Used by the screen to offer the option or explain its absence, rather than
-    presenting a button that will always fail.
+    presenting a button that will always fail. The mirror does not need a
+    warehouse: it is read over the application's own database connection.
     """
-    return bool(get_settings().warehouse_id)
+    settings = get_settings()
+    if settings.erp_source == "mirror":
+        return settings.lakebase_configured
+    return bool(settings.warehouse_id)
+
+
+def unavailable_reason() -> str | None:
+    """Why the button cannot be offered, in the user's terms."""
+    if erp_available():
+        return None
+    if reading_from_mirror():
+        return "La base de l'application n'est pas accessible."
+    return "Aucun entrepôt SQL n'est attaché à l'application."
+
+
+def mirror_state() -> dict[str, Any]:
+    """Row counts and synchronisation dates of the local mirror.
+
+    Shown next to the button so nobody loads a referential without seeing how
+    old it is. Never raises: a screen that cannot say « je ne sais pas » would
+    fail to display at all when the mirror has not been created yet.
+    """
+    state: dict[str, Any] = {}
+    for key, table in (("items", MIRROR_ITEMS_TABLE), ("boms", MIRROR_BOM_TABLE)):
+        try:
+            from ..db.engine import get_database
+
+            with get_database().cursor() as cur:
+                cur.execute(
+                    f"SELECT count(*) AS rows, max(synced_at) AS synced_at FROM {table}"
+                )
+                row = cur.fetchone() or {}
+        except Exception as exc:  # pragma: no cover — depends on the database
+            log.warning("État du miroir ERP (%s) illisible : %s", table, exc)
+            state[key] = {"rows": None, "syncedAt": None, "stale": None}
+            continue
+
+        synced_at = row.get("synced_at")
+        state[key] = {
+            "rows": int(row.get("rows") or 0),
+            "syncedAt": synced_at.isoformat() if synced_at else None,
+            "stale": _is_stale(synced_at),
+        }
+    return state
+
+
+def _is_stale(synced_at: Any) -> bool:
+    if synced_at is None:
+        return True
+    now = dt.datetime.now(dt.UTC)
+    if synced_at.tzinfo is None:
+        synced_at = synced_at.replace(tzinfo=dt.UTC)
+    return (now - synced_at).days >= MIRROR_STALE_AFTER_DAYS
 
 
 class ErpReader:
@@ -92,6 +181,9 @@ class ErpReader:
         self._client = client
         self._settings = get_settings()
         self._warehouse_id = warehouse_id or self._settings.warehouse_id
+        # A caller that hands in a workspace client is reading Unity Catalog by
+        # construction — that is what the client is for.
+        self._from_mirror = client is None and self._settings.erp_source == "mirror"
 
     # ------------------------------------------------------------------ items
 
@@ -102,12 +194,14 @@ class ErpReader:
         arbitrary sample — a partial load whose contents depend on the query
         planner is impossible to reason about the next day.
         """
+        if self._from_mirror:
+            return [_item_row(r) for r in _mirror_rows(
+                MIRROR_ITEMS_TABLE, ITEM_COLUMNS, order_by="item_id", limit=limit
+            )]
         table = self._settings.erp_items_fqn
         rows = self._query(
             f"""
-            SELECT item_id, item_name, item_description, search_name, name_alias,
-                   categorie, programme, item_group_id, item_group_label,
-                   std_cost_price, std_price_unit, std_unit
+            SELECT {", ".join(ITEM_COLUMNS)}
             FROM {table}
             ORDER BY item_id
             LIMIT {int(limit)}
@@ -132,12 +226,20 @@ class ErpReader:
             recipes, and silently dropping every row whose flag is null would
             look like an empty bill of materials rather than a filter.
         """
-        bom, items = self._settings.erp_bom_fqn, self._settings.erp_items_fqn
         where = "WHERE b.approved = 1" if approved_only else ""
+        if self._from_mirror:
+            return [_bom_row(r) for r in _mirror_rows(
+                f"{MIRROR_BOM_TABLE} b "
+                f"LEFT JOIN {MIRROR_ITEMS_TABLE} p ON b.parent_itemid = p.item_id",
+                _BOM_SELECT,
+                order_by="b.parent_itemid, b.child_itemid",
+                limit=limit,
+                where=where,
+            )]
+        bom, items = self._settings.erp_bom_fqn, self._settings.erp_items_fqn
         rows = self._query(
             f"""
-            SELECT b.parent_itemid, p.item_name AS parent_name,
-                   b.child_itemid, b.child_qty, b.child_unitid
+            SELECT {", ".join(_BOM_SELECT)}
             FROM {bom} b
             LEFT JOIN {items} p ON b.parent_itemid = p.item_id
             {where}
@@ -175,6 +277,48 @@ class ErpReader:
 
         _assert_succeeded(response, source)
         return list(_rows_of(response, client))
+
+
+def _mirror_rows(
+    source: str,
+    columns: Sequence[str],
+    *,
+    order_by: str,
+    limit: int,
+    where: str = "",
+) -> list[Sequence[Any]]:
+    """Rows of the local mirror, in the same shape a warehouse read returns.
+
+    Returning tuples rather than the dictionaries psycopg hands back is what
+    lets both transports share one translation: the mirror is a copy of the ERP,
+    not a second vocabulary.
+    """
+    from ..db.engine import get_database
+
+    names = [c.split(" AS ")[-1].split(".")[-1] for c in columns]
+    try:
+        with get_database().cursor() as cur:
+            cur.execute(
+                f"SELECT {', '.join(columns)} FROM {source} {where} "
+                f"ORDER BY {order_by} LIMIT %s",
+                (int(limit),),
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        log.error("Lecture du miroir ERP impossible (%s) : %s", source, exc)
+        raise UpstreamError(
+            "Lecture du miroir ERP impossible. Le job de synchronisation "
+            f"a-t-il déjà tourné ? ({exc})",
+            cause=str(exc),
+        ) from exc
+
+    if not rows:
+        raise ValidationError(
+            "Le miroir ERP est vide : le job « Synchronisation du miroir ERP » "
+            "n'a pas encore alimenté la copie locale. Lancez-le, ou chargez un "
+            "fichier."
+        )
+    return [[row[name] for name in names] for row in rows]
 
 
 def _workspace_client() -> Any:

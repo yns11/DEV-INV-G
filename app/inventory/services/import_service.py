@@ -831,7 +831,16 @@ class ImportService:
         if kwargs.get("mode") != "erp":
             return kwargs.get("filename", "")
         settings = self.ctx.settings
-        return settings.erp_items_fqn if target == "items" else settings.erp_bom_fqn
+        table = settings.erp_items_fqn if target == "items" else settings.erp_bom_fqn
+        if settings.erp_source != "mirror":
+            return table
+        # Naming the ERP table alone would claim a live read that did not
+        # happen. Which copy was loaded, and how old it was, is the whole
+        # question six months later.
+        from ..ingest.erp import mirror_state
+
+        synced = (mirror_state().get(target) or {}).get("syncedAt")
+        return f"{table} (miroir du {synced[:10]})" if synced else f"{table} (miroir)"
 
     def _record_batch(
         self,

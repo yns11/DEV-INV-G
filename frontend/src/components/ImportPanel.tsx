@@ -74,6 +74,7 @@ export function ImportPanel({
     enabled: hasErp,
     staleTime: Infinity,
   })
+  const mirror = erp.data?.mirror?.[target] ?? null
   const fileInput = useRef<HTMLInputElement>(null)
   const toast = useToast()
   const showError = useErrorToast()
@@ -156,6 +157,17 @@ export function ImportPanel({
           >
             Lire depuis l’ERP
           </Button>
+        )}
+        {/* The age of the copy, next to the button that loads it. Reading a
+            month-old referential without noticing is exactly the error this
+            application exists to remove — it cannot be left to a log line. */}
+        {hasErp && erp.data?.available && mirror && (
+          <span className={mirror.stale ? 'badge badge--warning' : 'muted'}>
+            Miroir ERP
+            {mirror.syncedAt
+              ? ` · ${new Date(mirror.syncedAt).toLocaleDateString('fr-FR')}`
+              : ' · jamais synchronisé'}
+          </span>
         )}
         <Button
           size="sm"

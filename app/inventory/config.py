@@ -66,6 +66,14 @@ class Settings(BaseSettings):
         default="silver_base_article", alias="INV_ERP_ITEMS_TABLE"
     )
     erp_bom_table: str = Field(default="silver_bom", alias="INV_ERP_BOM_TABLE")
+    #: Where the referential is read from. ``uc`` queries the silver tables
+    #: directly and needs USE CATALOG on the ERP's catalog for the application's
+    #: service principal — a grant only a catalog owner can make. ``mirror``
+    #: reads a local copy in the application's own database, refreshed by the
+    #: « Synchronisation du miroir ERP » job, which runs with an identity that
+    #: already has that access. Same rows, same translation, same editable grid;
+    #: what changes is who needed the grant.
+    erp_source: Literal["uc", "mirror"] = Field(default="uc", alias="INV_ERP_SOURCE")
 
     # ------------------------------------------------------------ unity catalog
     uc_catalog: str = Field(default="emotors_data_champions", alias="INV_UC_CATALOG")

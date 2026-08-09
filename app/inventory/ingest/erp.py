@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator, Sequence
+from enum import StrEnum
 from typing import Any
 
 from ..config import get_settings
@@ -56,6 +57,20 @@ _COMMON_PROGRAMME = "COMMUN"
 #: How long a read may block. The platform caps a request at 120 s, and a
 #: referential read that has not answered in 50 s will not answer in 119.
 _STATEMENT_TIMEOUT = "50s"
+
+
+class _OnWaitTimeout(StrEnum):
+    """What the warehouse does when the wait expires.
+
+    The SDK reads ``.value`` off this argument, so a plain string raises
+    ``'str' object has no attribute 'value'`` at call time — which is exactly
+    what happened in production. Mirrored here rather than imported from
+    ``databricks.sdk.service.sql`` so that the read path stays testable without
+    a workspace: the SDK only ever reads the value.
+    """
+
+    #: Give up rather than leave a statement running that nobody will collect.
+    CANCEL = "CANCEL"
 
 
 def erp_available() -> bool:
@@ -149,7 +164,7 @@ class ErpReader:
                 warehouse_id=self._warehouse_id,
                 statement=statement,
                 wait_timeout=_STATEMENT_TIMEOUT,
-                on_wait_timeout="CANCEL",
+                on_wait_timeout=_OnWaitTimeout.CANCEL,
             )
         except Exception as exc:
             log.error("Lecture ERP impossible (%s) : %s", source, exc)
@@ -172,9 +187,16 @@ def _workspace_client() -> Any:
 def _assert_succeeded(response: Any, source: str) -> None:
     """Turn a failed statement into the reason, not into an empty result."""
     status = getattr(response, "status", None)
+    # ``state`` is an SDK enum whose ``str()`` is "StatementState.SUCCEEDED";
+    # matching on the suffix reads both that and a plain string.
     state = str(getattr(status, "state", "") or "")
     if state.endswith("SUCCEEDED"):
         return
+    if state.endswith("CANCELED"):
+        raise ValidationError(
+            f"La lecture de « {source} » a dépassé {_STATEMENT_TIMEOUT} et a été "
+            "annulée. Réessayez, ou chargez un fichier si l'entrepôt est froid."
+        )
     error = getattr(status, "error", None)
     message = getattr(error, "message", None) or state or "raison inconnue"
     if "TABLE_OR_VIEW_NOT_FOUND" in message or "not found" in message.lower():

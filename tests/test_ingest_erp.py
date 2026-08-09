@@ -57,9 +57,17 @@ class _FakeClient:
         self.error = error
         self.chunks = chunks or []
         self.statements: list[str] = []
+        self.kwargs: list[dict[str, Any]] = []
         self.statement_execution = self
 
     def execute_statement(self, *, statement: str, **kwargs: Any) -> Any:
+        # Mimic what the SDK actually does with these arguments, so a value of
+        # the wrong *type* fails here rather than in production. Swallowing
+        # **kwargs is what let ``on_wait_timeout="CANCEL"`` — a string where the
+        # SDK reads ``.value`` — reach a real warehouse.
+        self.kwargs.append(kwargs)
+        assert isinstance(kwargs["wait_timeout"], str)
+        assert kwargs["on_wait_timeout"].value in ("CANCEL", "CONTINUE")
         self.statements.append(statement)
         return _Response(
             self.rows, self.state, self.error,
@@ -262,3 +270,26 @@ class TestWhichTablesAreRead:
         _, boms = read_boms([bom_row()])
         assert "silver_base_article" in items.statements[0]
         assert "silver_bom" in boms.statements[0]
+
+
+class TestTheSdkContract:
+    """What the read hands to ``execute_statement``.
+
+    The SDK builds its request body with ``on_wait_timeout.value``, so a plain
+    string raises ``'str' object has no attribute 'value'`` — an error that only
+    appears against a real warehouse, and says nothing about its cause. These
+    tests pin the shapes the SDK will accept.
+    """
+
+    def test_the_wait_timeout_is_a_duration_string(self):
+        _, client = read_items([item_row()])
+        assert client.kwargs[0]["wait_timeout"].endswith("s")
+
+    def test_the_timeout_policy_carries_a_value_the_sdk_can_read(self):
+        _, client = read_items([item_row()])
+        assert client.kwargs[0]["on_wait_timeout"].value == "CANCEL"
+
+    def test_a_read_that_times_out_says_so_rather_than_looking_like_a_refusal(self):
+        """CANCELED is the wait expiring, not the warehouse saying no."""
+        with pytest.raises(ValidationError, match="dépassé"):
+            read_items([], state="CANCELED")

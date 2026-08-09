@@ -120,6 +120,69 @@ def import_paste(
     return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
 
 
+#: The two grids the ERP is authoritative for. Book stock deliberately stays a
+#: file: it is a snapshot taken at a precise instant, and reading it live would
+#: give a picture of "now" rather than of the moment the count began.
+ERP_TARGETS = ("items", "boms")
+
+
+@router.get("/erp/source", summary="État de la source ERP")
+def erp_source() -> dict[str, Any]:
+    """Whether an ERP read is possible, and from which tables.
+
+    The screen offers the option or explains its absence with this; a button
+    that can only fail is worse than no button.
+    """
+    from ...config import get_settings
+    from ...ingest.erp import erp_available
+
+    settings = get_settings()
+    return {
+        "available": erp_available(),
+        "reason": (
+            None
+            if erp_available()
+            else "Aucun entrepôt SQL n'est attaché à l'application."
+        ),
+        "tables": {
+            "items": settings.erp_items_fqn,
+            "boms": settings.erp_bom_fqn,
+        },
+    }
+
+
+@router.post(
+    "/campaigns/{campaign_id}/import/{target}/erp",
+    summary="Importer depuis les tables ERP",
+)
+def import_erp(
+    campaign: CampaignDep,
+    target: str,
+    importer: Importer,
+    dry_run: Annotated[bool, Query(alias="dryRun")] = False,
+    replace: Annotated[bool, Query()] = False,
+    approved_only: Annotated[bool, Query(alias="approvedOnly")] = False,
+) -> dict[str, Any]:
+    """Read the referential straight from the ERP silver tables.
+
+    Joins the pipeline at the same point as a spreadsheet: the rows are
+    validated, previewed and mapped identically, and the grid stays editable
+    afterwards. What changes is only that nobody had to export and re-import a
+    file — which is where most referential errors came from.
+    """
+    if target not in ERP_TARGETS:
+        raise ValidationError(
+            f"La grille « {target} » n'a pas de source ERP.",
+            allowed=list(ERP_TARGETS),
+        )
+    method = _resolve(target)
+    kwargs: dict[str, Any] = {"mode": "erp", "approved_only": approved_only}
+    if dry_run:
+        return importer.preview(target, **kwargs)
+    extra = {"replace": replace} if target == "boms" else {}
+    return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
+
+
 @router.post(
     "/campaigns/{campaign_id}/import/{target}/rows",
     summary="Enregistrer des lignes saisies dans la grille",

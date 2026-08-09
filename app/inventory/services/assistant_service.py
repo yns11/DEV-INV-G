@@ -48,6 +48,7 @@ _TOP_ZONES = 40
 
 #: In the extended profile the ranked lists stop being a sample.
 _FULL_VARIANCES = 300
+_FULL_ROWS = 300
 
 
 class AssistantService:
@@ -138,6 +139,9 @@ class AssistantService:
             "avancement": self._progress(campaign),
             "zones": self._zones(campaign, full=full),
             "gestionnaires": self._managers(campaign),
+            "référentiel": self._referential(campaign),
+            "journauxDeComptage": self._journals(campaign),
+            "provenanceEtHistorique": self._history(campaign),
             "seuilsDeMatérialité": [
                 {
                     "typeArticle": str(t.item_type),
@@ -209,6 +213,9 @@ class AssistantService:
             )
             digest["répartitionDesCauses"] = analysis.cause_split(campaign)
             digest["perteOuTransfert"] = analysis.transfers(campaign)
+            digest["ajustementsPostés"] = self._adjustments(campaign)
+            digest["wip"] = self._wip(campaign)
+            digest["comparaisonCampagnePrécédente"] = self._comparison(campaign)
 
         return digest
 
@@ -226,6 +233,133 @@ class AssistantService:
             },
             "articlesAuRéférentiel": len(ctx.referentials.list_items(campaign.id)),
             "lignesDeStockLivre": len(ctx.book_stock.list(campaign.id)),
+        }
+
+    def _referential(self, campaign: Campaign) -> dict[str, Any]:
+        """The shape of the referential, not its contents.
+
+        Thousands of article rows would drown everything else and answer no
+        question anybody actually asks. What is useful is the distribution — how
+        many articles per type, per programme, per category — because that is
+        what a question like "sommes-nous exposés surtout sur le M3 ?" needs.
+        """
+        ctx = self.ctx
+        items = ctx.referentials.list_items(campaign.id)
+        links = ctx.referentials.list_bom_links(campaign.id)
+        return {
+            "articles": len(items),
+            "parType": _tally([str(i.item_type) for i in items]),
+            "parProgramme": _tally([i.program or "—" for i in items]),
+            "parCatégorie": _tally([i.category or "—" for i in items], limit=25),
+            "parProvenance": _tally([str(i.source) for i in items]),
+            "articlesSansPrixStandard": sum(1 for i in items if not i.std_price),
+            "articlesExclus": sum(1 for i in items if i.exclusions),
+            "nomenclatures": {
+                "liens": len(links),
+                "assemblages": len({l.parent_item for l in links}),
+                "composants": len({l.child_item for l in links}),
+            },
+        }
+
+    def _journals(self, campaign: Campaign) -> list[dict[str, Any]]:
+        """The counting journals, one line each — the operational state of the day."""
+        ctx = self.ctx
+        lines = ctx.journals.lines_by_journal(campaign.id)
+        return [
+            {
+                "entrepôt": j.warehouse_id,
+                "emplacement": j.location_id,
+                "type": str(j.kind),
+                "statut": str(j.status),
+                "numéroErp": j.journal_number,
+                "lignes": len(lines.get(j.id, [])),
+                "quantitéComptée": float(sum(l.qty for l in lines.get(j.id, []))),
+                "postéLe": j.posted_at,
+            }
+            for j in ctx.journals.list(campaign.id)
+        ]
+
+    def _adjustments(self, campaign: Campaign) -> list[dict[str, Any]]:
+        return [
+            {
+                "article": a.item_number,
+                "entrepôt": a.warehouse_id,
+                "emplacement": a.location_id,
+                "nature": str(a.kind),
+                "quantité": float(a.qty),
+                "valeurEur": float(a.value),
+                "date": a.physical_date,
+                "cause": a.reason_code,
+                "commentaire": a.comment,
+            }
+            for a in self.ctx.adjustments.list(campaign.id, limit=_FULL_ROWS)
+        ]
+
+    def _wip(self, campaign: Campaign) -> list[dict[str, Any]]:
+        """WIP exploded through the bill of materials, as the consolidation left it."""
+        return [
+            {
+                "zone": r.get("zone_code"),
+                "assemblage": r.get("parent_item"),
+                "quantitéAssemblage": _num(r.get("parent_qty")),
+                "composant": r.get("child_item"),
+                "quantitéComposant": _num(r.get("child_qty")),
+                "profondeur": r.get("depth"),
+            }
+            for r in self.ctx.consolidation.wip_breakdown(campaign.id)[:_FULL_ROWS]
+        ]
+
+    def _comparison(self, campaign: Campaign) -> dict[str, Any] | None:
+        """The previous campaign, when this one was duplicated from it.
+
+        A variance is far easier to judge against the last count than in the
+        absolute, and the link is already recorded — not offering it would leave
+        the model to answer "is that a lot?" with nothing to compare to.
+        """
+        if not campaign.cloned_from_code:
+            return None
+        previous = next(
+            (
+                c for c in self.ctx.campaigns.list(limit=200)
+                if c.code == campaign.cloned_from_code
+            ),
+            None,
+        )
+        if previous is None:
+            return None
+        try:
+            from .analysis_service import AnalysisService
+
+            return AnalysisService(self.ctx).compare(campaign, previous.id)
+        except Exception as exc:  # a missing comparison must not sink the answer
+            log.warning("Comparaison de campagne indisponible : %s", exc)
+            return None
+
+    def _history(self, campaign: Campaign) -> dict[str, Any]:
+        """Where the campaign's data came from, and what has been done to it."""
+        ctx = self.ctx
+        return {
+            "imports": [
+                {
+                    "grille": b.get("target"),
+                    "origine": b.get("filename"),
+                    "lignesAcceptées": b.get("rows_accepted"),
+                    "lignesRejetées": b.get("rows_rejected"),
+                    "par": b.get("imported_by"),
+                    "le": b.get("imported_at"),
+                }
+                for b in ctx.imports.list(campaign.id, limit=40)
+            ],
+            "dernièresActions": [
+                {
+                    "action": str(e.action),
+                    "objet": e.entity_type,
+                    "résumé": e.summary,
+                    "par": e.actor,
+                    "le": e.at,
+                }
+                for e in ctx.audit.list(campaign.id, limit=60)
+            ],
         }
 
     def _zones(self, campaign: Campaign, *, full: bool) -> list[dict[str, Any]]:
@@ -273,3 +407,11 @@ class AssistantService:
 def _num(value: Any) -> float | None:
     """A ratio the domain left undefined stays undefined."""
     return None if value is None else float(value)
+
+
+def _tally(values: Sequence[str], *, limit: int = 0) -> dict[str, int]:
+    """Count occurrences, largest first — a distribution beats a raw list."""
+    from collections import Counter
+
+    counts = Counter(values).most_common(limit or None)
+    return dict(counts)

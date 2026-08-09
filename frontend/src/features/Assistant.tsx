@@ -5,14 +5,16 @@
  * button — because that is the one people already know and this screen has
  * nothing to teach them about its controls.
  *
- * Three things are deliberately *not* familiar. The framing is a visible choice
- * rather than a hidden setting, because the same question gets a genuinely
- * different answer under each one. The scope of the active framing is stated up
- * front, because an assistant that silently declines feels broken while one that
- * says what it covers feels bounded. And each answer carries the framing that
- * produced it and what it was built from — an answer resting on nothing from the
- * campaign has to be readable as such, especially in a thread where the mode was
- * switched halfway.
+ * Two things are deliberately *not* familiar. The scope is stated up front,
+ * because an assistant that silently declines feels broken while one that says
+ * what it covers feels bounded. And each answer carries what it was built from,
+ * so a reply resting on figures the phase has not produced yet reads differently
+ * from one resting on the whole dossier.
+ *
+ * The framing is a server-side setting. When more than one is configured the
+ * picker appears and the answers carry which one produced them; with a single
+ * profile — the case today — neither is shown, because neither would say
+ * anything.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -116,11 +118,13 @@ export function Assistant() {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-3)' }}>
-      {framings.data && (
+      {/* A picker over a single entry is a control that does nothing. It comes
+          back on its own the day a second framing is configured. */}
+      {(framings.data?.profiles.length ?? 0) > 1 && (
         <ProfilePicker
-          profiles={framings.data.profiles}
+          profiles={framings.data!.profiles}
           active={active}
-          deployed={framings.data.active}
+          deployed={framings.data!.active}
           onChange={setProfile}
         />
       )}

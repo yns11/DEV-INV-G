@@ -1,10 +1,15 @@
 /**
  * The import surface, shared by every grid.
  *
- * Three actions, and nothing else until one is used: download the template,
- * load a file, or paste a block. The expected-columns list and the paste box
- * appear on demand — permanently parked above every grid, they were a band of
- * instructions people had already read.
+ * A row of actions, and nothing else until one is used. Where the grid has an
+ * ERP source it comes **first**, because it is the better answer: nobody has
+ * retyped anything, and the export/re-import round trip that produced most of
+ * the referential errors disappears. The file, the paste and the template stay
+ * — an ERP that is unreachable, incomplete or simply not yet updated is a
+ * normal Tuesday, and the campaign cannot wait for it.
+
+ * The expected-columns list and the paste box appear on demand — permanently
+ * parked above every grid, they were a band of instructions people had read.
  *
  * What does not change is the loop that matters: a file or a paste is validated
  * in a dry run and the result is shown — accepted, rejected, why, on which line
@@ -16,6 +21,7 @@
  */
 
 import { useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { api, downloads } from '../lib/api'
 import type { GridContract, ImportResult } from '../lib/types'
 import {
@@ -23,10 +29,17 @@ import {
 } from './ui'
 import { DataGrid, columnsFromContract } from './DataGrid'
 
+/** Grids the ERP is authoritative for — mirrors `ERP_TARGETS` on the API. */
+const ERP_TARGETS = ['items', 'boms']
+
 type Stage =
   | { kind: 'idle' }
   | { kind: 'validating' }
-  | { kind: 'preview'; result: ImportResult; source: { file?: File; text?: string } }
+  | {
+      kind: 'preview'
+      result: ImportResult
+      source: { file?: File; text?: string; erp?: boolean }
+    }
   | { kind: 'importing' }
   | { kind: 'done'; result: ImportResult }
 
@@ -52,20 +65,31 @@ export function ImportPanel({
   const [stage, setStage] = useState<Stage>({ kind: 'idle' })
   const [pasteText, setPasteText] = useState('')
   const [pasting, setPasting] = useState(false)
+  // Only the two referential grids have an ERP source; asking for the rest
+  // would be a round trip whose answer is always the same.
+  const hasErp = ERP_TARGETS.includes(target)
+  const erp = useQuery({
+    queryKey: ['erp-source'],
+    queryFn: api.erpSource,
+    enabled: hasErp,
+    staleTime: Infinity,
+  })
   const fileInput = useRef<HTMLInputElement>(null)
   const toast = useToast()
   const showError = useErrorToast()
   const startDownload = useDownload()
 
-  const validate = async (source: { file?: File; text?: string }) => {
+  const validate = async (source: { file?: File; text?: string; erp?: boolean }) => {
     setStage({ kind: 'validating' })
     try {
-      const result = source.file
-        ? await api.importFile(campaignId, target, source.file, { dryRun: true, replace })
-        : await api.importPaste(campaignId, target, source.text ?? '', { dryRun: true })
+      const result = source.erp
+        ? await api.importErp(campaignId, target, { dryRun: true, replace })
+        : source.file
+          ? await api.importFile(campaignId, target, source.file, { dryRun: true, replace })
+          : await api.importPaste(campaignId, target, source.text ?? '', { dryRun: true })
       setStage({ kind: 'preview', result, source })
     } catch (error) {
-      showError(error, 'Analyse du fichier impossible')
+      showError(error, source.erp ? 'Lecture ERP impossible' : 'Analyse impossible')
       setStage({ kind: 'idle' })
     }
   }
@@ -75,9 +99,11 @@ export function ImportPanel({
     const { source } = stage
     setStage({ kind: 'importing' })
     try {
-      const result = source.file
-        ? await api.importFile(campaignId, target, source.file, { replace })
-        : await api.importPaste(campaignId, target, source.text ?? '', { replace })
+      const result = source.erp
+        ? await api.importErp(campaignId, target, { replace })
+        : source.file
+          ? await api.importFile(campaignId, target, source.file, { replace })
+          : await api.importPaste(campaignId, target, source.text ?? '', { replace })
       setStage({ kind: 'done', result })
       setPasteText('')
       setPasting(false)
@@ -115,21 +141,37 @@ export function ImportPanel({
           when somebody is actually assembling a paste. */}
       <div className="row-wrap">
         {extraActions}
+        {hasErp && (
+          <Button
+            size="sm"
+            variant="primary"
+            icon={<Icons.refresh size={13} />}
+            disabled={busy || !erp.data?.available}
+            title={
+              erp.data?.available
+                ? `Lecture de ${erp.data.tables[target as 'items' | 'boms']}`
+                : erp.data?.reason ?? 'Vérification de la source ERP…'
+            }
+            onClick={() => void validate({ erp: true })}
+          >
+            Lire depuis l’ERP
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant={hasErp ? 'secondary' : 'primary'}
+          icon={<Icons.upload size={13} />}
+          disabled={busy}
+          onClick={() => fileInput.current?.click()}
+        >
+          Charger un fichier
+        </Button>
         <Button
           size="sm"
           icon={<Icons.download size={13} />}
           onClick={() => startDownload(downloads.gridTemplate(campaignId, contract.key))}
         >
           Télécharger le modèle
-        </Button>
-        <Button
-          size="sm"
-          variant="primary"
-          icon={<Icons.upload size={13} />}
-          disabled={busy}
-          onClick={() => fileInput.current?.click()}
-        >
-          Charger un fichier
         </Button>
         <Button
           size="sm"
@@ -204,6 +246,12 @@ export function ImportPanel({
       {stage.kind === 'validating' && (
         <Alert tone="info" title="Analyse en cours…">
           Validation ligne par ligne. Rien n’est encore enregistré.
+        </Alert>
+      )}
+
+      {hasErp && erp.data && !erp.data.available && (
+        <Alert tone="info" title="Lecture ERP indisponible">
+          {erp.data.reason} Chargez un fichier en attendant.
         </Alert>
       )}
 

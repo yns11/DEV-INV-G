@@ -99,6 +99,18 @@ export interface Overview {
   counts: { items: number; bookStockLines: number }
 }
 
+/**
+ * Whether the referential can be read straight from the ERP.
+ *
+ * `available` is false when no SQL warehouse is attached; the screen then says
+ * why instead of offering a button that can only fail.
+ */
+export interface ErpSource {
+  available: boolean
+  reason: string | null
+  tables: { items: string; boms: string }
+}
+
 export interface Threshold {
   item_type: ItemType
   value_abs_eur: string | number

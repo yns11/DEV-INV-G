@@ -71,40 +71,40 @@ n'aurait aucun sens.
 
 ### 1.3 Charger les articles
 
-**Référentiels & seuils → Articles.**
+**Référentiels & seuils → Articles.** Trois sources, dans cet ordre :
 
-La grille affiche d'abord les **colonnes attendues**, avant tout chargement.
-Trois façons d'alimenter :
+1. **Lire depuis l'ERP** — le référentiel est lu directement dans la table
+   silver `silvr_base_article` d'Unity Catalog. Rien n'est retapé, et l'aller-
+   retour export/ré-import qui produisait l'essentiel des erreurs disparaît.
+2. **Charger un fichier** — un export Excel ou CSV, quand l'ERP n'est pas
+   joignable ou que la liste vient d'ailleurs.
+3. **Copier / Coller** — un bloc collé depuis Excel.
 
-1. **Charger un fichier** `.xlsx` ou `.csv` — les en-têtes sont reconnus
-   automatiquement, y compris les intitulés de l'export ERP
-   (`Numéro d'article`, `Groupe d'articles`, …) ;
-2. **Coller un bloc** copié depuis Excel (Ctrl+C / Ctrl+V), avec ou sans ligne
-   d'en-tête ;
-3. **Télécharger le modèle**, le remplir, le recharger.
+Les trois passent par la **même vérification** : les lignes sont validées une à
+une et le résultat s'affiche — acceptées, rejetées, pourquoi, à quelle ligne —
+**avant** que quoi que ce soit ne soit enregistré. Et dans les trois cas la
+grille reste modifiable ensuite : une désignation se corrige à la main, un prix
+se rectifie, une exclusion se pose.
 
-**Rien n'est enregistré avant votre confirmation.** L'application analyse le
-fichier, affiche combien de lignes sont acceptées, combien sont rejetées, et
-**pour chaque rejet : la ligne, la colonne, la valeur et le motif**. Vous
-confirmez ensuite.
+Ce que la lecture ERP traduit pour vous :
 
-#### Les trois niveaux d'exclusion
+| Colonne ERP | Devient | Règle |
+|---|---|---|
+| `item_group_id` | Type d'article | COMPO → composant, PFINI → produit fini, PSMFI → semi-fini |
+| `programme` | Programme + spécificité | `Commun` = article commun, sinon spécifique |
+| `std_cost_price` ÷ `std_price_unit` | Prix standard | Ramené au prix d'**une** unité |
+| `item_name` / `name_alias` / `item_description` | Désignation | La première renseignée |
 
-| Valeur | Effet |
-|---|---|
-| *(vide)* | L'article participe partout |
-| `GENERIC` | Exclu de la consolidation GENERIQUE et de son analyse |
-| `BOM` | Ignoré dans les nomenclatures (jamais crédité par un éclatement) |
-| `ALL` | Hors périmètre complet : ni comptage, ni analyse, ni valorisation |
-
-Plusieurs valeurs peuvent être combinées : `GENERIC,BOM`.
+Un groupe non stockable (`SSTRA` sous-traitance, `PRESTA` prestation) reste en
+type *inconnu* plutôt que d'être rangé au jugé : valoriser une prestation comme
+un composant fausserait l'écart. L'**exclusion** n'est jamais déduite de l'ERP —
+c'est une décision de campagne, prise ici.
 
 ### 1.4 Charger les nomenclatures
 
-**Référentiels & seuils → Nomenclatures.**
-
-Une ligne par couple assemblage/composant. La quantité est celle consommée par
-**une** unité de l'assemblage.
+**Référentiels & seuils → Nomenclatures.** Mêmes trois sources, l'ERP en tête :
+la table `silvr_bom` fournit chaque lien parent → composant avec sa quantité, la
+désignation de l'assemblage étant jointe au passage.
 
 L'onglet **Santé des nomenclatures** signale immédiatement :
 
@@ -518,38 +518,30 @@ fichier est une photographie en lecture seule.
 
 ## 4. Interroger la campagne
 
-**Assistant** accepte une question en français. On peut y joindre un PDF, une
-image ou un fichier texte.
+**Assistant** accepte une question en français et répond à partir du **dossier
+complet** de cette campagne : identité et phase, avancement, référentiel et
+nomenclatures, journaux de comptage, zones et feuilles, indicateurs, écarts par
+article / entrepôt / emplacement, causes, perte ou transfert, ajustements
+postés, WIP éclaté, contrôles, provenance des imports et dernières actions du
+journal d'audit. On peut y joindre un PDF, une image ou un fichier texte.
 
-### 4.1 Choisir le cadrage
+Le cadrage : les **chiffres** viennent du dossier, le **raisonnement** est libre.
+L'assistant peut comparer, expliquer un mécanisme métier, formuler une
+hypothèse — à condition de l'annoncer comme telle. Un chiffre absent du dossier
+est déclaré absent, jamais estimé en silence.
 
-Trois profils, sélectionnables en haut de l'écran. Ils changent ce que le modèle
-reçoit et ce qu'on lui demande — la même question n'obtient pas la même réponse
-selon le profil, et chaque réponse affiche celui qui l'a produite.
-
-| Profil | Contexte transmis | Cadrage | Pour quoi faire |
-|---|---|---|---|
-| **Libre** | aucun | aucun prompt système, aucune limite de longueur | Évaluer le modèle lui-même, sans influence de l'application |
-| **Campagne** | un condensé (une vingtaine de chiffres) | sujet limité à l'inventaire, réponses courtes | L'usage quotidien |
-| **Étendu** | le dossier complet | raisonnement libre, chiffres issus du dossier | Analyser, comparer, formuler des hypothèses |
-
-En **mode libre**, aucune donnée de la campagne ne quitte l'application : les
-réponses ne s'appuient sur rien de ce qu'elle contient. L'écran le dit, et les
-réponses portent la mention « sans contexte de campagne ».
-
-Le profil appliqué par défaut se règle par la variable d'environnement
-`INV_ASSISTANT_PROFILE` (`libre`, `campagne` ou `etendu`) ; il est marqué
-« défaut » dans le sélecteur. Le changer ne demande aucun redéploiement de code.
-
-### 4.2 Ce qui ne change jamais
-
-Quel que soit le profil :
+Trois choses ne changent pas :
 
 - **le modèle n'a ni base de données ni outil.** Il ne peut être juste ou faux
-  que sur ce qu'on lui a transmis ;
+  que sur ce qui lui a été transmis, et chaque réponse indique sur quels blocs
+  elle s'appuie ;
 - **il ne modifie rien.** Aucune quantité, aucune cause, aucun statut ne change
   parce qu'on a posé une question ;
-- **la question est tracée** dans le journal d'audit, avec le profil utilisé.
+- **la question est tracée** au journal d'audit, avec le cadrage utilisé.
+
+Le cadrage est une variable d'environnement (`INV_ASSISTANT_PROFILE`) et non une
+décision figée dans le code : en ajouter un autre — plus restreint pour un
+public plus large, par exemple — ne demande pas de livraison applicative.
 
 Vérifiez tout chiffre avant de le porter dans une décision.
 

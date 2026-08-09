@@ -27,6 +27,7 @@ no extra dependency, and the caller's own credentials govern what is readable.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator, Sequence
 from enum import StrEnum
 from typing import Any
@@ -205,7 +206,59 @@ def _assert_succeeded(response: Any, source: str) -> None:
             "les droits de l'application. Vérifiez son nom et les autorisations "
             "Unity Catalog."
         )
+    if _is_permission_refusal(message):
+        raise ValidationError(_missing_grant_message(message, source))
     raise UpstreamError(f"Lecture de « {source} » refusée : {message}")
+
+
+#: What Unity Catalog says when a privilege is missing, in either of its wordings.
+_PERMISSION_MARKERS = ("INSUFFICIENT_PERMISSIONS", "PERMISSION_DENIED")
+
+#: « User does not have USE CATALOG on Catalog 'emotors_data_champions' ».
+_MISSING_PRIVILEGE = re.compile(
+    r"does not have (?P<privilege>[A-Z][A-Z_ ]*[A-Z]) on "
+    r"(?P<kind>Catalog|Schema|Table|View)\s*'(?P<name>[^']+)'",
+    re.IGNORECASE,
+)
+
+
+def _is_permission_refusal(message: str) -> bool:
+    return any(marker in message.upper() for marker in _PERMISSION_MARKERS)
+
+
+def _missing_grant_message(message: str, source: str) -> str:
+    """A refusal an administrator can act on, rather than a SQLSTATE.
+
+    Unity Catalog names the privilege and the object it is missing on; repeating
+    that back as the ``GRANT`` to run turns a dead end into a one-line fix. It
+    matters more here than elsewhere because the grant is on the *application's*
+    service principal, not on the person reading the screen — the usual reflex,
+    "but I can query that table myself", is true and beside the point.
+    """
+    settings = get_settings()
+    principal = settings.service_principal_id or "<service principal de l'App>"
+
+    found = _MISSING_PRIVILEGE.search(message)
+    if found:
+        privilege = found.group("privilege").upper()
+        kind = found.group("kind").upper()
+        name = found.group("name")
+        grant = f"GRANT {privilege} ON {kind} {name} TO `{principal}`;"
+    else:
+        catalog, schema = source.split(".")[0], ".".join(source.split(".")[:2])
+        grant = (
+            f"GRANT USE CATALOG ON CATALOG {catalog} TO `{principal}`; "
+            f"GRANT USE SCHEMA ON SCHEMA {schema} TO `{principal}`; "
+            f"GRANT SELECT ON TABLE {source} TO `{principal}`;"
+        )
+
+    return (
+        f"L'application n'a pas les droits Unity Catalog pour lire "
+        f"« {source} ». Ce sont les droits du service principal de "
+        f"l'application qui comptent, pas les vôtres. À faire exécuter par un "
+        f"administrateur du catalogue : {grant} — en attendant, chargez un "
+        f"fichier."
+    )
 
 
 def _rows_of(response: Any, client: Any) -> Iterator[Sequence[Any]]:

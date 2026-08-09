@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------- databricks
     databricks_host: str | None = Field(default=None, alias="DATABRICKS_HOST")
     warehouse_id: str | None = Field(default=None, alias="DATABRICKS_WAREHOUSE_ID")
+    #: The application's own service principal, injected by Databricks Apps.
+    #: Unity Catalog grants are made to *it*, not to the signed-in user, so a
+    #: permissions refusal can name the exact principal an admin has to grant.
+    service_principal_id: str | None = Field(
+        default=None, alias="DATABRICKS_CLIENT_ID"
+    )
     llm_endpoint: str = Field(
         default="databricks-claude-opus-4-8", alias="INV_LLM_ENDPOINT"
     )

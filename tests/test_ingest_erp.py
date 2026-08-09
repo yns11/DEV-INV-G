@@ -236,8 +236,9 @@ class TestFailures:
             read_items([], state="FAILED", error="TABLE_OR_VIEW_NOT_FOUND: silver_bom")
 
     def test_any_other_refusal_surfaces_the_provider_s_own_words(self):
-        with pytest.raises(UpstreamError, match="PERMISSION_DENIED"):
-            read_items([], state="FAILED", error="PERMISSION_DENIED on schema")
+        with pytest.raises(UpstreamError, match="ANALYSIS_EXCEPTION"):
+            read_items([], state="FAILED",
+                       error="[ANALYSIS_EXCEPTION] cannot resolve column")
 
     def test_a_short_row_does_not_raise(self):
         """A column dropped from the silver table must not take the app down."""
@@ -293,3 +294,74 @@ class TestTheSdkContract:
         """CANCELED is the wait expiring, not the warehouse saying no."""
         with pytest.raises(ValidationError, match="dépassé"):
             read_items([], state="CANCELED")
+
+
+class TestAMissingGrant:
+    """The refusal an administrator actually receives.
+
+    Unity Catalog answers a missing privilege with a SQLSTATE and a sentence
+    about a « User » — which, in an App, is the *application's* service
+    principal and not the person reading the screen. Passing that through
+    verbatim sends everybody to check their own access, where they find they can
+    query the table perfectly well. The message has to name the grant to run.
+    """
+
+    #: The exact text the warehouse returned in production.
+    REAL = (
+        "[INSUFFICIENT_PERMISSIONS] Insufficient privileges:\n"
+        "User does not have USE CATALOG on Catalog 'emotors_data_champions'. "
+        "SQLSTATE: 42501"
+    )
+
+    def refusal(self, error: str) -> str:
+        with pytest.raises(ValidationError) as raised:
+            read_items([], state="FAILED", error=error)
+        return str(raised.value)
+
+    def test_it_is_a_problem_to_fix_not_an_upstream_outage(self):
+        """UpstreamError reads as « retry later »; this never fixes itself."""
+        with pytest.raises(ValidationError):
+            read_items([], state="FAILED", error=self.REAL)
+
+    def test_the_grant_to_run_is_spelled_out(self):
+        assert "GRANT USE CATALOG ON CATALOG emotors_data_champions" in (
+            self.refusal(self.REAL)
+        )
+
+    def test_it_says_whose_rights_are_missing(self):
+        """The single fact that stops the wrong person debugging their own access."""
+        message = self.refusal(self.REAL)
+        assert "service principal" in message
+
+    def test_the_named_principal_is_the_app_s_own(self, monkeypatch):
+        from inventory.config import get_settings
+
+        monkeypatch.setenv("DATABRICKS_CLIENT_ID", "sp-1234")
+        get_settings.cache_clear()
+        try:
+            assert "`sp-1234`" in self.refusal(self.REAL)
+        finally:
+            monkeypatch.delenv("DATABRICKS_CLIENT_ID", raising=False)
+            get_settings.cache_clear()
+
+    @pytest.mark.parametrize("privilege,kind,name", [
+        ("USE SCHEMA", "Schema", "emotors_data_champions.silver_erp_ye"),
+        ("SELECT", "Table", "emotors_data_champions.silver_erp_ye.silver_bom"),
+    ])
+    def test_each_missing_privilege_is_echoed_back_as_its_own_grant(
+        self, privilege, kind, name
+    ):
+        """Three grants are needed and they fail one at a time."""
+        message = self.refusal(
+            f"[INSUFFICIENT_PERMISSIONS] User does not have {privilege} on "
+            f"{kind} '{name}'. SQLSTATE: 42501"
+        )
+        assert f"GRANT {privilege} ON {kind.upper()} {name}" in message
+
+    def test_an_unparsed_refusal_still_points_at_the_catalog(self):
+        """A reworded platform message must not degrade into « refusé »."""
+        message = self.refusal("PERMISSION_DENIED: not authorized")
+        assert "GRANT USE CATALOG ON CATALOG emotors_data_champions" in message
+
+    def test_the_fallback_is_named_so_the_load_is_not_blocked(self):
+        assert "fichier" in self.refusal(self.REAL)

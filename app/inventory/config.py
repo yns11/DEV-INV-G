@@ -44,10 +44,22 @@ class Settings(BaseSettings):
     llm_endpoint: str = Field(
         default="databricks-claude-opus-4-8", alias="INV_LLM_ENDPOINT"
     )
-    #: How the campaign assistant is framed — ``libre``, ``campagne`` or
-    #: ``etendu`` (see :mod:`inventory.ai.assistant`). A runtime setting rather
-    #: than a code decision, so tightening or loosening it costs no deployment.
-    assistant_profile: str = Field(default="libre", alias="INV_ASSISTANT_PROFILE")
+    #: How the campaign assistant is framed (see :mod:`inventory.ai.assistant`).
+    #: A runtime setting rather than a code decision, so tightening or loosening
+    #: it costs no deployment.
+    assistant_profile: str = Field(default="etendu", alias="INV_ASSISTANT_PROFILE")
+
+    # --------------------------------------------------------------- erp source
+    #: Unity Catalog silver tables holding the ERP article referential and its
+    #: bill of materials. Configurable because a table rename in the data
+    #: platform must not require a release of this application.
+    erp_schema: str = Field(
+        default="emotors_data_champions.silver_erp_ye", alias="INV_ERP_SCHEMA"
+    )
+    erp_items_table: str = Field(
+        default="silver_base_article", alias="INV_ERP_ITEMS_TABLE"
+    )
+    erp_bom_table: str = Field(default="silver_bom", alias="INV_ERP_BOM_TABLE")
 
     # ------------------------------------------------------------ unity catalog
     uc_catalog: str = Field(default="emotors_data_champions", alias="INV_UC_CATALOG")
@@ -118,6 +130,16 @@ class Settings(BaseSettings):
     def uc_table(self, name: str) -> str:
         """Fully-qualified name of a Delta table owned by this application."""
         return f"{self.uc_schema_fqn}.{name}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_items_fqn(self) -> str:
+        return f"{self.erp_schema}.{self.erp_items_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_bom_fqn(self) -> str:
+        return f"{self.erp_schema}.{self.erp_bom_table}"
 
 
 @functools.lru_cache(maxsize=1)

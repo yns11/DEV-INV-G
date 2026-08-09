@@ -59,7 +59,7 @@ log = logging.getLogger(__name__)
 
 __all__ = ["ImportOutcome", "ImportService", "InputMode"]
 
-InputMode = Literal["file", "paste", "rows"]
+InputMode = Literal["file", "paste", "rows", "erp"]
 
 
 @dataclass(slots=True)
@@ -120,12 +120,26 @@ class ImportService:
         sheet: str | None = None,
         text: str | None = None,
         rows: Sequence[dict[str, Any]] | None = None,
+        approved_only: bool = False,
     ) -> tuple[GridContract, ParseResult]:
-        """Parse input in any of the three supported modes."""
+        """Parse input in any of the supported modes.
+
+        ``erp`` reads the source tables in Unity Catalog and produces rows in the
+        grid's own shape, so it joins the pipeline at exactly the same point as a
+        spreadsheet: same validation, same dry run, same mappers, same audit,
+        same editable grid afterwards. That is deliberate — an ERP load must not
+        be a second, less-checked path into the referential.
+        """
         contract = get_contract(contract_key)
         limit = self.ctx.settings.max_import_rows
 
         match mode:
+            case "erp":
+                result = parse_rows(
+                    contract,
+                    self._read_erp(contract_key, limit=limit, approved_only=approved_only),
+                    max_rows=limit,
+                )
             case "file":
                 if payload is None:
                     raise ValidationError("Aucun fichier reçu.")
@@ -148,6 +162,24 @@ class ImportService:
                 raise ValidationError(f"Mode d'import inconnu : {mode!r}")
 
         return contract, result
+
+    def _read_erp(
+        self, contract_key: str, *, limit: int, approved_only: bool
+    ) -> list[dict[str, Any]]:
+        """Rows from the ERP silver tables, in the grid's shape."""
+        from ..ingest.erp import ErpReader
+
+        reader = ErpReader()
+        match contract_key:
+            case "items":
+                return reader.fetch_items(limit=limit)
+            case "boms":
+                return reader.fetch_bom_links(limit=limit, approved_only=approved_only)
+            case _:
+                raise ValidationError(
+                    f"La grille « {contract_key} » n'a pas de source ERP. "
+                    "Seuls les articles et les nomenclatures en ont une."
+                )
 
     def preview(
         self, contract_key: str, *, limit: int = 50, **kwargs: Any
@@ -789,6 +821,18 @@ class ImportService:
 
     # --------------------------------------------------------------- helpers
 
+    def _origin_of(self, target: str, kwargs: dict[str, Any]) -> str:
+        """What the import history should name as the origin of a batch.
+
+        A file has a filename; an ERP read has a table. Leaving the column blank
+        for ERP loads would make half the history unreadable six months later,
+        which is the one job that history has.
+        """
+        if kwargs.get("mode") != "erp":
+            return kwargs.get("filename", "")
+        settings = self.ctx.settings
+        return settings.erp_items_fqn if target == "items" else settings.erp_bom_fqn
+
     def _record_batch(
         self,
         campaign_id: str,
@@ -807,7 +851,7 @@ class ImportService:
         return self.ctx.imports.create(
             campaign_id=campaign_id,
             target=target,
-            filename=kwargs.get("filename", ""),
+            filename=self._origin_of(target, kwargs),
             content_hash=_hash_of(kwargs),
             storage_path=None,
             rows_received=outcome.rows_received,
@@ -841,7 +885,18 @@ def _base_outcome(target: str, parsed: ParseResult) -> ImportOutcome:
 
 
 def _source_of(mode: str) -> DataSource:
-    return DataSource.MANUAL if mode in ("paste", "rows") else DataSource.FILE_IMPORT
+    """Where a row came from, kept on every article for the rest of the campaign.
+
+    Worth distinguishing: an article read from the ERP and one typed by hand
+    carry different confidence, and the analysis screen shows the provenance.
+    """
+    match mode:
+        case "erp":
+            return DataSource.ERP_IMPORT
+        case "paste" | "rows":
+            return DataSource.MANUAL
+        case _:
+            return DataSource.FILE_IMPORT
 
 
 def _hash_of(kwargs: dict[str, Any]) -> str:

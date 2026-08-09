@@ -18,6 +18,7 @@ import type {
   CauseSplit,
   ConsolidationLine,
   ControlsPayload,
+  ErpSource,
   Finding,
   GridContract,
   Health,
@@ -255,6 +256,27 @@ export const api = {
       body: form,
     })
   },
+  /** Whether an ERP read is possible, and from which tables. */
+  erpSource: () => request<ErpSource>('/erp/source'),
+  /**
+   * Load a grid straight from the ERP silver tables.
+   *
+   * Same dry-run-then-confirm loop as a file: `dryRun` returns what *would* be
+   * loaded, without writing anything.
+   */
+  importErp: (id: string, target: string, options: {
+    dryRun?: boolean
+    replace?: boolean
+    approvedOnly?: boolean
+  } = {}) =>
+    request<ImportResult & ImportPreview>(
+      `/campaigns/${id}/import/${target}/erp${qs({
+        dryRun: options.dryRun || undefined,
+        replace: options.replace || undefined,
+        approvedOnly: options.approvedOnly || undefined,
+      })}`,
+      { method: 'POST' },
+    ),
   importPaste: (id: string, target: string, text: string, options: {
     dryRun?: boolean
     replace?: boolean

@@ -573,16 +573,23 @@ Onglet **Environment**, ajoutez :
 | `INV_GENERIC_LOCATION` | `GENERIQUE` |
 | `INV_LOG_LEVEL` | `INFO` |
 | `INV_ENV` | `prod` |
-| `INV_ASSISTANT_PROFILE` | `libre`, `campagne` ou `etendu` — voir ci-dessous |
+| `INV_ASSISTANT_PROFILE` | `etendu` (seul profil livré) |
+| `INV_ERP_SCHEMA` | `emotors_data_champions.silver_erp_ye` |
+| `INV_ERP_ITEMS_TABLE` | `silver_base_article` |
+| `INV_ERP_BOM_TABLE` | `silver_bom` |
 
 `INV_ASSISTANT_PROFILE` décide de ce que l'assistant de campagne reçoit et de
-ce qu'on lui demande — de `libre` (aucun prompt système, aucun contexte de
-campagne, aucune limite de longueur) à `campagne` (un condensé comme seule
-source de vérité, périmètre limité à l'inventaire). C'est une variable
-d'environnement précisément pour que resserrer ou desserrer le cadrage soit un
-redémarrage, jamais une livraison de code. Les utilisateurs peuvent aussi
-choisir un profil par question depuis l'écran ; la valeur ci-dessus est celle
-qui s'applique par défaut.
+ce qu'on lui demande. Un seul profil est livré — `etendu` : le dossier complet
+de la campagne, un raisonnement libre, des chiffres qui restent ceux du dossier.
+La variable existe pour qu'en ajouter un autre, plus restreint pour un public
+plus large par exemple, soit un redémarrage et non une livraison de code.
+
+Les trois variables `INV_ERP_*` désignent les tables silver lues par
+« Lire depuis l'ERP » sur les grilles Articles et Nomenclatures. La lecture
+emprunte l'entrepôt SQL attaché (`DATABRICKS_WAREHOUSE_ID`) et les droits Unity
+Catalog de l'application : sans entrepôt ou sans `SELECT` sur ces tables,
+l'option apparaît désactivée avec sa raison, et le chargement par fichier reste
+disponible.
 
 `DATABRICKS_WAREHOUSE_ID` et `INV_LLM_ENDPOINT` sont fournis par les ressources
 attachées (`valueFrom`), ne les saisissez pas à la main.

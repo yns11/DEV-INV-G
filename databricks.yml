@@ -202,6 +202,12 @@ resources:
               - ${var.erp_catalog}
               - "--schema"
               - ${var.erp_schema}
+              # Un job n'est pas une App : aucune ressource ne lui est attachée
+              # et il ne reçoit donc ni PGHOST ni PGUSER. Il déduit l'endpoint
+              # de la branche, construite depuis les mêmes variables que la
+              # ressource `postgres` de l'App — les deux ne peuvent pas diverger.
+              - "--branch"
+              - projects/${var.lakebase_project}/branches/${var.lakebase_branch}
           environment_key: serverless_env
       # Chaque nuit : un référentiel n'est pas un flux temps réel, et la copie
       # doit être en place avant la journée de comptage, pas pendant.

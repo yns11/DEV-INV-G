@@ -636,6 +636,28 @@ Si le job échoue en cours de route, le miroir précédent reste intact — le
 remplacement se fait dans une seule transaction. Et un ERP qui ne renvoie aucun
 article n'écrase rien : le job s'arrête en erreur.
 
+**Deux identités, et c'est le principe même.** L'application ne peut pas lire
+l'ERP ; le job le peut. Il tourne donc sous une autre identité qu'elle, ce qui a
+deux conséquences côté Lakebase, à régler une fois :
+
+1. **Le job doit pouvoir se connecter.** Contrairement à une App, un job ne
+   reçoit aucune variable `PG*` : il déduit l'endpoint de `--branch`, passé par
+   le bundle, puis mint un credential pour l'identité qui l'exécute. Il faut donc
+   que cette identité ait un rôle dans la base (console Lakebase → le projet →
+   *Roles*). Sinon : `FATAL: role "…" does not exist`, et le job dit quoi faire.
+2. **Le job doit pouvoir écrire.** Les tables du miroir appartiennent au service
+   principal de l'App, qui les a créées ; dans PostgreSQL, seul le propriétaire
+   accorde des droits dessus. La migration `006` le fait, à l'endroit unique où
+   l'application parle en tant que propriétaire. Elle s'applique au démarrage de
+   l'App — donc **redéployez l'App avant de relancer le job**.
+
+Le grant de la migration 006 porte sur les deux tables du miroir et sur elles
+seules : l'identité de synchronisation n'accède ni aux campagnes, ni aux
+comptages, ni à l'audit — vérifié, `permission denied for table campaign`.
+
+À défaut, le job accepte `PGHOST` / `PGUSER` / `PGPASSWORD` depuis un secret
+scope, ou `--pg-user` pour un rôle Postgres dédié.
+
 `DATABRICKS_WAREHOUSE_ID` et `INV_LLM_ENDPOINT` sont fournis par les ressources
 attachées (`valueFrom`), ne les saisissez pas à la main.
 

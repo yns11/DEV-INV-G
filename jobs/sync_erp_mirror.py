@@ -78,6 +78,18 @@ def main() -> int:
         "--pg-schema", default=os.environ.get("INV_PG_SCHEMA", "inventory")
     )
     parser.add_argument(
+        "--branch", default=os.environ.get("INV_LAKEBASE_BRANCH", ""),
+        help="projects/<projet>/branches/<branche> — d'où l'endpoint est déduit.",
+    )
+    parser.add_argument(
+        "--pg-database", default=os.environ.get("PGDATABASE", "databricks_postgres"),
+        help="Nom Postgres de la base (souligné), pas l'id de ressource.",
+    )
+    parser.add_argument(
+        "--pg-user", default=os.environ.get("PGUSER", ""),
+        help="Rôle Postgres. Par défaut l'identité qui exécute le job.",
+    )
+    parser.add_argument(
         "--limit", type=int, default=0,
         help="Tronque la copie (0 = tout). Pour un essai, pas pour la production.",
     )
@@ -107,10 +119,18 @@ def main() -> int:
 
     import psycopg
 
-    with psycopg.connect(_lakebase_conninfo()) as conn:
+    try:
+        connection = psycopg.connect(_lakebase_conninfo(args))
+    except Exception as exc:
+        raise RuntimeError(_connection_advice(exc)) from exc
+
+    with connection as conn:
         conn.execute(f"SET search_path TO {args.pg_schema}, public")
-        _swap(conn, "erp_base_article", ITEM_COLUMNS, items)
-        _swap(conn, "erp_bom", BOM_COLUMNS, boms)
+        try:
+            _swap(conn, "erp_base_article", ITEM_COLUMNS, items)
+            _swap(conn, "erp_bom", BOM_COLUMNS, boms)
+        except Exception as exc:
+            raise RuntimeError(_write_advice(exc, args.pg_schema)) from exc
         conn.commit()
 
     log.info("Miroir ERP synchronisé (%d articles, %d liens)", len(items), len(boms))
@@ -165,30 +185,36 @@ def _swap(conn: Any, table: str, columns: tuple[str, ...], rows: list[tuple]) ->
     log.info("%s : %d lignes", table, len(rows))
 
 
-def _lakebase_conninfo() -> str:
-    """Chaîne de connexion Lakebase, construite comme celle de l'application.
+def _lakebase_conninfo(args: Any, client: Any = None) -> str:
+    """Chaîne de connexion Lakebase, découverte plutôt qu'attendue.
 
-    Mêmes noms de variables que dans l'app : un seul contrat, et un job qui se
-    configure comme elle. Sans mot de passe, un credential OAuth est demandé
-    pour l'identité qui exécute le job.
+    Une App Databricks reçoit PGHOST / PGDATABASE / PGUSER de la plateforme
+    parce qu'une ressource ``postgres`` lui est attachée. **Un job n'en reçoit
+    rien** : ce n'est pas une App, et il n'a pas de ressources. La première
+    version de ce fichier reprenait le contrat de l'application et s'arrêtait
+    donc net au premier lancement.
+
+    Ce que le job connaît, c'est la branche Lakebase — passée en paramètre,
+    construite depuis les mêmes variables de bundle que la ressource de l'App,
+    si bien que les deux ne peuvent pas désigner des branches différentes. Le
+    reste s'en déduit : l'endpoint en écriture, son hôte, l'identité qui exécute
+    le job, et un credential OAuth frais.
+
+    Les variables d'environnement restent prioritaires quand elles sont là :
+    exécution locale, ou secret scope pour un rôle Postgres dédié.
     """
     host = os.environ.get("PGHOST")
-    database = os.environ.get("PGDATABASE")
-    user = os.environ.get("PGUSER")
+    database = os.environ.get("PGDATABASE") or args.pg_database
+    user = os.environ.get("PGUSER") or args.pg_user
     password = os.environ.get("PGPASSWORD")
 
-    if not all((host, database, user)):
-        raise RuntimeError(
-            "PGHOST, PGDATABASE et PGUSER doivent être définis. Attachez la base "
-            "Lakebase au job, ou exportez-les depuis un secret scope."
-        )
-    if not password:
-        from databricks.sdk import WorkspaceClient
-
-        credential = WorkspaceClient().database.generate_database_credential(
-            request_id="sync-erp-mirror", instance_names=[host or ""]
-        )
-        password = getattr(credential, "token", "")
+    if not (host and user and password):
+        client = client or _workspace_client()
+        name, resolved_host = _read_write_endpoint(client, args.branch)
+        host = host or resolved_host
+        user = user or _current_identity(client)
+        password = password or _mint(client, name)
+        log.info("Lakebase : endpoint %s, hôte %s, identité %s", name, host, user)
 
     port = os.environ.get("PGPORT", "5432")
     sslmode = os.environ.get("PGSSLMODE", "require")
@@ -196,6 +222,117 @@ def _lakebase_conninfo() -> str:
         f"host={host} port={port} dbname={database} user={user} "
         f"password={password} sslmode={sslmode}"
     )
+
+
+def _connection_advice(exc: Exception) -> str:
+    """Ce qu'il faut faire, plutôt que le message brut de libpq.
+
+    Les deux échecs attendus au premier lancement se ressemblent à l'écran et
+    n'ont pas du tout le même remède : une identité sans rôle Postgres, et une
+    identité qui n'a pas le droit de se connecter à cette base.
+    """
+    message = str(exc)
+    if "does not exist" in message and "role" in message.lower():
+        return (
+            "L'identité qui exécute le job n'a pas de rôle Postgres dans la base "
+            "Lakebase. Ajoutez-la comme rôle de base de données (console Lakebase "
+            f"→ le projet → Roles), puis relancez. Détail : {message}"
+        )
+    if "password authentication" in message or "authentication failed" in message:
+        return (
+            "Authentification Lakebase refusée. Le credential est minté pour "
+            "l'identité du job : vérifiez qu'elle a bien CAN_CONNECT sur la base. "
+            f"Détail : {message}"
+        )
+    return f"Connexion à Lakebase impossible : {message}"
+
+
+def _write_advice(exc: Exception, schema: str) -> str:
+    message = str(exc)
+    if "permission denied" in message.lower():
+        return (
+            "Le job n'a pas les droits d'écriture sur le miroir. Les tables "
+            f"appartiennent au service principal de l'App ; la migration 006 "
+            f"({schema}) les ouvre à l'identité de synchronisation — redéployez "
+            f"l'App pour qu'elle s'applique, puis relancez. Détail : {message}"
+        )
+    return f"Écriture du miroir impossible : {message}"
+
+
+def _workspace_client() -> Any:
+    from databricks.sdk import WorkspaceClient
+
+    return WorkspaceClient()
+
+
+def _read_write_endpoint(client: Any, branch: str) -> tuple[str, str]:
+    """Le chemin de ressource de l'endpoint en écriture, et son hôte.
+
+    On écrit : un endpoint en lecture seule ferait échouer la synchronisation
+    au premier INSERT, après avoir lu tout le référentiel.
+    """
+    if not branch:
+        raise RuntimeError(
+            "Branche Lakebase inconnue : passez --branch "
+            "projects/<projet>/branches/<branche>, ou exportez PGHOST, PGUSER "
+            "et PGPASSWORD depuis un secret scope."
+        )
+    try:
+        endpoints = list(client.postgres.list_endpoints(branch))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Impossible de lister les endpoints de « {branch} ». L'identité qui "
+            "exécute le job a-t-elle accès au projet Lakebase ?"
+        ) from exc
+
+    for endpoint in endpoints:
+        status = getattr(endpoint, "status", None)
+        if "READ_WRITE" not in str(getattr(status, "endpoint_type", "")):
+            continue
+        hosts = getattr(status, "hosts", None)
+        host = getattr(hosts, "host", None) or getattr(
+            hosts, "read_write_pooled_host", None
+        )
+        if host:
+            return endpoint.name, str(host)
+
+    raise RuntimeError(
+        f"Aucun endpoint en écriture sur « {branch} ». Vérifiez la branche, ou "
+        "exportez PGHOST / PGUSER / PGPASSWORD depuis un secret scope."
+    )
+
+
+def _current_identity(client: Any) -> str:
+    """Le rôle Postgres de l'identité qui exécute le job.
+
+    Lakebase authentifie une identité Databricks sous son propre nom : l'adresse
+    e-mail pour une personne, l'application id pour un service principal.
+    """
+    try:
+        name = client.current_user.me().user_name
+    except Exception as exc:
+        raise RuntimeError(
+            "Impossible de déterminer l'identité qui exécute le job ; "
+            "passez --pg-user."
+        ) from exc
+    if not name:
+        raise RuntimeError("Identité sans nom d'utilisateur ; passez --pg-user.")
+    return str(name)
+
+
+def _mint(client: Any, endpoint: str) -> str:
+    """Un credential Lakebase, comme l'application en demande un.
+
+    ``postgres.generate_database_credential`` prend le chemin de ressource d'un
+    endpoint. L'API ``database.*`` de l'ancien palier provisionné, appelée avec
+    un nom d'hôte, échoue par « Database instance not found » — elle n'est pas
+    tentée.
+    """
+    credential = client.postgres.generate_database_credential(endpoint)
+    token = getattr(credential, "token", None)
+    if not token:
+        raise RuntimeError("Databricks n'a pas renvoyé de credential Lakebase.")
+    return str(token)
 
 
 if __name__ == "__main__":

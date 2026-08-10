@@ -209,12 +209,17 @@ resources:
               - "--branch"
               - projects/${var.lakebase_project}/branches/${var.lakebase_branch}
           environment_key: serverless_env
-      # Chaque nuit : un référentiel n'est pas un flux temps réel, et la copie
-      # doit être en place avant la journée de comptage, pas pendant.
+      # Planification en pause. La voie opérationnelle est le notebook
+      # `jobs/sync_erp_mirror_notebook.py`, importé dans le workspace et planifié
+      # depuis l'interface : il obtient son jeton du contexte de session et ne
+      # dépend donc pas de la version du SDK, que le runtime serverless fige en
+      # deçà de l'API Lakebase. Ce job-ci reste déployé pour une exécution en
+      # ligne de commande, mais le laisser se déclencher chaque nuit ne
+      # produirait qu'un échec quotidien tant que ce SDK n'a pas évolué.
       schedule:
         quartz_cron_expression: "0 30 4 * * ?"
         timezone_id: Europe/Paris
-        pause_status: UNPAUSED
+        pause_status: PAUSED
       environments:
         - environment_key: serverless_env
           spec:

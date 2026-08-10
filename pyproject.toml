@@ -37,6 +37,12 @@ ignore = [
 # `from pyspark.sql import functions as F` is the universal Spark convention;
 # renaming it would make the file harder to read for every Spark developer.
 "jobs/*" = ["N812"]
+# A Databricks notebook runs with `spark` and `dbutils` already bound by the
+# platform. Declaring them here beats scattering `# noqa` over every cell — and
+# beats a fake import, which would shadow the real ones at run time.
+# E402: dans un notebook, un import arrive dans la cellule qui en a
+# besoin, après celle qui installe le paquet.
+"jobs/*_notebook.py" = ["N812", "F821", "E402"]
 
 [tool.mypy]
 python_version = "3.11"

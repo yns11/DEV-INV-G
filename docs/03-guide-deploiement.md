@@ -615,14 +615,27 @@ déjà accès à l'ERP.
 | `uc` (défaut) | les tables silver, en direct | `USE CATALOG` + `SELECT` pour le SP de l'App |
 | `mirror` | `erp_base_article` / `erp_bom` (Lakebase) | que le job de synchronisation ait tourné |
 
-```bash
-# 1. déployer le job, puis l'exécuter une première fois
-databricks bundle deploy -t prod --profile PROD
-databricks bundle run inventory_sync_erp_mirror -t prod --profile PROD
+**La voie recommandée est le notebook**, `jobs/sync_erp_mirror_notebook.py` :
+importez-le dans le workspace (*Workspace → Import → File*), renseignez les
+widgets, « Exécuter tout », puis planifiez-le depuis l'interface. Il obtient son
+jeton du contexte de session et ne dépend donc pas de la version du SDK — que le
+runtime serverless fige en deçà de l'API Lakebase (voir plus bas). Un seul
+widget demande une valeur qui ne se devine pas, `pg_host` : console Lakebase → le
+projet → l'endpoint en écriture, ou le `PGHOST` de l'App dans son onglet
+*Environment*.
 
-# 2. basculer l'application sur le miroir
+```bash
+# 1. l'App d'abord : la migration 006 s'applique à son démarrage et ouvre
+#    l'écriture du miroir à l'identité qui synchronise
+databricks apps deploy -t prod --profile PROD
+
+# 2. exécuter le notebook depuis l'interface, puis basculer l'App sur le miroir
 databricks apps deploy -t prod --profile PROD --var=erp_source=mirror
 ```
+
+Le job `inventory_sync_erp_mirror` du bundle fait la même chose en ligne de
+commande ; sa planification est en pause, faute de quoi il échouerait chaque
+nuit tant que le SDK du runtime n'expose pas l'API Lakebase.
 
 Le job est planifié à 4 h 30 (Europe/Paris) : un référentiel n'est pas un flux
 temps réel, et la copie doit être en place **avant** la journée de comptage.

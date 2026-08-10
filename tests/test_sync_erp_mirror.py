@@ -180,15 +180,49 @@ class TestWhatTheJobSaysWhenItCannotWrite:
         assert "disque plein" in sync._write_advice(Exception("disque plein"), "inventory")
 
 
+def declared_in(path: Path, name: str) -> tuple:
+    """La valeur d'une constante lue sans exécuter le fichier.
+
+    Le notebook appelle ``dbutils`` au niveau module : il ne s'importe pas hors
+    d'un workspace. Sa liste de colonnes doit pourtant rester vérifiable ici,
+    puisque c'est elle qui décide de ce qui atterrit dans le miroir.
+    """
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        targets = getattr(node, "targets", [])
+        if targets and getattr(targets[0], "id", None) == name:
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} introuvable dans {path.name}")
+
+
 class TestTheColumnsCopied:
-    def test_the_job_copies_the_columns_the_application_reads(self):
-        """Le miroir est lu positionnellement : l'ordre est un contrat."""
+    """Le miroir est lu positionnellement : l'ordre des colonnes est un contrat.
+
+    Trois fichiers le déclarent — l'application, le script de job, le notebook —
+    et une divergence ne lève rien : elle décale chaque champ d'un rang et charge
+    des prix dans des codes unité. D'où ces égalités.
+    """
+
+    def application_columns(self) -> tuple:
         import sys
 
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
         from inventory.ingest.erp import ITEM_COLUMNS
 
-        assert sync.ITEM_COLUMNS == ITEM_COLUMNS
+        return ITEM_COLUMNS
+
+    def test_the_job_copies_the_columns_the_application_reads(self):
+        assert self.application_columns() == sync.ITEM_COLUMNS
+
+    def test_the_notebook_copies_them_too(self):
+        notebook = JOB.with_name("sync_erp_mirror_notebook.py")
+        assert self.application_columns() == declared_in(notebook, "ITEM_COLUMNS")
+
+    def test_the_notebook_and_the_script_agree_on_the_bom_columns(self):
+        notebook = JOB.with_name("sync_erp_mirror_notebook.py")
+        assert declared_in(notebook, "BOM_COLUMNS") == sync.BOM_COLUMNS
 
 
 class TestWhenTheDiscoveryIsRefused:

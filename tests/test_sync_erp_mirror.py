@@ -38,6 +38,8 @@ class Args:
         self.branch = "projects/inventaire/branches/production"
         self.pg_database = "databricks_postgres"
         self.pg_user = ""
+        self.pg_host = ""
+        self.lakebase_endpoint = ""
         self.__dict__.update(overrides)
 
 
@@ -174,3 +176,78 @@ class TestTheColumnsCopied:
         from inventory.ingest.erp import ITEM_COLUMNS
 
         assert sync.ITEM_COLUMNS == ITEM_COLUMNS
+
+
+class TestWhenTheDiscoveryIsRefused:
+    """Le deuxième lancement en production s'est arrêté sur « Impossible de
+    lister les endpoints » — un message qui avalait sa propre cause, et couvrait
+    donc trois pannes sans rapport : des droits manquants sur le projet, une
+    branche qui n'existe pas, et un SDK trop ancien pour connaître l'API. Sans
+    la cause, aucune ne se distingue des autres.
+    """
+
+    class Refusing(FakeClient):
+        def __init__(self, exc: Exception) -> None:
+            super().__init__([])
+            self._exc = exc
+
+        def list_endpoints(self, branch: str) -> list[Any]:
+            raise self._exc
+
+    def test_the_cause_reaches_the_message(self):
+        client = self.Refusing(PermissionError("PERMISSION_DENIED on project"))
+        with pytest.raises(RuntimeError, match="PERMISSION_DENIED on project"):
+            sync._lakebase_conninfo(Args(), client)
+
+    def test_the_exception_type_is_named_too(self):
+        """« AttributeError » et « PermissionError » n'appellent pas le même geste."""
+        client = self.Refusing(AttributeError("no attribute 'list_endpoints'"))
+        with pytest.raises(RuntimeError, match="AttributeError"):
+            sync._lakebase_conninfo(Args(), client)
+
+    def test_an_sdk_without_the_lakebase_api_says_so_and_names_the_pin(self):
+        """Un SDK antérieur à 0.81 n'a pas w.postgres ; l'erreur ressemblait
+        pourtant à un problème de droits."""
+        class Old:
+            current_user = type("C", (), {"me": lambda s: type("U", (), {
+                "user_name": "u@example.com"})()})()
+
+        with pytest.raises(RuntimeError, match=r"databricks-sdk>=0\.81"):
+            sync._lakebase_conninfo(Args(), Old())
+
+    def test_a_refused_credential_names_the_endpoint_and_the_cause(self):
+        class NoCredential(FakeClient):
+            def generate_database_credential(self, endpoint_name: str) -> Any:
+                raise PermissionError("not authorized")
+
+        with pytest.raises(RuntimeError, match="not authorized"):
+            sync._lakebase_conninfo(Args(), NoCredential(READ_WRITE))
+
+
+class TestTheEscapeHatches:
+    """De quoi avancer sans la découverte, le temps qu'un droit soit accordé."""
+
+    def test_an_explicit_endpoint_skips_the_enumeration(self):
+        client = FakeClient(READ_WRITE)
+        conninfo = sync._lakebase_conninfo(
+            Args(lakebase_endpoint="projects/p/branches/b/endpoints/e",
+                 pg_host="direct.example"),
+            client,
+        )
+        assert "host=direct.example" in conninfo
+        assert not hasattr(client, "branch"), "aucun appel à list_endpoints"
+        assert client.credential_for == ["projects/p/branches/b/endpoints/e"]
+
+    def test_a_host_and_a_password_avoid_the_sdk_entirely(self, monkeypatch):
+        """Le dernier recours : rien n'est demandé à la plateforme."""
+        monkeypatch.setenv("PGPASSWORD", "depuis-un-secret-scope")
+
+        class Forbidden:
+            def __getattr__(self, name: str) -> Any:
+                raise AssertionError(f"le SDK ne doit pas être appelé ({name})")
+
+        conninfo = sync._lakebase_conninfo(
+            Args(pg_host="direct.example", pg_user="sync_bot"), Forbidden()
+        )
+        assert "host=direct.example" in conninfo
+        assert "password=depuis-un-secret-scope" in conninfo

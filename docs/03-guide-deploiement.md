@@ -658,6 +658,25 @@ comptages, ni à l'audit — vérifié, `permission denied for table campaign`.
 À défaut, le job accepte `PGHOST` / `PGUSER` / `PGPASSWORD` depuis un secret
 scope, ou `--pg-user` pour un rôle Postgres dédié.
 
+**Si la découverte de l'endpoint est refusée** (« Impossible de lister les
+endpoints de … »), la même commande depuis votre poste tranche en dix secondes,
+puisqu'elle emprunte la même identité que le job :
+
+```bash
+databricks postgres list-projects --profile PROD
+databricks postgres list-endpoints projects/inventaire/branches/production --profile PROD
+```
+
+- Elle répond → l'identité a bien l'accès ; c'est l'environnement du job qui
+  n'a pas le bon SDK. `w.postgres` n'existe qu'à partir de `databricks-sdk`
+  0.81 ; le job l'épingle désormais, redéployez-le.
+- Elle échoue → c'est l'accès au projet Lakebase, ou le chemin de branche.
+  Corrigez `lakebase_project` / `lakebase_branch`, ou contournez avec
+  `--lakebase-endpoint` et `--pg-host`, lus dans la console Lakebase.
+
+Le job journalise la version du SDK qu'il utilise et reporte la cause exacte de
+chaque refus : ces trois pannes se ressemblaient à l'écran.
+
 `DATABRICKS_WAREHOUSE_ID` et `INV_LLM_ENDPOINT` sont fournis par les ressources
 attachées (`valueFrom`), ne les saisissez pas à la main.
 

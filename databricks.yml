@@ -221,6 +221,10 @@ resources:
             client: "3"
             dependencies:
               - psycopg[binary]~=3.2.0
+              # L'environnement d'un job n'est pas celui de l'App : sans pin, il
+              # hérite du SDK du runtime, qui peut être antérieur à `w.postgres`
+              # (API Lakebase Autoscaling, 0.81). Même borne que app/requirements.
+              - databricks-sdk>=0.81,<1.0
       queue:
         enabled: true
 

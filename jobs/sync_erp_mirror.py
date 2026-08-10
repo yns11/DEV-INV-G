@@ -89,6 +89,17 @@ def main() -> int:
         "--pg-user", default=os.environ.get("PGUSER", ""),
         help="Rôle Postgres. Par défaut l'identité qui exécute le job.",
     )
+    # Deux échappatoires, pour ne pas dépendre de la découverte quand elle est
+    # refusée : l'hôte se lit dans la console Lakebase, et avec un mot de passe
+    # sorti d'un secret scope le job n'appelle plus le SDK du tout.
+    parser.add_argument(
+        "--pg-host", default="",
+        help="Hôte Lakebase, si la découverte par la branche est impossible.",
+    )
+    parser.add_argument(
+        "--lakebase-endpoint", default=os.environ.get("INV_LAKEBASE_ENDPOINT", ""),
+        help="projects/<p>/branches/<b>/endpoints/<e> — évite d'énumérer.",
+    )
     parser.add_argument(
         "--limit", type=int, default=0,
         help="Tronque la copie (0 = tout). Pour un essai, pas pour la production.",
@@ -203,18 +214,25 @@ def _lakebase_conninfo(args: Any, client: Any = None) -> str:
     Les variables d'environnement restent prioritaires quand elles sont là :
     exécution locale, ou secret scope pour un rôle Postgres dédié.
     """
-    host = os.environ.get("PGHOST")
+    host = os.environ.get("PGHOST") or args.pg_host
     database = os.environ.get("PGDATABASE") or args.pg_database
     user = os.environ.get("PGUSER") or args.pg_user
     password = os.environ.get("PGPASSWORD")
 
     if not (host and user and password):
         client = client or _workspace_client()
-        name, resolved_host = _read_write_endpoint(client, args.branch)
-        host = host or resolved_host
+        log.info("SDK Databricks %s", _sdk_version())
         user = user or _current_identity(client)
-        password = password or _mint(client, name)
-        log.info("Lakebase : endpoint %s, hôte %s, identité %s", name, host, user)
+        if not (host and password):
+            api = _postgres_api(client)
+            name = args.lakebase_endpoint
+            if not name or not host:
+                found, resolved_host = _read_write_endpoint(api, args.branch)
+                name = name or found
+                host = host or resolved_host
+            password = password or _mint(api, name)
+            log.info("Lakebase : endpoint %s, hôte %s", name, host)
+        log.info("Lakebase : identité %s, base %s", user, database)
 
     port = os.environ.get("PGPORT", "5432")
     sslmode = os.environ.get("PGSSLMODE", "require")
@@ -265,7 +283,43 @@ def _workspace_client() -> Any:
     return WorkspaceClient()
 
 
-def _read_write_endpoint(client: Any, branch: str) -> tuple[str, str]:
+def _sdk_version() -> str:
+    """La version du SDK, dans le journal du job.
+
+    L'environnement serverless d'un job n'est pas celui de l'App : il apporte sa
+    propre version du SDK, et une API absente s'y présente comme une erreur
+    d'attribut au milieu d'un appel. Une ligne de journal rend la question
+    tranchable en un coup d'œil au lieu d'un aller-retour.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("databricks-sdk")
+    except Exception:  # pragma: no cover — dépend de l'environnement
+        return "inconnue"
+
+
+def _postgres_api(client: Any) -> Any:
+    """L'API Lakebase Autoscaling du SDK, ou pourquoi elle manque.
+
+    ``w.postgres`` n'existe qu'à partir de databricks-sdk 0.81. L'App l'épingle
+    dans ses dépendances ; un job qui ne déclare pas la sienne hérite de celle
+    du runtime, qui peut être antérieure — et l'échec ressemble alors à un
+    problème de droits, ce qu'il n'est pas.
+    """
+    api = getattr(client, "postgres", None)
+    if api is None:
+        raise RuntimeError(
+            "Le SDK Databricks de cet environnement ne connaît pas l'API Lakebase "
+            f"Autoscaling (w.postgres) — version installée : {_sdk_version()}, il "
+            "en faut au moins 0.81. Ajoutez « databricks-sdk>=0.81,<1.0 » aux "
+            "dépendances de l'environnement du job, ou passez --pg-host avec "
+            "PGPASSWORD depuis un secret scope."
+        )
+    return api
+
+
+def _read_write_endpoint(api: Any, branch: str) -> tuple[str, str]:
     """Le chemin de ressource de l'endpoint en écriture, et son hôte.
 
     On écrit : un endpoint en lecture seule ferait échouer la synchronisation
@@ -278,11 +332,16 @@ def _read_write_endpoint(client: Any, branch: str) -> tuple[str, str]:
             "et PGPASSWORD depuis un secret scope."
         )
     try:
-        endpoints = list(client.postgres.list_endpoints(branch))
+        endpoints = list(api.list_endpoints(branch))
     except Exception as exc:
+        # La cause décide du geste — droits manquants, branche inexistante,
+        # méthode absente d'un SDK plus ancien — et elle ne doit donc jamais
+        # être avalée : sans elle, les trois se ressemblent.
         raise RuntimeError(
-            f"Impossible de lister les endpoints de « {branch} ». L'identité qui "
-            "exécute le job a-t-elle accès au projet Lakebase ?"
+            f"Impossible de lister les endpoints de « {branch} » : "
+            f"{type(exc).__name__}: {exc}. Vérifiez que la branche existe et que "
+            "l'identité qui exécute le job a accès au projet Lakebase ; à défaut, "
+            "passez --lakebase-endpoint et --pg-host."
         ) from exc
 
     for endpoint in endpoints:
@@ -320,7 +379,7 @@ def _current_identity(client: Any) -> str:
     return str(name)
 
 
-def _mint(client: Any, endpoint: str) -> str:
+def _mint(api: Any, endpoint: str) -> str:
     """Un credential Lakebase, comme l'application en demande un.
 
     ``postgres.generate_database_credential`` prend le chemin de ressource d'un
@@ -328,7 +387,13 @@ def _mint(client: Any, endpoint: str) -> str:
     un nom d'hôte, échoue par « Database instance not found » — elle n'est pas
     tentée.
     """
-    credential = client.postgres.generate_database_credential(endpoint)
+    try:
+        credential = api.generate_database_credential(endpoint)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Credential Lakebase refusé pour « {endpoint} » : "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     token = getattr(credential, "token", None)
     if not token:
         raise RuntimeError("Databricks n'a pas renvoyé de credential Lakebase.")

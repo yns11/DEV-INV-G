@@ -18,8 +18,9 @@
 # MAGIC | Widget | Où le trouver |
 # MAGIC |---|---|
 # MAGIC | `pg_host` | Console Lakebase → le projet → l'endpoint en écriture. C'est aussi le `PGHOST` visible dans l'onglet *Environment* de l'App. |
-# MAGIC | `pg_password` | Facultatif. Vide, le notebook utilise le jeton de la session. Sinon un jeton personnel (*Paramètres → Développeur → Jetons d'accès*). |
+# MAGIC | `pg_password` | Facultatif : laissez vide, le notebook cherche un jeton lui-même et dit ce qu'il a trouvé. |
 # MAGIC | `pg_user` | Facultatif. Vide, c'est l'identité qui exécute le notebook. |
+# MAGIC | `lakebase_branch` | Déjà rempli. Sert à demander un credential dédié à l'endpoint. |
 # MAGIC
 # MAGIC Prérequis, une seule fois : l'App doit avoir démarré au moins une fois
 # MAGIC depuis la migration `006` — c'est elle qui ouvre l'écriture du miroir à une
@@ -28,6 +29,11 @@
 # COMMAND ----------
 
 # MAGIC %pip install psycopg[binary]==3.2.3
+# MAGIC # Le SDK récent expose l'API Lakebase, qui délivre le seul jeton que
+# MAGIC # Postgres accepte ici. L'installation peut être ignorée sous serverless,
+# MAGIC # dont les versions sont figées : le notebook essaie alors d'autres
+# MAGIC # sources, et le dit. Sur un cluster classique elle aboutit.
+# MAGIC %pip install databricks-sdk==0.81.0
 # MAGIC %restart_python
 
 # COMMAND ----------
@@ -40,6 +46,10 @@ dbutils.widgets.text("pg_schema", "inventory", "5. Schéma de l'application")
 dbutils.widgets.text("erp_catalog", "emotors_data_champions", "6. Catalogue ERP")
 dbutils.widgets.text("erp_schema", "silver_erp_ye", "7. Schéma ERP")
 dbutils.widgets.text("limit", "0", "8. Limite (0 = tout)")
+dbutils.widgets.text(
+    "lakebase_branch", "projects/inventaire/branches/production",
+    "9. Branche Lakebase",
+)
 
 # COMMAND ----------
 
@@ -73,7 +83,7 @@ BATCH = 5_000
 
 conf = {name: dbutils.widgets.get(name).strip() for name in (
     "pg_host", "pg_password", "pg_user", "pg_database", "pg_schema",
-    "erp_catalog", "erp_schema", "limit",
+    "erp_catalog", "erp_schema", "limit", "lakebase_branch",
 )}
 
 if not conf["pg_host"]:
@@ -134,26 +144,103 @@ if not items:
 # MAGIC ## Connexion à Lakebase
 # MAGIC
 # MAGIC Lakebase authentifie une identité Databricks sous son propre nom, avec un
-# MAGIC jeton en guise de mot de passe. À défaut de jeton fourni en widget, celui de
-# MAGIC la session sert — c'est le chemin qui ne dépend d'aucune version de SDK, et
-# MAGIC c'est là que la version en ligne de commande s'était arrêtée.
+# MAGIC jeton en guise de mot de passe — mais **seulement un JWT**. Un jeton
+# MAGIC personnel (`dapi…`), qui ouvre pourtant toute l'API REST, est refusé :
+# MAGIC « Provided authentication token is not a valid JWT encoding ». C'est là que
+# MAGIC la version précédente s'est arrêtée.
+# MAGIC
+# MAGIC Les fournisseurs possibles sont donc essayés dans l'ordre, et la cellule dit
+# MAGIC ce que chacun a donné. Si aucun ne convient, le message le dit avec le
+# MAGIC détail — plutôt qu'un échec identique au précédent.
 
 # COMMAND ----------
 
 user = conf["pg_user"] or spark.sql("SELECT current_user()").collect()[0][0]
 
-password = conf["pg_password"]
-if not password:
-    ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
-    password = ctx.apiToken().get()
+
+def looks_like_a_jwt(token):
+    """Lakebase refuse tout ce qui n'est pas un JWT.
+
+    Un jeton personnel Databricks commence par ``dapi`` et n'a pas de points :
+    il authentifie parfaitement l'API REST, et Lakebase le rejette par
+    « Provided authentication token is not a valid JWT encoding ». Les deux
+    sortes de jetons se ressemblent à l'usage ; seule leur forme les distingue,
+    et la vérifier ici évite d'aller le découvrir au bout d'une connexion.
+    """
+    return bool(token) and token.count(".") == 2 and token.startswith("ey")
+
+
+def token_sources():
+    """Les fournisseurs de jeton, du plus ciblé au plus général.
+
+    Aucun n'est disponible partout : l'API Lakebase du SDK n'existe qu'à partir
+    de la version 0.81, le jeton OAuth dépend du mode d'authentification du
+    runtime, et le jeton de session n'est un JWT que dans certains contextes.
+    Les essayer dans l'ordre, en disant ce que chacun a donné, transforme un
+    échec en information.
+    """
+    yield "widget « 2. Jeton »", lambda: conf["pg_password"]
+
+    from databricks.sdk import WorkspaceClient
+
+    client = WorkspaceClient()
+
+    def dedicated_credential():
+        api = getattr(client, "postgres", None)
+        if api is None:
+            return None
+        for endpoint in api.list_endpoints(conf["lakebase_branch"]):
+            if "READ_WRITE" in str(getattr(endpoint.status, "endpoint_type", "")):
+                return api.generate_database_credential(endpoint.name).token
+        return None
+
+    def legacy_credential():
+        api = getattr(client, "database", None)
+        if api is None:
+            return None
+        import uuid
+
+        return api.generate_database_credential(
+            request_id=str(uuid.uuid4()), instance_names=[conf["pg_host"]]
+        ).token
+
+    yield "credential Lakebase (w.postgres)", dedicated_credential
+    yield "credential Lakebase (w.database)", legacy_credential
+    yield "jeton OAuth du SDK", lambda: client.config.oauth_token().access_token
+    yield "jeton de session (dbutils)", lambda: (
+        dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+        .apiToken().get()
+    )
+
+
+password = ""
+for label, source in token_sources():
+    try:
+        candidate = source()
+    except Exception as exc:
+        print(f"  {label:<34} indisponible ({type(exc).__name__})")
+        continue
+    if not candidate:
+        print(f"  {label:<34} vide")
+    elif not looks_like_a_jwt(candidate):
+        print(f"  {label:<34} pas un JWT ({candidate[:4]}…, "
+              f"{len(candidate)} caractères)")
+    else:
+        print(f"  {label:<34} JWT retenu")
+        password = candidate
+        break
 
 if not password:
     raise RuntimeError(
-        "Aucun jeton disponible. Collez un jeton personnel dans le widget « 2 » "
-        "(Paramètres → Développeur → Jetons d'accès)."
+        "Aucun JWT disponible — voir le détail par source ci-dessus. Deux "
+        "recours : exécuter ce notebook sur un cluster classique après avoir "
+        "installé « databricks-sdk==0.81.0 » (l'API Lakebase du SDK y devient "
+        "disponible, contrairement au serverless dont les versions sont figées), "
+        "ou créer dans la console Lakebase un rôle Postgres natif avec mot de "
+        "passe et le renseigner dans les widgets 2 et 3."
     )
 
-print(f"Identité : {user}")
+print(f"\nIdentité : {user}")
 
 # COMMAND ----------
 

@@ -90,8 +90,38 @@ class ThresholdPayload(ApiModel):
     item_type: ItemType = Field(alias="itemType")
     value_abs_eur: Decimal = Field(default=Decimal("1000"), ge=0, alias="valueAbsEur")
     qty_relative: Decimal | None = Field(default=None, ge=0, alias="qtyRelative")
-    qty_abs_floor: Decimal = Field(default=Decimal("0"), ge=0, alias="qtyAbsFloor")
-    ira_tolerance: Decimal = Field(default=Decimal("0"), ge=0, alias="iraTolerance")
+
+
+class ItemPatch(ApiModel):
+    """One article, edited in place.
+
+    Every field is optional and ``None`` means "leave it alone": the grid sends
+    what the user changed, not a whole row rebuilt from what happened to be on
+    screen. The business key is not here — an article number is the identity of
+    the line, and renaming it would be a different article.
+    """
+
+    name: str | None = None
+    item_type: ItemType | None = Field(default=None, alias="itemType")
+    category: str | None = None
+    program: str | None = None
+    unit: str | None = None
+    std_price: Decimal | None = Field(default=None, ge=0, alias="stdPrice")
+    exclusions: list[str] | None = None
+
+
+class BomLinkPatch(ApiModel):
+    """One bill-of-materials edge, edited in place.
+
+    Parent and child identify the edge, so they are required and never changed;
+    changing either is deleting one link and creating another, which the grid
+    already offers.
+    """
+
+    parent_item: str = Field(alias="parentItem", min_length=1)
+    child_item: str = Field(alias="childItem", min_length=1)
+    qty_per: Decimal | None = Field(default=None, gt=0, alias="qtyPer")
+    unit: str | None = None
 
 
 class CreateCampaignRequest(ApiModel):

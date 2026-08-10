@@ -16,13 +16,15 @@ import type {
 import {
   ITEM_TYPE_LABELS,
   moneyShort,
-  numShort,
+  qty,
   percent,
   signClass,
   signedMoney,
+  signedNum,
 } from '../lib/format'
 import { CompositionBar, DistributionChart, Pareto, VarianceBars } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
+import { useSubSection } from '../lib/subsection'
 import { ImportPanel } from '../components/ImportPanel'
 import {
   Alert,
@@ -34,23 +36,27 @@ import {
   Icons,
   Modal,
   Skeleton,
-  Tabs,
   useErrorToast,
   useToast,
 } from '../components/ui'
 
-type Tab = 'variances' | 'analytics' | 'causes' | 'adjustments' | 'controls' | 'summary'
+/** One per navigation entry; `causes` still carries three related views. */
+export type AnalysisView = 'controls' | 'variances' | 'causes' | 'adjustments'
 
-export function Analysis() {
+type CausesTab = 'causes' | 'analytics' | 'summary'
+
+const CAUSES_TABS: CausesTab[] = ['causes', 'analytics', 'summary']
+
+export function Analysis({ view }: { view: AnalysisView }) {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
-  const [tab, setTab] = useState<Tab>('variances')
+  const [causesTab] = useSubSection<CausesTab>('causes', CAUSES_TABS)
 
   if (!overview.campaign.book_stock_frozen_at) {
     return (
       <Card>
         <EmptyState title="Analyse indisponible" icon={<Icons.lock size={20} />}>
-          Les écarts se calculent à partir du stock livre gelé. Chargez puis gelez le
+          Les écarts se calculent à partir du stock ERP gelé. Chargez puis gelez le
           snapshot ERP dans l’onglet Référentiels.
         </EmptyState>
       </Card>
@@ -59,25 +65,20 @@ export function Analysis() {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
-      <Tabs<Tab>
-        value={tab}
-        onChange={setTab}
-        tabs={[
-          { id: 'variances', label: 'Écarts' },
-          { id: 'analytics', label: 'Analyses & ML' },
-          { id: 'causes', label: 'Causes' },
-          { id: 'adjustments', label: 'Ajustements' },
-          { id: 'controls', label: 'Contrôles' },
-          { id: 'summary', label: 'Synthèse IA' },
-        ]}
-      />
-
-      {tab === 'variances' && <VariancesTab campaignId={campaignId} overview={overview} />}
-      {tab === 'analytics' && <AnalyticsTab campaignId={campaignId} />}
-      {tab === 'causes' && <CausesTab campaignId={campaignId} overview={overview} />}
-      {tab === 'adjustments' && <AdjustmentsTab campaignId={campaignId} overview={overview} />}
-      {tab === 'controls' && <ControlsTab campaignId={campaignId} />}
-      {tab === 'summary' && <SummaryTab campaignId={campaignId} />}
+      {view === 'variances' && <VariancesTab campaignId={campaignId} overview={overview} />}
+      {view === 'controls' && <ControlsTab campaignId={campaignId} />}
+      {view === 'adjustments' && (
+        <AdjustmentsTab campaignId={campaignId} overview={overview} />
+      )}
+      {view === 'causes' && causesTab === 'causes' && (
+        <CausesTab campaignId={campaignId} overview={overview} />
+      )}
+      {view === 'causes' && causesTab === 'analytics' && (
+        <AnalyticsTab campaignId={campaignId} />
+      )}
+      {view === 'causes' && causesTab === 'summary' && (
+        <SummaryTab campaignId={campaignId} />
+      )}
     </div>
   )
 }
@@ -159,16 +160,18 @@ function VariancesTab({
       render: (row) => <Badge tone="neutral">{ITEM_TYPE_LABELS[row.itemType]}</Badge>,
       value: (row) => row.itemType,
     },
+    // Every cell of this row that carries both figures uses the same
+    // arrangement: quantity on the first line, amount on the second. Mixing the
+    // two orders — a quantity heading one column and an amount heading the next
+    // — puts different units at the same height, and the eye reading across a
+    // row cannot tell which is which without checking the header every time.
     {
       key: 'bookQty',
-      label: 'Stock livre',
+      label: 'Stock ERP',
       numeric: true,
       width: 130,
       render: (row) => (
-        <span className="num">
-          {numShort(row.bookQty)}
-          <div className="subtle">{moneyShort(row.bookValue)}</div>
-        </span>
+        <QtyOverValue qty={qty(row.bookQty)} value={moneyShort(row.bookValue)} />
       ),
       value: (row) => row.bookQty,
     },
@@ -176,8 +179,13 @@ function VariancesTab({
       key: 'countedQty',
       label: 'Compté',
       numeric: true,
-      width: 120,
-      render: (row) => <span className="num">{numShort(row.countedQty)}</span>,
+      width: 130,
+      render: (row) => (
+        <QtyOverValue
+          qty={qty(row.countedQty)}
+          value={moneyShort(row.countedQty * row.unitCost)}
+        />
+      ),
       value: (row) => row.countedQty,
     },
     {
@@ -187,12 +195,11 @@ function VariancesTab({
       width: 170,
       render: (row) => (
         <div>
-          <strong className={`num ${signClass(row.varianceValue)}`}>
-            {signedMoney(row.varianceValue)}
-          </strong>
-          <div className="subtle num">
-            {numShort(row.varianceQty)} {row.unit}
-          </div>
+          <QtyOverValue
+            qty={signedNum(row.varianceQty)}
+            value={signedMoney(row.varianceValue)}
+            tone={signClass(row.varianceValue)}
+          />
           <CellBarInline value={row.varianceValue} max={maxAbs} />
         </div>
       ),
@@ -204,9 +211,11 @@ function VariancesTab({
       numeric: true,
       width: 140,
       render: (row) => (
-        <span className={`num ${signClass(row.residualValue)}`}>
-          {signedMoney(row.residualValue)}
-        </span>
+        <QtyOverValue
+          qty={signedNum(row.residualQty)}
+          value={signedMoney(row.residualValue)}
+          tone={signClass(row.residualValue)}
+        />
       ),
       value: (row) => row.residualValue,
     },
@@ -350,7 +359,7 @@ function VariancesTab({
             <EmptyState title="Aucun écart" icon={<Icons.check size={20} />}>
               {materialOnly
                 ? 'Aucun écart ne dépasse les seuils de matérialité configurés.'
-                : 'Le stock compté correspond au stock livre.'}
+                : 'Le stock compté correspond au stock ERP.'}
             </EmptyState>
           }
         >
@@ -364,7 +373,7 @@ function VariancesTab({
               initialSort={{ key: 'varianceValue', direction: 'desc' }}
               footer={
                 <span className="subtle">
-                  Périmètre : {overview.campaign.code} · stock livre gelé le{' '}
+                  Périmètre : {overview.campaign.code} · stock ERP gelé le{' '}
                   {new Date(overview.campaign.book_stock_frozen_at!).toLocaleDateString('fr-FR')}
                 </span>
               }
@@ -376,6 +385,30 @@ function VariancesTab({
       {explain && (
         <ExplainModal campaignId={campaignId} itemNumber={explain} onClose={() => setExplain(null)} />
       )}
+    </div>
+  )
+}
+
+/**
+ * A quantity over an amount, in that order, everywhere.
+ *
+ * One component rather than the same two lines written per column: the point is
+ * that the arrangement cannot drift, and a shared component is the only version
+ * of "consistent" that survives the next column being added.
+ */
+function QtyOverValue({
+  qty: quantity,
+  value,
+  tone,
+}: {
+  qty: string
+  value: string
+  tone?: string
+}) {
+  return (
+    <div className="num">
+      <strong className={tone}>{quantity}</strong>
+      <div className="subtle">{value}</div>
     </div>
   )
 }
@@ -436,7 +469,7 @@ function ExplainModal({
                         <tr key={index}>
                           <td>{row.zone_code}</td>
                           <td className="mono">{row.parent_item}</td>
-                          <td className="num">{numShort(row.child_qty)}</td>
+                          <td className="num">{qty(row.child_qty)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -461,7 +494,7 @@ function ExplainModal({
                         <tr key={index}>
                           <td>{String(row.date ?? '—')}</td>
                           <td>{String(row.kind)}</td>
-                          <td className="num">{numShort(Number(row.qty))}</td>
+                          <td className="num">{qty(Number(row.qty))}</td>
                           <td className="num">{moneyShort(Number(row.value))}</td>
                         </tr>
                       ))}
@@ -897,7 +930,7 @@ function AdjustmentsTab({
       numeric: true,
       width: 120,
       render: (row) => (
-        <span className={`num ${signClass(Number(row.qty))}`}>{numShort(Number(row.qty))}</span>
+        <span className={`num ${signClass(Number(row.qty))}`}>{qty(Number(row.qty))}</span>
       ),
       value: (row) => Number(row.qty),
     },

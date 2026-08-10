@@ -165,7 +165,6 @@ def is_material(line: VarianceLine, thresholds: Thresholds) -> bool:
     A line is material when **every** configured gate is breached:
 
     * absolute value  ``|Δ€| >= value_abs_eur``
-    * absolute qty    ``|Δqty| >= qty_abs_floor``
     * relative qty    ``|Δqty| / book_qty >= qty_relative``
 
     Requiring all gates (rather than any) keeps the exception list at a size a
@@ -179,8 +178,6 @@ def is_material(line: VarianceLine, thresholds: Thresholds) -> bool:
     if line.book_qty == 0:
         return True
     if abs(line.variance_value) < thresholds.value_abs_eur:
-        return False
-    if dq < thresholds.qty_abs_floor:
         return False
     if thresholds.qty_relative is not None:
         ratio = safe_ratio(dq, abs(line.book_qty))
@@ -355,7 +352,9 @@ def compute_kpis(
     """Headline KPIs over a set of variance lines.
 
     A record counts as *accurate* for IRA when ``|Δqty| / book_qty`` is within
-    the item type's ``ira_tolerance`` (0 by default: exact match required).
+    counted quantity matches the book exactly. There is no tolerance: a record
+    that is off by one is a record that was wrong, and softening that would make
+    the indicator agree with itself rather than with the shelf.
     Records with a zero book quantity are accurate only when nothing was counted
     either — "we thought there was nothing and there was nothing".
     """
@@ -380,7 +379,7 @@ def compute_kpis(
         kpi.book_only_count += int(line.book_only)
         kpi.material_line_count += int(is_material(line, thresholds))
 
-        if _is_accurate(line, thresholds.ira_tolerance):
+        if _is_accurate(line):
             kpi.accurate_line_count += 1
 
     kpi.book_qty = quantize_qty(kpi.book_qty)
@@ -407,11 +406,10 @@ def compute_kpis(
     return kpi
 
 
-def _is_accurate(line: VarianceLine, tolerance: Decimal) -> bool:
+def _is_accurate(line: VarianceLine) -> bool:
     if line.book_qty == 0:
         return line.counted_qty == 0
-    ratio = safe_ratio(abs(line.variance_qty), abs(line.book_qty))
-    return ratio is not None and ratio <= tolerance
+    return line.variance_qty == 0
 
 
 def _clamp(value: Decimal) -> Decimal:

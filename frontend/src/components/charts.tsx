@@ -14,7 +14,7 @@
  */
 
 import { useId, type ReactNode } from 'react'
-import { moneyShort, numShort, percent } from '../lib/format'
+import { moneyShort, qty, percent } from '../lib/format'
 
 type Formatter = (value: number) => string
 
@@ -150,7 +150,7 @@ export function VarianceBars({
 
 export function Columns({
   data,
-  format = numShort,
+  format = qty,
   height = 200,
   referenceLabel,
   seriesLabel = 'Réel',

@@ -48,7 +48,7 @@ export function CampaignsPage() {
         <div>
           <h1 className="page-head__title">Campagnes d’inventaire</h1>
           <p className="page-head__lede">
-            Chaque campagne est un dossier figé : référentiels, stock livre, comptages,
+            Chaque campagne est un dossier figé : référentiels, stock ERP, comptages,
             journaux et analyses sont versionnés ensemble et restent recalculables à
             l’identique.
           </p>
@@ -139,7 +139,7 @@ function CampaignGrid({
               <dl className="kv">
                 <dt>Date de comptage</dt>
                 <dd className="num">{fmtDate(campaign.count_date)}</dd>
-                <dt>Stock livre</dt>
+                <dt>Stock ERP</dt>
                 <dd>
                   {campaign.book_stock_frozen_at ? (
                     <span className="row" style={{ gap: 'var(--space-1)' }}>
@@ -249,7 +249,7 @@ function CreateCampaignModal({ onClose }: { onClose: () => void }) {
         <Alert tone="info" title="Et ensuite ?">
           La campagne démarre en <strong>Préparation</strong> : chargez les articles et
           les nomenclatures, réglez les seuils et créez les zones GENERIQUE. Le stock
-          livre se charge au début du <strong>Comptage</strong>.
+          ERP se charge au début du <strong>Comptage</strong>.
         </Alert>
       </div>
     </Modal>
@@ -313,7 +313,7 @@ function CloneCampaignModal({
           entrepôts/emplacements (avec les emplacements désactivés) et, si vous le
           souhaitez, les zones GENERIQUE avec leurs listes d’articles pré-imprimées.
           <br />
-          <strong>Aucune donnée de comptage n’est copiée</strong> : ni stock livre, ni
+          <strong>Aucune donnée de comptage n’est copiée</strong> : ni stock ERP, ni
           journaux, ni quantités, ni ajustements.
         </Alert>
         <Field label="Code de la nouvelle campagne">

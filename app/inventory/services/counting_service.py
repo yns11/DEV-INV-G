@@ -224,6 +224,11 @@ class CountingService:
         """Change the status of a batch of journals."""
         ctx = self.ctx
         ctx.guard(campaign, "count_journals")
+        if status in (JournalStatus.POSTED, JournalStatus.BOOK_ENFORCED):
+            # Posting is what the ERP will be adjusted by. It must not happen
+            # against a snapshot that can still move: the variance it settles
+            # would not be reproducible the next day.
+            ctx.guard(campaign, "post_journal")
         if status is JournalStatus.BOOK_ENFORCED:
             return self.enforce_book_stock(campaign, journal_ids)
 
@@ -255,6 +260,7 @@ class CountingService:
         """
         ctx = self.ctx
         ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "post_journal")
         if not journal_ids:
             return 0
 
@@ -281,7 +287,7 @@ class CountingService:
                         qty_manual=b.qty,
                         unit=b.unit,
                         source=DataSource.SYSTEM,
-                        comment="Quantité forcée au stock livre.",
+                        comment="Quantité forcée au stock ERP.",
                     )
                     for b in by_key.get(journal.key, [])
                 ]
@@ -299,7 +305,7 @@ class CountingService:
                 action=AuditAction.STATUS_CHANGE,
                 entity_type="count_journal",
                 summary=(
-                    f"{touched} journal(aux) forcé(s) au stock livre "
+                    f"{touched} journal(aux) forcé(s) au stock ERP "
                     "(emplacement inventorié avant le snapshot)."
                 ),
                 after={"journalIds": list(journal_ids)},

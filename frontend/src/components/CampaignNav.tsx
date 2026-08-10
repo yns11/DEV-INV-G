@@ -14,7 +14,7 @@
 
 import { NavLink, useLocation } from 'react-router-dom'
 import type { Overview } from '../lib/types'
-import { PHASE_GROUPS, SECTIONS, type Section } from '../lib/navigation'
+import { PHASE_GROUPS, SECTIONS, labelOf, type Section } from '../lib/navigation'
 import { subSectionPath, VIEW_PARAM } from '../lib/subsection'
 import { useFocusMode } from '../lib/focus'
 import { Icons } from './ui'
@@ -102,7 +102,7 @@ function SectionLink({
         <span className="navlink__icon">
           <Icon size={17} />
         </span>
-        <span>{section.label}</span>
+        <span className="truncate">{labelOf(section, overview)}</span>
         {badge ? <span className="navlink__count num">{badge}</span> : null}
       </NavLink>
 

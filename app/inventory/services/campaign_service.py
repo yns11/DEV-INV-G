@@ -9,6 +9,7 @@ from typing import Any
 from ..db import new_id
 from ..domain.enums import AuditAction, CampaignStatus, ItemType, JournalStatus
 from ..domain.models import Campaign, CampaignConfig, Thresholds
+from ..domain.sequence import PREREQUISITES, blocking_reason, unlocked_aspects
 from ..domain.workflow import (
     Editable,
     assert_campaign_transition,
@@ -29,37 +30,16 @@ __all__ = ["CampaignService", "DEFAULT_THRESHOLDS"]
 #: site's campaigns: a €1 000 gate on components keeps the exception list to a
 #: workable size, while assemblies are worth far more per unit and deserve a
 #: tighter relative gate.
+#: Packaging is deliberately absent: the ERP referential excludes it, so a row
+#: for it was a line nobody could ever act on. An article that somehow carries
+#: that type still falls back to a permissive default rather than being skipped.
 DEFAULT_THRESHOLDS: tuple[Thresholds, ...] = (
+    Thresholds(item_type=ItemType.COMPONENT, value_abs_eur="1000", qty_relative="0.02"),
     Thresholds(
-        item_type=ItemType.COMPONENT,
-        value_abs_eur="1000",
-        qty_relative="0.02",
-        ira_tolerance="0.005",
+        item_type=ItemType.SEMI_FINISHED, value_abs_eur="2000", qty_relative="0.01"
     ),
-    Thresholds(
-        item_type=ItemType.SEMI_FINISHED,
-        value_abs_eur="2000",
-        qty_relative="0.01",
-        ira_tolerance="0",
-    ),
-    Thresholds(
-        item_type=ItemType.FINISHED,
-        value_abs_eur="2000",
-        qty_relative="0.005",
-        ira_tolerance="0",
-    ),
-    Thresholds(
-        item_type=ItemType.PACKAGING,
-        value_abs_eur="500",
-        qty_relative="0.10",
-        ira_tolerance="0.05",
-    ),
-    Thresholds(
-        item_type=ItemType.UNKNOWN,
-        value_abs_eur="500",
-        qty_relative="0.02",
-        ira_tolerance="0",
-    ),
+    Thresholds(item_type=ItemType.FINISHED, value_abs_eur="2000", qty_relative="0.005"),
+    Thresholds(item_type=ItemType.UNKNOWN, value_abs_eur="500", qty_relative="0.02"),
 )
 
 
@@ -89,6 +69,7 @@ class CampaignService:
         """
         ctx = self.ctx
         campaign = ctx.campaigns.get(campaign_id)
+        progress = ctx.progress(campaign)
         journal_progress = ctx.journals.progress(campaign_id)
 
         zones = ctx.sheets.list_zones(campaign_id)
@@ -153,6 +134,16 @@ class CampaignService:
             "counts": {
                 "items": ctx.referentials.count_items(campaign_id),
                 "bookStockLines": ctx.book_stock.count(campaign_id),
+            },
+            # What is unlocked, and why not — the same function the guard uses,
+            # so a step is never offered and then refused.
+            "sequence": {
+                "unlocked": unlocked_aspects(progress),
+                "blockedBy": {
+                    aspect: blocking_reason(aspect, progress)
+                    for aspect in PREREQUISITES
+                    if blocking_reason(aspect, progress)
+                },
             },
             "perimeter": perimeter_payload,
         }

@@ -13,7 +13,7 @@ import type { Finding, Kpis, Overview } from '../lib/types'
 import {
   SEVERITY_LABELS,
   moneyShort,
-  numShort,
+  qty,
   percent,
   signClass,
   signedMoney,
@@ -52,8 +52,8 @@ export function Dashboard() {
   return (
     <div className="stack" style={{ gap: 'var(--space-5)' }}>
       {!hasBookStock && (
-        <Alert tone="info" title="Le stock livre n’est pas encore gelé">
-          Les écarts apparaîtront une fois le stock livre chargé et gelé.{' '}
+        <Alert tone="info" title="Le stock ERP n’est pas encore gelé">
+          Les écarts apparaîtront une fois le stock ERP chargé et gelé.{' '}
           <Link to="preparation">Aller aux référentiels</Link>
         </Alert>
       )}
@@ -168,7 +168,7 @@ function CoverageAlerts({ query }: { query: { data: Kpis | undefined } }) {
     <div className="grid grid--2">
       {data.bookOnlyCount > 0 && (
         <Alert tone="danger" title={`${data.bookOnlyCount} couple(s) jamais comptés`}>
-          Du stock livre sans comptage en face : soldé à zéro à la clôture.{' '}
+          Du stock ERP sans comptage en face : soldé à zéro à la clôture.{' '}
           <Link to="analyse">Voir la liste</Link>
         </Alert>
       )}
@@ -201,7 +201,7 @@ function ControlsBanner({
   if (blockers.length === 0 && warnings === 0) {
     return (
       <Alert tone="success" title="Aucun point bloquant détecté">
-        Référentiels, stock livre et comptages : aucune anomalie.
+        Référentiels, stock ERP et comptages : aucune anomalie.
       </Alert>
     )
   }
@@ -250,7 +250,7 @@ function TopVariances({ campaignId }: { campaignId: string }) {
       empty={
         <Card title="Principaux écarts">
           <EmptyState title="Aucun écart" icon={<Icons.check size={20} />}>
-            Le stock compté correspond au stock livre sur l’ensemble du périmètre.
+            Le stock compté correspond au stock ERP sur l’ensemble du périmètre.
           </EmptyState>
         </Card>
       }
@@ -281,11 +281,11 @@ function TopVariances({ campaignId }: { campaignId: string }) {
                         {row.name}
                       </div>
                     </td>
-                    <td className="num">{numShort(row.bookQty)}</td>
-                    <td className="num">{numShort(row.countedQty)}</td>
+                    <td className="num">{qty(row.bookQty)}</td>
+                    <td className="num">{qty(row.countedQty)}</td>
                     <td className={`num ${signClass(row.varianceValue)}`}>
                       <strong>{signedMoney(row.varianceValue)}</strong>
-                      <div className="subtle">{numShort(row.varianceQty)} {row.unit}</div>
+                      <div className="subtle">{qty(row.varianceQty)} {row.unit}</div>
                     </td>
                   </tr>
                 ))}

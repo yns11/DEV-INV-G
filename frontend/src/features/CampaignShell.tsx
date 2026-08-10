@@ -21,7 +21,7 @@ import {
   CAMPAIGN_STATUS_LABELS,
   date as fmtDate,
   moneyShort,
-  numShort,
+  qty,
   percent,
   signClass,
   signedMoney,
@@ -29,7 +29,7 @@ import {
   label as toLabel,
 } from '../lib/format'
 import { useFocusMode } from '../lib/focus'
-import { sectionFor } from '../lib/navigation'
+import { labelOf, sectionFor } from '../lib/navigation'
 import {
   Alert, AsyncBoundary, Badge, Button, Carousel, ErrorState, Icons, Kpi, Modal,
   Skeleton, Switch, useDownload, useErrorToast, useToast,
@@ -84,7 +84,7 @@ function CampaignHeader({ overview }: { overview: Overview }) {
       <div className="page-head" style={{ marginBottom: 0 }}>
         <div className="stack" style={{ gap: 'var(--space-1)' }}>
           <h1 className="page-head__title" style={{ marginBottom: 0 }}>
-            {section?.label ?? campaign.code}
+            {section ? labelOf(section, overview) : campaign.code}
           </h1>
           {/* The campaign's own dates belong on the campaign's own screen. On
               every other one they are a line of noise above the actual work. */}
@@ -96,7 +96,7 @@ function CampaignHeader({ overview }: { overview: Overview }) {
                 — {campaign.label}, comptage du{' '}
                 <strong>{fmtDate(campaign.count_date)}</strong>
                 {campaign.book_stock_frozen_at && (
-                  <> · stock livre gelé le {fmtDate(campaign.book_stock_frozen_at)}</>
+                  <> · stock ERP gelé le {fmtDate(campaign.book_stock_frozen_at)}</>
                 )}
               </>
             )}
@@ -231,7 +231,7 @@ function KpiCarousel({ overview }: { overview: Overview }) {
             value={counts.items.toLocaleString('fr-FR')}
             compare={
               <span className="num">
-                {counts.bookStockLines.toLocaleString('fr-FR')} lignes de stock livre
+                {counts.bookStockLines.toLocaleString('fr-FR')} lignes de stock ERP
               </span>
             }
             source={
@@ -265,9 +265,9 @@ function KpiCarousel({ overview }: { overview: Overview }) {
           {(data) => (
             <div className="grid grid--kpi">
               <Kpi
-                label="Stock livre"
+                label="Stock ERP"
                 value={moneyShort(data.bookValue)}
-                compare={<span className="num">{numShort(data.bookQty)} unités</span>}
+                compare={<span className="num">{qty(data.bookQty)} unités</span>}
                 hero
               />
               <Kpi
@@ -292,7 +292,7 @@ function KpiCarousel({ overview }: { overview: Overview }) {
                     nette <strong className="num">{percent(data.netReliabilityValue, 2)}</strong>
                   </span>
                 }
-                hint="1 − Σ|écart €| / Σ stock livre €. La nette, compensée, flatte."
+                hint="1 − Σ|écart €| / Σ stock ERP €. La nette, compensée, flatte."
               />
               <Kpi
                 label="IRA"
@@ -324,7 +324,7 @@ function KpiCarousel({ overview }: { overview: Overview }) {
                 hero
               />
               <Kpi
-                label="Comptés sans stock livre"
+                label="Comptés sans stock ERP"
                 value={data.countedOnlyCount.toLocaleString('fr-FR')}
                 tone={data.countedOnlyCount ? 'neg' : 'neutral'}
                 compare={<span>trouvé là où l’ERP ne voyait rien</span>}

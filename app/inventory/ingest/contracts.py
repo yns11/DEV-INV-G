@@ -187,7 +187,7 @@ BOMS = GridContract(
 
 BOOK_STOCK = GridContract(
     key="book_stock",
-    title="Stock livre (snapshot ERP)",
+    title="Stock ERP (snapshot ERP)",
     description=(
         "Photographie du stock ERP prise juste avant le comptage. Entrepôts et "
         "emplacements sont normalisés en majuscules à l'import."
@@ -373,7 +373,7 @@ LOCATIONS = GridContract(
     key="locations",
     title="Référentiel entrepôts / emplacements",
     description=(
-        "Construit automatiquement à partir du stock livre, complétable à la main. "
+        "Construit automatiquement à partir du stock ERP, complétable à la main. "
         "Un emplacement désactivé sort totalement du périmètre."
     ),
     hint=(

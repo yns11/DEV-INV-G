@@ -218,6 +218,29 @@ export const api = {
   // a nomenclature read half-way would make unusable anyway.
   boms: (id: string, parent?: string) =>
     request<Array<Record<string, unknown>>>(`/campaigns/${id}/boms${qs({ parent })}`),
+  // Editing one line rather than re-importing the file. A referential arrives
+  // with a designation missing here and a type wrong there; before this the
+  // only remedy was to redo the whole load, so people stopped correcting.
+  updateItem: (id: string, itemNumber: string, patch: Record<string, unknown>) =>
+    request<Record<string, unknown>>(
+      `/campaigns/${id}/items/${encodeURIComponent(itemNumber)}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
+  deleteItem: (id: string, itemNumber: string) =>
+    request<{ deleted: boolean }>(
+      `/campaigns/${id}/items/${encodeURIComponent(itemNumber)}`,
+      { method: 'DELETE' },
+    ),
+  updateBomLink: (id: string, patch: Record<string, unknown>) =>
+    request<Record<string, unknown>>(`/campaigns/${id}/boms`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  deleteBomLink: (id: string, parent: string, child: string) =>
+    request<{ deleted: boolean }>(
+      `/campaigns/${id}/boms${qs({ parent, child })}`,
+      { method: 'DELETE' },
+    ),
   bomHealth: (id: string) =>
     request<{
       linkCount: number

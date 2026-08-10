@@ -254,8 +254,8 @@ class CampaignRepository(_Base):
 
     def list_thresholds(self, campaign_id: str) -> list[Thresholds]:
         rows = self._fetch_all(
-            "SELECT item_type, value_abs_eur, qty_relative, qty_abs_floor, "
-            "ira_tolerance FROM threshold WHERE campaign_id = %s ORDER BY item_type",
+            "SELECT item_type, value_abs_eur, qty_relative "
+            "FROM threshold WHERE campaign_id = %s ORDER BY item_type",
             (campaign_id,),
         )
         return [
@@ -263,8 +263,6 @@ class CampaignRepository(_Base):
                 item_type=ItemType(r["item_type"]),
                 value_abs_eur=r["value_abs_eur"],
                 qty_relative=r["qty_relative"],
-                qty_abs_floor=r["qty_abs_floor"],
-                ira_tolerance=r["ira_tolerance"],
             )
             for r in rows
         ]
@@ -278,18 +276,18 @@ class CampaignRepository(_Base):
         conn: psycopg.Connection | None = None,
     ) -> None:
         self._execute_many(
+            # `qty_abs_floor` and `ira_tolerance` are no longer written: they
+            # were two dials nobody turned, and the columns keep their defaults
+            # rather than being dropped, so an older campaign stays readable.
             "INSERT INTO threshold (campaign_id, item_type, value_abs_eur, "
-            "qty_relative, qty_abs_floor, ira_tolerance, updated_by, updated_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, now()) "
+            "qty_relative, updated_by, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, now()) "
             "ON CONFLICT (campaign_id, item_type) DO UPDATE SET "
             "value_abs_eur = EXCLUDED.value_abs_eur, "
             "qty_relative = EXCLUDED.qty_relative, "
-            "qty_abs_floor = EXCLUDED.qty_abs_floor, "
-            "ira_tolerance = EXCLUDED.ira_tolerance, "
             "updated_by = EXCLUDED.updated_by, updated_at = now()",
             [
-                (campaign_id, str(t.item_type), t.value_abs_eur, t.qty_relative,
-                 t.qty_abs_floor, t.ira_tolerance, actor)
+                (campaign_id, str(t.item_type), t.value_abs_eur, t.qty_relative, actor)
                 for t in thresholds
             ],
             conn=conn,
@@ -399,6 +397,19 @@ class ReferentialRepository(_Base):
             conn=conn,
         )
 
+    def get_item(self, campaign_id: str, item_number: str) -> Item | None:
+        """One article, by its business key.
+
+        A targeted read rather than filtering the whole referential in Python:
+        editing a single line should not load fifteen hundred rows.
+        """
+        row = self._fetch_one(
+            "SELECT * FROM item WHERE campaign_id = %s AND item_number = %s "
+            "AND deleted_at IS NULL",
+            (campaign_id, item_number),
+        )
+        return self._item(row) if row else None
+
     def delete_item(self, campaign_id: str, item_number: str, *, actor: str) -> None:
         self._execute(
             "UPDATE item SET deleted_at = now(), updated_by = %s WHERE campaign_id = %s "
@@ -450,6 +461,37 @@ class ReferentialRepository(_Base):
             "updated_at = now()",
             rows,
             conn=conn,
+        )
+
+    def get_bom_link(
+        self, campaign_id: str, parent_item: str, child_item: str
+    ) -> BomLink | None:
+        row = self._fetch_one(
+            "SELECT campaign_id, parent_item, child_item, qty_per, unit, level "
+            "FROM bom_link WHERE campaign_id = %s AND parent_item = %s "
+            "AND child_item = %s AND deleted_at IS NULL",
+            (campaign_id, parent_item, child_item),
+        )
+        if row is None:
+            return None
+        return BomLink(
+            campaign_id=str(row["campaign_id"]),
+            parent_item=row["parent_item"],
+            child_item=row["child_item"],
+            qty_per=row["qty_per"],
+            unit=row["unit"],
+            level=row["level"],
+        )
+
+    def delete_bom_link(
+        self, campaign_id: str, parent_item: str, child_item: str, *, actor: str
+    ) -> int:
+        """Logical deletion of one edge, so the history keeps what was there."""
+        return self._execute(
+            "UPDATE bom_link SET deleted_at = now(), updated_by = %s "
+            "WHERE campaign_id = %s AND parent_item = %s AND child_item = %s "
+            "AND deleted_at IS NULL",
+            (actor, campaign_id, parent_item, child_item),
         )
 
     def clear_bom(self, campaign_id: str, *, actor: str) -> int:

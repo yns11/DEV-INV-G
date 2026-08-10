@@ -97,6 +97,16 @@ export interface Overview {
     pendingArbitrations: number
   }
   counts: { items: number; bookStockLines: number }
+  /**
+   * Which steps are open, and why the others are not.
+   *
+   * Computed by the same function the API guard uses, so the interface can grey
+   * out a step with the exact sentence a write would have been refused with.
+   */
+  sequence: {
+    unlocked: Record<string, boolean>
+    blockedBy: Record<string, string>
+  }
 }
 
 /**
@@ -123,8 +133,6 @@ export interface Threshold {
   item_type: ItemType
   value_abs_eur: string | number
   qty_relative: string | number | null
-  qty_abs_floor: string | number
-  ira_tolerance: string | number
 }
 
 /**

@@ -75,8 +75,14 @@ class Editable:
     zones: bool
     #: Counting journals and their lines.
     count_journals: bool
-    #: Counting-sheet lines, statuses and arbitration.
+    #: The *structure* of a counting sheet: which articles it lists. Prepared
+    #: before inventory day, which is the whole point of preparing paper.
     count_sheets: bool
+    #: The *quantities* written on those sheets, and everything downstream of
+    #: them — arbitration, consolidation, WIP reclassification. Separate from
+    #: the structure because a sheet was fillable in preparation, which produced
+    #: counts of a campaign that had not started.
+    count_entries: bool
     adjustments: bool
     #: Human analysis (cause assignment, comments) on variances.
     analysis: bool
@@ -91,6 +97,7 @@ class Editable:
             "zones": self.zones,
             "countJournals": self.count_journals,
             "countSheets": self.count_sheets,
+            "countEntries": self.count_entries,
             "adjustments": self.adjustments,
             "analysis": self.analysis,
         }
@@ -115,6 +122,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         zones=True,
         count_journals=False,
         count_sheets=True,
+        count_entries=False,
         adjustments=False,
         analysis=False,
     ),
@@ -127,6 +135,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         zones=True,
         count_journals=True,
         count_sheets=True,
+        count_entries=True,
         adjustments=False,
         analysis=False,
     ),
@@ -139,6 +148,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         zones=False,
         count_journals=False,
         count_sheets=False,
+        count_entries=False,
         adjustments=True,
         analysis=True,
     ),
@@ -151,6 +161,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         zones=False,
         count_journals=False,
         count_sheets=False,
+        count_entries=False,
         adjustments=False,
         analysis=False,
     ),
@@ -209,7 +220,7 @@ def campaign_transition_blockers(
                     code="BOOK_STOCK_NOT_FROZEN",
                     severity=ControlSeverity.BLOCKER,
                     message=(
-                        "Le stock livre n'a pas été chargé puis gelé : "
+                        "Le stock ERP n'a pas été chargé puis gelé : "
                         "aucun écart ne peut être calculé."
                     ),
                     entity_type="campaign",
@@ -224,7 +235,7 @@ def campaign_transition_blockers(
                     severity=ControlSeverity.BLOCKER,
                     message=(
                         f"{len(pending)} journal(aux) de comptage ne sont pas encore "
-                        "postés ou forcés au stock livre."
+                        "postés ou forcés au stock ERP."
                     ),
                     entity_type="count_journal",
                     context={"pending": len(pending)},

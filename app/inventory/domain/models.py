@@ -165,18 +165,13 @@ class Thresholds(DomainModel):
     value_abs_eur: Decimal = Field(default=Decimal("1000"))
     #: |Δqty| / book_qty above which the line is an exception (0.05 = 5 %).
     qty_relative: Decimal | None = Field(default=Decimal("0.02"))
-    #: |Δqty| below which the line is never an exception, whatever the ratio.
-    qty_abs_floor: Decimal = Field(default=Decimal("0"))
-    #: Tolerance used by the Inventory Record Accuracy (IRA) KPI, per WMS
-    #: practice: a line counts as "accurate" when |Δqty|/book_qty <= tolerance.
-    ira_tolerance: Decimal = Field(default=Decimal("0"))
 
-    @field_validator("value_abs_eur", "qty_abs_floor", mode="before")
+    @field_validator("value_abs_eur", mode="before")
     @classmethod
     def _money(cls, v: Any) -> Decimal:
         return _as_money(v)
 
-    @field_validator("qty_relative", "ira_tolerance", mode="before")
+    @field_validator("qty_relative", mode="before")
     @classmethod
     def _ratio(cls, v: Any) -> Decimal | None:
         if v is None:
@@ -465,7 +460,7 @@ class Manager(DomainModel):
 
 
 class BookStockLine(DomainModel):
-    """One line of the frozen ERP book stock (``stock livre``) snapshot."""
+    """One line of the frozen ERP book stock (``stock ERP``) snapshot."""
 
     campaign_id: str
     item_number: str

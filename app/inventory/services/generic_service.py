@@ -242,6 +242,8 @@ class GenericService:
             summary=f"Création de la zone {zone.code}",
             after=zone.model_dump(mode="json"),
         )
+        # A zone is what unlocks the pilotage steps; the counts move with it.
+        ctx.forget_progress(campaign.id)
         return zone
 
     def set_zone_passes(
@@ -366,6 +368,7 @@ class GenericService:
             entity_id=zone_id,
             summary="Suppression logique d'une zone",
         )
+        ctx.forget_progress(campaign.id)
 
     # ---------------------------------------------------------------- sheets
 
@@ -379,7 +382,7 @@ class GenericService:
     ) -> CountSheet:
         """Advance a sheet through PENDING → COUNTING → ENCODING → DONE."""
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         sheet = ctx.sheets.get_sheet(sheet_id)
         if sheet.campaign_id != campaign.id:
             raise NotFoundError("Feuille introuvable dans cette campagne.")
@@ -430,7 +433,7 @@ class GenericService:
     ) -> int:
         """Create or update the lines of a sheet from grid edits or a paste."""
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         sheet = ctx.sheets.get_sheet(sheet_id)
         if sheet.campaign_id != campaign.id:
             raise NotFoundError("Feuille introuvable dans cette campagne.")
@@ -497,7 +500,7 @@ class GenericService:
 
     def delete_sheet_line(self, campaign: Campaign, line_id: str) -> None:
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         ctx.sheets.delete_sheet_line(line_id, actor=ctx.actor)
         ctx.record(
             campaign_id=campaign.id,
@@ -534,7 +537,7 @@ class GenericService:
         from ..ai import SheetExtractor, render_pdf_pages
 
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         sheet = ctx.sheets.get_sheet(sheet_id)
         if sheet.campaign_id != campaign.id:
             raise NotFoundError("Feuille introuvable dans cette campagne.")
@@ -633,7 +636,7 @@ class GenericService:
         from ..ai import SheetCandidate, SheetExtractor, render_pdf_pages
 
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
 
         if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
             images = render_pdf_pages(payload, max_pages=_MAX_SCAN_PAGES)
@@ -818,7 +821,7 @@ class GenericService:
         comment: str = "",
     ) -> None:
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         if qty < 0:
             raise ValidationError("Une quantité arbitrée ne peut pas être négative.")
         ctx.sheets.decide_arbitration(
@@ -846,7 +849,7 @@ class GenericService:
         overwrite a judgement somebody made line by line.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         proposals: dict[str, Decimal] = {}
         for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id):
             if line.is_resolved or line.qty_pass_1 == line.qty_pass_2:
@@ -933,7 +936,7 @@ class GenericService:
         directly.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         result = self.consolidate(campaign, preview=False)
 
         if result.blocking:
@@ -1076,7 +1079,7 @@ class GenericService:
         posted journal will contain.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         if not line_ids:
             return 0
 

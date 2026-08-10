@@ -270,7 +270,7 @@ class ReportService:
         sheets["Écarts par article"] = (
             [
                 "Article", "Désignation", "Type", "Catégorie", "Programme", "Unité",
-                "Coût unitaire €", "Stock livre qté", "Stock livre valeur €",
+                "Coût unitaire €", "Stock ERP qté", "Stock ERP valeur €",
                 "Compté qté", "Écart qté", "Écart valeur €", "Ajusté qté",
                 "Résiduel qté", "Résiduel valeur €", "Stock après qté",
                 "Cause", "Commentaire", "Matériel",
@@ -280,7 +280,7 @@ class ReportService:
 
         # -- variances by location --------------------------------------------
         sheets["Écarts par emplacement"] = (
-            ["Emplacement", "Stock livre valeur €", "Écart valeur €",
+            ["Emplacement", "Stock ERP valeur €", "Écart valeur €",
              "Écart absolu €", "Lignes", "Lignes matérielles"],
             [
                 [g["key"], g["bookValue"], g["varianceValue"],
@@ -289,7 +289,7 @@ class ReportService:
             ],
         )
         sheets["Écarts par entrepôt"] = (
-            ["Entrepôt", "Stock livre valeur €", "Écart valeur €",
+            ["Entrepôt", "Stock ERP valeur €", "Écart valeur €",
              "Écart absolu €", "Lignes"],
             [
                 [g["key"], g["bookValue"], g["varianceValue"],
@@ -336,17 +336,15 @@ class ReportService:
             ],
         )
         sheets["Seuils"] = (
-            ["Type d'article", "Valeur absolue €", "Écart relatif qté",
-             "Plancher qté", "Tolérance IRA"],
+            ["Type d'article", "Valeur absolue €", "Écart relatif qté"],
             [
-                [str(t.item_type), float(t.value_abs_eur), float(t.qty_relative),
-                 float(t.qty_abs_floor), float(t.ira_tolerance)]
+                [str(t.item_type), float(t.value_abs_eur), float(t.qty_relative)]
                 for t in campaign.thresholds
             ],
         )
 
         # -- book stock snapshot ----------------------------------------------
-        sheets["Stock livre"] = (
+        sheets["Stock ERP"] = (
             ["Article", "Désignation", "Entrepôt", "Emplacement", "Quantité",
              "Unité", "Coût unitaire €", "Valeur €"],
             [
@@ -454,7 +452,7 @@ class ReportService:
                 "Campagne": f"{campaign.code} — {campaign.label}",
                 "Date de comptage": campaign.count_date.isoformat(),
                 "Statut": str(campaign.status),
-                "Stock livre gelé le": _iso(campaign.book_stock_frozen_at),
+                "Stock ERP gelé le": _iso(campaign.book_stock_frozen_at),
                 "Comptage clôturé le": _iso(campaign.counting_frozen_at),
                 "Campagne clôturée le": _iso(campaign.closed_at),
                 "Dupliquée depuis": campaign.cloned_from_code or "—",
@@ -639,8 +637,8 @@ def _grid_rows(ctx: ServiceContext, campaign: Campaign, key: str) -> list[list[A
 def _kpi_rows(kpis: Any) -> list[tuple[str, Any]]:
     data = kpis.as_dict()
     labels = [
-        ("Stock livre — quantité", "bookQty"),
-        ("Stock livre — valeur (€)", "bookValue"),
+        ("Stock ERP — quantité", "bookQty"),
+        ("Stock ERP — valeur (€)", "bookValue"),
         ("Compté — quantité", "countedQty"),
         ("Compté — valeur (€)", "countedValue"),
         ("Écart net — quantité", "netVarianceQty"),
@@ -655,8 +653,8 @@ def _kpi_rows(kpis: Any) -> list[tuple[str, Any]]:
         ("Lignes analysées", "lineCount"),
         ("Lignes exactes (dans la tolérance)", "accurateLineCount"),
         ("Lignes au-delà des seuils", "materialLineCount"),
-        ("Comptés sans stock livre", "countedOnlyCount"),
-        ("Stock livre jamais compté", "bookOnlyCount"),
+        ("Comptés sans stock ERP", "countedOnlyCount"),
+        ("Stock ERP jamais compté", "bookOnlyCount"),
     ]
     return [(label, data.get(key)) for label, key in labels]
 

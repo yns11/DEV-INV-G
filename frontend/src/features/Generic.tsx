@@ -8,7 +8,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { api, downloads } from '../lib/api'
+import { api } from '../lib/api'
 import { useSubSection } from '../lib/subsection'
 import type {
   Arbitration,
@@ -20,25 +20,25 @@ import type {
   SheetStatus,
   Zone,
 } from '../lib/types'
-import { PRINT_MODE_LABELS } from '../lib/types'
 import {
   SECTION_HINTS,
   SECTION_LABELS,
   SHEET_STATUS_LABELS,
   ZONE_STATUS_LABELS,
   moneyShort,
-  numShort,
+  qty,
   percent,
   signedNum,
   label as toLabel,
 } from '../lib/format'
 import { CompositionBar } from '../components/charts'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
+import { PrintModal } from '../components/PrintModal'
 import { parseSheetLines } from '../lib/pasteSheetLines'
 import { useFocusMode } from '../lib/focus'
 import { CreateZoneModal } from './zones'
 import {
-  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Field, Icons, Modal, Skeleton, Switch, useDownload, useErrorToast, useToast,
+  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Skeleton, useErrorToast, useToast,
 } from '../components/ui'
 
 type Tab = 'zones' | 'arbitration' | 'consolidation'
@@ -512,7 +512,7 @@ function SheetModal({
         ? undefined
         : (row) =>
             row.isCounted ? (
-              <span className="num">{numShort(Number(row.qty))}</span>
+              <span className="num">{qty(Number(row.qty))}</span>
             ) : (
               <span className="subtle" title="Vide ≠ zéro : la ligne n’a pas été comptée">
                 non compté
@@ -546,7 +546,7 @@ function SheetModal({
                     ? 'Les deux comptages divergent : un arbitrage sera demandé.'
                     : undefined
                 }>
-                  {numShort(first)}
+                  {qty(first)}
                 </span>
               )
             },
@@ -878,8 +878,8 @@ function ArbitrationTable({
                   {SECTION_LABELS[row.section] ?? row.section}
                 </Badge>
               </td>
-              <td className="num">{row.qty_pass_1 === null ? '—' : numShort(row.qty_pass_1)}</td>
-              <td className="num">{row.qty_pass_2 === null ? '—' : numShort(row.qty_pass_2)}</td>
+              <td className="num">{row.qty_pass_1 === null ? '—' : qty(row.qty_pass_1)}</td>
+              <td className="num">{row.qty_pass_2 === null ? '—' : qty(row.qty_pass_2)}</td>
               <td className={`num ${row.gap === 0 ? 'neutral' : row.gap > 0 ? 'pos' : 'neg'}`}>
                 {signedNum(row.gap)}
               </td>
@@ -889,10 +889,10 @@ function ArbitrationTable({
                   <span className="subtle">à décider</span>
                 ) : row.isProposed ? (
                   <span className="subtle" title="Pré-rempli, pas encore validé">
-                    {numShort(row.qty_arbitrated)} · proposé
+                    {qty(row.qty_arbitrated)} · proposé
                   </span>
                 ) : (
-                  <strong>{numShort(row.qty_arbitrated)}</strong>
+                  <strong>{qty(row.qty_arbitrated)}</strong>
                 )}
               </td>
               <td>
@@ -1053,7 +1053,7 @@ function ConsolidationTab({
                     <td>{row.zoneCode}</td>
                     <td className="mono">{row.itemNumber}</td>
                     <td className="num">
-                      {numShort(row.qty)} {row.unit}
+                      {qty(row.qty)} {row.unit}
                     </td>
                   </tr>
                 ))}
@@ -1103,7 +1103,7 @@ function ConsolidationTab({
                 <dt>Articles au journal (aperçu)</dt>
                 <dd className="num">{data.lines.length.toLocaleString('fr-FR')}</dd>
                 <dt>Quantité totale</dt>
-                <dd className="num">{numShort(data.totalQty)}</dd>
+                <dd className="num">{qty(data.totalQty)}</dd>
                 <dt>Zones incluses</dt>
                 <dd>{data.zonesIncluded.join(', ') || '—'}</dd>
               </dl>
@@ -1162,7 +1162,7 @@ function ConsolidationResult({
       label: 'Quantité totale',
       numeric: true,
       width: 150,
-      render: (row) => <strong className="num">{numShort(row.qty)}</strong>,
+      render: (row) => <strong className="num">{qty(row.qty)}</strong>,
       value: (row) => row.qty,
     },
     {
@@ -1170,7 +1170,7 @@ function ConsolidationResult({
       label: 'Bord de ligne',
       numeric: true,
       width: 140,
-      render: (row) => <span className="num">{numShort(row.qty_line_side)}</span>,
+      render: (row) => <span className="num">{qty(row.qty_line_side)}</span>,
       value: (row) => row.qty_line_side,
     },
     {
@@ -1178,7 +1178,7 @@ function ConsolidationResult({
       label: 'WIP assemblé',
       numeric: true,
       width: 140,
-      render: (row) => <span className="num">{numShort(row.qty_wip_ok)}</span>,
+      render: (row) => <span className="num">{qty(row.qty_wip_ok)}</span>,
       value: (row) => row.qty_wip_ok,
     },
     {
@@ -1193,7 +1193,7 @@ function ConsolidationResult({
             onClick={() => onExploreWip(row.item_number)}
             title="Voir de quoi se compose ce WIP"
           >
-            {numShort(row.qty_wip_exploded)}
+            {qty(row.qty_wip_exploded)}
             <Icons.chevronRight size={12} />
           </button>
         ) : (
@@ -1225,7 +1225,7 @@ function ConsolidationResult({
         message="Le WIP éclaté n’est plus une valeur agrégée opaque : chaque quantité est traçable jusqu’à l’assemblage qui l’a produite."
       >
         <CompositionBar
-          format={numShort}
+          format={qty}
           segments={[
             { label: 'Bord de ligne', value: totals.lineSide, color: 'var(--cat-1)' },
             { label: 'WIP assemblé', value: totals.wipOk, color: 'var(--cat-2)' },
@@ -1287,10 +1287,10 @@ function WipModal({
                   <tr key={index}>
                     <td>{row.zone_code || '—'}</td>
                     <td className="mono">{row.parent_item}</td>
-                    <td className="num">{numShort(row.parent_qty)}</td>
-                    <td className="num">{numShort(row.qty_per_parent)}</td>
+                    <td className="num">{qty(row.parent_qty)}</td>
+                    <td className="num">{qty(row.qty_per_parent)}</td>
                     <td className="num">
-                      <strong>{numShort(row.child_qty)}</strong>
+                      <strong>{qty(row.child_qty)}</strong>
                     </td>
                   </tr>
                 ))}
@@ -1315,160 +1315,6 @@ function WipModal({
  * to a counter, the record of what came back, and the free-entry sheet with
  * nothing pre-printed at all.
  */
-/**
- * Printing a counting sheet.
- *
- * A sheet is three different documents and only some of them exist at any given
- * moment: a zone with a pre-printed list has nothing to gain from a blank grid,
- * a free-entry zone has no list to print, and the record with quantities does
- * not exist before anything has been counted. Which modes apply is decided
- * server-side and arrives as `zone.printModes`; this dialog offers exactly
- * those, so a choice on screen is never one the endpoint will refuse.
- */
-function PrintModal({
-  campaignId,
-  sheetId,
-  modes,
-  zonesByMode,
-  onClose,
-}: {
-  campaignId: string
-  sheetId?: string
-  modes: PrintMode[]
-  /** For the batch print: how many zones each mode would produce a sheet for. */
-  zonesByMode?: Record<PrintMode, number>
-  onClose: () => void
-}) {
-  const startDownload = useDownload()
-  const [passNo, setPassNo] = useState<1 | 2>(1)
-  const [mode, setMode] = useState<PrintMode>(modes[0] ?? 'list')
-  const [withSources, setWithSources] = useState(false)
-  const [blankLines, setBlankLines] = useState('40')
-
-  const lines = Number(blankLines)
-  const linesInvalid =
-    mode === 'blank' && (!Number.isInteger(lines) || lines < 10 || lines > 180)
-
-  const print = () => {
-    const options = {
-      mode,
-      withSources: mode === 'filled' && withSources,
-      blankLines: mode === 'blank' ? lines : undefined,
-    }
-    startDownload(
-      sheetId
-        ? downloads.countingSheet(campaignId, sheetId, options)
-        : downloads.allCountingSheets(campaignId, passNo, options),
-    )
-    onClose()
-  }
-
-  if (modes.length === 0) {
-    return (
-      <Modal
-        title="Impression"
-        onClose={onClose}
-        width={520}
-        footer={<Button onClick={onClose}>Fermer</Button>}
-      >
-        <Alert tone="info" title="Rien à imprimer pour l’instant">
-          Aucune zone n’a de liste d’articles ni de saisie libre déclarée.
-        </Alert>
-      </Modal>
-    )
-  }
-
-  return (
-    <Modal
-      title={sheetId ? 'Imprimer cette feuille' : 'Imprimer les feuilles'}
-      onClose={onClose}
-      width={600}
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Annuler
-          </Button>
-          <Button
-            variant="primary"
-            icon={<Icons.printer size={14} />}
-            disabled={linesInvalid}
-            onClick={print}
-          >
-            Imprimer
-          </Button>
-        </>
-      }
-    >
-      <div className="stack">
-        {!sheetId && (
-          <Field label="Comptage">
-            <div className="segmented">
-              {([1, 2] as const).map((value) => (
-                <button
-                  key={value}
-                  className={`segmented__item${passNo === value ? ' segmented__item--active' : ''}`}
-                  onClick={() => setPassNo(value)}
-                >
-                  Comptage n°{value}
-                </button>
-              ))}
-            </div>
-          </Field>
-        )}
-
-        <Field label="Document">
-          <div className="chips">
-            {modes.map((value) => (
-              <button
-                key={value}
-                className={`chip${mode === value ? ' chip--active' : ''}`}
-                onClick={() => setMode(value)}
-              >
-                {PRINT_MODE_LABELS[value]}
-                {zonesByMode && (
-                  <Badge tone="neutral">{zonesByMode[value] ?? 0} zone(s)</Badge>
-                )}
-              </button>
-            ))}
-          </div>
-        </Field>
-
-        {mode === 'blank' && (
-          <Field
-            label="Nombre de lignes"
-            hint="Entre 10 et 180."
-            error={linesInvalid ? 'Entier entre 10 et 180.' : undefined}
-          >
-            <input
-              className="input num"
-              inputMode="numeric"
-              value={blankLines}
-              onChange={(event) => setBlankLines(event.target.value.trim())}
-            />
-          </Field>
-        )}
-
-        {mode === 'filled' && (
-          <Switch
-            checked={withSources}
-            onChange={setWithSources}
-            label="Ajouter les colonnes Source et Commentaire"
-          />
-        )}
-
-        <Alert tone="info" title={PRINT_MODE_LABELS[mode]}>
-          {mode === 'blank' && 'Une grille vide : le compteur écrit la référence et la quantité.'}
-          {mode === 'list' && 'La liste à parcourir, plus 5 lignes libres en bord de ligne, 3 en WIP et 2 en WIP terminé.'}
-          {mode === 'filled' && 'Toutes les lignes portant une référence, y compris « non compté ». Aucune ligne vide ajoutée.'}
-        </Alert>
-      </div>
-    </Modal>
-  )
-}
-
-// --------------------------------------------------------------------------- //
-// Multi-sheet scan
-// --------------------------------------------------------------------------- //
 
 /**
  * Reading a whole stack of sheets in one go.

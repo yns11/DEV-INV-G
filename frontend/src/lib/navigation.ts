@@ -1,16 +1,21 @@
 /**
  * The campaign's navigation, as one declaration.
  *
- * There are three levels and they are three different questions, so they get
- * three different shapes on screen rather than three identical bars:
+ * Three levels, three different questions, three different shapes on screen:
  *
  *  - **phase** — where the campaign is in its life. A grouping label, never
  *    clickable: you do not navigate to a phase, you are in one.
  *  - **section** — a screen. This is what the URL addresses.
  *  - **sub-section** — a view inside a screen, carried in `?vue=`.
  *
- * Keeping the whole tree here is what lets the sidebar, the page title and the
- * screens themselves agree without any of them re-deriving the others' labels.
+ * One entry per screen, and the entries under a phase are in the order the work
+ * is actually done: articles before the sheets that list them, ERP stock before
+ * the counts it will be compared to. The tree is therefore also the procedure,
+ * which is why the same order is enforced server-side
+ * (`inventory.domain.sequence`) rather than merely suggested here.
+ *
+ * Keeping the whole tree in one file is what lets the sidebar, the page title
+ * and the screens agree without any of them re-deriving the others' labels.
  */
 
 import type { Icons } from '../components/ui'
@@ -20,7 +25,7 @@ import type { CampaignStatus, Overview } from './types'
 export type IconName = keyof typeof Icons
 
 /** The lifecycle stage a section belongs to. Ordered as the campaign runs. */
-export type PhaseGroup = 'PILOTAGE' | 'PREPARATION' | 'COUNTING' | 'ANALYSIS' | 'TRACE'
+export type PhaseGroup = 'PILOTAGE' | 'PREPARATION' | 'COUNTING' | 'ANALYSIS'
 
 export const PHASE_GROUPS: Array<{
   id: PhaseGroup
@@ -32,7 +37,6 @@ export const PHASE_GROUPS: Array<{
   { id: 'PREPARATION', label: 'Préparation', status: 'PREPARATION' },
   { id: 'COUNTING', label: 'Comptage', status: 'COUNTING' },
   { id: 'ANALYSIS', label: 'Analyse', status: 'ANALYSIS' },
-  { id: 'TRACE', label: 'Traçabilité' },
 ]
 
 export interface SubSection {
@@ -47,6 +51,12 @@ export interface Section {
   /** Route segment, relative to the campaign. `''` is the dashboard. */
   to: string
   label: string
+  /**
+   * Label that depends on the campaign — the generic warehouse is named in two
+   * entries, and hard-coding `B06VRAC` in the navigation would make a
+   * configuration change silently wrong on screen.
+   */
+  labelFor?: (overview: Overview) => string
   icon: IconName
   phase: PhaseGroup
   /** One line, shown as the screen's lede. Kept short on purpose. */
@@ -58,7 +68,20 @@ export interface Section {
   subs?: SubSection[]
 }
 
+/** The warehouse the loose-paper counting happens in, e.g. `B06VRAC`. */
+const generic = (o: Overview) => o.campaign.config.generic_warehouse
+
+/**
+ * Why a step is not open yet, straight from the server.
+ *
+ * The interface never decides this on its own: it displays the same sentence
+ * the API would answer with, so a section is never offered and then refused.
+ */
+const blocked = (o: Overview, aspect: string) => o.sequence?.blockedBy?.[aspect]
+const ready = (o: Overview, aspect: string) => !blocked(o, aspect)
+
 export const SECTIONS: Section[] = [
+  // --- Pilotage -------------------------------------------------------------
   {
     to: '',
     label: 'Tableau de bord',
@@ -76,56 +99,80 @@ export const SECTIONS: Section[] = [
     enabled: () => true,
   },
   {
-    to: 'preparation',
-    label: 'Référentiels & seuils',
-    icon: 'layers',
-    phase: 'PREPARATION',
-    lede: 'Ce sur quoi la campagne s’appuie : articles, stock livre, seuils, périmètres.',
+    to: 'audit',
+    label: 'Journal d’audit',
+    icon: 'history',
+    phase: 'PILOTAGE',
+    lede: 'Qui a changé quoi, quand.',
     enabled: () => true,
+  },
+
+  // --- Préparation ----------------------------------------------------------
+  {
+    to: 'articles',
+    label: 'Articles',
+    icon: 'box',
+    phase: 'PREPARATION',
+    lede: 'Le référentiel sur lequel tout le reste s’appuie.',
+    enabled: () => true,
+    badge: (o) => o.counts.items || null,
+  },
+  {
+    to: 'nomenclatures',
+    label: 'Nomenclatures',
+    icon: 'tree',
+    phase: 'PREPARATION',
+    lede: 'Ce qui permet d’éclater un en-cours en composants.',
+    enabled: (o) => ready(o, 'boms'),
+    locked: (o) => blocked(o, 'boms') ?? '',
+  },
+  {
+    to: 'feuilles',
+    label: 'Feuilles',
+    labelFor: (o) => `Feuilles ${generic(o)}`,
+    icon: 'printer',
+    phase: 'PREPARATION',
+    lede: 'Les zones, leurs feuilles, et l’impression — avant le jour J.',
+    enabled: (o) => ready(o, 'zones'),
+    locked: (o) => blocked(o, 'zones') ?? '',
+    badge: (o) => o.genericProgress.zones || null,
+  },
+  {
+    to: 'gestion',
+    label: 'Gestion',
+    icon: 'sliders',
+    phase: 'PREPARATION',
+    lede: 'Qui compte quoi, et à partir de quel montant un écart compte.',
+    enabled: (o) => ready(o, 'thresholds'),
+    locked: (o) => blocked(o, 'thresholds') ?? '',
     subs: [
-      {
-        id: 'items',
-        label: 'Articles',
-        group: 'Données de référence',
-        count: (o) => o.counts.items,
-      },
-      { id: 'boms', label: 'Nomenclatures', group: 'Données de référence' },
-      {
-        id: 'book_stock',
-        label: 'Stock livre',
-        group: 'Données de référence',
-        count: (o) => o.counts.bookStockLines,
-      },
-      { id: 'count_sheets', label: 'Feuilles de comptage', group: 'Données de référence' },
-      { id: 'thresholds', label: 'Seuils', group: 'Pilotage' },
-      { id: 'managers', label: 'Gestionnaires', group: 'Pilotage' },
-      { id: 'journal_scope', label: 'Affectation journaux', group: 'Pilotage' },
-      { id: 'zone_scope', label: 'Affectation zones', group: 'Pilotage' },
+      { id: 'managers', label: 'Gestionnaires' },
+      { id: 'zone_scope', label: 'Affectation zones' },
+      { id: 'journal_scope', label: 'Affectation journaux' },
+      { id: 'thresholds', label: 'Seuils' },
     ],
   },
+
+  // --- Comptage -------------------------------------------------------------
   {
-    to: 'comptage',
-    label: 'Journaux de comptage',
-    icon: 'clipboard',
+    to: 'stock-erp',
+    label: 'Stock ERP',
+    icon: 'database',
     phase: 'COUNTING',
-    lede: 'Un journal par emplacement, saisi puis posté à l’ERP.',
+    lede: 'La photo du stock à laquelle les comptages seront comparés.',
     enabled: (o) => o.campaign.status !== 'PREPARATION',
-    locked: () => 'Disponible une fois la campagne passée en comptage.',
-    // Under focus the badge counts the perimeter, not the campaign: a "6" over
-    // a list of four is the kind of small lie that makes people stop trusting
-    // the numbers next to it.
-    badge: (o, focus) =>
-      focus
-        ? o.perimeter.journalCount || null
-        : o.journalProgress.total - o.journalProgress.complete || null,
+    locked: () => 'Se charge au passage en comptage.',
+    badge: (o) => o.counts.bookStockLines || null,
   },
   {
-    to: 'generique',
-    label: 'GENERIQUE',
+    to: 'compil',
+    label: 'Compil',
+    labelFor: (o) => `Compil ${generic(o)}`,
     icon: 'grid',
     phase: 'COUNTING',
-    lede: 'Un emplacement ERP, des dizaines de zones physiques comptées sur papier.',
-    enabled: () => true,
+    lede: 'Un emplacement ERP, des dizaines de zones comptées sur papier.',
+    enabled: (o) => ready(o, 'count_entries'),
+    locked: (o) => blocked(o, 'count_entries') ?? '',
     badge: (o, focus) =>
       focus
         ? o.perimeter.zoneCount || null
@@ -141,23 +188,70 @@ export const SECTIONS: Section[] = [
     ],
   },
   {
-    to: 'analyse',
-    label: 'Écarts & analyses',
-    icon: 'chart',
+    to: 'comptage',
+    label: 'Journaux de comptage',
+    icon: 'clipboard',
+    phase: 'COUNTING',
+    lede: 'Un journal par emplacement, saisi puis posté à l’ERP.',
+    enabled: (o) => ready(o, 'count_journals'),
+    locked: (o) => blocked(o, 'count_journals') ?? '',
+    // Under focus the badge counts the perimeter, not the campaign: a "6" over
+    // a list of four is the kind of small lie that makes people stop trusting
+    // the numbers next to it.
+    badge: (o, focus) =>
+      focus
+        ? o.perimeter.journalCount || null
+        : o.journalProgress.total - o.journalProgress.complete || null,
+  },
+
+  // --- Analyse --------------------------------------------------------------
+  {
+    to: 'controles',
+    label: 'Contrôles',
+    icon: 'alert',
     phase: 'ANALYSIS',
-    lede: 'Où sont les écarts, ce qui les explique, ce qui reste à ajuster.',
+    lede: 'Ce qui empêcherait de clôturer, et pourquoi.',
     enabled: (o) => o.campaign.book_stock_frozen_at !== null,
-    locked: () => 'Disponible une fois le stock livre gelé.',
+    locked: () => 'Disponible une fois le stock ERP gelé.',
   },
   {
-    to: 'audit',
-    label: 'Journal d’audit',
-    icon: 'history',
-    phase: 'TRACE',
-    lede: 'Qui a changé quoi, quand.',
-    enabled: () => true,
+    to: 'ecarts',
+    label: 'Écarts',
+    icon: 'chart',
+    phase: 'ANALYSIS',
+    lede: 'Où ils sont, combien ils pèsent.',
+    enabled: (o) => o.campaign.book_stock_frozen_at !== null,
+    locked: () => 'Disponible une fois le stock ERP gelé.',
+  },
+  {
+    to: 'causes',
+    label: 'Analyses et causes',
+    icon: 'search',
+    phase: 'ANALYSIS',
+    lede: 'Ce qui les explique.',
+    enabled: (o) => o.campaign.book_stock_frozen_at !== null,
+    locked: () => 'Disponible une fois le stock ERP gelé.',
+    subs: [
+      { id: 'causes', label: 'Causes' },
+      { id: 'analytics', label: 'Analyses & ML' },
+      { id: 'summary', label: 'Synthèse IA' },
+    ],
+  },
+  {
+    to: 'ajustements',
+    label: 'Ajustements',
+    icon: 'scale',
+    phase: 'ANALYSIS',
+    lede: 'Ce qui reste à corriger dans l’ERP.',
+    enabled: (o) => o.campaign.book_stock_frozen_at !== null,
+    locked: () => 'Disponible une fois le stock ERP gelé.',
   },
 ]
+
+/** The label to draw for a section, campaign-aware when it needs to be. */
+export function labelOf(section: Section, overview: Overview): string {
+  return section.labelFor ? section.labelFor(overview) : section.label
+}
 
 /** The section a pathname is currently on. */
 export function sectionFor(pathname: string, campaignId: string): Section | undefined {

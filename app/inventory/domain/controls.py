@@ -177,7 +177,7 @@ def check_book_stock(
             ControlFinding(
                 code="BOOK_STOCK_EMPTY",
                 severity=ControlSeverity.BLOCKER,
-                message="Le stock livre est vide : aucun écart ne pourra être calculé.",
+                message="Le stock ERP est vide : aucun écart ne pourra être calculé.",
                 entity_type="book_stock",
             )
         ]
@@ -191,7 +191,7 @@ def check_book_stock(
                 code="BOOK_STOCK_UNKNOWN_ITEM",
                 severity=ControlSeverity.WARNING,
                 message=(
-                    f"{len(unknown_items)} article(s) du stock livre sont absents du "
+                    f"{len(unknown_items)} article(s) du stock ERP sont absents du "
                     "référentiel de la campagne."
                 ),
                 entity_type="book_stock",
@@ -214,7 +214,7 @@ def check_book_stock(
                 severity=ControlSeverity.WARNING,
                 message=(
                     f"{len(duplicates)} triplet(s) article/entrepôt/emplacement "
-                    "apparaissent plusieurs fois dans le stock livre ; les quantités "
+                    "apparaissent plusieurs fois dans le stock ERP ; les quantités "
                     "ont été sommées."
                 ),
                 entity_type="book_stock",
@@ -232,7 +232,7 @@ def check_book_stock(
                     code="UNIT_MISMATCH",
                     severity=ControlSeverity.WARNING,
                     message=(
-                        f"{line.item_number} : unité {line.unit} dans le stock livre "
+                        f"{line.item_number} : unité {line.unit} dans le stock ERP "
                         f"contre {item.unit} dans le référentiel."
                     ),
                     entity_type="book_stock",
@@ -250,7 +250,7 @@ def check_book_stock(
                 code="BOOK_STOCK_NEGATIVE",
                 severity=ControlSeverity.INFO,
                 message=(
-                    f"{len(negatives)} ligne(s) de stock livre sont négatives — "
+                    f"{len(negatives)} ligne(s) de stock ERP sont négatives — "
                     "généralement une consommation antérieure à la réception."
                 ),
                 entity_type="book_stock",
@@ -271,7 +271,7 @@ def check_book_stock(
                     code="BOOK_STOCK_UNKNOWN_LOCATION",
                     severity=ControlSeverity.WARNING,
                     message=(
-                        f"{len(orphans)} emplacement(s) du stock livre ne figurent pas "
+                        f"{len(orphans)} emplacement(s) du stock ERP ne figurent pas "
                         "dans le référentiel emplacements."
                     ),
                     entity_type="location",
@@ -457,7 +457,7 @@ def check_variances(
                 severity=ControlSeverity.BLOCKER,
                 message=(
                     f"{len(never_counted)} couple(s) article/emplacement portent du "
-                    f"stock livre ({value:,.0f} €) sans aucun comptage. Ils seront "
+                    f"stock ERP ({value:,.0f} €) sans aucun comptage. Ils seront "
                     "soldés à zéro si l'inventaire est clôturé en l'état."
                 ),
                 entity_type="variance",

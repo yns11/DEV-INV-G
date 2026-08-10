@@ -114,13 +114,33 @@ export function App() {
               <Route path="/" element={<Navigate to="/campagnes" replace />} />
               <Route path="/campagnes" element={<CampaignsPage />} />
               <Route path="/campagnes/:campaignId" element={<CampaignShell />}>
+                {/* One route per navigation entry, in the order the work is
+                    done. The two screens that serve several entries take the
+                    view as a prop rather than reading the path themselves —
+                    the tree is declared once, in `lib/navigation`. */}
                 <Route index element={<Dashboard />} />
                 <Route path="assistant" element={<Assistant />} />
-                <Route path="preparation" element={<Preparation />} />
-                <Route path="comptage" element={<Counting />} />
-                <Route path="generique" element={<Generic />} />
-                <Route path="analyse" element={<Analysis />} />
                 <Route path="audit" element={<Audit />} />
+
+                <Route path="articles" element={<Preparation view="items" />} />
+                <Route path="nomenclatures" element={<Preparation view="boms" />} />
+                <Route path="feuilles" element={<Preparation view="count_sheets" />} />
+                <Route path="gestion" element={<Preparation view="gestion" />} />
+
+                <Route path="stock-erp" element={<Preparation view="book_stock" />} />
+                <Route path="compil" element={<Generic />} />
+                <Route path="comptage" element={<Counting />} />
+
+                <Route path="controles" element={<Analysis view="controls" />} />
+                <Route path="ecarts" element={<Analysis view="variances" />} />
+                <Route path="causes" element={<Analysis view="causes" />} />
+                <Route path="ajustements" element={<Analysis view="adjustments" />} />
+
+                {/* Anciennes adresses : un lien en favori doit continuer de
+                    tomber sur l'écran correspondant. */}
+                <Route path="preparation" element={<Navigate to="../articles" replace />} />
+                <Route path="generique" element={<Navigate to="../compil" replace />} />
+                <Route path="analyse" element={<Navigate to="../ecarts" replace />} />
               </Route>
               <Route
                 path="*"

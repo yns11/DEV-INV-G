@@ -32,6 +32,7 @@ from ..db import (
 )
 from ..domain.enums import AuditAction, CampaignStatus
 from ..domain.models import Campaign
+from ..domain.sequence import Progress, blocking_reason
 from ..domain.workflow import Editable, mutability_of
 from ..errors import FrozenError
 
@@ -56,6 +57,8 @@ class ServiceContext:
     db: Database = field(default_factory=get_database)
     settings: Settings = field(default_factory=get_settings)
     request_id: str | None = None
+    #: Memoised by :meth:`progress`, keyed by campaign; see there.
+    _progress: dict[str, Progress] = field(default_factory=dict, repr=False)
 
     # -- repositories (lazily built, cached per context) ----------------------
 
@@ -102,22 +105,72 @@ class ServiceContext:
     # -- cross-cutting concerns ----------------------------------------------
 
     def guard(self, campaign: Campaign, aspect: str) -> None:
-        """Raise :class:`FrozenError` if *aspect* is frozen in this phase.
+        """Refuse a write that this phase freezes, or that comes too early.
 
-        ``aspect`` is an attribute name of :class:`~inventory.domain.workflow.Editable`
-        (``items``, ``book_stock``, ``count_journals``, …). Calling this before
-        every write is what makes "geler" a guarantee rather than a convention.
+        Two different questions, checked at one place because a caller must not
+        be able to satisfy one and forget the other.
+
+        *Is it frozen?* — ``aspect`` is an attribute of
+        :class:`~inventory.domain.workflow.Editable` (``items``, ``book_stock``,
+        ``count_entries``, …), and the phase decides. This is what makes
+        "geler" a guarantee rather than a convention.
+
+        *Is it too early?* — within a phase the steps are still ordered, and
+        :mod:`inventory.domain.sequence` holds that order. ``post_journal`` is a
+        pseudo-aspect: nothing is frozen by it, but it must not happen before
+        the ERP stock has stopped moving.
         """
         editable: Editable = mutability_of(campaign.status)
-        if not hasattr(editable, aspect):
-            raise ValueError(f"unknown editable aspect {aspect!r}")
-        if not getattr(editable, aspect):
-            raise FrozenError(
-                f"« {_ASPECT_LABELS.get(aspect, aspect)} » est gelé au statut "
-                f"{_STATUS_LABELS[campaign.status]} de la campagne.",
-                aspect=aspect,
-                status=str(campaign.status),
+        if aspect != "post_journal":
+            if not hasattr(editable, aspect):
+                raise ValueError(f"unknown editable aspect {aspect!r}")
+            if not getattr(editable, aspect):
+                raise FrozenError(
+                    f"« {_ASPECT_LABELS.get(aspect, aspect)} » est gelé au statut "
+                    f"{_STATUS_LABELS[campaign.status]} de la campagne.",
+                    aspect=aspect,
+                    status=str(campaign.status),
+                )
+
+        reason = blocking_reason(aspect, self.progress(campaign))
+        if reason:
+            raise FrozenError(reason, aspect=aspect, status=str(campaign.status))
+
+    def progress(self, campaign: Campaign) -> Progress:
+        """What the campaign already holds, counted once per request.
+
+        The guard runs before every write, so this is cached: the counts cannot
+        change under a single request, and re-issuing four ``count(*)`` queries
+        per line of an import would be a real cost for an answer that is already
+        known.
+
+        Keyed by campaign, not merely memoised. A request handles one campaign
+        almost always — but "almost" is what makes a cache dangerous: cloning
+        reads two, and a shared entry would answer the second with the first's
+        counts, silently unlocking or blocking the wrong steps.
+        """
+        cached = self._progress.get(campaign.id)
+        if cached is None:
+            cached = Progress(
+                items=self.referentials.count_items(campaign.id),
+                zones=len(self.sheets.list_zones(campaign.id)),
+                book_stock_lines=self.book_stock.count(campaign.id),
+                book_stock_frozen=campaign.book_stock_frozen_at is not None,
             )
+            self._progress[campaign.id] = cached
+        return cached
+
+    def forget_progress(self, campaign_id: str | None = None) -> None:
+        """Drop the cached counts after a write that changes them.
+
+        Called by the importers: loading the referential inside a request that
+        then creates the sheets must not be judged on the counts taken before
+        the load.
+        """
+        if campaign_id is None:
+            self._progress.clear()
+        else:
+            self._progress.pop(campaign_id, None)
 
     def record(
         self,
@@ -151,10 +204,12 @@ _ASPECT_LABELS = {
     "items": "Le référentiel articles",
     "boms": "Les nomenclatures",
     "locations": "Le référentiel emplacements",
-    "book_stock": "Le stock livre",
+    "book_stock": "Le stock ERP",
     "zones": "Les zones GENERIQUE",
     "count_journals": "Les journaux de comptage",
     "count_sheets": "Les feuilles de comptage",
+    "count_entries": "La saisie des comptages",
+    "post_journal": "Le postage des journaux",
     "adjustments": "Les ajustements",
     "analysis": "L'analyse des écarts",
 }

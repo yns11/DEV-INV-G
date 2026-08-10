@@ -68,15 +68,15 @@ export function moneyShort(value: number | null | undefined): string {
   return `${sign}${int.format(Math.round(abs))}${NBSP}€`
 }
 
-/** A compact quantity: `12,4 M`, `847 k`, `312`. */
-export function numShort(value: number | null | undefined): string {
-  if (isNil(value)) return DASH
-  const sign = value < 0 ? '-' : ''
-  const abs = Math.abs(value)
-  if (abs >= 1e6) return `${sign}${decFlexible.format(abs / 1e6)}${NBSP}M`
-  if (abs >= 1e3) return `${sign}${int.format(Math.round(abs / 1e3))}${NBSP}k`
-  return `${sign}${decFlexible.format(abs)}`
-}
+/*
+ * There is deliberately no compact quantity formatter.
+ *
+ * Abbreviating money is safe: a value is an order of magnitude, and « 847 k€ »
+ * is read as one. A quantity is a count of physical things — 3 420 screws is
+ * not "3 k screws", and rounding it on screen quietly contradicts the sheet the
+ * counter wrote and the line the ERP will be adjusted by. Quantities therefore
+ * print in full everywhere, `moneyShort` stays for amounts.
+ */
 
 /** A ratio in [0, 1] as a percentage. */
 export function percent(
@@ -95,7 +95,7 @@ export function signedMoney(value: number | null | undefined): string {
 
 export function signedNum(value: number | null | undefined): string {
   if (isNil(value)) return DASH
-  return value > 0 ? `+${numShort(value)}` : numShort(value)
+  return value > 0 ? `+${qty(value)}` : qty(value)
 }
 
 /** CSS class for a signed value: direction only, never a judgement. */
@@ -161,7 +161,7 @@ export const JOURNAL_STATUS_LABELS: Record<string, string> = {
   PENDING: 'En attente',
   IN_PROGRESS: 'En cours',
   POSTED: 'Posté',
-  BOOK_ENFORCED: 'Forcé au stock livre',
+  BOOK_ENFORCED: 'Forcé au stock ERP',
 }
 
 export const SHEET_STATUS_LABELS: Record<string, string> = {

@@ -1,13 +1,16 @@
-/** Referentials, materiality thresholds and the book-stock snapshot. */
+/** Referentials, printable sheets, perimeters and materiality thresholds. */
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { GRID_ROW_CEILING, api } from '../lib/api'
-import type { GridContract, Manager, Overview, Threshold } from '../lib/types'
-import { ITEM_TYPE_LABELS, moneyShort, numShort, percent } from '../lib/format'
+import type {
+  GridContract, Manager, Overview, PrintMode, Threshold,
+} from '../lib/types'
+import { ITEM_TYPE_LABELS, moneyShort, qty, percent } from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, type Column } from '../components/DataGrid'
+import { PrintModal } from '../components/PrintModal'
 import { useSubSection } from '../lib/subsection'
 import { ZonesAdminGrid } from './zones'
 import {
@@ -16,32 +19,42 @@ import {
   Badge,
   Button,
   Card,
+  Field,
   Icons,
+  Modal,
   Skeleton,
   useErrorToast,
   useToast,
 } from '../components/ui'
 
-type Tab =
+/**
+ * The screens this file serves, one per navigation entry.
+ *
+ * `gestion` is the one that still holds several views: managers, the two
+ * perimeter assignments and the thresholds are four short forms that belong to
+ * the same decision — who counts what, and from which amount an variance
+ * matters — and splitting them into four sidebar entries would have made the
+ * tree longer without making anything easier to find.
+ */
+export type PreparationView =
   | 'items'
   | 'boms'
   | 'book_stock'
   | 'count_sheets'
-  | 'thresholds'
-  | 'managers'
-  | 'journal_scope'
-  | 'zone_scope'
+  | 'gestion'
 
-const TABS: Tab[] = [
-  'items', 'boms', 'book_stock', 'count_sheets',
-  'thresholds', 'managers', 'journal_scope', 'zone_scope',
+type GestionTab = 'managers' | 'zone_scope' | 'journal_scope' | 'thresholds'
+
+const GESTION_TABS: GestionTab[] = [
+  'managers', 'zone_scope', 'journal_scope', 'thresholds',
 ]
 
-export function Preparation() {
+export function Preparation({ view }: { view: PreparationView }) {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
   // The sidebar draws this level, so the screen only reads it.
-  const [tab] = useSubSection<Tab>('items', TABS)
+  const [gestion] = useSubSection<GestionTab>('managers', GESTION_TABS)
+  const tab = view
 
   const contracts = useQuery({ queryKey: ['contracts'], queryFn: api.contracts })
   const contract = (key: string): GridContract | undefined =>
@@ -71,12 +84,18 @@ export function Preparation() {
           overview={overview}
         />
       )}
-      {tab === 'thresholds' && <ThresholdsTab campaignId={campaignId} overview={overview} />}
-      {tab === 'managers' && <ManagersTab campaignId={campaignId} overview={overview} />}
-      {tab === 'journal_scope' && (
+      {tab === 'gestion' && gestion === 'thresholds' && (
+        <ThresholdsTab campaignId={campaignId} overview={overview} />
+      )}
+      {tab === 'gestion' && gestion === 'managers' && (
+        <ManagersTab campaignId={campaignId} overview={overview} />
+      )}
+      {tab === 'gestion' && gestion === 'journal_scope' && (
         <JournalScopeTab campaignId={campaignId} overview={overview} />
       )}
-      {tab === 'zone_scope' && <ZoneScopeTab campaignId={campaignId} overview={overview} />}
+      {tab === 'gestion' && gestion === 'zone_scope' && (
+        <ZoneScopeTab campaignId={campaignId} overview={overview} />
+      )}
     </div>
   )
 }
@@ -96,6 +115,8 @@ function ItemsTab({
 }) {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
+  const [editing, setEditing] = useState<Record<string, unknown> | null>(null)
+  const editable = overview.permissions.items
   const query = useQuery({
     queryKey: ['items', campaignId, search],
     queryFn: () => api.items(campaignId, { limit: GRID_ROW_CEILING, search: search || undefined }),
@@ -145,6 +166,23 @@ function ItemsTab({
       },
       value: (row) => ((row.exclusions as string[] | undefined) ?? []).join(','),
     },
+    {
+      key: 'edit',
+      label: '',
+      width: 52,
+      sortable: false,
+      render: (row) => (
+        <Button
+          variant="ghost"
+          size="sm"
+          title={editable ? 'Modifier cet article' : 'Référentiel gelé'}
+          disabled={!editable}
+          onClick={() => setEditing(row)}
+        >
+          <Icons.sliders size={14} />
+        </Button>
+      ),
+    },
   ]
 
   return (
@@ -192,6 +230,14 @@ function ItemsTab({
           )}
         </AsyncBoundary>
       </Card>
+
+      {editing && (
+        <ItemEditModal
+          campaignId={campaignId}
+          row={editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   )
 }
@@ -200,6 +246,137 @@ const EXCLUSION_LABELS: Record<string, string> = {
   ALL: 'Hors périmètre',
   GENERIC: 'Hors GENERIQUE',
   BOM: 'Ignoré en BOM',
+}
+
+/**
+ * Correcting one article, in place.
+ *
+ * Only the fields a human legitimately fixes are here. The article number is
+ * shown and not editable: it is the identity of the line, and changing it would
+ * be creating a different article while quietly orphaning every count, journal
+ * line and bill-of-materials edge that referenced the old one.
+ */
+function ItemEditModal({
+  campaignId,
+  row,
+  onClose,
+}: {
+  campaignId: string
+  row: Record<string, unknown>
+  onClose: () => void
+}) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+  const itemNumber = String(row.item_number)
+
+  const [draft, setDraft] = useState({
+    name: String(row.name ?? ''),
+    itemType: String(row.item_type ?? 'UNKNOWN'),
+    category: String(row.category ?? ''),
+    program: String(row.program ?? ''),
+    unit: String(row.unit ?? 'PCE'),
+    stdPrice: String(row.stdPrice ?? 0),
+  })
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.updateItem(campaignId, itemNumber, {
+        ...draft,
+        stdPrice: Number(draft.stdPrice.replace(',', '.')),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['items'] })
+      toast.success(`Article ${itemNumber} modifié`)
+      onClose()
+    },
+    onError: (error) => showError(error, 'Modification impossible'),
+  })
+
+  const priceInvalid = !Number.isFinite(Number(draft.stdPrice.replace(',', '.')))
+  const set = (key: keyof typeof draft) => (value: string) =>
+    setDraft((current) => ({ ...current, [key]: value }))
+
+  return (
+    <Modal
+      title={`Article ${itemNumber}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Annuler
+          </Button>
+          <Button
+            variant="primary"
+            disabled={save.isPending || priceInvalid}
+            onClick={() => save.mutate()}
+          >
+            Enregistrer
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <Field label="Désignation">
+          <input
+            className="input"
+            value={draft.name}
+            onChange={(event) => set('name')(event.target.value)}
+          />
+        </Field>
+        <Field label="Type">
+          <select
+            className="input"
+            value={draft.itemType}
+            onChange={(event) => set('itemType')(event.target.value)}
+          >
+            {Object.entries(ITEM_TYPE_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <div className="row" style={{ gap: 'var(--space-3)' }}>
+          <Field label="Catégorie">
+            <input
+              className="input"
+              value={draft.category}
+              onChange={(event) => set('category')(event.target.value)}
+            />
+          </Field>
+          <Field label="Programme">
+            <input
+              className="input"
+              value={draft.program}
+              onChange={(event) => set('program')(event.target.value)}
+            />
+          </Field>
+        </div>
+        <div className="row" style={{ gap: 'var(--space-3)' }}>
+          <Field label="Unité">
+            <input
+              className="input"
+              value={draft.unit}
+              onChange={(event) => set('unit')(event.target.value)}
+            />
+          </Field>
+          <Field
+            label="Prix standard (€)"
+            hint="Pour une unité."
+            error={priceInvalid ? 'Nombre attendu.' : undefined}
+          >
+            <input
+              className="input num"
+              inputMode="decimal"
+              value={draft.stdPrice}
+              onChange={(event) => set('stdPrice')(event.target.value)}
+            />
+          </Field>
+        </div>
+      </div>
+    </Modal>
+  )
 }
 
 // --------------------------------------------------------------------------- //
@@ -216,6 +393,10 @@ function BomsTab({
   overview: Overview
 }) {
   const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+  const [editing, setEditing] = useState<Record<string, unknown> | null>(null)
+  const editable = overview.permissions.boms
   const health = useQuery({
     queryKey: ['bom-health', campaignId],
     queryFn: () => api.bomHealth(campaignId),
@@ -223,6 +404,21 @@ function BomsTab({
   const links = useQuery({
     queryKey: ['boms', campaignId],
     queryFn: () => api.boms(campaignId),
+  })
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['boms'] })
+    void queryClient.invalidateQueries({ queryKey: ['bom-health'] })
+  }
+
+  const remove = useMutation({
+    mutationFn: ({ parent, child }: { parent: string; child: string }) =>
+      api.deleteBomLink(campaignId, parent, child),
+    onSuccess: () => {
+      refresh()
+      toast.success('Lien supprimé')
+    },
+    onError: (error) => showError(error, 'Suppression impossible'),
   })
 
   const columns: Column[] = [
@@ -233,10 +429,49 @@ function BomsTab({
       label: 'Qté par assemblage',
       numeric: true,
       width: 170,
-      render: (row) => <span className="num">{numShort(Number(row.qtyPer ?? 0))}</span>,
+      render: (row) => <span className="num">{qty(Number(row.qtyPer ?? 0))}</span>,
       value: (row) => Number(row.qtyPer ?? 0),
     },
     { key: 'unit', label: 'Unité', width: 90 },
+    {
+      key: 'edit',
+      label: '',
+      width: 92,
+      sortable: false,
+      render: (row) => (
+        <span className="row" style={{ gap: 'var(--space-1)' }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            title={editable ? 'Modifier ce lien' : 'Nomenclatures gelées'}
+            disabled={!editable}
+            onClick={() => setEditing(row)}
+          >
+            <Icons.sliders size={14} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            title={editable ? 'Supprimer ce lien' : 'Nomenclatures gelées'}
+            disabled={!editable || remove.isPending}
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Supprimer le lien ${row.parent_item} → ${row.child_item} ?`,
+                )
+              ) {
+                remove.mutate({
+                  parent: String(row.parent_item),
+                  child: String(row.child_item),
+                })
+              }
+            }}
+          >
+            <Icons.trash size={14} />
+          </Button>
+        </span>
+      ),
+    },
   ]
 
   return (
@@ -319,7 +554,108 @@ function BomsTab({
           )}
         </AsyncBoundary>
       </Card>
+
+      {editing && (
+        <BomLinkEditModal
+          campaignId={campaignId}
+          row={editing}
+          onSaved={refresh}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * Correcting one bill-of-materials edge.
+ *
+ * Parent and child are shown and fixed: they *are* the edge. Changing one is
+ * deleting a link and creating another, which the grid already offers — and
+ * doing it silently here would leave the original in place.
+ *
+ * A wrong quantity per assembly is invisible until consolidation explodes a WIP
+ * and produces a component count nobody can explain, so it is worth being able
+ * to fix in one field.
+ */
+function BomLinkEditModal({
+  campaignId,
+  row,
+  onSaved,
+  onClose,
+}: {
+  campaignId: string
+  row: Record<string, unknown>
+  onSaved: () => void
+  onClose: () => void
+}) {
+  const toast = useToast()
+  const showError = useErrorToast()
+  const parent = String(row.parent_item)
+  const child = String(row.child_item)
+  const [qtyPer, setQtyPer] = useState(String(row.qtyPer ?? ''))
+  const [unit, setUnit] = useState(String(row.unit ?? 'PCE'))
+
+  const parsed = Number(qtyPer.replace(',', '.'))
+  const invalid = !Number.isFinite(parsed) || parsed <= 0
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.updateBomLink(campaignId, {
+        parentItem: parent,
+        childItem: child,
+        qtyPer: parsed,
+        unit,
+      }),
+    onSuccess: () => {
+      onSaved()
+      toast.success(`Lien ${parent} → ${child} modifié`)
+      onClose()
+    },
+    onError: (error) => showError(error, 'Modification impossible'),
+  })
+
+  return (
+    <Modal
+      title={`${parent} → ${child}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Annuler
+          </Button>
+          <Button
+            variant="primary"
+            disabled={save.isPending || invalid}
+            onClick={() => save.mutate()}
+          >
+            Enregistrer
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <Field
+          label="Quantité par assemblage"
+          hint="Combien de composants un assemblage consomme."
+          error={invalid ? 'Nombre strictement positif attendu.' : undefined}
+        >
+          <input
+            className="input num"
+            inputMode="decimal"
+            value={qtyPer}
+            onChange={(event) => setQtyPer(event.target.value)}
+          />
+        </Field>
+        <Field label="Unité">
+          <input
+            className="input"
+            value={unit}
+            onChange={(event) => setUnit(event.target.value)}
+          />
+        </Field>
+      </div>
+    </Modal>
   )
 }
 
@@ -348,7 +684,7 @@ function BookStockTab({
     mutationFn: () => api.freezeBookStock(campaignId),
     onSuccess: () => {
       void queryClient.invalidateQueries()
-      toast.success('Stock livre gelé', 'Les écarts sont désormais reproductibles.')
+      toast.success('Stock ERP gelé', 'Les écarts sont désormais reproductibles.')
     },
     onError: (error) => showError(error, 'Gel impossible'),
   })
@@ -363,7 +699,7 @@ function BookStockTab({
       label: 'Quantité',
       numeric: true,
       width: 130,
-      render: (row) => <span className="num">{numShort(Number(row.qty ?? 0))}</span>,
+      render: (row) => <span className="num">{qty(Number(row.qty ?? 0))}</span>,
       value: (row) => Number(row.qty ?? 0),
     },
     { key: 'unit', label: 'Unité', width: 80 },
@@ -380,13 +716,13 @@ function BookStockTab({
   return (
     <div className="stack">
       {frozen ? (
-        <Alert tone="success" title="Stock livre gelé">
+        <Alert tone="success" title="Stock ERP gelé">
           Tout écart calculé aujourd’hui restera recalculable à l’identique.
         </Alert>
       ) : (
         <Alert
           tone="warning"
-          title="Stock livre non gelé"
+          title="Stock ERP non gelé"
           actions={
             <Button
               variant="primary"
@@ -395,7 +731,7 @@ function BookStockTab({
               disabled={query.data?.total === 0 || freeze.isPending}
               onClick={() => freeze.mutate()}
             >
-              Geler le stock livre
+              Geler le stock ERP
             </Button>
           }
         >
@@ -412,12 +748,12 @@ function BookStockTab({
         disabledReason={
           frozen
             ? undefined
-            : 'Le chargement du stock livre se fait pendant la phase de comptage.'
+            : 'Le chargement du stock ERP se fait pendant la phase de comptage.'
         }
         onImported={() => void queryClient.invalidateQueries()}
       />
 
-      <Card title="Stock livre (snapshot ERP)" flush>
+      <Card title="Stock ERP (snapshot ERP)" flush>
         <AsyncBoundary query={query} isEmpty={(d) => d.rows.length === 0}>
           {(data) => (
             <DataGrid
@@ -456,13 +792,62 @@ function CountSheetsTab({
   overview: Overview
 }) {
   const queryClient = useQueryClient()
+  const [printing, setPrinting] = useState(false)
   const managers = useQuery({
     queryKey: ['managers', campaignId],
     queryFn: () => api.managers(campaignId),
   })
+  const zones = useQuery({
+    queryKey: ['zones', campaignId, false],
+    queryFn: () => api.zones(campaignId, {}),
+  })
+
+  // Which documents the whole set can produce, and how many sheets each would
+  // yield. Computed from the zones themselves — the print matrix lives on the
+  // server and arrives as `zone.printModes`, so this screen never guesses.
+  const batch = useMemo(() => {
+    const counts = { blank: 0, list: 0, filled: 0 } as Record<PrintMode, number>
+    for (const zone of zones.data ?? []) {
+      for (const mode of zone.printModes ?? []) counts[mode] = (counts[mode] ?? 0) + 1
+    }
+    const modes = (['list', 'blank', 'filled'] as PrintMode[]).filter(
+      (m) => (counts[m] ?? 0) > 0,
+    )
+    return { modes, counts }
+  }, [zones.data])
 
   return (
     <div className="stack">
+      {/* Printing belongs here, not three screens away under the counting
+          phase: the sheets are handed out *before* anyone counts, and having to
+          go looking for the button in GENERIQUE was the reason people printed
+          from the wrong screen. */}
+      <Card
+        title="Feuilles à imprimer"
+        message="Préparez et sortez le papier avant la journée de comptage."
+        actions={
+          <Button
+            variant="primary"
+            icon={<Icons.printer size={14} />}
+            disabled={batch.modes.length === 0}
+            title={
+              batch.modes.length === 0
+                ? 'Créez d’abord au moins une zone.'
+                : undefined
+            }
+            onClick={() => setPrinting(true)}
+          >
+            Imprimer toutes les feuilles
+          </Button>
+        }
+      >
+        <p className="muted">
+          {batch.modes.length === 0
+            ? 'Aucune zone pour l’instant : les feuilles apparaîtront ici dès qu’une zone existe.'
+            : `${zones.data?.length ?? 0} zone(s) prêtes à être imprimées.`}
+        </p>
+      </Card>
+
       {overview.permissions.countSheets && (
       <Alert tone="info" title="Une ligne par couple feuille / article">
         Une feuille inconnue est créée, une feuille connue complétée. Les lignes sont
@@ -490,6 +875,15 @@ function CountSheetsTab({
         editable={overview.permissions.zones}
         managers={managers.data?.managers ?? []}
       />
+
+      {printing && (
+        <PrintModal
+          campaignId={campaignId}
+          modes={batch.modes}
+          zonesByMode={batch.counts}
+          onClose={() => setPrinting(false)}
+        />
+      )}
     </div>
   )
 }
@@ -523,8 +917,6 @@ function ThresholdsTab({
           itemType: row.item_type,
           valueAbsEur: Number(row.value_abs_eur),
           qtyRelative: row.qty_relative === null ? null : Number(row.qty_relative),
-          qtyAbsFloor: Number(row.qty_abs_floor),
-          iraTolerance: Number(row.ira_tolerance),
         })),
       ),
     onSuccess: () => {
@@ -587,14 +979,8 @@ function ThresholdsTab({
                   <th className="num" title="Écart en valeur absolue au-delà duquel la ligne est une exception">
                     Valeur absolue (€)
                   </th>
-                  <th className="num" title="|Δqté| / qté livre au-delà duquel la ligne est une exception">
+                  <th className="num" title="|Δqté| / qté ERP au-delà duquel la ligne est une exception">
                     Écart relatif
-                  </th>
-                  <th className="num" title="En deçà de cette quantité, jamais d’exception">
-                    Plancher quantité
-                  </th>
-                  <th className="num" title="Tolérance utilisée par l’indicateur IRA">
-                    Tolérance IRA
                   </th>
                 </tr>
               </thead>
@@ -629,30 +1015,6 @@ function ThresholdsTab({
                         <span className="subtle">désactivé</span>
                       ) : (
                         percent(Number(row.qty_relative), 2)
-                      )}
-                    </td>
-                    <td className="editable num">
-                      {editable ? (
-                        <input
-                          className="num"
-                          inputMode="decimal"
-                          value={String(row.qty_abs_floor ?? '')}
-                          onChange={(e) => update(index, 'qty_abs_floor', e.target.value)}
-                        />
-                      ) : (
-                        numShort(Number(row.qty_abs_floor))
-                      )}
-                    </td>
-                    <td className="editable num">
-                      {editable ? (
-                        <input
-                          className="num"
-                          inputMode="decimal"
-                          value={String(row.ira_tolerance ?? '')}
-                          onChange={(e) => update(index, 'ira_tolerance', e.target.value)}
-                        />
-                      ) : (
-                        percent(Number(row.ira_tolerance), 2)
                       )}
                     </td>
                   </tr>

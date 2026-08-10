@@ -147,8 +147,6 @@ class AssistantService:
                     "typeArticle": str(t.item_type),
                     "valeurAbsolueEur": float(t.value_abs_eur),
                     "écartRelatifQté": float(t.qty_relative),
-                    "plancherQté": float(t.qty_abs_floor),
-                    "toléranceIra": float(t.ira_tolerance),
                 }
                 for t in campaign.thresholds
             ],
@@ -161,7 +159,7 @@ class AssistantService:
             digest["écarts"] = {
                 "disponible": False,
                 "raison": (
-                    "Le stock livre n'est pas encore gelé : aucun écart n'est "
+                    "Le stock ERP n'est pas encore gelé : aucun écart n'est "
                     "calculable à ce stade de la campagne."
                 ),
             }

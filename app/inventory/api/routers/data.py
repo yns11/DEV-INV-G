@@ -11,11 +11,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
-from ...errors import ValidationError
+from ...errors import NotFoundError, ValidationError
 from ...ingest import get_contract, list_contracts
 from ...services import ImportService
 from ..deps import CampaignDep, Ctx, import_service
-from ..schemas import PasteRequest, RowsRequest
+from ..schemas import BomLinkPatch, ItemPatch, PasteRequest, RowsRequest
 
 router = APIRouter(tags=["données"])
 
@@ -244,6 +244,47 @@ def list_items(
     }
 
 
+@router.patch(
+    "/campaigns/{campaign_id}/items/{item_number}", summary="Modifier un article"
+)
+def update_item(
+    campaign: CampaignDep, item_number: str, payload: ItemPatch, ctx: Ctx
+) -> dict[str, Any]:
+    """Correct one article without reloading the referential.
+
+    A referential arrives from the ERP with a designation missing here, a type
+    wrong there. Before this, the only remedy was to re-import the whole file —
+    so a one-character fix meant redoing the load, and people stopped fixing
+    things. The edit goes through the same freeze and sequencing guard as the
+    import, and lands in the audit trail with what it replaced.
+    """
+    ctx.guard(campaign, "items")
+    current = ctx.referentials.get_item(campaign.id, item_number)
+    if current is None:
+        raise NotFoundError(f"Article « {item_number} » introuvable.")
+
+    changes = payload.model_dump(exclude_none=True)
+    if not changes:
+        raise ValidationError("Aucune modification transmise.")
+    updated = current.model_copy(update=changes)
+
+    ctx.referentials.upsert_items([updated], actor=ctx.actor)
+    ctx.record(
+        campaign_id=campaign.id,
+        action="UPDATE",
+        entity_type="item",
+        entity_id=item_number,
+        summary=f"Modification de l'article {item_number}",
+        before={k: str(getattr(current, k)) for k in changes},
+        after={k: str(getattr(updated, k)) for k in changes},
+    )
+    return {
+        **updated.model_dump(mode="json"),
+        "exclusions": sorted(str(e) for e in updated.exclusions),
+        "stdPrice": float(updated.std_price),
+    }
+
+
 @router.delete(
     "/campaigns/{campaign_id}/items/{item_number}", summary="Supprimer un article"
 )
@@ -275,6 +316,65 @@ def list_boms(
     ]
 
 
+@router.patch("/campaigns/{campaign_id}/boms", summary="Modifier un lien de nomenclature")
+def update_bom_link(
+    campaign: CampaignDep, payload: BomLinkPatch, ctx: Ctx
+) -> dict[str, Any]:
+    """Correct the quantity or unit of one edge.
+
+    A wrong ``qty_per`` is invisible until consolidation explodes an assembly
+    and produces a component count nobody can explain. Fixing it should cost one
+    field, not a re-import of the whole structure.
+    """
+    ctx.guard(campaign, "boms")
+    parent = payload.parent_item.strip().upper()
+    child = payload.child_item.strip().upper()
+    current = ctx.referentials.get_bom_link(campaign.id, parent, child)
+    if current is None:
+        raise NotFoundError(f"Lien « {parent} → {child} » introuvable.")
+
+    changes = payload.model_dump(exclude_none=True, exclude={"parent_item", "child_item"})
+    if not changes:
+        raise ValidationError("Aucune modification transmise.")
+    updated = current.model_copy(update=changes)
+
+    ctx.referentials.upsert_bom_links([updated], actor=ctx.actor)
+    ctx.record(
+        campaign_id=campaign.id,
+        action="UPDATE",
+        entity_type="bom_link",
+        entity_id=f"{parent}/{child}",
+        summary=f"Modification du lien {parent} → {child}",
+        before={k: str(getattr(current, k)) for k in changes},
+        after={k: str(getattr(updated, k)) for k in changes},
+    )
+    return {**updated.model_dump(mode="json"), "qtyPer": float(updated.qty_per)}
+
+
+@router.delete("/campaigns/{campaign_id}/boms", summary="Supprimer un lien")
+def delete_bom_link(
+    campaign: CampaignDep,
+    ctx: Ctx,
+    parent: Annotated[str, Query(min_length=1)],
+    child: Annotated[str, Query(min_length=1)],
+) -> dict[str, bool]:
+    ctx.guard(campaign, "boms")
+    parent_key, child_key = parent.strip().upper(), child.strip().upper()
+    removed = ctx.referentials.delete_bom_link(
+        campaign.id, parent_key, child_key, actor=ctx.actor
+    )
+    if not removed:
+        raise NotFoundError(f"Lien « {parent_key} → {child_key} » introuvable.")
+    ctx.record(
+        campaign_id=campaign.id,
+        action="DELETE",
+        entity_type="bom_link",
+        entity_id=f"{parent_key}/{child_key}",
+        summary=f"Suppression du lien {parent_key} → {child_key}",
+    )
+    return {"deleted": True}
+
+
 @router.get("/campaigns/{campaign_id}/bom-health", summary="Santé des nomenclatures")
 def bom_health(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
     """Cycles, orphan links and assemblies without a structure.
@@ -299,7 +399,7 @@ def bom_health(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
     }
 
 
-@router.get("/campaigns/{campaign_id}/book-stock", summary="Stock livre")
+@router.get("/campaigns/{campaign_id}/book-stock", summary="Stock ERP")
 def book_stock(
     campaign: CampaignDep,
     ctx: Ctx,
@@ -323,7 +423,7 @@ def book_stock(
     }
 
 
-@router.post("/campaigns/{campaign_id}/book-stock/freeze", summary="Geler le stock livre")
+@router.post("/campaigns/{campaign_id}/book-stock/freeze", summary="Geler le stock ERP")
 def freeze_book_stock(campaign: CampaignDep, importer: Importer) -> dict[str, Any]:
     return importer.freeze_book_stock(campaign).model_dump(mode="json")
 

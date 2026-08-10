@@ -364,7 +364,7 @@ class ImportService:
         ctx.guard(campaign, "book_stock")
         if campaign.book_stock_frozen_at is not None:
             raise ConflictError(
-                "Le stock livre est gelé pour cette campagne. Créez une nouvelle "
+                "Le stock ERP est gelé pour cette campagne. Créez une nouvelle "
                 "campagne si un nouveau snapshot est nécessaire.",
                 frozenAt=campaign.book_stock_frozen_at.isoformat(),
             )
@@ -463,7 +463,7 @@ class ImportService:
                 action=AuditAction.IMPORT,
                 entity_type="book_stock",
                 summary=(
-                    f"Stock livre chargé : {len(lines)} lignes, "
+                    f"Stock ERP chargé : {len(lines)} lignes, "
                     f"{len(discovered)} nouvel(s) emplacement(s), "
                     f"{created} journal(aux) créé(s)."
                 ),
@@ -493,7 +493,7 @@ class ImportService:
         ctx.guard(campaign, "book_stock")
         if ctx.book_stock.count(campaign.id) == 0:
             raise ValidationError(
-                "Impossible de geler un stock livre vide : chargez d'abord le "
+                "Impossible de geler un stock ERP vide : chargez d'abord le "
                 "snapshot ERP."
             )
         with ctx.db.transaction() as conn:
@@ -508,9 +508,10 @@ class ImportService:
                 campaign_id=campaign.id,
                 action=AuditAction.FREEZE,
                 entity_type="book_stock",
-                summary="Stock livre gelé",
+                summary="Stock ERP gelé",
                 conn=conn,
             )
+        ctx.forget_progress(campaign.id)
         return ctx.campaigns.get(campaign.id)
 
     # -------------------------------------------------------- count journals
@@ -857,7 +858,7 @@ class ImportService:
         the permanent record of what a file actually loaded, and a zero there
         would make the import history useless.
         """
-        return self.ctx.imports.create(
+        batch_id = self.ctx.imports.create(
             campaign_id=campaign_id,
             target=target,
             filename=self._origin_of(target, kwargs),
@@ -870,6 +871,11 @@ class ImportService:
             imported_by=self.ctx.actor,
             conn=conn,
         )
+        # The counts the sequencing guard reads have just changed: a request
+        # that loads the referential and then creates the sheets must not be
+        # judged on the counts taken before the load.
+        self.ctx.forget_progress(campaign_id)
+        return batch_id
 
     def check_duplicate(
         self, campaign_id: str, target: str, **kwargs: Any

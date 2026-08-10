@@ -75,6 +75,19 @@ class FakeClient:
         return type("U", (), {"user_name": self._identity})()
 
 
+class OldSdk:
+    """Un SDK antérieur à 0.81 : pas de ``w.postgres``, mais un jeton OAuth."""
+
+    def __init__(self, token: str = "oauth-tok") -> None:
+        self._token = token
+        self.current_user = type("C", (), {
+            "me": lambda s: type("U", (), {"user_name": "u@example.com"})()
+        })()
+        self.config = type("Cfg", (), {
+            "oauth_token": lambda s: type("T", (), {"access_token": token})()
+        })()
+
+
 READ_WRITE = [
     endpoint("projects/p/branches/b/endpoints/replica", "READ_ONLY", "ro.example"),
     endpoint("projects/p/branches/b/endpoints/primary", "READ_WRITE", "rw.example"),
@@ -205,15 +218,16 @@ class TestWhenTheDiscoveryIsRefused:
         with pytest.raises(RuntimeError, match="AttributeError"):
             sync._lakebase_conninfo(Args(), client)
 
-    def test_an_sdk_without_the_lakebase_api_says_so_and_names_the_pin(self):
-        """Un SDK antérieur à 0.81 n'a pas w.postgres ; l'erreur ressemblait
-        pourtant à un problème de droits."""
-        class Old:
-            current_user = type("C", (), {"me": lambda s: type("U", (), {
-                "user_name": "u@example.com"})()})()
+    def test_an_sdk_without_the_lakebase_api_asks_for_the_host_not_an_upgrade(self):
+        """La version du SDK est figée par le runtime serverless.
 
-        with pytest.raises(RuntimeError, match=r"databricks-sdk>=0\.81"):
-            sync._lakebase_conninfo(Args(), Old())
+        En exiger une autre fait échouer l'installation entière contre
+        ``immutable-package-constraints.txt`` — c'est arrivé. Le job doit donc
+        demander ce qui est fournissable : l'hôte, relevé une fois dans la
+        console.
+        """
+        with pytest.raises(RuntimeError, match="--pg-host"):
+            sync._lakebase_conninfo(Args(), OldSdk())
 
     def test_a_refused_credential_names_the_endpoint_and_the_cause(self):
         class NoCredential(FakeClient):
@@ -251,3 +265,32 @@ class TestTheEscapeHatches:
         )
         assert "host=direct.example" in conninfo
         assert "password=depuis-un-secret-scope" in conninfo
+
+
+class TestAuthenticatingWithTheSdkThatIsThere:
+    """Le job ne peut pas choisir sa version du SDK.
+
+    Elle est figée par les contraintes immuables du runtime serverless : la
+    demander autrement fait échouer l'installation de tout l'environnement, et
+    le job ne démarre même pas. Il s'accommode donc de ce qui est présent.
+    """
+
+    def test_the_dedicated_credential_is_preferred_when_the_api_exists(self):
+        client = FakeClient(READ_WRITE)
+        sync._lakebase_conninfo(Args(), client)
+        assert client.credential_for == ["projects/p/branches/b/endpoints/primary"]
+
+    def test_an_older_sdk_falls_back_to_the_oauth_token(self):
+        """Lakebase accepte le jeton de l'identité comme mot de passe."""
+        conninfo = sync._lakebase_conninfo(Args(pg_host="direct.example"), OldSdk())
+        assert "password=oauth-tok" in conninfo
+        assert "host=direct.example" in conninfo
+
+    def test_without_any_credential_it_names_the_secret_scope(self):
+        class Nothing(OldSdk):
+            def __init__(self) -> None:
+                super().__init__()
+                self.config = type("Cfg", (), {})()
+
+        with pytest.raises(RuntimeError, match="PGPASSWORD"):
+            sync._lakebase_conninfo(Args(pg_host="direct.example"), Nothing())

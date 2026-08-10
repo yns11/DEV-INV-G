@@ -667,12 +667,28 @@ databricks postgres list-projects --profile PROD
 databricks postgres list-endpoints projects/inventaire/branches/production --profile PROD
 ```
 
-- Elle répond → l'identité a bien l'accès ; c'est l'environnement du job qui
-  n'a pas le bon SDK. `w.postgres` n'existe qu'à partir de `databricks-sdk`
-  0.81 ; le job l'épingle désormais, redéployez-le.
+- Elle répond → l'identité a bien l'accès ; c'est le SDK de l'environnement du
+  job qui ne connaît pas l'API. Voir juste en dessous : il ne peut pas être
+  relevé, passez `--pg-host`.
 - Elle échoue → c'est l'accès au projet Lakebase, ou le chemin de branche.
   Corrigez `lakebase_project` / `lakebase_branch`, ou contournez avec
-  `--lakebase-endpoint` et `--pg-host`, lus dans la console Lakebase.
+  `--pg-host`, lu dans la console Lakebase.
+
+**Le SDK d'un job ne se choisit pas.** `w.postgres` (API Lakebase Autoscaling)
+n'existe qu'à partir de `databricks-sdk` 0.81, mais `databricks-sdk` figure dans
+`immutable-package-constraints.txt` du runtime serverless : en déclarer une autre
+version fait échouer l'installation de **tout** l'environnement, et le job ne
+démarre pas — l'environnement n'accepte d'ailleurs que des versions exactes,
+jamais de bornes. Le job s'accommode donc de ce qui est présent :
+
+| Ce que le SDK offre | Hôte | Mot de passe |
+|---|---|---|
+| `w.postgres` (≥ 0.81) | déduit de `--branch` | credential dédié à l'endpoint |
+| version plus ancienne | **`--pg-host` requis** | jeton OAuth de l'identité du job |
+| — | `--pg-host` | `PGPASSWORD` d'un secret scope |
+
+L'hôte se relève une fois dans la console Lakebase (le projet → l'endpoint en
+écriture) ; il ne change pas. C'est la même valeur que le `PGHOST` de l'App.
 
 Le job journalise la version du SDK qu'il utilise et reporte la cause exacte de
 chaque refus : ces trois pannes se ressemblaient à l'écran.

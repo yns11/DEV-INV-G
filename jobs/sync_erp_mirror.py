@@ -29,6 +29,12 @@ Exécution
 ---------
     databricks bundle run inventory_sync_erp_mirror -t prod
 
+Si le SDK de l'environnement est antérieur à 0.81 — sa version est figée par le
+runtime serverless et ne peut pas être relevée — l'hôte Lakebase doit être donné
+explicitement ; il se relève une fois dans la console et ne change pas :
+
+    ... --python-params="--pg-host=instance-xxxx.database.cloud.databricks.com"
+
 ou en local, contre les mêmes variables d'environnement que l'application :
 
     python jobs/sync_erp_mirror.py --catalog emotors_data_champions \\
@@ -223,16 +229,24 @@ def _lakebase_conninfo(args: Any, client: Any = None) -> str:
         client = client or _workspace_client()
         log.info("SDK Databricks %s", _sdk_version())
         user = user or _current_identity(client)
-        if not (host and password):
-            api = _postgres_api(client)
-            name = args.lakebase_endpoint
-            if not name or not host:
-                found, resolved_host = _read_write_endpoint(api, args.branch)
-                name = name or found
-                host = host or resolved_host
-            password = password or _mint(api, name)
-            log.info("Lakebase : endpoint %s, hôte %s", name, host)
-        log.info("Lakebase : identité %s, base %s", user, database)
+        api = getattr(client, "postgres", None)
+
+        name = args.lakebase_endpoint
+        if not host:
+            if api is None:
+                raise RuntimeError(
+                    "Hôte Lakebase inconnu, et le SDK de cet environnement ne "
+                    f"connaît pas l'API Lakebase Autoscaling (version "
+                    f"{_sdk_version()}, w.postgres apparaît en 0.81). Sa version "
+                    "est figée par le runtime serverless : passez --pg-host, "
+                    "relevé dans la console Lakebase."
+                )
+            found, resolved_host = _read_write_endpoint(api, args.branch)
+            name = name or found
+            host = resolved_host
+
+        password = password or _password(client, api, name)
+        log.info("Lakebase : hôte %s, identité %s, base %s", host, user, database)
 
     port = os.environ.get("PGPORT", "5432")
     sslmode = os.environ.get("PGSSLMODE", "require")
@@ -299,24 +313,42 @@ def _sdk_version() -> str:
         return "inconnue"
 
 
-def _postgres_api(client: Any) -> Any:
-    """L'API Lakebase Autoscaling du SDK, ou pourquoi elle manque.
+def _password(client: Any, api: Any, endpoint: str) -> str:
+    """Le mot de passe Postgres, par ordre de préférence décroissante.
 
-    ``w.postgres`` n'existe qu'à partir de databricks-sdk 0.81. L'App l'épingle
-    dans ses dépendances ; un job qui ne déclare pas la sienne hérite de celle
-    du runtime, qui peut être antérieure — et l'échec ressemble alors à un
-    problème de droits, ce qu'il n'est pas.
+    Le credential dédié de ``w.postgres`` est le meilleur : il porte sur un
+    endpoint précis et expire vite. Mais cette API n'existe qu'à partir de
+    databricks-sdk 0.81, et **la version du SDK ne peut pas être relevée dans un
+    job** : elle figure dans les contraintes immuables du runtime serverless, si
+    bien qu'en demander une autre fait échouer l'installation entière — c'est ce
+    qui est arrivé.
+
+    Le repli est le jeton OAuth de l'identité qui exécute le job, que Lakebase
+    accepte comme mot de passe. Moins ciblé, disponible partout. Un job qui
+    refuserait de tourner faute d'une dépendance impossible à satisfaire ne
+    serait utile à personne.
     """
-    api = getattr(client, "postgres", None)
-    if api is None:
-        raise RuntimeError(
-            "Le SDK Databricks de cet environnement ne connaît pas l'API Lakebase "
-            f"Autoscaling (w.postgres) — version installée : {_sdk_version()}, il "
-            "en faut au moins 0.81. Ajoutez « databricks-sdk>=0.81,<1.0 » aux "
-            "dépendances de l'environnement du job, ou passez --pg-host avec "
-            "PGPASSWORD depuis un secret scope."
+    if api is not None and endpoint:
+        return _mint(api, endpoint)
+
+    for source in ("oauth_token", "token"):
+        try:
+            credential = getattr(client.config, source)()
+        except Exception:  # pragma: no cover — dépend de la version du SDK
+            continue
+        token = getattr(credential, "access_token", None) or getattr(
+            credential, "token", None
         )
-    return api
+        if token:
+            log.info("Authentification par jeton OAuth (%s)", source)
+            return str(token)
+
+    raise RuntimeError(
+        "Aucun moyen d'authentifier la connexion Lakebase : ni credential "
+        f"dédié (SDK {_sdk_version()}, w.postgres apparaît en 0.81, et sa "
+        "version est figée par le runtime), ni jeton OAuth. Exportez "
+        "PGPASSWORD depuis un secret scope."
+    )
 
 
 def _read_write_endpoint(api: Any, branch: str) -> tuple[str, str]:

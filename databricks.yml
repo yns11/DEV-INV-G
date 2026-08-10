@@ -219,12 +219,13 @@ resources:
         - environment_key: serverless_env
           spec:
             client: "3"
+            # Versions exactes : l'environnement serverless refuse les bornes.
+            # Et surtout, rien d'autre — `databricks-sdk` figure dans les
+            # contraintes immuables du runtime, si bien qu'en demander une autre
+            # version fait échouer l'installation entière. Le job s'accommode
+            # donc de celle qui est là (voir _password dans le script).
             dependencies:
-              - psycopg[binary]~=3.2.0
-              # L'environnement d'un job n'est pas celui de l'App : sans pin, il
-              # hérite du SDK du runtime, qui peut être antérieur à `w.postgres`
-              # (API Lakebase Autoscaling, 0.81). Même borne que app/requirements.
-              - databricks-sdk>=0.81,<1.0
+              - psycopg[binary]==3.2.3
       queue:
         enabled: true
 

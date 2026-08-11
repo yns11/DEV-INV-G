@@ -27,6 +27,7 @@ __all__ = [
     "build_workbook",
     "build_counting_sheet_pdf",
     "build_journal_export",
+    "build_variance_pdf",
     "EXPORT_FORMATS",
 ]
 
@@ -480,10 +481,184 @@ def _shorten(name: str, limit: int = _NAME_MAX_CHARS) -> str:
     return name if len(name) <= limit else name[: limit - 1] + "…"
 
 
-def _fr_number(value: Any) -> str:
-    """A counted quantity, French-formatted, without trailing decimal noise."""
+def build_variance_pdf(
+    *,
+    campaign_label: str,
+    campaign_code: str,
+    count_date: dt.date,
+    rows: Sequence[dict[str, Any]],
+    by_location: bool,
+    material_only: bool,
+    generated_at: dt.datetime,
+    omitted: int = 0,
+) -> bytes:
+    """The variance table as a document one can hand over or file.
+
+    Landscape, and deliberately narrower than the Excel export: paper has a
+    fixed width, and a table that keeps every column of the workbook would give
+    six-point type nobody reads. What survives is what a reading needs — the
+    reference, where it is, the two stocks it compares, and the gap between them
+    — while the workbook remains the place to slice the rest.
+
+    Quantity and value stay in separate columns rather than stacked in one cell
+    as on screen: on paper there is no room for the second line, and a column
+    that sometimes holds a quantity and sometimes an amount is unreadable in a
+    print-out that is going to be annotated by hand.
+
+    Rows arrive already sorted and capped by the caller; the total line sums
+    *what is printed*, and says so, because a total that included rows absent
+    from the page would be the one number nobody could check. ``omitted`` is
+    what the cap left out, printed under the table — a truncation nobody is told
+    about is read as a complete document.
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.units import mm
+    from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate, Table, TableStyle
+
+    page = landscape(A4)
+    margin = _SIDE_MARGIN_MM * mm
+    buffer = io.BytesIO()
+
+    scope = "par référence et emplacement" if by_location else "par référence"
+    filters = "au-delà des seuils uniquement" if material_only else "tous les écarts"
+
+    def draw_page(canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setFont("Helvetica-Bold", 13)
+        canvas.drawString(margin, page[1] - 11 * mm, f"Écarts d'inventaire — {scope}")
+        canvas.setFont("Helvetica", 9)
+        canvas.drawString(
+            margin, page[1] - 16 * mm,
+            f"{campaign_label} — comptage du {count_date:%d/%m/%Y} — {filters}",
+        )
+        canvas.setStrokeColor(colors.HexColor("#CBD5E1"))
+        canvas.line(margin, page[1] - 19 * mm, page[0] - margin, page[1] - 19 * mm)
+        canvas.setFont("Helvetica", 7.5)
+        canvas.setFillColor(colors.HexColor("#64748B"))
+        canvas.drawString(
+            margin, 8 * mm,
+            f"{campaign_code} · édité le {generated_at:%d/%m/%Y à %H:%M}",
+        )
+        canvas.drawRightString(page[0] - margin, 8 * mm, f"Page {doc.page}")
+        canvas.restoreState()
+
+    doc = BaseDocTemplate(
+        buffer, pagesize=page,
+        leftMargin=margin, rightMargin=margin,
+        topMargin=24 * mm, bottomMargin=13 * mm,
+        title=f"Écarts — {campaign_code}",
+    )
+    doc.addPageTemplates([
+        PageTemplate(
+            id="main",
+            frames=[Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height)],
+            onPage=draw_page,
+        )
+    ])
+
+    header = ["Article", "Désignation"]
+    widths = [30 * mm, 62 * mm]
+    if by_location:
+        header += ["Entrepôt", "Emplacement"]
+        widths += [20 * mm, 28 * mm]
+    header += [
+        "Qté ERP", "Valeur ERP", "Qté comptée", "Valeur comptée",
+        "Écart qté", "Écart valeur",
+    ]
+    widths += [22 * mm, 26 * mm, 24 * mm, 28 * mm, 22 * mm, 26 * mm]
+
+    body: list[list[str]] = []
+    for row in rows:
+        cells = [str(row["itemNumber"]), _shorten(str(row["name"]), 46)]
+        if by_location:
+            cells += [str(row["warehouseId"]), str(row["locationId"])]
+        cells += [
+            _fr_number(row["bookQty"]),
+            _fr_money(row["bookValue"]),
+            _fr_number(row["countedQty"]),
+            _fr_money(row["countedValue"]),
+            _fr_number(row["varianceQty"], signed=True),
+            _fr_money(row["varianceValue"], signed=True),
+        ]
+        body.append(cells)
+
+    total_label = f"Total des {len(rows)} ligne(s) imprimée(s)"
+    total: list[str] = [total_label, ""]
+    if by_location:
+        total += ["", ""]
+    total += [
+        "",
+        _fr_money(sum(float(r["bookValue"]) for r in rows)),
+        "",
+        _fr_money(sum(float(r["countedValue"]) for r in rows)),
+        "",
+        _fr_money(sum(float(r["varianceValue"]) for r in rows), signed=True),
+    ]
+
+    table = Table([header, *body, total], colWidths=widths, repeatRows=1)
+    numeric_from = 4 if by_location else 2
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("LEADING", (0, 0), (-1, -1), 9),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E293B")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("ALIGN", (numeric_from, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -2),
+         [colors.white, colors.HexColor("#F1F5F9")]),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#E2E8F0")),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+
+    story: list[Any] = [table]
+    if omitted > 0:
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.platypus import Paragraph, Spacer
+
+        note = ParagraphStyle(
+            "note", parent=getSampleStyleSheet()["BodyText"],
+            fontSize=8, leading=10, textColor=colors.HexColor("#B45309"),
+        )
+        story += [
+            Spacer(1, 4 * mm),
+            Paragraph(
+                f"{omitted} ligne(s) d'écart plus faible ne sont pas reprises sur "
+                "ce document. L'export Excel les contient toutes.",
+                note,
+            ),
+        ]
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def _fr_money(value: Any, *, signed: bool = False) -> str:
+    """An amount, French-formatted, rounded to the euro.
+
+    Cents on a variance line are noise: the figure is a valuation of a physical
+    count, and nobody acts on the difference between 12 431 € and 12 431,40 €.
+    """
+    number = round(float(value))
+    text = f"{abs(number):,.0f}".replace(",", " ")
+    sign = "-" if number < 0 else ("+" if signed and number > 0 else "")
+    return f"{sign}{text} €"
+
+
+def _fr_number(value: Any, *, signed: bool = False) -> str:
+    """A counted quantity, French-formatted, without trailing decimal noise.
+
+    ``signed`` prefixes a ``+`` on a positive: in a variance column the sign is
+    the information, and a bare number there reads as a stock level.
+    """
     number = float(value)
     text = f"{number:,.6f}".rstrip("0").rstrip(".") if number % 1 else f"{number:,.0f}"
+    if signed and number > 0:
+        text = f"+{text}"
     # A *no-break* space as the thousands separator, French convention. The
     # narrow one typography would prefer (U+202F) is absent from Helvetica's
     # Latin-1 encoding, and ReportLab draws a missing glyph as a black box:

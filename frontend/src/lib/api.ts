@@ -20,6 +20,7 @@ import type {
   ControlsPayload,
   ErpSource,
   Finding,
+  FindingGroup,
   GridContract,
   Health,
   ImportPreview,
@@ -264,6 +265,7 @@ export const api = {
       parentCount: number
       cycles: string[]
       summary: ControlsPayload['summary']
+      groups: FindingGroup[]
       findings: Finding[]
     }>(`/campaigns/${id}/bom-health`),
   bookStock: (id: string, params: { limit?: number; offset?: number } = {}) =>
@@ -642,4 +644,12 @@ export const downloads = {
     `/campaigns/${id}/reports/counting-sheets/${sheetId}.pdf${qs(printQuery(options))}`,
   allCountingSheets: (id: string, passNo: number, options: PrintOptions = {}) =>
     `/campaigns/${id}/reports/counting-sheets.pdf${qs({ passNo, ...printQuery(options) })}`,
+  // Les filtres de l'écran voyagent avec l'export : un fichier qui ne
+  // contiendrait pas ce qu'on avait sous les yeux au moment de cliquer serait
+  // le genre d'écart qu'on ne découvre qu'en réunion.
+  variances: (
+    id: string,
+    format: 'xlsx' | 'pdf',
+    params: { granularity?: string; materialOnly?: boolean } = {},
+  ) => `/campaigns/${id}/reports/variances.${format}${qs(params)}`,
 }

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import urllib.parse
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -99,6 +99,51 @@ def journal_export(
     """
     payload, filename = service.journal_export(campaign, journal_id)
     return _download(payload, filename, _XLSX)
+
+
+#: Which variance table is being exported — the same two the screen offers.
+_Granularity = Annotated[
+    Literal["item", "item_location"], Query(alias="granularity")
+]
+_MaterialOnly = Annotated[bool, Query(alias="materialOnly")]
+
+
+@router.get("/variances.xlsx", summary="Exporter les écarts en Excel")
+def variance_export(
+    campaign: CampaignDep,
+    service: Service,
+    granularity: _Granularity = "item",
+    material_only: _MaterialOnly = False,
+) -> Response:
+    """The variance view, with each figure in its own column.
+
+    ``granularity=item`` gives the site's real loss or gain; ``item_location``
+    the detail one goes and recounts from. Quantity and value are separate
+    columns for both the ERP stock and the counted stock — a spreadsheet whose
+    cells hold two figures cannot be summed or pivoted.
+    """
+    payload, filename = service.variance_export(
+        campaign, granularity=granularity, material_only=material_only
+    )
+    return _download(payload, filename, _XLSX)
+
+
+@router.get("/variances.pdf", summary="Imprimer les écarts")
+def variance_pdf(
+    campaign: CampaignDep,
+    service: Service,
+    granularity: _Granularity = "item",
+    material_only: _MaterialOnly = False,
+) -> Response:
+    """The same table as a document, biggest variances first.
+
+    Capped: past a few hundred rows a PDF stops being read. The page says how
+    many lines it left out, and the Excel export carries them all.
+    """
+    payload, filename = service.variance_pdf(
+        campaign, granularity=granularity, material_only=material_only
+    )
+    return _download(payload, filename, "application/pdf")
 
 
 @router.get("/campaign.xlsx", summary="Exporter le dossier complet de la campagne")

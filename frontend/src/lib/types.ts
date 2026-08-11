@@ -220,6 +220,20 @@ export interface Finding {
   context: Record<string, unknown>
 }
 
+/**
+ * Un contrôle et son nombre d'occurrences.
+ *
+ * Les occurrences elles-mêmes ne voyagent qu'une fois, dans `findings` : on les
+ * retrouve en filtrant sur `code`. Deux copies d'une même liste finiraient par
+ * ne plus dire le même nombre.
+ */
+export interface FindingGroup {
+  code: string
+  label: string
+  severity: Severity
+  count: number
+}
+
 export interface ControlsPayload {
   summary: {
     total: number
@@ -227,6 +241,7 @@ export interface ControlsPayload {
     byCode: Record<string, number>
     hasBlocker: boolean
   }
+  groups: FindingGroup[]
   findings: Finding[]
 }
 

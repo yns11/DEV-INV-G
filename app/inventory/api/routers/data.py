@@ -515,7 +515,7 @@ def bom_health(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
     ten minutes.
     """
     from ...domain.bom import BomIndex
-    from ...domain.controls import check_referentials, summarise
+    from ...domain.controls import check_referentials, group_findings, summarise
 
     items = ctx.referentials.items_by_number(campaign.id)
     links = ctx.referentials.list_bom_links(campaign.id)
@@ -526,6 +526,7 @@ def bom_health(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
         "parentCount": len(index.parents),
         "cycles": [" → ".join(c) for c in index.find_cycles()],
         "summary": summarise(findings),
+        "groups": [g.to_summary() for g in group_findings(findings)],
         "findings": [f.model_dump(mode="json") for f in findings],
     }
 

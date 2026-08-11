@@ -23,6 +23,7 @@ from ..domain.controls import (
     check_referentials,
     check_variances,
     check_zones,
+    group_findings,
     summarise,
 )
 from ..domain.enums import AuditAction, JournalStatus
@@ -330,6 +331,9 @@ class AnalysisService:
             )
         return {
             "summary": summarise(findings),
+            # One entry per control, in reading order; the screen opens a group
+            # by filtering `findings` on its code.
+            "groups": [g.to_summary() for g in group_findings(findings)],
             "findings": [f.model_dump(mode="json") for f in findings],
         }
 

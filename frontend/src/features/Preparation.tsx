@@ -10,6 +10,7 @@ import type {
 import { ITEM_TYPE_LABELS, moneyShort, qty, percent } from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, type Column } from '../components/DataGrid'
+import { FindingGroups } from '../components/Findings'
 import { PrintModal } from '../components/PrintModal'
 import { useSubSection } from '../lib/subsection'
 import { ZonesAdminGrid } from './zones'
@@ -692,34 +693,11 @@ function BomsTab({
                   </ul>
                 </Alert>
               )}
-              {data.findings.length > 0 ? (
-                <div className="table-wrap" style={{ maxHeight: 260 }}>
-                  <table className="data">
-                    <thead>
-                      <tr>
-                        <th style={{ width: 110 }}>Sévérité</th>
-                        <th style={{ width: 170 }}>Article</th>
-                        <th>Constat</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.findings.slice(0, 60).map((finding, index) => (
-                        <tr key={index}>
-                          <td>
-                            <Badge tone={finding.severity === 'BLOCKER' ? 'danger' : 'warning'}>
-                              {finding.severity === 'BLOCKER' ? 'Bloquant' : 'Avertissement'}
-                            </Badge>
-                          </td>
-                          <td className="mono">{finding.item_number || '—'}</td>
-                          <td>{finding.message}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <Alert tone="success" title="Aucune anomalie structurelle détectée" />
-              )}
+              <FindingGroups
+                groups={data.groups}
+                findings={data.findings}
+                emptyLabel="Aucune anomalie structurelle détectée"
+              />
             </div>
           </Card>
         )}

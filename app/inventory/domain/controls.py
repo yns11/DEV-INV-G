@@ -35,6 +35,7 @@ from .models import (
     CountJournalLine,
     CountSheet,
     CountSheetLine,
+    FindingGroup,
     Item,
     Location,
     LocationKey,
@@ -45,6 +46,8 @@ from .quantities import ZERO
 from .variance import is_material
 
 __all__ = [
+    "CONTROL_LABELS",
+    "group_findings",
     "check_referentials",
     "check_book_stock",
     "check_journals",
@@ -650,6 +653,90 @@ def run_all_controls(
     if variances:
         findings += check_variances(campaign=campaign, variances=variances)
     return findings
+
+
+#: What each control is *about*, in one short phrase.
+#:
+#: The finding's own message names the article, the quantity or the location —
+#: that is what makes it actionable, and it is also what makes forty of them
+#: unreadable. Grouping needs a title that stays the same across the forty, and
+#: the code is already that category; this table is only its French name. It is
+#: deliberately not a second copy of the message: the message is the detail line
+#: shown underneath.
+CONTROL_LABELS: dict[str, str] = {
+    "ASSEMBLY_BOM_RETIRED": "Assemblages dont toutes les versions de nomenclature sont inactives",
+    "ASSEMBLY_WITHOUT_BOM": "Assemblages sans aucune nomenclature",
+    "BOM_CHILD_UNKNOWN": "Composants de nomenclature absents du référentiel articles",
+    "BOM_CYCLE": "Cycles de nomenclature",
+    "BOM_PARENT_UNKNOWN": "Assemblages de nomenclature absents du référentiel articles",
+    "BOOK_STOCK_DUPLICATE_KEY": "Doublons dans le stock ERP",
+    "BOOK_STOCK_EMPTY": "Stock ERP absent",
+    "BOOK_STOCK_NEGATIVE": "Quantités négatives dans le stock ERP",
+    "BOOK_STOCK_NOT_COUNTED": "Stock ERP jamais compté",
+    "BOOK_STOCK_UNKNOWN_ITEM": "Stock ERP sur des articles hors référentiel",
+    "BOOK_STOCK_UNKNOWN_LOCATION": "Stock ERP sur des emplacements inconnus",
+    "COUNTED_WITHOUT_BOOK_STOCK": "Comptages sans stock ERP en face",
+    "DUPLICATE_COUNT_LINE": "Références saisies plusieurs fois dans un journal",
+    "DUPLICATE_JOURNAL": "Emplacements portant plusieurs journaux",
+    "EXCLUDED_ITEM_COUNTED": "Articles exclus pourtant comptés",
+    "ITEMS_WITHOUT_PRICE": "Articles sans prix standard",
+    "JOURNAL_ON_DISABLED_LOCATION": "Journaux ouverts sur un emplacement désactivé",
+    "JOURNAL_UNKNOWN_ITEM": "Comptages sur des articles hors référentiel",
+    "MATERIAL_VARIANCE": "Écarts au-delà des seuils",
+    "NEGATIVE_COUNT": "Quantités comptées négatives",
+    "POSTED_JOURNAL_EMPTY": "Journaux postés sans aucune ligne",
+    "UNIT_MISMATCH": "Unités incohérentes avec le référentiel",
+    "ZONE_MISSING_SHEET": "Zones sans feuille de comptage",
+    "ZONE_WITHOUT_LINES": "Zones sans ligne à compter",
+}
+
+#: Blockers first, then warnings: within a screen the order is the reading order.
+_SEVERITY_RANK = {
+    ControlSeverity.BLOCKER: 0,
+    ControlSeverity.WARNING: 1,
+    ControlSeverity.INFO: 2,
+}
+
+
+def group_findings(findings: Iterable[ControlFinding]) -> list[FindingGroup]:
+    """One entry per control, carrying its occurrences.
+
+    Fifty lines saying the same thing about fifty different articles is not
+    fifty pieces of information — it is one, buried under its own repetitions,
+    and it pushes everything else off the screen. What the reader needs first is
+    *which* control fired and *how often*; the list of articles is the second
+    question, and it belongs behind a « voir plus ».
+
+    Grouping is by code rather than by message text: the messages differ, since
+    each names its own article, and that difference is exactly what has to stop
+    being shown forty times.
+
+    Groups come back blockers first, then by size — the loudest control at the
+    top — and the occurrences keep the order the engine produced them in, which
+    is already sorted by article.
+    """
+    buckets: dict[str, list[ControlFinding]] = defaultdict(list)
+    for finding in findings:
+        buckets[finding.code].append(finding)
+
+    groups = [
+        FindingGroup(
+            code=code,
+            label=CONTROL_LABELS.get(code, code),
+            # The worst of the bucket. A code whose severity depends on the case
+            # must not be filed under the milder of the two.
+            severity=min(
+                (f.severity for f in occurrences),
+                key=lambda s: _SEVERITY_RANK.get(s, 3),
+            ),
+            findings=list(occurrences),
+        )
+        for code, occurrences in buckets.items()
+    ]
+    groups.sort(
+        key=lambda g: (_SEVERITY_RANK.get(g.severity, 3), -len(g.findings), g.code)
+    )
+    return groups
 
 
 def summarise(findings: Iterable[ControlFinding]) -> dict[str, object]:

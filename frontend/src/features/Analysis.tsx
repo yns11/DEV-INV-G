@@ -6,7 +6,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { api } from '../lib/api'
+import { api, download, downloads } from '../lib/api'
 import type {
   AssignableCause,
   GridContract,
@@ -24,6 +24,7 @@ import {
 } from '../lib/format'
 import { CompositionBar, DistributionChart, Pareto, VarianceBars } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
+import { FindingGroups } from '../components/Findings'
 import { useSubSection } from '../lib/subsection'
 import { ImportPanel } from '../components/ImportPanel'
 import {
@@ -106,6 +107,24 @@ function VariancesTab({
   const [granularity, setGranularity] = useState<'item' | 'item_location'>('item')
   const [dimension, setDimension] = useState('item_type')
   const [explain, setExplain] = useState<string | null>(null)
+  const [exporting, setExporting] = useState<'xlsx' | 'pdf' | null>(null)
+  const showError = useErrorToast()
+
+  const exportAs = async (format: 'xlsx' | 'pdf') => {
+    setExporting(format)
+    try {
+      await download(
+        downloads.variances(campaignId, format, {
+          granularity,
+          materialOnly: materialOnly || undefined,
+        }),
+      )
+    } catch (error) {
+      showError(error, 'Export impossible')
+    } finally {
+      setExporting(null)
+    }
+  }
 
   const variances = useQuery({
     queryKey: ['variances', campaignId, materialOnly, granularity],
@@ -348,6 +367,28 @@ function VariancesTab({
               <Icons.filter size={12} />
               Au-delà des seuils uniquement
             </button>
+            {/* Les deux boutons emportent la vue telle qu'elle est réglée —
+                granularité et filtre compris. Un export qui ignorerait les
+                réglages produirait un fichier qui ne ressemble pas à l'écran
+                depuis lequel on l'a demandé. */}
+            <Button
+              size="sm"
+              icon={<Icons.download size={13} />}
+              disabled={exporting !== null}
+              onClick={() => void exportAs('xlsx')}
+              title="Quantités, valeurs et écarts en colonnes séparées, stock ERP et stock compté"
+            >
+              {exporting === 'xlsx' ? 'Export…' : 'Excel'}
+            </Button>
+            <Button
+              size="sm"
+              icon={<Icons.printer size={13} />}
+              disabled={exporting !== null}
+              onClick={() => void exportAs('pdf')}
+              title="Le tableau imprimable, plus gros écarts en tête"
+            >
+              {exporting === 'pdf' ? 'Export…' : 'PDF'}
+            </Button>
           </div>
         }
         flush
@@ -1027,7 +1068,22 @@ function ControlsTab({ campaignId }: { campaignId: string }) {
             ))}
           </div>
 
-          <Card title="Constats de contrôle" flush>
+          <Card
+            title="Constats par contrôle"
+            message="Un contrôle, une ligne. Le détail article par article s’ouvre à la demande."
+          >
+            <FindingGroups
+              groups={data.groups}
+              findings={data.findings}
+              emptyLabel="Aucun constat : rien ne s’oppose à la clôture"
+            />
+          </Card>
+
+          <Card
+            title="Tous les constats"
+            message="La même chose à plat, pour chercher une référence précise."
+            flush
+          >
             <DataGrid
               columns={[
                 {

@@ -64,6 +64,7 @@ __all__ = [
     "AdjustmentLine",
     "VarianceLine",
     "ControlFinding",
+    "FindingGroup",
     "AuditEvent",
     "AssignableCause",
     "VarianceAnalysis",
@@ -900,6 +901,40 @@ class ControlFinding(DomainModel):
     warehouse_id: str = ""
     location_id: str = ""
     context: dict[str, Any] = Field(default_factory=dict)
+
+
+class FindingGroup(DomainModel):
+    """Every occurrence of one control, under a single title.
+
+    The screen shows the label and the count, and opens the occurrences on
+    demand. Carrying them here rather than re-fetching them keeps the two
+    numbers — the one announced and the one listed — impossible to disagree.
+    """
+
+    code: str
+    label: str
+    #: The worst severity present among the occurrences.
+    severity: ControlSeverity
+    findings: list[ControlFinding] = Field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        return len(self.findings)
+
+    def to_summary(self) -> dict[str, Any]:
+        """Wire shape: the title and how many, not the occurrences again.
+
+        The occurrences already travel in the flat ``findings`` list the screen
+        receives alongside; sending them a second time would double a payload
+        that runs to thousands of lines, and hand the client two copies free to
+        disagree. It filters that list by ``code`` to open a group.
+        """
+        return {
+            "code": self.code,
+            "label": self.label,
+            "severity": str(self.severity),
+            "count": self.count,
+        }
 
 
 class AssignableCause(DomainModel):

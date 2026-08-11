@@ -195,9 +195,14 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
       target: SheetStatus
       counterName?: string
     }) => api.transitionSheet(campaignId, sheetId, target, counterName),
-    onSuccess: () => {
+    onSuccess: (_result, { target }) => {
       void queryClient.invalidateQueries()
-      toast.success('Statut de la feuille mis à jour')
+      toast.success(
+        `Feuille ${toLabel(SHEET_STATUS_LABELS, target).toLowerCase()}`,
+        target === 'ENCODING'
+          ? 'Ouvrez-la pour saisir les quantités relevées.'
+          : undefined,
+      )
     },
     onError: (error) => showError(error, 'Transition impossible'),
   })
@@ -360,13 +365,22 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                             aria-label="Imprimer"
                             title="Imprimer cette feuille — vierge ou remplie"
                           />
-                          <Button
-                            size="sm"
-                            onClick={() => setOpenSheet({ zone, sheet })}
-                          >
-                            Ouvrir
-                          </Button>
-                          {editable && NEXT_SHEET_STATUS[sheet.status] && (
+                          {/* La saisie n'a lieu qu'à l'encodage. Proposer
+                              « Ouvrir » avant, c'est inviter à remplir la
+                              feuille pendant que le compteur est encore en
+                              train de la remplir sur le papier ; après, c'est
+                              rouvrir sans le dire ce que quelqu'un a validé —
+                              « Modifier » le dit. L'impression, elle, reste
+                              accessible à tout moment. */}
+                          {sheet.status === 'ENCODING' && (
+                            <Button
+                              size="sm"
+                              onClick={() => setOpenSheet({ zone, sheet })}
+                            >
+                              Ouvrir
+                            </Button>
+                          )}
+                          {editable && (
                             <Button
                               size="sm"
                               variant="primary"
@@ -374,11 +388,11 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                               onClick={() =>
                                 transition.mutate({
                                   sheetId: sheet.id,
-                                  target: NEXT_SHEET_STATUS[sheet.status]!,
+                                  target: SHEET_ACTION[sheet.status].target,
                                 })
                               }
                             >
-                              {NEXT_SHEET_LABEL[sheet.status]}
+                              {SHEET_ACTION[sheet.status].label}
                             </Button>
                           )}
                         </div>
@@ -443,16 +457,21 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   )
 }
 
-const NEXT_SHEET_STATUS: Partial<Record<SheetStatus, SheetStatus>> = {
-  PENDING: 'COUNTING',
-  COUNTING: 'ENCODING',
-  ENCODING: 'DONE',
-}
-
-const NEXT_SHEET_LABEL: Partial<Record<SheetStatus, string>> = {
-  PENDING: 'Remettre au compteur',
-  COUNTING: 'Feuille rendue',
-  ENCODING: 'Terminer l’encodage',
+/**
+ * Le bouton bleu d'une feuille : ce qu'il fait, et comment il s'appelle.
+ *
+ * Il porte l'action suivante, jamais l'état courant — « Commencer le comptage »
+ * tant que rien n'a commencé, « Valider » quand la saisie est faite. Une
+ * feuille terminée n'est pas close pour autant : « Modifier » la ramène en
+ * encodage, et le couple Modifier / Valider se répète autant de fois qu'il le
+ * faut. C'est le seul bouton bleu de la ligne, donc le seul endroit où
+ * quelqu'un a besoin de regarder pour savoir quoi faire.
+ */
+const SHEET_ACTION: Record<SheetStatus, { target: SheetStatus; label: string }> = {
+  PENDING: { target: 'COUNTING', label: 'Commencer le comptage' },
+  COUNTING: { target: 'ENCODING', label: 'Commencer l’encodage' },
+  ENCODING: { target: 'DONE', label: 'Valider' },
+  DONE: { target: 'ENCODING', label: 'Modifier' },
 }
 
 function SheetModal({

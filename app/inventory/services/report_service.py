@@ -14,6 +14,7 @@ from ..errors import NotFoundError, ValidationError
 from ..reporting.exports import (
     build_counting_sheet_pdf,
     build_journal_export,
+    build_variance_pdf,
     build_workbook,
 )
 from .analysis_service import AnalysisService
@@ -475,6 +476,118 @@ class ReportService:
         )
         return payload, f"bilan-inventaire_{campaign.code}.xlsx"
 
+    # ------------------------------------------------------------- variances
+
+    def _variance_rows(
+        self, campaign: Campaign, *, granularity: str, material_only: bool
+    ) -> list[dict[str, Any]]:
+        """The variance view, exactly as the screen shows it.
+
+        Same service call, same filters, same ordering — so the file and the
+        table can never disagree. ``countedValue`` is computed here rather than
+        left to the reader: on screen the amount sits under the quantity and is
+        obviously derived, but a spreadsheet column the user is asked to build
+        themselves is a column half of them will build differently.
+        """
+        rows = AnalysisService(self.ctx).top_variances(
+            campaign,
+            limit=VARIANCE_EXPORT_CEILING,
+            material_only=material_only,
+            granularity=granularity,
+        )
+        for row in rows:
+            row["countedValue"] = row["countedQty"] * row["unitCost"]
+        return rows
+
+    def variance_export(
+        self, campaign: Campaign, *, granularity: str = "item",
+        material_only: bool = False,
+    ) -> tuple[bytes, str]:
+        """The variance table as a workbook, quantities and values side by side.
+
+        Every figure gets its own column — ERP quantity, ERP value, counted
+        quantity, counted value, then the gap in both units. On screen the two
+        share a cell because the eye reads a pair; in a spreadsheet they must be
+        two columns, or nobody can sum, pivot or filter on either.
+        """
+        by_location = granularity == "item_location"
+        rows = self._variance_rows(
+            campaign, granularity=granularity, material_only=material_only
+        )
+        headers = variance_columns(by_location=by_location)
+        body = [variance_row(r, by_location=by_location) for r in rows]
+
+        scope = "par référence et emplacement" if by_location else "par référence"
+        sheet_name = "Écarts par emplacement" if by_location else "Écarts par référence"
+        payload = build_workbook(
+            {sheet_name: (headers, body)},
+            title=f"Écarts d'inventaire — {scope}",
+            provenance={
+                "Campagne": f"{campaign.code} — {campaign.label}",
+                "Date de comptage": campaign.count_date,
+                "Vue": scope,
+                "Filtre": (
+                    "au-delà des seuils uniquement" if material_only
+                    else "tous les écarts"
+                ),
+                "Lignes": len(rows),
+                "Généré le": utcnow().isoformat(timespec="seconds"),
+                "Moteur": ENGINE_VERSION,
+            },
+        )
+        self.ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.EXPORT,
+            entity_type="variance",
+            entity_id=campaign.id,
+            summary=f"Export Excel des écarts {scope} ({len(rows)} ligne(s))",
+        )
+        suffix = "emplacement" if by_location else "reference"
+        return payload, f"ecarts-{suffix}_{campaign.code}.xlsx"
+
+    def variance_pdf(
+        self, campaign: Campaign, *, granularity: str = "item",
+        material_only: bool = False,
+    ) -> tuple[bytes, str]:
+        """The same table, printable.
+
+        Capped well below the workbook: past a few hundred rows a PDF is no
+        longer a document somebody reads, it is a spreadsheet that lost its
+        filters. The cap is announced on the page rather than applied silently.
+        """
+        by_location = granularity == "item_location"
+        rows = self._variance_rows(
+            campaign, granularity=granularity, material_only=material_only
+        )
+        if not rows:
+            raise ValidationError(
+                "Aucun écart à imprimer avec ce filtre.",
+                granularity=granularity, materialOnly=material_only,
+            )
+        payload = build_variance_pdf(
+            campaign_label=campaign.label or campaign.code,
+            campaign_code=campaign.code,
+            count_date=campaign.count_date,
+            rows=rows[:VARIANCE_PDF_CEILING],
+            by_location=by_location,
+            material_only=material_only,
+            generated_at=utcnow(),
+            omitted=max(0, len(rows) - VARIANCE_PDF_CEILING),
+        )
+        scope = "par référence et emplacement" if by_location else "par référence"
+        self.ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.EXPORT,
+            entity_type="variance",
+            entity_id=campaign.id,
+            summary=(
+                f"Export PDF des écarts {scope} "
+                f"({min(len(rows), VARIANCE_PDF_CEILING)} ligne(s))"
+            ),
+        )
+        suffix = "emplacement" if by_location else "reference"
+        return payload, f"ecarts-{suffix}_{campaign.code}.pdf"
+
     def grid_export(
         self, campaign: Campaign, contract_key: str
     ) -> tuple[bytes, str]:
@@ -509,6 +622,57 @@ class ReportService:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+def variance_columns(*, by_location: bool) -> list[str]:
+    """The workbook's columns, in order.
+
+    Quantity and value never share a column. On screen they share a cell —
+    the eye reads the pair, and the arrangement is deliberate — but a
+    spreadsheet cell holding two figures cannot be summed, pivoted or filtered,
+    which is the entire reason somebody asked for the export instead of a
+    screenshot. So the ERP stock contributes two columns, the counted stock two
+    more, and the gap between them two again.
+    """
+    columns = ["Article", "Désignation", "Type", "Catégorie", "Programme"]
+    if by_location:
+        columns += ["Entrepôt", "Emplacement"]
+    return [
+        *columns,
+        "Unité", "Coût unitaire €",
+        "Stock ERP qté", "Stock ERP valeur €",
+        "Compté qté", "Compté valeur €",
+        "Écart qté", "Écart valeur €",
+        "Ajusté qté", "Résiduel qté", "Résiduel valeur €",
+        "Au-delà des seuils", "Cause", "Commentaire",
+    ]
+
+
+def variance_row(row: Mapping[str, Any], *, by_location: bool) -> list[Any]:
+    """One variance as a spreadsheet line, matching :func:`variance_columns`."""
+    cells: list[Any] = [
+        row["itemNumber"], row["name"], row["itemType"],
+        row["category"], row["program"],
+    ]
+    if by_location:
+        cells += [row["warehouseId"], row["locationId"]]
+    return [
+        *cells,
+        row["unit"], row["unitCost"],
+        row["bookQty"], row["bookValue"],
+        row["countedQty"], row["countedValue"],
+        row["varianceQty"], row["varianceValue"],
+        row["adjustedQty"], row["residualQty"], row["residualValue"],
+        "oui" if row["isMaterial"] else "non",
+        row.get("causeCode") or "", row.get("comment") or "",
+    ]
+
+
+#: How many variance lines an export carries. The workbook takes the whole
+#: population — that is what a spreadsheet is for. The PDF stops far earlier:
+#: past a few hundred rows it is no longer a document anybody reads, and the
+#: cap is stated on the page rather than applied quietly.
+VARIANCE_EXPORT_CEILING = 100_000
+VARIANCE_PDF_CEILING = 400
 
 #: Bounds on the number of blank rows a free-entry sheet may be printed with.
 #: Ten is the fewest worth walking to the printer for; 180 fills four A4 pages,

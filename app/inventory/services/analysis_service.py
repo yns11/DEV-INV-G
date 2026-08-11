@@ -25,7 +25,7 @@ from ..domain.controls import (
     check_zones,
     summarise,
 )
-from ..domain.enums import AuditAction
+from ..domain.enums import AuditAction, JournalStatus
 from ..domain.models import Campaign, VarianceAnalysis, VarianceLine
 from ..domain.variance import (
     CountedQty,
@@ -86,6 +86,7 @@ class AnalysisService:
             )
             for row in ctx.journals.counted_quantities(campaign.id)
         ]
+        counted = self._with_live_generic(campaign, counted)
         lines = build_variances(
             campaign=campaign,
             book_stock=ctx.book_stock.list(campaign.id),
@@ -97,6 +98,50 @@ class AnalysisService:
         )
         self._variance_cache[key] = lines
         return lines
+
+    def _with_live_generic(
+        self, campaign: Campaign, counted: list[CountedQty]
+    ) -> list[CountedQty]:
+        """Replace the GENERIQUE counts by what the sheets say right now.
+
+        A quantity written on a GENERIQUE sheet reached the variance only after
+        somebody ran the consolidation, so the figure on screen lagged behind
+        the counting by hours — and a team that had just finished a zone saw no
+        movement at all. The consolidation is cheap and pure, so it runs on
+        every read instead: the sheets are the source, the variance follows.
+
+        Once the journal is **posted** the provisional view stands down. Posting
+        is what the ERP will be adjusted by; recomputing over it would let a late
+        sheet edit silently contradict a figure somebody has already signed off.
+        """
+        warehouse = campaign.config.generic_warehouse
+        location = campaign.config.generic_location
+        ctx = self.ctx
+
+        generic_key = campaign.config.generic_key
+        journal = next(
+            (j for j in ctx.journals.list(campaign.id) if j.key == generic_key), None
+        )
+        if journal is not None and journal.status is JournalStatus.POSTED:
+            return counted
+
+        from .generic_service import GenericService
+
+        result = GenericService(ctx).consolidate(campaign, preview=True, provisional=True)
+        kept = [
+            c for c in counted
+            if not (c.warehouse_id == warehouse and c.location_id == location)
+        ]
+        kept.extend(
+            CountedQty(
+                item_number=line.item_number,
+                warehouse_id=warehouse,
+                location_id=location,
+                qty=line.qty,
+            )
+            for line in result.lines
+        )
+        return kept
 
     def kpis(self, campaign: Campaign) -> KpiBlock:
         return compute_kpis(self.variances(campaign, granularity="item"), campaign=campaign)

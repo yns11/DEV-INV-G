@@ -96,6 +96,15 @@ class ConsolidationInput:
     #: When False, zones that are not fully counted are skipped instead of
     #: contributing partial data. Used for the live "preview" during counting.
     require_done_zones: bool = True
+    #: Resolve a pending arbitration instead of refusing to.
+    #:
+    #: The posted consolidation must never guess: a zone whose two counts
+    #: disagree has no retained quantity until somebody arbitrates. But the
+    #: variance shown *while* counting has to move at every entry, and refusing
+    #: to answer would leave the screen frozen on the book stock until the last
+    #: arbitration. So the live view takes the best provisional reading and says
+    #: it is provisional; the posted run keeps blocking.
+    provisional: bool = False
 
 
 @dataclass(slots=True)
@@ -207,6 +216,7 @@ def resolve_zone_quantities(
     *,
     passes_required: int | None = None,
     arbitration_tolerance: Decimal = ZERO,
+    provisional: bool = False,
 ) -> tuple[dict[tuple[str, CountSection], Decimal], list[ControlFinding]]:
     """Retained quantity per (item, section) for one zone.
 
@@ -278,6 +288,14 @@ def resolve_zone_quantities(
                              "section": str(section)},
                 )
             )
+            if provisional:
+                # Le comptage n°2 est le plus tardif, donc le mieux informé —
+                # sauf quand il est à zéro : une case laissée vide et un « rien
+                # trouvé » se ressemblent sur le papier, et retenir zéro ferait
+                # apparaître un écart de tout le stock d'une référence sur la
+                # foi d'un encodage peut-être inachevé. Dans ce cas le comptage
+                # n°1 tient jusqu'à l'arbitrage.
+                retained[key] = q1 if q2 == 0 else q2
             continue
 
         single = q2 if q2 is not None else q1
@@ -342,6 +360,7 @@ def consolidate_generic(payload: ConsolidationInput) -> ConsolidationResult:
         retained, zone_findings = resolve_zone_quantities(
             zone_counts,
             arbitration_tolerance=payload.arbitration_tolerance,
+            provisional=payload.provisional,
         )
         result.findings.extend(zone_findings)
 

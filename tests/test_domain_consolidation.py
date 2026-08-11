@@ -355,3 +355,72 @@ class TestSinglePassZones:
         zone.sheets[1].status = SheetStatus.ENCODING
         result = run(zone)
         assert result.zones_skipped == [zone.zone.code]
+
+
+def zone_with(*, p1, p2=None, arbitrated=None):
+    """Une zone dont l'article A est compté une ou deux fois."""
+    rows_2 = None if p2 is None else [("A", CountSection.LINE_SIDE, p2)]
+    zone = zone_counts(
+        rows_1=[("A", CountSection.LINE_SIDE, p1)],
+        rows_2=rows_2,
+        passes=1 if p2 is None else 2,
+    )
+    if arbitrated is not None:
+        zone.arbitrations = [ArbitrationLine(
+            id="a1", campaign_id="c", zone_id=zone.zone.id, item_number="A",
+            section=CountSection.LINE_SIDE, qty_pass_1=p1, qty_pass_2=p2,
+            qty_arbitrated=arbitrated,
+            decided_at=dt.datetime(2026, 6, 30, tzinfo=dt.UTC), decided_by="alice",
+        )]
+    return zone
+
+
+class TestTheProvisionalReading:
+    """L'écart doit bouger à chaque saisie, sans attendre l'arbitrage.
+
+    La consolidation *postée* ne devine jamais : une zone dont les deux
+    comptages divergent n'a pas de quantité retenue tant que personne n'a
+    tranché. Mais l'écart affiché *pendant* le comptage restait alors figé sur
+    le stock ERP jusqu'au dernier arbitrage, et une équipe qui venait de
+    terminer une zone ne voyait rien bouger.
+
+    Le mode provisoire prend donc la meilleure lecture disponible. La règle
+    n'est pas « le dernier gagne » : un comptage n°2 à zéro et une case laissée
+    vide se ressemblent sur le papier, et retenir zéro ferait apparaître un
+    écart de tout le stock d'une référence sur la foi d'un encodage peut-être
+    inachevé.
+    """
+
+    def resolve(self, zone, **kwargs):
+        retained, _ = resolve_zone_quantities(zone, provisional=True, **kwargs)
+        return {key[0]: qty for key, qty in retained.items()}
+
+    def test_the_posted_run_still_refuses_to_choose(self):
+        """Le mode par défaut ne change pas : c'est lui qui part à l'ERP."""
+        retained, findings = resolve_zone_quantities(zone_with(p1=10, p2=7))
+        assert retained == {}
+        assert any(f.code == "ARBITRATION_PENDING" for f in findings)
+
+    def test_a_pending_arbitration_takes_the_second_count(self):
+        """Le plus tardif, donc le mieux informé."""
+        assert self.resolve(zone_with(p1=10, p2=7)) == {"A": Decimal("7")}
+
+    def test_but_a_second_count_at_zero_falls_back_to_the_first(self):
+        """Zéro peut vouloir dire « rien trouvé » comme « pas encore saisi »."""
+        assert self.resolve(zone_with(p1=10, p2=0)) == {"A": Decimal("10")}
+
+    def test_a_second_count_not_started_leaves_the_first_in_place(self):
+        assert self.resolve(zone_with(p1=10)) == {"A": Decimal("10")}
+
+    def test_an_arbitration_already_decided_still_wins(self):
+        """Le provisoire ne recouvre jamais une décision humaine."""
+        zone = zone_with(p1=10, p2=7, arbitrated=9)
+        assert self.resolve(zone) == {"A": Decimal("9")}
+
+    def test_two_counts_that_agree_need_no_rule(self):
+        assert self.resolve(zone_with(p1=10, p2=10)) == {"A": Decimal("10")}
+
+    def test_the_finding_is_still_raised(self):
+        """Le provisoire affiche une quantité ; il ne fait pas taire l'alerte."""
+        _, findings = resolve_zone_quantities(zone_with(p1=10, p2=7), provisional=True)
+        assert any(f.code == "ARBITRATION_PENDING" for f in findings)

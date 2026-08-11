@@ -115,7 +115,6 @@ export const SECTIONS: Section[] = [
     phase: 'PREPARATION',
     lede: 'Le référentiel sur lequel tout le reste s’appuie.',
     enabled: () => true,
-    badge: (o) => o.counts.items || null,
   },
   {
     to: 'nomenclatures',
@@ -135,7 +134,6 @@ export const SECTIONS: Section[] = [
     lede: 'Les zones, leurs feuilles, et l’impression — avant le jour J.',
     enabled: (o) => ready(o, 'zones'),
     locked: (o) => blocked(o, 'zones') ?? '',
-    badge: (o) => o.genericProgress.zones || null,
   },
   {
     to: 'gestion',
@@ -162,7 +160,6 @@ export const SECTIONS: Section[] = [
     lede: 'La photo du stock à laquelle les comptages seront comparés.',
     enabled: (o) => o.campaign.status !== 'PREPARATION',
     locked: () => 'Se charge au passage en comptage.',
-    badge: (o) => o.counts.bookStockLines || null,
   },
   {
     to: 'compil',
@@ -173,10 +170,10 @@ export const SECTIONS: Section[] = [
     lede: 'Un emplacement ERP, des dizaines de zones comptées sur papier.',
     enabled: (o) => ready(o, 'count_entries'),
     locked: (o) => blocked(o, 'count_entries') ?? '',
-    badge: (o, focus) =>
-      focus
-        ? o.perimeter.zoneCount || null
-        : o.genericProgress.pendingArbitrations || null,
+    // Ce qui reste à faire. Un badge qui compte les zones existantes affiche
+    // le même nombre du premier au dernier jour ; celui-ci descend à zéro, ce
+    // qui est la seule chose qu'on lui demande.
+    badge: (o) => o.genericProgress.zones - o.genericProgress.done || null,
     subs: [
       { id: 'zones', label: 'Zones & feuilles', count: (o) => o.genericProgress.zones },
       {

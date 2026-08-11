@@ -250,6 +250,59 @@ const EXCLUSION_LABELS: Record<string, string> = {
 }
 
 /**
+ * The four possible exclusions, as one control.
+ *
+ * « Aucune » is a state, not a fourth checkbox: an article excluded from
+ * nothing is the normal case, and it has to be reachable in one click — the
+ * point of the screen is to *undo* an exclusion as easily as to set one.
+ * GENERIC and BOM are independent facets and combine; ALL subsumes both, so
+ * picking it clears them rather than leaving three boxes ticked that say the
+ * same thing three times.
+ */
+function ExclusionPicker({
+  value,
+  onChange,
+}: {
+  value: string[]
+  onChange: (next: string[]) => void
+}) {
+  const has = (scope: string) => value.includes(scope)
+  const toggle = (scope: string) => {
+    if (scope === 'ALL') {
+      onChange(has('ALL') ? [] : ['ALL'])
+      return
+    }
+    const without = value.filter((v) => v !== 'ALL' && v !== scope)
+    onChange(has(scope) ? without : [...without, scope])
+  }
+
+  return (
+    <Field
+      label="Exclusion"
+      hint="Hors périmètre exclut l’article de tout comptage et de toute analyse."
+    >
+      <div className="chips">
+        <button
+          className={`chip${value.length === 0 ? ' chip--active' : ''}`}
+          onClick={() => onChange([])}
+        >
+          Aucune
+        </button>
+        {(['GENERIC', 'BOM', 'ALL'] as const).map((scope) => (
+          <button
+            key={scope}
+            className={`chip${has(scope) ? ' chip--active' : ''}`}
+            onClick={() => toggle(scope)}
+          >
+            {EXCLUSION_LABELS[scope]}
+          </button>
+        ))}
+      </div>
+    </Field>
+  )
+}
+
+/**
  * Correcting one article, in place.
  *
  * Only the fields a human legitimately fixes are here. The article number is
@@ -279,12 +332,16 @@ function ItemEditModal({
     unit: String(row.unit ?? 'PCE'),
     stdPrice: String(row.stdPrice ?? 0),
   })
+  const [exclusions, setExclusions] = useState<string[]>(
+    ((row.exclusions as string[] | undefined) ?? []).filter((e) => e !== 'NONE'),
+  )
 
   const save = useMutation({
     mutationFn: () =>
       api.updateItem(campaignId, itemNumber, {
         ...draft,
         stdPrice: Number(draft.stdPrice.replace(',', '.')),
+        exclusions,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['items'] })
@@ -375,6 +432,7 @@ function ItemEditModal({
             />
           </Field>
         </div>
+        <ExclusionPicker value={exclusions} onChange={setExclusions} />
       </div>
     </Modal>
   )

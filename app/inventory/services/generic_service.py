@@ -879,13 +879,16 @@ class GenericService:
     # --------------------------------------------------------- consolidation
 
     def consolidate(
-        self, campaign: Campaign, *, preview: bool = False
+        self, campaign: Campaign, *, preview: bool = False, provisional: bool = False
     ) -> ConsolidationResult:
         """Run the GENERIQUE consolidation.
 
         :param preview: include zones that are not finished yet. Used for the
             live view during counting; the posted run always requires every zone
             to be complete.
+        :param provisional: resolve a pending arbitration with the best reading
+            available instead of refusing to. Only for the live variance — the
+            posted run must never guess which of two counts is right.
         """
         ctx = self.ctx
         items = ctx.referentials.items_by_number(campaign.id)
@@ -924,6 +927,7 @@ class GenericService:
             bom=bom,
             arbitration_tolerance=campaign.config.arbitration_tolerance,
             require_done_zones=not preview,
+            provisional=provisional,
         )
         return consolidate_generic(payload)
 

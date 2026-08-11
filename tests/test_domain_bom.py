@@ -10,8 +10,9 @@ from inventory.domain.bom import BomCycleError, BomIndex
 from inventory.domain.models import BomLink
 
 
-def link(parent: str, child: str, qty: str) -> BomLink:
-    return BomLink(campaign_id="c", parent_item=parent, child_item=child, qty_per=qty)
+def link(parent: str, child: str, qty: str, *, active: bool = True) -> BomLink:
+    return BomLink(campaign_id="c", parent_item=parent, child_item=child,
+                   qty_per=qty, active=active)
 
 
 LINKS = [
@@ -136,3 +137,67 @@ class TestDepthGuard:
         assert result.truncated_parents == {"L0"}
         # The quantity stops at the depth limit but is credited, never dropped.
         assert sum(result.components.values()) > 0
+
+
+class TestRetiredVersions:
+    """L'ERP garde toutes les versions d'une recette ; une seule est en vigueur.
+
+    Elles arrivent toutes dans la campagne, et c'est voulu : un assemblage dont
+    la recette a été retirée *a* une structure, et le signaler comme n'en ayant
+    aucune produisait une page d'alertes sur lesquelles personne ne pouvait
+    agir. Mais l'éclatement, lui, ne prend que l'actif — additionner une
+    quantité retirée à une quantité en vigueur ferait apparaître des composants
+    que l'assemblage ne contient plus.
+    """
+
+    def test_a_retired_link_is_not_exploded(self):
+        index = BomIndex([
+            link("A", "X", "2"),
+            link("A", "Y", "5", active=False),
+        ])
+        assert index.explode({"A": Decimal("1")}).components == {
+            "X": Decimal("2.000000")
+        }
+
+    def test_a_retired_version_never_adds_to_the_live_one(self):
+        """Le pire cas : le même couple dans deux versions.
+
+        L'index fusionne les doublons — c'est ce qu'il faut pour deux versions
+        en vigueur — et c'est exactement ce qui gonflerait le comptage si une
+        version retirée entrait dans la somme.
+        """
+        index = BomIndex([
+            link("A", "X", "2"),
+            link("A", "X", "30", active=False),
+        ])
+        assert index.explode({"A": Decimal("1")}).components == {
+            "X": Decimal("2.000000")
+        }
+
+    def test_an_assembly_with_only_retired_versions_cannot_be_exploded(self):
+        index = BomIndex([link("A", "X", "2", active=False)])
+        result = index.explode({"A": Decimal("1")})
+        assert result.components == {}
+        # Signalé comme non éclatable — la quantité ne disparaît pas en silence.
+        assert result.unknown_parents == {"A"}
+        assert not index.has_bom("A")
+
+    def test_but_it_is_not_reported_as_having_no_structure(self):
+        """La distinction que le référentiel réclamait."""
+        index = BomIndex([link("A", "X", "2", active=False)])
+        assert index.has_any_version("A")
+        assert index.retired_only("A")
+
+    def test_an_assembly_the_erp_ignores_entirely_is_a_different_case(self):
+        index = BomIndex([link("A", "X", "2")])
+        assert not index.has_any_version("B")
+        assert not index.retired_only("B")
+
+    def test_a_live_assembly_is_neither(self):
+        index = BomIndex([link("A", "X", "2")])
+        assert index.has_bom("A") and index.has_any_version("A")
+        assert not index.retired_only("A")
+
+    def test_a_link_is_in_force_unless_stated_otherwise(self):
+        """Une campagne chargée avant ce changement n'avait que de l'actif."""
+        assert BomIndex([link("A", "X", "2")]).has_bom("A")

@@ -41,10 +41,11 @@ def bom_row(**overrides: Any) -> list[Any]:
     base = {
         "parent_itemid": "mass-00048312", "parent_name": "MEL M4",
         "child_itemid": "P-00003818", "child_qty": "8.0", "child_unitid": "PCE",
+        "statut": "Actif",
     }
     base.update(overrides)
-    return [base[c] for c in
-            ("parent_itemid", "parent_name", "child_itemid", "child_qty", "child_unitid")]
+    return [base[c] for c in ("parent_itemid", "parent_name", "child_itemid",
+                              "child_qty", "child_unitid", "statut")]
 
 
 class _FakeClient:
@@ -102,10 +103,9 @@ def read_items(rows, **kwargs):
 
 
 def read_boms(rows, **kwargs):
-    approved_only = kwargs.pop("approved_only", False)
     client = _FakeClient(rows, **kwargs)
     reader = ErpReader(client=client, warehouse_id="wh-1")
-    return reader.fetch_bom_links(limit=1000, approved_only=approved_only), client
+    return reader.fetch_bom_links(limit=1000), client
 
 
 class TestArticleTranslation:
@@ -198,20 +198,33 @@ class TestBomTranslation:
             "child_item": "P-00003818",
             "qty_per": 8.0,
             "unit": "PCE",
+            "statut": "Actif",
         }
 
     def test_the_parent_designation_is_joined_in(self):
         _, client = read_boms([bom_row()])
         assert "LEFT JOIN" in client.statements[0]
 
-    def test_an_unapproved_recipe_is_kept_by_default(self):
-        """Dropping every row whose flag is null looks like an empty BOM."""
-        _, client = read_boms([bom_row()])
-        assert "approved" not in client.statements[0]
+    def test_every_version_is_read_in_force_or_not(self):
+        """Filtering here would hide the difference that matters.
 
-    def test_it_can_be_restricted_to_approved_recipes(self):
-        _, client = read_boms([bom_row()], approved_only=True)
-        assert "b.approved = 1" in client.statements[0]
+        An assembly whose only recipe is retired *has* a structure; one the ERP
+        has no recipe for at all does not. Dropping the retired rows at read
+        time makes the two indistinguishable, and it was reporting the first as
+        the second that produced a page of alerts nobody could act on.
+        """
+        _, client = read_boms([bom_row()])
+        assert "WHERE" not in client.statements[0]
+
+    def test_the_status_comes_across_verbatim(self):
+        """The mapper decides what counts as in force — once, for every mode."""
+        rows, _ = read_boms([bom_row(statut="Inactif")])
+        assert rows[0]["statut"] == "Inactif"
+
+    def test_a_row_without_a_status_is_taken_as_in_force(self):
+        """A source that predates the column is a source of live recipes."""
+        rows, _ = read_boms([bom_row(statut=None)])
+        assert rows[0]["statut"] == "Actif"
 
 
 class TestReadingTheWholeTable:

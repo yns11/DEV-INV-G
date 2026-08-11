@@ -349,6 +349,15 @@ class BomLink(DomainModel):
     unit: str = "PCE"
     #: 0 for the top level; kept to reproduce the ERP's effective BOM view.
     level: int = 1
+    #: Whether this version of the recipe is the one in force.
+    #:
+    #: The ERP keeps every version of a bill of materials, active or not, and
+    #: the campaign now loads them all — an assembly whose only recipe is
+    #: retired *has* a structure, and reporting it as having none produced a
+    #: page of alerts nobody could act on. Only the active versions are exploded
+    #: though: adding a retired quantity to a live one would inflate the
+    #: component count with parts the assembly no longer contains.
+    active: bool = True
 
     @field_validator("parent_item", "child_item", mode="before")
     @classmethod

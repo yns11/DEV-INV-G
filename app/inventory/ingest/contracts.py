@@ -166,7 +166,10 @@ BOMS = GridContract(
         "Une ligne par couple assemblage/composant. La quantité est celle consommée "
         "par UNE unité de l'assemblage."
     ),
-    natural_key=("parent_item", "child_item"),
+    # The status is part of the key: the ERP holds several versions of the same
+    # pair, so "same parent, same child" is no longer an anomaly. A genuine
+    # duplicate is the same pair *twice in the same state*.
+    natural_key=("parent_item", "child_item", "statut"),
     fields=(
         FieldSpec("parent_item", "Assemblage (parent)", required=True,
                   aliases=("ref_mere", "parent", "article/ressource"), width=180),
@@ -178,10 +181,17 @@ BOMS = GridContract(
                   aliases=("quantite", "qty", "qty / bom", "quantite par"), width=180),
         FieldSpec("unit", "Unité", default="PCE",
                   aliases=("unite", "unit"), width=90),
+        # The ERP holds every version of a recipe. All of them are loaded, and
+        # only the ones in force are exploded — hence a column rather than a
+        # filter at import: an assembly whose only recipe is retired has a
+        # structure, and the screens have to be able to say so.
+        FieldSpec("statut", "Statut", default="Actif",
+                  aliases=("status", "actif", "etat", "état"), width=100),
     ),
     examples=(
         {"parent_item": "mass-00040922", "parent_name": "STATOR M4",
-         "child_item": "P-00003759", "qty_per": 4.86, "unit": "KG"},
+         "child_item": "P-00003759", "qty_per": 4.86, "unit": "KG",
+         "statut": "Actif"},
     ),
 )
 

@@ -23,6 +23,7 @@ import {
   Icons,
   Modal,
   Skeleton,
+  Switch,
   useErrorToast,
   useToast,
 } from '../components/ui'
@@ -434,6 +435,18 @@ function BomsTab({
     },
     { key: 'unit', label: 'Unité', width: 90 },
     {
+      key: 'active',
+      label: 'Version',
+      width: 110,
+      render: (row) =>
+        row.active === false ? (
+          <Badge tone="warning">Inactive</Badge>
+        ) : (
+          <Badge tone="success">En vigueur</Badge>
+        ),
+      value: (row) => (row.active === false ? 'Inactive' : 'En vigueur'),
+    },
+    {
       key: 'edit',
       label: '',
       width: 92,
@@ -595,6 +608,7 @@ function BomLinkEditModal({
   const child = String(row.child_item)
   const [qtyPer, setQtyPer] = useState(String(row.qtyPer ?? ''))
   const [unit, setUnit] = useState(String(row.unit ?? 'PCE'))
+  const [active, setActive] = useState(row.active !== false)
 
   const parsed = Number(qtyPer.replace(',', '.'))
   const invalid = !Number.isFinite(parsed) || parsed <= 0
@@ -606,6 +620,7 @@ function BomLinkEditModal({
         childItem: child,
         qtyPer: parsed,
         unit,
+        active,
       }),
     onSuccess: () => {
       onSaved()
@@ -654,6 +669,15 @@ function BomLinkEditModal({
             onChange={(event) => setUnit(event.target.value)}
           />
         </Field>
+        {/* Une version retirée reste chargée — c'est ce qui distingue « recette
+            périmée » de « aucune recette » — mais elle n'est pas éclatée. La
+            remettre en vigueur ici évite un aller-retour par l'ERP quand c'est
+            le statut, et non la structure, qui était faux. */}
+        <Switch
+          checked={active}
+          onChange={setActive}
+          label="Version en vigueur (seules celles-ci sont éclatées)"
+        />
       </div>
     </Modal>
   )

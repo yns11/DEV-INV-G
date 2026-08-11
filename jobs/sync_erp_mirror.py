@@ -60,8 +60,11 @@ ITEM_COLUMNS = (
     "std_cost_price", "std_price_unit", "std_unit",
 )
 
+#: ``statut`` (Actif / Inactif) a remplacé le drapeau ``approved`` : la table
+#: silver contient désormais toutes les versions d'une nomenclature, et c'est
+#: l'application qui n'éclate que celles en vigueur.
 BOM_COLUMNS = (
-    "parent_itemid", "child_itemid", "child_qty", "child_unitid", "approved",
+    "parent_itemid", "child_itemid", "child_qty", "child_unitid", "statut",
 )
 
 #: Nombre de lignes envoyées par ordre d'insertion. Assez grand pour que le
@@ -158,8 +161,8 @@ def _read(spark: Any, fqn: str, columns: tuple[str, ...], *, limit: int) -> list
     """Les colonnes demandées, celles qui manquent renvoyées à NULL.
 
     Une colonne absente de la table silver ne doit pas arrêter la
-    synchronisation : ``approved`` en particulier n'existe pas partout, et
-    l'application sait la traiter comme inconnue.
+    synchronisation : ``statut`` n'existait pas avant que la table porte toutes
+    les versions, et l'application traite son absence comme « en vigueur ».
     """
     available = {f.name.lower() for f in spark.table(fqn).schema.fields}
     missing = [c for c in columns if c.lower() not in available]

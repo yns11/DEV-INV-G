@@ -122,6 +122,8 @@ class BomLinkPatch(ApiModel):
     child_item: str = Field(alias="childItem", min_length=1)
     qty_per: Decimal | None = Field(default=None, gt=0, alias="qtyPer")
     unit: str | None = None
+    #: Whether this version is in force. Only those are exploded.
+    active: bool | None = None
 
 
 class CreateCampaignRequest(ApiModel):

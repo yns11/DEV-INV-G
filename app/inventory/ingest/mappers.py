@@ -158,27 +158,58 @@ def _commonality(value: Any, program: Any) -> ItemCommonality:
     return ItemCommonality.SPECIFIC if program else ItemCommonality.COMMON
 
 
+#: How the ERP spells "in force". Anything else — « Inactif », a blank, a
+#: version marker — is treated as retired, which is the safe direction: a link
+#: wrongly kept out of the explosion shows up as an un-explodable assembly,
+#: while one wrongly kept in silently invents components.
+_ACTIVE_WORDS = frozenset({"actif", "active", "1", "true", "vrai", "o", "oui", "y", "yes"})
+
+
+def _is_active(value: Any) -> bool:
+    if value is None or value == "":
+        return True  # a source without the column is a source of live recipes
+    return str(value).strip().lower() in _ACTIVE_WORDS
+
+
 def map_bom_links(
     campaign_id: str, rows: Iterable[Mapping[str, Any]]
 ) -> tuple[list[BomLink], list[RowError]]:
-    links: list[BomLink] = []
+    """One edge per parent/child pair, the version in force winning.
+
+    The ERP keeps every version of a recipe, so the same pair arrives several
+    times: once in force, once or more retired. The campaign stores one edge per
+    pair — that is what the explosion walks — and the flag records whether the
+    surviving one is live.
+
+    Collapsing here rather than letting the upsert decide is the whole point:
+    the upsert keeps whichever row came last, and « last » is the ERP's row
+    order. A retired version arriving after the live one silently replaced it,
+    which turned an assembly with a perfectly good recipe into one that could
+    not be exploded.
+    """
+    by_pair: dict[tuple[str, str], BomLink] = {}
     errors: list[RowError] = []
     for index, row in enumerate(rows, start=2):
         try:
-            links.append(
-                BomLink(
-                    campaign_id=campaign_id,
-                    parent_item=row["parent_item"],
-                    child_item=row["child_item"],
-                    qty_per=row["qty_per"],
-                    unit=row.get("unit") or "PCE",
-                )
+            link = BomLink(
+                campaign_id=campaign_id,
+                parent_item=row["parent_item"],
+                child_item=row["child_item"],
+                qty_per=row["qty_per"],
+                unit=row.get("unit") or "PCE",
+                active=_is_active(row.get("statut")),
             )
         except (ValueError, KeyError) as exc:
-            errors.append(
-                RowError(index, "qty_per", row.get("qty_per"), str(exc))
-            )
-    return links, errors
+            errors.append(RowError(index, "qty_per", row.get("qty_per"), str(exc)))
+            continue
+
+        key = (link.parent_item, link.child_item)
+        previous = by_pair.get(key)
+        # An active version always wins; between two of the same state the last
+        # one wins, as before.
+        if previous is None or link.active or not previous.active:
+            by_pair[key] = link
+    return list(by_pair.values()), errors
 
 
 def map_locations(

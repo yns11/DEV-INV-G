@@ -170,7 +170,6 @@ def import_erp(
     importer: Importer,
     dry_run: Annotated[bool, Query(alias="dryRun")] = False,
     replace: Annotated[bool, Query()] = False,
-    approved_only: Annotated[bool, Query(alias="approvedOnly")] = False,
 ) -> dict[str, Any]:
     """Read the referential straight from the ERP silver tables.
 
@@ -185,7 +184,7 @@ def import_erp(
             allowed=list(ERP_TARGETS),
         )
     method = _resolve(target)
-    kwargs: dict[str, Any] = {"mode": "erp", "approved_only": approved_only}
+    kwargs: dict[str, Any] = {"mode": "erp"}
     if dry_run:
         return importer.preview(target, **kwargs)
     extra = {"replace": replace} if target == "boms" else {}

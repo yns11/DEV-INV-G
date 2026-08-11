@@ -20,6 +20,7 @@ from inventory.domain.quantities import to_decimal
 from inventory.ingest import (
     get_contract,
     map_adjustments,
+    map_bom_links,
     map_book_stock,
     map_count_sheets,
     map_items,
@@ -370,3 +371,52 @@ class TestAdjustmentMapping:
         )
         assert result.rows[0]["physical_date"] == dt.date(2026, 6, 13)
         assert result.rows[1]["physical_date"] == dt.date(2026, 6, 13)
+
+
+class TestSeveralVersionsOfTheSameRecipe:
+    """L'ERP garde toutes les versions ; la campagne n'en retient qu'une.
+
+    L'insertion en base est un upsert sur (parent, enfant) : c'est la dernière
+    ligne vue qui gagne, et « dernière » veut dire l'ordre de l'ERP. Une version
+    retirée arrivant après la version en vigueur écrasait donc celle-ci — un
+    assemblage parfaitement documenté devenait inéclatable, sans que rien ne le
+    signale. Vérifié sur une vraie base avant d'être corrigé ici.
+    """
+
+    def rows(self, *versions):
+        return [
+            {"parent_item": "MEL", "child_item": "VIS", "qty_per": qty,
+             "unit": "PCE", "statut": statut}
+            for qty, statut in versions
+        ]
+
+    def test_the_version_in_force_wins_whatever_the_order(self):
+        for order in (
+            (("8", "Actif"), ("30", "Inactif")),
+            (("30", "Inactif"), ("8", "Actif")),
+        ):
+            links, errors = map_bom_links("c", self.rows(*order))
+            assert not errors
+            assert len(links) == 1
+            assert links[0].qty_per == Decimal("8")
+            assert links[0].active
+
+    def test_only_retired_versions_leave_one_retired_edge(self):
+        """L'assemblage garde une structure — retirée, mais présente."""
+        links, _ = map_bom_links("c", self.rows(("30", "Inactif"), ("2", "Inactif")))
+        assert len(links) == 1 and not links[0].active
+
+    def test_distinct_pairs_are_untouched(self):
+        links, _ = map_bom_links("c", [
+            {"parent_item": "MEL", "child_item": "VIS", "qty_per": "8",
+             "statut": "Actif"},
+            {"parent_item": "MEL", "child_item": "TOLE", "qty_per": "2",
+             "statut": "Actif"},
+        ])
+        assert {l.child_item for l in links} == {"VIS", "TOLE"}
+
+    def test_a_source_without_the_column_is_taken_as_in_force(self):
+        links, _ = map_bom_links("c", [
+            {"parent_item": "MEL", "child_item": "VIS", "qty_per": "8"},
+        ])
+        assert links[0].active

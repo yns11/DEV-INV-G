@@ -117,25 +117,48 @@ def check_referentials(
             )
         )
 
-    # -- assemblies without a structure ---------------------------------------
+    # -- assemblies without a usable structure --------------------------------
+    #
+    # Two different situations, and they used to produce the same alert. An
+    # assembly the ERP has no recipe for at all is a referential gap somebody
+    # must fill. One whose recipes are all retired is a decision somebody
+    # already made — it still cannot be exploded, but the answer is to reinstate
+    # a version, not to write one. Reporting both as "aucune nomenclature"
+    # buried the first under the second.
     for item in items.values():
-        if item.is_assembly and not item.excluded_everywhere and not index.has_bom(
-            item.item_number
-        ):
+        if not item.is_assembly or item.excluded_everywhere:
+            continue
+        if index.has_bom(item.item_number):
+            continue
+        kind = "produit fini" if item.item_type is ItemType.FINISHED else "semi-fini"
+        if index.retired_only(item.item_number):
             findings.append(
                 ControlFinding(
-                    code="ASSEMBLY_WITHOUT_BOM",
+                    code="ASSEMBLY_BOM_RETIRED",
                     severity=ControlSeverity.WARNING,
                     message=(
-                        f"{item.item_number} est déclaré "
-                        f"{'produit fini' if item.item_type is ItemType.FINISHED else 'semi-fini'} "
-                        "mais n'a aucune nomenclature : il ne pourra pas être éclaté "
+                        f"{item.item_number} ({kind}) n'a que des versions de "
+                        "nomenclature inactives : il ne pourra pas être éclaté "
                         "s'il est compté en WIP."
                     ),
                     entity_type="item",
                     item_number=item.item_number,
                 )
             )
+            continue
+        findings.append(
+            ControlFinding(
+                code="ASSEMBLY_WITHOUT_BOM",
+                severity=ControlSeverity.WARNING,
+                message=(
+                    f"{item.item_number} est déclaré {kind} mais n'a aucune "
+                    "nomenclature : il ne pourra pas être éclaté s'il est "
+                    "compté en WIP."
+                ),
+                entity_type="item",
+                item_number=item.item_number,
+            )
+        )
 
     # -- valuation gaps --------------------------------------------------------
     unpriced = [

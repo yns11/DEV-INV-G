@@ -421,8 +421,9 @@ class ReferentialRepository(_Base):
 
     def list_bom_links(self, campaign_id: str) -> list[BomLink]:
         rows = self._fetch_all(
-            "SELECT id, campaign_id, parent_item, child_item, qty_per, unit, level "
-            "FROM bom_link WHERE campaign_id = %s AND deleted_at IS NULL "
+            "SELECT id, campaign_id, parent_item, child_item, qty_per, unit, "
+            "level, active FROM bom_link WHERE campaign_id = %s "
+            "AND deleted_at IS NULL "
             "ORDER BY parent_item, child_item",
             (campaign_id,),
         )
@@ -434,6 +435,7 @@ class ReferentialRepository(_Base):
                 qty_per=r["qty_per"],
                 unit=r["unit"],
                 level=r["level"],
+                active=r["active"],
             )
             for r in rows
         ]
@@ -447,18 +449,18 @@ class ReferentialRepository(_Base):
     ) -> int:
         rows = [
             (new_id(), l.campaign_id, l.parent_item, l.child_item, l.qty_per,
-             l.unit, l.level, actor)
+             l.unit, l.level, l.active, actor)
             for l in links
         ]
         return self._execute_many(
             "INSERT INTO bom_link (id, campaign_id, parent_item, child_item, "
-            "qty_per, unit, level, updated_by, updated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now()) "
+            "qty_per, unit, level, active, updated_by, updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
             "ON CONFLICT (campaign_id, parent_item, child_item) "
             "WHERE deleted_at IS NULL DO UPDATE SET "
             "qty_per = EXCLUDED.qty_per, unit = EXCLUDED.unit, "
-            "level = EXCLUDED.level, updated_by = EXCLUDED.updated_by, "
-            "updated_at = now()",
+            "level = EXCLUDED.level, active = EXCLUDED.active, "
+            "updated_by = EXCLUDED.updated_by, updated_at = now()",
             rows,
             conn=conn,
         )
@@ -467,8 +469,8 @@ class ReferentialRepository(_Base):
         self, campaign_id: str, parent_item: str, child_item: str
     ) -> BomLink | None:
         row = self._fetch_one(
-            "SELECT campaign_id, parent_item, child_item, qty_per, unit, level "
-            "FROM bom_link WHERE campaign_id = %s AND parent_item = %s "
+            "SELECT campaign_id, parent_item, child_item, qty_per, unit, level, "
+            "active FROM bom_link WHERE campaign_id = %s AND parent_item = %s "
             "AND child_item = %s AND deleted_at IS NULL",
             (campaign_id, parent_item, child_item),
         )
@@ -481,6 +483,7 @@ class ReferentialRepository(_Base):
             qty_per=row["qty_per"],
             unit=row["unit"],
             level=row["level"],
+            active=row["active"],
         )
 
     def delete_bom_link(

@@ -75,8 +75,12 @@ ITEM_COLUMNS = (
     "std_cost_price", "std_price_unit", "std_unit",
 )
 
+# `statut` (Actif / Inactif) a remplacé `approved` : la table silver contient
+# maintenant toutes les versions d'une nomenclature, actives comme inactives.
+# Toutes sont copiées — c'est l'application qui n'éclate que celles en vigueur,
+# et qui distingue « recette retirée » de « aucune recette ».
 BOM_COLUMNS = (
-    "parent_itemid", "child_itemid", "child_qty", "child_unitid", "approved",
+    "parent_itemid", "child_itemid", "child_qty", "child_unitid", "statut",
 )
 
 BATCH = 5_000
@@ -105,8 +109,9 @@ print(f"Miroir : {conf['pg_host']} / {conf['pg_database']} / {conf['pg_schema']}
 # MAGIC ## Lecture de l'ERP
 # MAGIC
 # MAGIC Une colonne absente de la table silver est copiée à NULL plutôt que
-# MAGIC d'arrêter la synchronisation : `approved` en particulier n'existe pas
-# MAGIC partout, et l'application sait la traiter comme inconnue.
+# MAGIC d'arrêter la synchronisation : `statut` n'existait pas avant que la table
+# MAGIC porte toutes les versions, et l'application traite son absence comme
+# MAGIC « en vigueur ».
 
 # COMMAND ----------
 

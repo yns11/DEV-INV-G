@@ -120,7 +120,6 @@ class ImportService:
         sheet: str | None = None,
         text: str | None = None,
         rows: Sequence[dict[str, Any]] | None = None,
-        approved_only: bool = False,
     ) -> tuple[GridContract, ParseResult]:
         """Parse input in any of the supported modes.
 
@@ -137,7 +136,7 @@ class ImportService:
             case "erp":
                 result = parse_rows(
                     contract,
-                    self._read_erp(contract_key, limit=limit, approved_only=approved_only),
+                    self._read_erp(contract_key, limit=limit),
                     max_rows=limit,
                 )
             case "file":
@@ -164,7 +163,7 @@ class ImportService:
         return contract, result
 
     def _read_erp(
-        self, contract_key: str, *, limit: int, approved_only: bool
+        self, contract_key: str, *, limit: int
     ) -> list[dict[str, Any]]:
         """Rows from the ERP silver tables, in the grid's shape."""
         from ..ingest.erp import ErpReader
@@ -174,7 +173,7 @@ class ImportService:
             case "items":
                 return reader.fetch_items(limit=limit)
             case "boms":
-                return reader.fetch_bom_links(limit=limit, approved_only=approved_only)
+                return reader.fetch_bom_links(limit=limit)
             case _:
                 raise ValidationError(
                     f"La grille « {contract_key} » n'a pas de source ERP. "

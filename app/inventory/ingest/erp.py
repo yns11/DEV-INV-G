@@ -50,7 +50,10 @@ ERP_ITEM_TYPES = {
     "COMPO": "COMPONENT",       # composant acheté ou fabriqué
     "PFINI": "FINISHED",        # produit fini
     "PSMFI": "SEMI_FINISHED",   # sous-ensemble
-    "APVPR": "COMPONENT",       # appro prototype — un composant, plus tôt
+    "PVENDU": "FINISHED",       # référence de vente (P-00, fini ou semi-fini)
+    "PPROTO": "COMPONENT",      # prototype : traité comme un composant, comme
+                                # l'était l'appro prototype avant son propre groupe
+    "APVPR": "COMPONENT",       # après-vente
 }
 
 #: Groups that are not physical stock. Left UNKNOWN rather than guessed: a
@@ -76,9 +79,14 @@ ITEM_COLUMNS = (
 
 #: Same contract for a bill-of-materials link. The parent designation is joined
 #: in from the article table, hence the aliases.
+#:
+#: ``statut`` decides whether the link is exploded. Every version of a recipe is
+#: read — retired ones included — because an assembly whose only recipe is out
+#: of force *has* a structure, and reporting it as having none produced a page
+#: of alerts nobody could act on.
 _BOM_SELECT = (
     "b.parent_itemid", "p.item_name AS parent_name", "b.child_itemid",
-    "b.child_qty", "b.child_unitid",
+    "b.child_qty", "b.child_unitid", "b.statut",
 )
 
 #: Mirror tables, in the application's own Lakebase schema (migration 005).
@@ -212,21 +220,18 @@ class ErpReader:
 
     # ------------------------------------------------------------------- boms
 
-    def fetch_bom_links(
-        self, *, limit: int, approved_only: bool = False
-    ) -> list[dict[str, Any]]:
+    def fetch_bom_links(self, *, limit: int) -> list[dict[str, Any]]:
         """The bill of materials, as ``boms`` grid rows.
 
         The parent's designation is joined in rather than left blank: the grid
         shows it, and a second round trip to fetch names the referential already
         holds would be wasted.
 
-        :param approved_only: keep only rows flagged approved in the ERP. Off by
-            default — the silver table already restricts itself to active
-            recipes, and silently dropping every row whose flag is null would
-            look like an empty bill of materials rather than a filter.
+        Every version is returned, in force or not. Filtering here would make
+        an assembly with a retired recipe indistinguishable from one the ERP has
+        no recipe for at all — two situations calling for two different actions.
+        The explosion applies the filter instead, where it belongs.
         """
-        where = "WHERE b.approved = 1" if approved_only else ""
         if self._from_mirror:
             return [_bom_row(r) for r in _mirror_rows(
                 f"{MIRROR_BOM_TABLE} b "
@@ -234,7 +239,6 @@ class ErpReader:
                 _BOM_SELECT,
                 order_by="b.parent_itemid, b.child_itemid",
                 limit=limit,
-                where=where,
             )]
         bom, items = self._settings.erp_bom_fqn, self._settings.erp_items_fqn
         rows = self._query(
@@ -242,7 +246,6 @@ class ErpReader:
             SELECT {", ".join(_BOM_SELECT)}
             FROM {bom} b
             LEFT JOIN {items} p ON b.parent_itemid = p.item_id
-            {where}
             ORDER BY b.parent_itemid, b.child_itemid
             LIMIT {int(limit)}
             """,
@@ -458,13 +461,16 @@ def _item_row(row: Sequence[Any]) -> dict[str, Any]:
 
 
 def _bom_row(row: Sequence[Any]) -> dict[str, Any]:
-    parent, parent_name, child, qty, unit = _pad(row, 5)
+    parent, parent_name, child, qty, unit, statut = _pad(row, 6)
     return {
         "parent_item": _text(parent),
         "parent_name": _text(parent_name),
         "child_item": _text(child),
         "qty_per": _number(qty),
         "unit": _text(unit) or "PCE",
+        # Passed through as the ERP spells it; the mapper decides what counts as
+        # "in force", once, for every input mode.
+        "statut": _text(statut) or "Actif",
     }
 
 

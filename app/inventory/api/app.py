@@ -103,6 +103,28 @@ def _configure_logging(level: str) -> None:
 # Lifespan
 # --------------------------------------------------------------------------- #
 
+def _migration_state(settings: Any) -> dict[str, Any]:
+    """Applied versions, and the ones still missing.
+
+    Never raises: this is the payload somebody reads *because* something is
+    wrong, and it must not be the thing that fails.
+    """
+    if not settings.lakebase_configured:
+        return {"applied": [], "pending": [], "error": "Lakebase non configuré."}
+    try:
+        from ..db import get_database
+        from ..db.migrations import applied_versions, discover
+
+        applied = applied_versions(get_database(settings))
+        return {
+            "applied": sorted(applied),
+            "pending": [v for v, _ in discover() if v not in applied],
+            "error": None,
+        }
+    except Exception as exc:  # pragma: no cover - infrastructure dependent
+        return {"applied": [], "pending": [], "error": str(exc)}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Apply migrations at start-up, dispose of the pool at shutdown.
@@ -276,6 +298,13 @@ def create_app() -> FastAPI:
             "frontendBuilt": STATIC_DIR.exists(),
             "llmEndpoint": settings.llm_endpoint,
             "startupError": getattr(app.state, "startup_error", None),
+            # Which schema versions this container actually applied. A failed
+            # migration is logged and start-up continues on purpose — a
+            # crash-looping container shows nothing at all — but the trade-off
+            # only works if the state is readable from outside. It was not:
+            # « the app does not create the columns » took a round trip to
+            # diagnose because nothing said which migrations had run.
+            "migrations": _migration_state(settings),
         }
 
     @app.get("/api/me", tags=["système"], summary="Utilisateur connecté")

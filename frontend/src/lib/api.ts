@@ -210,14 +210,24 @@ export const api = {
     request<Array<Record<string, unknown>>>(`/campaigns/${id}/imports`),
 
   // ------------------------------------------------------------ referentials
-  items: (id: string, params: { limit?: number; offset?: number; search?: string } = {}) =>
+  // `counted` keeps only what a GENERIQUE sheet or a counting journal names.
+  // Filtered server-side so `total` keeps meaning what it says.
+  items: (
+    id: string,
+    params: {
+      limit?: number
+      offset?: number
+      search?: string
+      counted?: boolean
+    } = {},
+  ) =>
     request<{ total: number; offset: number; limit: number; rows: Array<Record<string, unknown>> }>(
       `/campaigns/${id}/items${qs(params)}`,
     ),
   // No ceiling here: the endpoint returns the whole structure, which is what
   // a nomenclature read half-way would make unusable anyway.
-  boms: (id: string, parent?: string) =>
-    request<Array<Record<string, unknown>>>(`/campaigns/${id}/boms${qs({ parent })}`),
+  boms: (id: string, params: { parent?: string; counted?: boolean } = {}) =>
+    request<Array<Record<string, unknown>>>(`/campaigns/${id}/boms${qs(params)}`),
   // Editing one line rather than re-importing the file. A referential arrives
   // with a designation missing here and a type wrong there; before this the
   // only remedy was to redo the whole load, so people stopped correcting.
@@ -225,6 +235,13 @@ export const api = {
     request<Record<string, unknown>>(
       `/campaigns/${id}/items/${encodeURIComponent(itemNumber)}`,
       { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
+  // Une exclusion se décide par famille — un programme parti du site, une gamme
+  // après-vente comptée ailleurs — pas ligne à ligne.
+  setItemExclusions: (id: string, itemNumbers: string[], exclusions: string[]) =>
+    request<{ updated: number; unchanged: number; exclusions: string[] }>(
+      `/campaigns/${id}/items/exclusions`,
+      { method: 'POST', body: JSON.stringify({ itemNumbers, exclusions }) },
     ),
   deleteItem: (id: string, itemNumber: string) =>
     request<{ deleted: boolean }>(

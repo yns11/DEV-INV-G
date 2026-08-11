@@ -306,13 +306,7 @@ class Item(DomainModel):
     @field_validator("exclusions", mode="before")
     @classmethod
     def _exclusions(cls, v: Any) -> set[ExclusionScope]:
-        if v is None:
-            return set()
-        if isinstance(v, (str, ExclusionScope)):
-            v = [v]
-        out = {ExclusionScope(str(x).upper()) for x in v}
-        out.discard(ExclusionScope.NONE)
-        return out
+        return ExclusionScope.normalise(v)
 
     # -- scope helpers --------------------------------------------------------
     @property

@@ -60,6 +60,57 @@ const SHEET_TONE: Record<SheetStatus, string> = {
 
 const TABS: Tab[] = ['zones', 'arbitration', 'consolidation']
 
+/**
+ * Où en est une zone, du point de vue de qui distribue le papier.
+ *
+ * Le statut de la zone répond à « peut-elle être consolidée ? » ; celui-ci
+ * répond à « qu'est-ce qui se passe dessus en ce moment ? », qui est la
+ * question qu'on se pose le jour J devant quarante zones. Les deux ne se
+ * déduisent pas l'un de l'autre : une zone en arbitrage et une zone dont
+ * personne n'a encore pris la feuille sont toutes deux « pas finies », et ce
+ * n'est pas la même chose à faire.
+ */
+type ZoneStage =
+  | 'pending'
+  | 'count_1'
+  | 'encode_1'
+  | 'count_2'
+  | 'encode_2'
+  | 'done'
+
+const STAGE_LABELS: Array<{ id: ZoneStage; label: string; hint: string }> = [
+  {
+    id: 'pending',
+    label: 'En attente',
+    hint: 'Aucune feuille en cours : à démarrer, entre deux comptages, ou en attente d’arbitrage.',
+  },
+  { id: 'count_1', label: '1er comptage en cours', hint: 'La feuille n°1 est sur le terrain.' },
+  { id: 'encode_1', label: '1er encodage en cours', hint: 'La feuille n°1 est rentrée, sa saisie est ouverte.' },
+  { id: 'count_2', label: '2ème comptage en cours', hint: 'La feuille n°2 est sur le terrain.' },
+  { id: 'encode_2', label: '2ème encodage en cours', hint: 'La feuille n°2 est rentrée, sa saisie est ouverte.' },
+  { id: 'done', label: 'Terminé', hint: 'Comptages rendus, écarts arbitrés : la zone entre dans la consolidation.' },
+]
+
+/**
+ * L'étape d'une zone, la plus avancée d'abord.
+ *
+ * L'ordre des tests est ce qui compte : une zone dont la feuille n°2 est
+ * partie alors que la saisie de la n°1 traîne encore est affichée sur son
+ * comptage n°2 — c'est ce qui est en jeu maintenant.
+ */
+function stageOf(zone: Zone): ZoneStage {
+  if (zone.status === 'DONE') return 'done'
+  const statusOf = (pass: Sheet['pass_no']) =>
+    zone.sheets.find((sheet) => sheet.pass_no === pass)?.status
+  const pass1 = statusOf('PASS_1')
+  const pass2 = statusOf('PASS_2')
+  if (pass2 === 'ENCODING') return 'encode_2'
+  if (pass2 === 'COUNTING') return 'count_2'
+  if (pass1 === 'ENCODING') return 'encode_1'
+  if (pass1 === 'COUNTING') return 'count_1'
+  return 'pending'
+}
+
 export function Generic() {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
@@ -91,6 +142,7 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   const [multiScan, setMultiScan] = useState<File | null>(null)
   const [scanning, setScanning] = useState(false)
   const [openSheet, setOpenSheet] = useState<{ zone: Zone; sheet: Sheet } | null>(null)
+  const [stage, setStage] = useState<ZoneStage | ''>('')
 
   const [focus] = useFocusMode()
   // A zone created here needs its manager straight away: with the focus switch
@@ -120,6 +172,22 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
     )
     return { modes, counts }
   }, [query.data])
+
+  // Combien de zones par étape, et lesquelles sont à l'écran. Les deux se
+  // calculent d'un coup : une pilule qui annoncerait un nombre différent de ce
+  // qu'elle affiche une fois cliquée serait pire que pas de pilule du tout.
+  const { byStage, visible } = useMemo(() => {
+    const zones = query.data ?? []
+    const tally = {} as Record<ZoneStage, number>
+    for (const zone of zones) {
+      const id = stageOf(zone)
+      tally[id] = (tally[id] ?? 0) + 1
+    }
+    return {
+      byStage: tally,
+      visible: stage === '' ? zones : zones.filter((z) => stageOf(z) === stage),
+    }
+  }, [query.data, stage])
 
   const transition = useMutation({
     mutationFn: ({ sheetId, target, counterName }: {
@@ -191,107 +259,141 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
         }
       >
         {(zones) => (
-          <div className="grid grid--2">
-            {zones.map((zone) => (
-              <Card
-                key={zone.id}
-                title={
-                  <span className="row" style={{ gap: 'var(--space-3)' }}>
-                    <span className="truncate">{zone.label || zone.code}</span>
-                    <Badge tone={ZONE_TONE[zone.status] ?? 'neutral'} dot>
-                      {toLabel(ZONE_STATUS_LABELS, zone.status)}
-                    </Badge>
-                    {zone.passes === 1 && (
-                      <Badge tone="warning" title="Un seul comptage : aucun arbitrage possible">
-                        comptage unique
-                      </Badge>
-                    )}
-                    {zone.free_entry && (
-                      <Badge tone="info" title="Feuille volontairement vide : le compteur écrit ce qu’il trouve">
-                        saisie libre
-                      </Badge>
-                    )}
-                  </span>
-                }
-                message={zone.sector || undefined}
+          <div className="stack">
+            <div className="chips">
+              <button
+                className={`chip${stage === '' ? ' chip--active' : ''}`}
+                onClick={() => setStage('')}
               >
-                <div className="stack" style={{ gap: 'var(--space-3)' }}>
-                  {zone.sheets.map((sheet) => (
-                    <div
-                      key={sheet.id}
-                      className="row-wrap"
-                      style={{
-                        padding: 'var(--space-3)',
-                        background: 'var(--bg-inset)',
-                        borderRadius: 'var(--radius-md)',
-                      }}
-                    >
-                      <strong style={{ fontSize: 'var(--text-sm)', minWidth: 90 }}>
-                        Comptage n°{sheet.pass_no === 'PASS_1' ? 1 : 2}
-                      </strong>
-                      <Badge tone={SHEET_TONE[sheet.status]}>
-                        {toLabel(SHEET_STATUS_LABELS, sheet.status)}
-                      </Badge>
-                      <span className="subtle num">
-                        {sheet.countedLines} / {sheet.lineCount} lignes comptées
+                Tous <span className="num">{zones.length}</span>
+              </button>
+              {STAGE_LABELS.map(({ id, label, hint }) => (
+                <button
+                  key={id}
+                  className={`chip${stage === id ? ' chip--active' : ''}`}
+                  title={hint}
+                  onClick={() => setStage(stage === id ? '' : id)}
+                >
+                  {label} <span className="num">{byStage[id] ?? 0}</span>
+                </button>
+              ))}
+            </div>
+
+            {visible.length === 0 ? (
+              <Card>
+                <EmptyState
+                  title="Aucune zone à cette étape"
+                  action={
+                    <Button variant="ghost" onClick={() => setStage('')}>
+                      Voir toutes les zones
+                    </Button>
+                  }
+                />
+              </Card>
+            ) : (
+              <div className="grid grid--2">
+                {visible.map((zone) => (
+                  <Card
+                    key={zone.id}
+                    title={
+                      <span className="row" style={{ gap: 'var(--space-3)' }}>
+                        <span className="truncate">{zone.label || zone.code}</span>
+                        <Badge tone={ZONE_TONE[zone.status] ?? 'neutral'} dot>
+                          {toLabel(ZONE_STATUS_LABELS, zone.status)}
+                        </Badge>
+                        {zone.passes === 1 && (
+                          <Badge tone="warning" title="Un seul comptage : aucun arbitrage possible">
+                            comptage unique
+                          </Badge>
+                        )}
+                        {zone.free_entry && (
+                          <Badge tone="info" title="Feuille volontairement vide : le compteur écrit ce qu’il trouve">
+                            saisie libre
+                          </Badge>
+                        )}
                       </span>
-                      {sheet.counter_name && (
-                        <span className="subtle">· {sheet.counter_name}</span>
-                      )}
-                      {sheet.extraction_confidence !== null && (
-                        <Badge tone={sheet.extraction_confidence < 0.75 ? 'danger' : 'neutral'}>
-                          IA {percent(sheet.extraction_confidence)}
-                        </Badge>
-                      )}
-                      {sheet.correctedLines > 0 && (
-                        <Badge
-                          tone="success"
-                          title="Un scan multi-feuilles préservera cette feuille plutôt que d’écraser ces corrections."
+                    }
+                    message={zone.sector || undefined}
+                  >
+                    <div className="stack" style={{ gap: 'var(--space-3)' }}>
+                      {zone.sheets.map((sheet) => (
+                        <div
+                          key={sheet.id}
+                          className="row-wrap"
+                          style={{
+                            padding: 'var(--space-3)',
+                            background: 'var(--bg-inset)',
+                            borderRadius: 'var(--radius-md)',
+                          }}
                         >
-                          {sheet.correctedLines} corrigée(s) à la main
-                        </Badge>
-                      )}
-                      <span className="spacer" />
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        icon={<Icons.printer size={13} />}
-                        onClick={() => setPrintSheet({ sheetId: sheet.id, zone })}
-                        aria-label="Imprimer"
-                        title="Imprimer cette feuille — vierge ou remplie"
-                      />
-                      <Button
-                        size="sm"
-                        onClick={() => setOpenSheet({ zone, sheet })}
-                      >
-                        Ouvrir
-                      </Button>
-                      {editable && NEXT_SHEET_STATUS[sheet.status] && (
-                        <Button
-                          size="sm"
-                          variant="primary"
-                          disabled={transition.isPending}
-                          onClick={() =>
-                            transition.mutate({
-                              sheetId: sheet.id,
-                              target: NEXT_SHEET_STATUS[sheet.status]!,
-                            })
-                          }
-                        >
-                          {NEXT_SHEET_LABEL[sheet.status]}
-                        </Button>
+                          <strong style={{ fontSize: 'var(--text-sm)', minWidth: 90 }}>
+                            Comptage n°{sheet.pass_no === 'PASS_1' ? 1 : 2}
+                          </strong>
+                          <Badge tone={SHEET_TONE[sheet.status]}>
+                            {toLabel(SHEET_STATUS_LABELS, sheet.status)}
+                          </Badge>
+                          <span className="subtle num">
+                            {sheet.countedLines} / {sheet.lineCount} lignes comptées
+                          </span>
+                          {sheet.counter_name && (
+                            <span className="subtle">· {sheet.counter_name}</span>
+                          )}
+                          {sheet.extraction_confidence !== null && (
+                            <Badge tone={sheet.extraction_confidence < 0.75 ? 'danger' : 'neutral'}>
+                              IA {percent(sheet.extraction_confidence)}
+                            </Badge>
+                          )}
+                          {sheet.correctedLines > 0 && (
+                            <Badge
+                              tone="success"
+                              title="Un scan multi-feuilles préservera cette feuille plutôt que d’écraser ces corrections."
+                            >
+                              {sheet.correctedLines} corrigée(s) à la main
+                            </Badge>
+                          )}
+                          <span className="spacer" />
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon={<Icons.printer size={13} />}
+                            onClick={() => setPrintSheet({ sheetId: sheet.id, zone })}
+                            aria-label="Imprimer"
+                            title="Imprimer cette feuille — vierge ou remplie"
+                          />
+                          <Button
+                            size="sm"
+                            onClick={() => setOpenSheet({ zone, sheet })}
+                          >
+                            Ouvrir
+                          </Button>
+                          {editable && NEXT_SHEET_STATUS[sheet.status] && (
+                            <Button
+                              size="sm"
+                              variant="primary"
+                              disabled={transition.isPending}
+                              onClick={() =>
+                                transition.mutate({
+                                  sheetId: sheet.id,
+                                  target: NEXT_SHEET_STATUS[sheet.status]!,
+                                })
+                              }
+                            >
+                              {NEXT_SHEET_LABEL[sheet.status]}
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                      {zone.pendingArbitrations > 0 && (
+                        <Alert tone="warning" title={`${zone.pendingArbitrations} écart(s) à arbitrer`}>
+                          La consolidation reste bloquée tant qu’une quantité n’est pas
+                          retenue.
+                        </Alert>
                       )}
                     </div>
-                  ))}
-                  {zone.pendingArbitrations > 0 && (
-                    <Alert tone="warning" title={`${zone.pendingArbitrations} écart(s) à arbitrer`}>
-                      La consolidation reste bloquée tant qu’une quantité n’est pas
-                      retenue.
-                    </Alert>
-                  )}
-                </div>
-              </Card>
-            ))}
+                  </Card>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </AsyncBoundary>

@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..domain.enums import (
     CampaignStatus,
     CountSection,
+    ExclusionScope,
     ItemType,
     JournalStatus,
     LocationStatus,
@@ -32,6 +33,9 @@ __all__ = [
     "ThresholdPayload",
     "UpdateThresholdsRequest",
     "CampaignConfigPayload",
+    "ItemPatch",
+    "ItemExclusionsRequest",
+    "BomLinkPatch",
     "ImportRequest",
     "PasteRequest",
     "RowsRequest",
@@ -107,7 +111,24 @@ class ItemPatch(ApiModel):
     program: str | None = None
     unit: str | None = None
     std_price: Decimal | None = Field(default=None, ge=0, alias="stdPrice")
-    exclusions: list[str] | None = None
+    #: Typed rather than free strings: an unknown scope has to be refused at the
+    #: door, because stored it would only fail later, when the referential is
+    #: read back and every screen breaks at once.
+    exclusions: list[ExclusionScope] | None = None
+
+
+class ItemExclusionsRequest(ApiModel):
+    """The exclusion of a whole selection, in one decision.
+
+    Setting it article by article is what people actually do — a family, a
+    programme, a supplier's whole range — so the batch is the operation, not a
+    convenience wrapper around the single edit. An empty ``exclusions`` puts the
+    selection back fully in scope, which is the same gesture in reverse and must
+    cost exactly as little.
+    """
+
+    item_numbers: list[str] = Field(min_length=1, max_length=50_000, alias="itemNumbers")
+    exclusions: list[ExclusionScope] = Field(default_factory=list)
 
 
 class BomLinkPatch(ApiModel):

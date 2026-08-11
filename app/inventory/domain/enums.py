@@ -14,6 +14,7 @@ labels found in old files onto them so that archived workbooks stay importable.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 __all__ = [
     "CampaignStatus",
@@ -79,6 +80,25 @@ class ExclusionScope(StrEnum):
     GENERIC = "GENERIC"
     BOM = "BOM"
     ALL = "ALL"
+
+    @classmethod
+    def normalise(cls, values: Any) -> set[ExclusionScope]:
+        """The set an article really carries, from whatever was asked for.
+
+        ``NONE`` is the absence of an exclusion rather than a fourth one, so it
+        drops out; and ``ALL`` already means both facets, so it replaces them
+        instead of sitting beside them. Without that last rule the same
+        intention could be stored three ways — ``{ALL}``, ``{ALL, GENERIC}``,
+        ``{ALL, GENERIC, BOM}`` — and a screen listing the raw set would say
+        three different things about three identical articles.
+        """
+        if values is None:
+            return set()
+        if isinstance(values, (str, ExclusionScope)):
+            values = [values]
+        out = {cls(str(v).upper()) for v in values}
+        out.discard(cls.NONE)
+        return {cls.ALL} if cls.ALL in out else out
 
 
 class LocationType(StrEnum):

@@ -1053,6 +1053,19 @@ class JournalRepository(_Base):
                 )
         return len(lines)
 
+    def listed_item_numbers(self, campaign_id: str) -> set[str]:
+        """Articles present on a counting journal, whatever its status.
+
+        Same reading as on the sheets: the line exists because somebody expects
+        that article at that location, which is what makes it "stocké".
+        """
+        rows = self._fetch_all(
+            "SELECT DISTINCT item_number FROM count_journal_line "
+            "WHERE campaign_id = %s AND deleted_at IS NULL",
+            (campaign_id,),
+        )
+        return {str(r["item_number"]) for r in rows}
+
     def counted_quantities(self, campaign_id: str) -> list[dict[str, Any]]:
         """Effective counted quantity per (item, warehouse, location).
 
@@ -1340,6 +1353,22 @@ class SheetRepository(_Base):
             conn=conn,
         )
         return [self._sheet_line(r) for r in rows]
+
+    def listed_item_numbers(self, campaign_id: str) -> set[str]:
+        """Articles written on a GENERIQUE counting sheet, quantity or not.
+
+        A line without a quantity counts: a pre-printed sheet is the statement
+        that the article is expected to be found in that zone, which is exactly
+        what the "stocké / compté" filter is asked to keep. Waiting for a
+        quantity would make the filter useless during preparation, when it is
+        most needed.
+        """
+        rows = self._fetch_all(
+            "SELECT DISTINCT item_number FROM count_sheet_line "
+            "WHERE campaign_id = %s AND deleted_at IS NULL",
+            (campaign_id,),
+        )
+        return {str(r["item_number"]) for r in rows}
 
     def lines_by_sheet(self, campaign_id: str) -> dict[str, list[CountSheetLine]]:
         rows = self._fetch_all(

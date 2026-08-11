@@ -11,11 +11,18 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
+from ...domain.enums import ExclusionScope
 from ...errors import NotFoundError, ValidationError
 from ...ingest import get_contract, list_contracts
 from ...services import ImportService
 from ..deps import CampaignDep, Ctx, import_service
-from ..schemas import BomLinkPatch, ItemPatch, PasteRequest, RowsRequest
+from ..schemas import (
+    BomLinkPatch,
+    ItemExclusionsRequest,
+    ItemPatch,
+    PasteRequest,
+    RowsRequest,
+)
 
 router = APIRouter(tags=["données"])
 
@@ -210,6 +217,21 @@ def import_rows(
 # Referential reads
 # --------------------------------------------------------------------------- #
 
+def _stocked_item_numbers(ctx: Any, campaign_id: str) -> set[str]:
+    """Articles the campaign actually expects to see: sheets ∪ journals.
+
+    The referential holds the whole catalogue — tens of thousands of references,
+    most of which no site has held for years. What is being counted is a much
+    smaller set, and it is the only one worth reading a designation or a
+    bill-of-materials edge for. The two sources are unioned rather than picked
+    between because the split is a matter of storage, not of interest: a
+    reference on a GENERIQUE sheet and one on a journal line are both stocked.
+    """
+    return ctx.sheets.listed_item_numbers(campaign_id) | ctx.journals.listed_item_numbers(
+        campaign_id
+    )
+
+
 @router.get("/campaigns/{campaign_id}/items", summary="Référentiel articles")
 def list_items(
     campaign: CampaignDep,
@@ -217,8 +239,18 @@ def list_items(
     limit: Annotated[int, Query(ge=1, le=20_000)] = 1000,
     offset: Annotated[int, Query(ge=0)] = 0,
     search: Annotated[str | None, Query()] = None,
+    counted: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
+    """The campaign's articles, filtered server-side.
+
+    ``counted=true`` keeps only the references that appear on a GENERIQUE
+    counting sheet or in a counting journal. Filtered here rather than in the
+    browser so that ``total`` means what it says and the paging stays honest.
+    """
     items = ctx.referentials.list_items(campaign.id)
+    if counted:
+        stocked = _stocked_item_numbers(ctx, campaign.id)
+        items = [i for i in items if i.item_number in stocked]
     if search:
         needle = search.strip().upper()
         items = [
@@ -265,6 +297,11 @@ def update_item(
     changes = payload.model_dump(exclude_none=True)
     if not changes:
         raise ValidationError("Aucune modification transmise.")
+    # `model_copy` does not re-validate, so the set has to arrive already
+    # normalised — otherwise a `{ALL, GENERIC}` sent by a client would be stored
+    # verbatim and read back as something the picker cannot represent.
+    if "exclusions" in changes:
+        changes["exclusions"] = ExclusionScope.normalise(changes["exclusions"])
     updated = current.model_copy(update=changes)
 
     ctx.referentials.upsert_items([updated], actor=ctx.actor)
@@ -281,6 +318,87 @@ def update_item(
         **updated.model_dump(mode="json"),
         "exclusions": sorted(str(e) for e in updated.exclusions),
         "stdPrice": float(updated.std_price),
+    }
+
+
+#: How an exclusion reads in the audit trail and in error messages.
+_EXCLUSION_LABELS = {
+    ExclusionScope.GENERIC: "hors GENERIQUE",
+    ExclusionScope.BOM: "ignoré en nomenclature",
+    ExclusionScope.ALL: "hors périmètre",
+}
+
+
+def _describe(scopes: set[ExclusionScope]) -> str:
+    if not scopes:
+        return "aucune exclusion"
+    return ", ".join(_EXCLUSION_LABELS[s] for s in sorted(scopes, key=str))
+
+
+@router.post(
+    "/campaigns/{campaign_id}/items/exclusions",
+    summary="Exclure ou réintégrer un lot d'articles",
+)
+def set_item_exclusions(
+    campaign: CampaignDep, payload: ItemExclusionsRequest, ctx: Ctx
+) -> dict[str, Any]:
+    """Apply one exclusion to a whole selection.
+
+    Exclusions come in families, not one reference at a time: a programme that
+    left the site, an after-sales range counted elsewhere, packaging nobody
+    weighs. Doing it line by line through the edit modal is what made people
+    give up half-way and leave a referential that is only half true — which is
+    worse than one that excludes nothing, because the gaps are invisible.
+
+    An unknown reference stops the whole batch rather than being skipped: a
+    selection is made against what is on screen, so a reference the server does
+    not know means the two disagree, and silently applying the rest would hide
+    it.
+    """
+    ctx.guard(campaign, "items")
+    wanted = ExclusionScope.normalise(payload.exclusions)
+    numbers = list(
+        dict.fromkeys(n.strip().upper() for n in payload.item_numbers if n.strip())
+    )
+    if not numbers:
+        raise ValidationError("Aucun article transmis.")
+
+    known = ctx.referentials.items_by_number(campaign.id)
+    missing = [n for n in numbers if n not in known]
+    if missing:
+        raise ValidationError(
+            f"{len(missing)} article(s) hors référentiel, dont "
+            f"« {missing[0]} ». Rechargez la liste avant de recommencer.",
+            missing=missing[:20],
+        )
+
+    changed = [
+        known[n].model_copy(update={"exclusions": set(wanted)})
+        for n in numbers
+        if known[n].exclusions != wanted
+    ]
+    if changed:
+        ctx.referentials.upsert_items(changed, actor=ctx.actor)
+        ctx.record(
+            campaign_id=campaign.id,
+            action="UPDATE",
+            entity_type="item",
+            entity_id="",
+            summary=f"{len(changed)} article(s) : {_describe(wanted)}",
+            after={
+                "exclusions": ",".join(sorted(str(e) for e in wanted)),
+                # The references themselves, so the trail answers "which ones?"
+                # without replaying the selection — truncated, because a batch
+                # can carry the whole catalogue and an audit row is read by a
+                # human.
+                "itemNumbers": ", ".join(i.item_number for i in changed[:50])
+                + (" …" if len(changed) > 50 else ""),
+            },
+        )
+    return {
+        "updated": len(changed),
+        "unchanged": len(numbers) - len(changed),
+        "exclusions": sorted(str(e) for e in wanted),
     }
 
 
@@ -305,11 +423,25 @@ def list_boms(
     campaign: CampaignDep,
     ctx: Ctx,
     parent: Annotated[str | None, Query()] = None,
+    counted: Annotated[bool, Query()] = False,
 ) -> list[dict[str, Any]]:
+    """Every edge, or only the ones a counted reference is on either side of.
+
+    An edge is kept when **either** end is stocked, not only the parent: an
+    assembly found on a sheet is kept because it will be exploded, and a
+    component found on one is kept because a wrong ``qty_per`` above it is
+    exactly what would make its counted quantity unexplainable.
+    """
     links = ctx.referentials.list_bom_links(campaign.id)
     if parent:
         needle = parent.strip().upper()
         links = [l for l in links if l.parent_item == needle]
+    if counted:
+        stocked = _stocked_item_numbers(ctx, campaign.id)
+        links = [
+            l for l in links
+            if l.parent_item in stocked or l.child_item in stocked
+        ]
     return [
         {**l.model_dump(mode="json"), "qtyPer": float(l.qty_per)} for l in links
     ]

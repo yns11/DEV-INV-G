@@ -115,12 +115,44 @@ function ItemsTab({
   overview: Overview
 }) {
   const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
   const [search, setSearch] = useState('')
+  const [counted, setCounted] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [editing, setEditing] = useState<Record<string, unknown> | null>(null)
   const editable = overview.permissions.items
   const query = useQuery({
-    queryKey: ['items', campaignId, search],
-    queryFn: () => api.items(campaignId, { limit: GRID_ROW_CEILING, search: search || undefined }),
+    queryKey: ['items', campaignId, search, counted],
+    queryFn: () =>
+      api.items(campaignId, {
+        limit: GRID_ROW_CEILING,
+        search: search || undefined,
+        counted: counted || undefined,
+      }),
+  })
+
+  // Changer de filtre change la liste sous les cases cochées. Garder la
+  // sélection reviendrait à agir sur des lignes qui ne sont plus à l'écran.
+  const filterBy = (next: boolean) => {
+    setCounted(next)
+    setSelected(new Set())
+  }
+
+  const exclude = useMutation({
+    mutationFn: (exclusions: string[]) =>
+      api.setItemExclusions(campaignId, [...selected], exclusions),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['items'] })
+      setSelected(new Set())
+      toast.success(
+        `${result.updated} article(s) mis à jour`,
+        result.unchanged > 0
+          ? `${result.unchanged} l’étaient déjà.`
+          : undefined,
+      )
+    },
+    onError: (error) => showError(error, 'Exclusion impossible'),
   })
 
   const columns: Column[] = [
@@ -199,7 +231,7 @@ function ItemsTab({
 
       <Card
         title="Référentiel articles de la campagne"
-        message="Trois niveaux d’exclusion : hors périmètre complet, hors GENERIQUE, ou ignoré dans les nomenclatures."
+        message="Trois niveaux d’exclusion : hors périmètre complet, hors GENERIQUE, ou ignoré dans les nomenclatures. Sélectionnez des lignes pour en exclure un lot d’un coup."
         flush
       >
         <AsyncBoundary query={query} isEmpty={(d) => d.rows.length === 0}>
@@ -208,24 +240,38 @@ function ItemsTab({
               columns={columns}
               rows={data.rows}
               getRowId={(row) => String(row.item_number)}
+              selectable={editable}
+              selected={selected}
+              onSelectedChange={setSelected}
               searchPlaceholder="Filtrer par référence, désignation…"
               maxHeight={560}
               footer={
                 <span>
-                  {data.total.toLocaleString('fr-FR')} article(s) au référentiel
+                  {data.total.toLocaleString('fr-FR')} article(s)
+                  {counted ? ' stockés ou comptés' : ' au référentiel'}
                   {data.total > data.rows.length && ` — ${data.rows.length} affichés`}
                 </span>
               }
               toolbar={
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  icon={<Icons.search size={13} />}
-                  onClick={() => setSearch('')}
-                  disabled={!search}
-                >
-                  Réinitialiser la recherche serveur
-                </Button>
+                <div className="row-wrap" style={{ gap: 'var(--space-2)' }}>
+                  <StockedFilter value={counted} onChange={filterBy} />
+                  {editable && selected.size > 0 && (
+                    <ExclusionBulkAction
+                      disabled={exclude.isPending}
+                      onPick={(exclusions) => exclude.mutate(exclusions)}
+                    />
+                  )}
+                  {search && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={<Icons.search size={13} />}
+                      onClick={() => setSearch('')}
+                    >
+                      Réinitialiser la recherche serveur
+                    </Button>
+                  )}
+                </div>
               }
             />
           )}
@@ -247,6 +293,72 @@ const EXCLUSION_LABELS: Record<string, string> = {
   ALL: 'Hors périmètre',
   GENERIC: 'Hors GENERIQUE',
   BOM: 'Ignoré en BOM',
+}
+
+/**
+ * « Articles stockés / comptés ».
+ *
+ * Le référentiel porte tout le catalogue — des dizaines de milliers de
+ * références, dont la plupart n'ont pas été détenues depuis des années. Ce qui
+ * est réellement compté tient dans un sous-ensemble beaucoup plus court, et
+ * c'est le seul sur lequel corriger une désignation ou un `qty_par` vaut le
+ * temps qu'on y passe. Le tri se fait côté serveur : le total affiché reste
+ * donc celui de ce qu'on regarde.
+ */
+function StockedFilter({
+  value,
+  onChange,
+}: {
+  value: boolean
+  onChange: (next: boolean) => void
+}) {
+  return (
+    <button
+      className={`chip${value ? ' chip--active' : ''}`}
+      title="Ne garder que les références présentes dans les feuilles B06VRAC GENERIQUE ou dans les journaux de comptage."
+      onClick={() => onChange(!value)}
+    >
+      Articles stockés / comptés
+    </button>
+  )
+}
+
+/**
+ * L'exclusion d'une sélection entière, en un geste.
+ *
+ * Les quatre cas de figure et rien d'autre : c'est ainsi que la décision se
+ * prend — « toute cette gamme est après-vente », « ce programme a quitté le
+ * site ». La combinaison GENERIQUE + nomenclature reste possible article par
+ * article dans la fenêtre de modification, où elle a un sens ; ici elle
+ * n'ajouterait qu'une case à cocher de plus devant une liste de mille lignes.
+ */
+function ExclusionBulkAction({
+  disabled,
+  onPick,
+}: {
+  disabled: boolean
+  onPick: (exclusions: string[]) => void
+}) {
+  return (
+    <select
+      className="input"
+      style={{ width: 240 }}
+      value=""
+      disabled={disabled}
+      aria-label="Exclusion de la sélection"
+      onChange={(event) => {
+        const choice = event.target.value
+        if (choice === '') return
+        onPick(choice === 'NONE' ? [] : [choice])
+      }}
+    >
+      <option value="">Exclusion de la sélection…</option>
+      <option value="NONE">Aucune — remettre dans le périmètre</option>
+      <option value="GENERIC">{EXCLUSION_LABELS.GENERIC}</option>
+      <option value="BOM">{EXCLUSION_LABELS.BOM}</option>
+      <option value="ALL">{EXCLUSION_LABELS.ALL}</option>
+    </select>
+  )
 }
 
 /**
@@ -455,14 +567,15 @@ function BomsTab({
   const toast = useToast()
   const showError = useErrorToast()
   const [editing, setEditing] = useState<Record<string, unknown> | null>(null)
+  const [counted, setCounted] = useState(false)
   const editable = overview.permissions.boms
   const health = useQuery({
     queryKey: ['bom-health', campaignId],
     queryFn: () => api.bomHealth(campaignId),
   })
   const links = useQuery({
-    queryKey: ['boms', campaignId],
-    queryFn: () => api.boms(campaignId),
+    queryKey: ['boms', campaignId, counted],
+    queryFn: () => api.boms(campaignId, { counted: counted || undefined }),
   })
 
   const refresh = () => {
@@ -621,6 +734,14 @@ function BomsTab({
               getRowId={(row, index) => `${row.parent_item}-${row.child_item}-${index}`}
               searchPlaceholder="Filtrer par assemblage ou composant…"
               maxHeight={520}
+              toolbar={<StockedFilter value={counted} onChange={setCounted} />}
+              footer={
+                counted ? (
+                  <span>
+                    Liens dont l’assemblage ou le composant est stocké ou compté.
+                  </span>
+                ) : null
+              }
             />
           )}
         </AsyncBoundary>

@@ -426,10 +426,34 @@ print(f"\nMiroir synchronisé : {len(items)} articles, {len(boms)} liens.")
 
 # COMMAND ----------
 
+# La source et le miroir, comptés côte à côte. Un écart ici ne peut avoir que
+# deux causes, et la date de synchronisation les départage : soit le miroir n'a
+# pas été rafraîchi depuis que la source a changé — les exécutions suivantes ont
+# échoué — soit les deux chiffres ne comptent pas la même chose, une vue filtrée
+# d'un côté et toutes les versions de l'autre. Poser la question à la source et
+# au miroir dans la même cellule évite de la poser à quelqu'un.
+sources = {
+    "erp_base_article": spark.table(items_fqn).count(),
+    "erp_bom": spark.table(bom_fqn).count(),
+}
+
 with psycopg.connect(conninfo) as conn:
     conn.execute(f"SET search_path TO {conf['pg_schema']}, public")
-    for table in ("erp_base_article", "erp_bom"):
-        row = conn.execute(
+    print(f"{'Table':<20}{'Source':>9}{'Miroir':>9}   Synchronisé le")
+    for table, source_rows in sources.items():
+        rows, synced = conn.execute(
             f"SELECT count(*), max(synced_at) FROM {table}"
         ).fetchone()
-        print(f"{table:<20} {row[0]:>8} lignes   synchronisé le {row[1]}")
+        flag = "" if rows == source_rows else "   ⚠ écart"
+        print(f"{table:<20}{source_rows:>9}{rows:>9}   {synced}{flag}")
+
+    dupes = conn.execute(
+        "SELECT count(*) FROM ("
+        "  SELECT parent_itemid, child_itemid, statut, count(*) AS n"
+        "  FROM erp_bom GROUP BY 1, 2, 3 HAVING count(*) > 1"
+        ") d"
+    ).fetchone()[0]
+    if dupes:
+        print(f"\n{dupes} couple(s) parent/enfant présents plusieurs fois dans le "
+              "même statut. Plusieurs versions d'une même recette sont normales ; "
+              "plusieurs fois la même version ne l'est pas.")

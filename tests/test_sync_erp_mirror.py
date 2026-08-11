@@ -388,3 +388,43 @@ class TestTheFinalInsertCannotViolateTheKey:
             if s.startswith("INSERT INTO erp_base_article (")
         )
         assert truncate < final
+
+
+class TestTheMirrorIsCheckedBeforeAnythingIsRead:
+    """Le miroir appartient à l'application ; le job ne fait que le remplir.
+
+    Quand les deux se désynchronisent — une colonne ajoutée à la source et à
+    l'application, mais l'application pas encore redéployée — Postgres refusait
+    la toute dernière instruction, après que le référentiel entier avait été lu
+    et transmis. C'est arrivé sur `statut`, et c'est la troisième fois qu'un
+    échec bon marché se paie au prix d'un chargement complet.
+    """
+
+    class Catalogue:
+        def __init__(self, columns: list[str]) -> None:
+            self._columns = columns
+
+        def execute(self, statement: str, params: Any = None) -> Any:
+            class Result:
+                def __init__(self, rows): self._rows = rows
+                def fetchall(self): return self._rows
+            return Result([(c,) for c in self._columns])
+
+    def test_a_missing_column_names_itself_and_the_remedy(self):
+        conn = self.Catalogue(["parent_itemid", "child_itemid"])
+        with pytest.raises(RuntimeError) as raised:
+            sync._assert_mirror_shape(conn, "erp_bom", ("parent_itemid", "statut"))
+        assert "statut" in str(raised.value)
+        assert "redéployez" in str(raised.value)
+
+    def test_an_absent_table_says_the_application_creates_them(self):
+        with pytest.raises(RuntimeError, match="crée"):
+            sync._assert_mirror_shape(self.Catalogue([]), "erp_bom", ("statut",))
+
+    def test_a_mirror_in_step_passes_quietly(self):
+        conn = self.Catalogue(["parent_itemid", "statut", "synced_at"])
+        assert sync._assert_mirror_shape(conn, "erp_bom", ("parent_itemid", "statut")) is None
+
+    def test_the_comparison_ignores_case(self):
+        conn = self.Catalogue(["PARENT_ITEMID", "STATUT"])
+        assert sync._assert_mirror_shape(conn, "erp_bom", ("parent_itemid", "statut")) is None

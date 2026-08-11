@@ -22,9 +22,12 @@
 # MAGIC | `pg_user` | Facultatif. Vide, c'est l'identité qui exécute le notebook. |
 # MAGIC | `lakebase_branch` | Déjà rempli. Sert à demander un credential dédié à l'endpoint. |
 # MAGIC
-# MAGIC Prérequis, une seule fois : l'App doit avoir démarré au moins une fois
-# MAGIC depuis la migration `006` — c'est elle qui ouvre l'écriture du miroir à une
-# MAGIC autre identité que la sienne.
+# MAGIC **Prérequis : l'App doit avoir démarré depuis le dernier déploiement.**
+# MAGIC C'est elle qui crée les tables du miroir et les fait évoluer — droits
+# MAGIC d'écriture, colonnes nouvelles. Ce notebook ne fait que les remplir, et il
+# MAGIC le vérifie avant de lire quoi que ce soit : si l'App est en retard, il
+# MAGIC s'arrête en une seconde en le disant, au lieu de le découvrir à la dernière
+# MAGIC instruction après avoir chargé tout le référentiel.
 
 # COMMAND ----------
 
@@ -102,73 +105,6 @@ limit = int(conf["limit"] or 0)
 
 print(f"ERP    : {items_fqn}\n         {bom_fqn}")
 print(f"Miroir : {conf['pg_host']} / {conf['pg_database']} / {conf['pg_schema']}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Lecture de l'ERP
-# MAGIC
-# MAGIC Une colonne absente de la table silver est copiée à NULL plutôt que
-# MAGIC d'arrêter la synchronisation : `statut` n'existait pas avant que la table
-# MAGIC porte toutes les versions, et l'application traite son absence comme
-# MAGIC « en vigueur ».
-
-# COMMAND ----------
-
-def read(fqn, columns, unique_on=""):
-    """Les colonnes demandées, celles qui manquent copiées à NULL.
-
-    `unique_on` déduplique à la source. La table des articles a livré deux
-    lignes pour le même `item_id` — le programme y est calculé en cascade, et
-    une remontée de nomenclature peut faire éventail — ce qui violait la clé
-    primaire du miroir en fin de chargement, après tout le travail utile. Cette
-    clé n'est pas du confort : un article y est une ligne, et l'application lit
-    le miroir en supposant exactement cela. On déduplique donc plutôt que de la
-    lever, de façon déterministe pour que deux exécutions donnent le même
-    miroir, et le nombre de lignes écartées est affiché : c'est une anomalie de
-    la source, pas une routine.
-    """
-    available = {f.name.lower() for f in spark.table(fqn).schema.fields}
-    missing = [c for c in columns if c.lower() not in available]
-    if missing:
-        print(f"  {fqn} : absentes, copiées à NULL — {', '.join(missing)}")
-
-    projection = ", ".join(
-        c if c.lower() in available else f"CAST(NULL AS STRING) AS {c}"
-        for c in columns
-    )
-    query = f"SELECT {projection} FROM {fqn}"
-    if unique_on and unique_on.lower() in available:
-        query = (
-            f"SELECT {', '.join(columns)} FROM ("
-            f"  SELECT {projection}, ROW_NUMBER() OVER ("
-            f"    PARTITION BY {unique_on} ORDER BY {', '.join(columns)}"
-            f"  ) AS _rang FROM {fqn}"
-            f") WHERE _rang = 1"
-        )
-    if limit:
-        query += f" LIMIT {limit}"
-
-    rows = [tuple(row) for row in spark.sql(query).collect()]
-    if unique_on and not limit:
-        total = spark.table(fqn).count()
-        if total > len(rows):
-            print(f"  {fqn} : {total - len(rows)} ligne(s) en double sur "
-                  f"{unique_on}, une seule conservée par clé")
-    return rows
-
-
-items = read(items_fqn, ITEM_COLUMNS, unique_on="item_id")
-boms = read(bom_fqn, BOM_COLUMNS)
-print(f"\n{len(items)} articles, {len(boms)} liens de nomenclature")
-
-# Écraser un référentiel valide par un vide fait disparaître la possibilité même
-# de lancer une campagne. Un ERP qui ne renvoie rien est une anomalie, pas une
-# mise à jour.
-if not items:
-    raise RuntimeError(
-        f"{items_fqn} n'a renvoyé aucune ligne — miroir laissé intact."
-    )
 
 # COMMAND ----------
 
@@ -296,6 +232,110 @@ except Exception as exc:
     raise RuntimeError(f"Connexion à Lakebase impossible : {message}") from exc
 
 print("Connecté.")
+
+# COMMAND ----------
+def assert_mirror_shape(conn, table, columns):
+    """Refuse de démarrer si le miroir n'a pas les colonnes à écrire.
+
+    Les tables du miroir appartiennent à l'application, qui les crée et les fait
+    évoluer à son démarrage ; ce notebook ne fait que les remplir. Quand les deux
+    se désynchronisent — une colonne ajoutée à la source et à l'application, mais
+    l'application pas encore redéployée — Postgres refuse la toute dernière
+    instruction, après que le référentiel entier a été lu et transmis.
+    L'interroger d'abord transforme cela en un arrêt immédiat et explicite.
+    """
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+        (table,),
+    ).fetchall()
+    present = {str(r[0]).lower() for r in rows}
+    if not present:
+        raise RuntimeError(
+            f"La table « {table} » n'existe pas dans le schéma du miroir. "
+            "Démarrez l'application une fois : c'est elle qui crée et fait "
+            "évoluer ces tables."
+        )
+    missing = [c for c in columns if c.lower() not in present]
+    if missing:
+        raise RuntimeError(
+            f"Le miroir « {table} » n'a pas la ou les colonnes "
+            f"{', '.join(missing)}. Elles arrivent avec une migration de "
+            "l'application : redéployez-la, laissez-la démarrer une fois, puis "
+            "relancez cette synchronisation."
+        )
+
+
+with psycopg.connect(conninfo) as check:
+    check.execute(f"SET search_path TO {conf['pg_schema']}, public")
+    assert_mirror_shape(check, "erp_base_article", ITEM_COLUMNS)
+    assert_mirror_shape(check, "erp_bom", BOM_COLUMNS)
+print("Miroir conforme.")
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Lecture de l'ERP
+# MAGIC
+# MAGIC Une colonne absente de la table silver est copiée à NULL plutôt que
+# MAGIC d'arrêter la synchronisation : `statut` n'existait pas avant que la table
+# MAGIC porte toutes les versions, et l'application traite son absence comme
+# MAGIC « en vigueur ».
+
+# COMMAND ----------
+
+def read(fqn, columns, unique_on=""):
+    """Les colonnes demandées, celles qui manquent copiées à NULL.
+
+    `unique_on` déduplique à la source. La table des articles a livré deux
+    lignes pour le même `item_id` — le programme y est calculé en cascade, et
+    une remontée de nomenclature peut faire éventail — ce qui violait la clé
+    primaire du miroir en fin de chargement, après tout le travail utile. Cette
+    clé n'est pas du confort : un article y est une ligne, et l'application lit
+    le miroir en supposant exactement cela. On déduplique donc plutôt que de la
+    lever, de façon déterministe pour que deux exécutions donnent le même
+    miroir, et le nombre de lignes écartées est affiché : c'est une anomalie de
+    la source, pas une routine.
+    """
+    available = {f.name.lower() for f in spark.table(fqn).schema.fields}
+    missing = [c for c in columns if c.lower() not in available]
+    if missing:
+        print(f"  {fqn} : absentes, copiées à NULL — {', '.join(missing)}")
+
+    projection = ", ".join(
+        c if c.lower() in available else f"CAST(NULL AS STRING) AS {c}"
+        for c in columns
+    )
+    query = f"SELECT {projection} FROM {fqn}"
+    if unique_on and unique_on.lower() in available:
+        query = (
+            f"SELECT {', '.join(columns)} FROM ("
+            f"  SELECT {projection}, ROW_NUMBER() OVER ("
+            f"    PARTITION BY {unique_on} ORDER BY {', '.join(columns)}"
+            f"  ) AS _rang FROM {fqn}"
+            f") WHERE _rang = 1"
+        )
+    if limit:
+        query += f" LIMIT {limit}"
+
+    rows = [tuple(row) for row in spark.sql(query).collect()]
+    if unique_on and not limit:
+        total = spark.table(fqn).count()
+        if total > len(rows):
+            print(f"  {fqn} : {total - len(rows)} ligne(s) en double sur "
+                  f"{unique_on}, une seule conservée par clé")
+    return rows
+
+
+items = read(items_fqn, ITEM_COLUMNS, unique_on="item_id")
+boms = read(bom_fqn, BOM_COLUMNS)
+print(f"\n{len(items)} articles, {len(boms)} liens de nomenclature")
+
+# Écraser un référentiel valide par un vide fait disparaître la possibilité même
+# de lancer une campagne. Un ERP qui ne renvoie rien est une anomalie, pas une
+# mise à jour.
+if not items:
+    raise RuntimeError(
+        f"{items_fqn} n'a renvoyé aucune ligne — miroir laissé intact."
+    )
 
 # COMMAND ----------
 

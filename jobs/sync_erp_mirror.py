@@ -126,20 +126,13 @@ def main() -> int:
     items_fqn = f"{args.catalog}.{args.schema}.{args.items_table}"
     bom_fqn = f"{args.catalog}.{args.schema}.{args.bom_table}"
 
-    items = _read(spark, items_fqn, ITEM_COLUMNS, limit=args.limit,
-                  unique_on="item_id")
-    boms = _read(spark, bom_fqn, BOM_COLUMNS, limit=args.limit)
-    log.info("Lu %d articles et %d liens de nomenclature", len(items), len(boms))
-
-    if not items:
-        # Écraser un référentiel valide par un vide fait disparaître la
-        # possibilité même de lancer une campagne. Un ERP qui ne renvoie rien
-        # est une anomalie, pas une mise à jour.
-        log.error("La table %s n'a renvoyé aucune ligne — miroir laissé intact", items_fqn)
-        return 1
-
     import psycopg
 
+    # La connexion et la vérification de forme passent avant la lecture. Chaque
+    # échec rencontré jusqu'ici — variables absentes, droits manquants, colonne
+    # du miroir non migrée — est arrivé après le chargement complet du
+    # référentiel, c'est-à-dire au bout du seul travail coûteux. Ces contrôles
+    # tiennent en une seconde ; les faire d'abord, c'est échouer en une seconde.
     try:
         connection = psycopg.connect(_lakebase_conninfo(args))
     except Exception as exc:
@@ -147,6 +140,24 @@ def main() -> int:
 
     with connection as conn:
         conn.execute(f"SET search_path TO {args.pg_schema}, public")
+        _assert_mirror_shape(conn, "erp_base_article", ITEM_COLUMNS)
+        _assert_mirror_shape(conn, "erp_bom", BOM_COLUMNS)
+
+        items = _read(spark, items_fqn, ITEM_COLUMNS, limit=args.limit,
+                      unique_on="item_id")
+        boms = _read(spark, bom_fqn, BOM_COLUMNS, limit=args.limit)
+        log.info("Lu %d articles et %d liens de nomenclature", len(items), len(boms))
+
+        if not items:
+            # Écraser un référentiel valide par un vide fait disparaître la
+            # possibilité même de lancer une campagne. Un ERP qui ne renvoie
+            # rien est une anomalie, pas une mise à jour.
+            log.error(
+                "La table %s n'a renvoyé aucune ligne — miroir laissé intact",
+                items_fqn,
+            )
+            return 1
+
         try:
             _swap(conn, "erp_base_article", ITEM_COLUMNS, items,
                   unique_on="item_id")
@@ -308,6 +319,38 @@ def _lakebase_conninfo(args: Any, client: Any = None) -> str:
         f"host={host} port={port} dbname={database} user={user} "
         f"password={password} sslmode={sslmode}"
     )
+
+
+def _assert_mirror_shape(conn: Any, table: str, columns: tuple[str, ...]) -> None:
+    """Refuse to start unless the mirror has the columns about to be written.
+
+    The mirror's tables belong to the application, which creates and migrates
+    them at start-up; this job only fills them. When the two get out of step —
+    a column added to the source and to the application, but the application not
+    yet redeployed — Postgres refuses the very last statement, after the whole
+    referential has been read and shipped. Asking the catalogue first turns that
+    into an immediate, self-explanatory stop.
+    """
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = %s",
+        (table,),
+    ).fetchall()
+    present = {str(r[0]).lower() for r in rows}
+    if not present:
+        raise RuntimeError(
+            f"La table « {table} » n'existe pas dans le schéma du miroir. "
+            "Démarrez l'application une fois : c'est elle qui crée et fait "
+            "évoluer ces tables."
+        )
+    missing = [c for c in columns if c.lower() not in present]
+    if missing:
+        raise RuntimeError(
+            f"Le miroir « {table} » n'a pas la ou les colonnes {', '.join(missing)}. "
+            "Elles arrivent avec une migration de l'application : redéployez-la "
+            "et laissez-la démarrer une fois, puis relancez cette "
+            "synchronisation."
+        )
 
 
 def _connection_advice(exc: Exception) -> str:

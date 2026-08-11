@@ -468,3 +468,60 @@ class TestAnArticleThatArrivesTwice:
         ], source=DataSource.ERP_IMPORT)
         assert len(errors) == 1
         assert [i.item_number for i in items] == ["A"]
+
+
+class TestDuplicateBomLinksAreOnlyReportedInForce:
+    """Cinquante « doublons » qui n'en étaient pas.
+
+    Depuis que la table silver porte toutes les versions d'une recette, le même
+    couple parent/enfant apparaît une fois par version retirée. Le contrôle les
+    signalait toutes, et le seul cas qui compte — le même lien déclaré deux fois
+    *en vigueur*, où l'éclatement devrait choisir une quantité et ne le peut
+    pas — se retrouvait noyé au milieu.
+    """
+
+    def link(self, child: str, statut: str, qty: str = "1"):
+        return {"parent_item": "PROTO-00162222", "child_item": child,
+                "qty_per": qty, "unit": "PCE", "statut": statut}
+
+    def parse(self, rows):
+        return parse_rows(get_contract("boms"), rows)
+
+    def test_several_retired_versions_of_a_link_are_not_a_duplicate(self):
+        result = self.parse([
+            self.link("P-00003418", "INACTIF", "2"),
+            self.link("P-00003418", "INACTIF", "3"),
+        ])
+        assert result.duplicate_keys == []
+        assert len(result.rows) == 2, "les deux versions restent chargées"
+
+    def test_the_same_link_twice_in_force_is_still_reported(self):
+        """Le cas qui compte : l'éclatement ne saurait pas laquelle appliquer."""
+        result = self.parse([
+            self.link("P-00003418", "Actif", "2"),
+            self.link("P-00003418", "Actif", "3"),
+        ])
+        assert len(result.duplicate_keys) == 1
+        assert "PROTO-00162222|P-00003418" in result.duplicate_keys[0]
+
+    def test_one_in_force_and_one_retired_is_not_a_duplicate(self):
+        """C'est la situation normale d'une recette qui a été révisée."""
+        assert self.parse([
+            self.link("P-00003418", "Actif"),
+            self.link("P-00003418", "INACTIF"),
+        ]).duplicate_keys == []
+
+    def test_the_status_no_longer_appears_in_the_reported_key(self):
+        """La clé nommée est celle du lien, pas celle de la ligne."""
+        result = self.parse([
+            self.link("P-1", "Actif"), self.link("P-1", "Actif"),
+        ])
+        assert "ACTIF" not in result.duplicate_keys[0]
+
+    def test_a_grid_without_a_scope_checks_every_row(self):
+        """La restriction est propre aux nomenclatures, pas au parseur."""
+        result = parse_rows(get_contract("items"), [
+            {"item_number": "A", "name": "A"},
+            {"item_number": "A", "name": "A bis"},
+        ])
+        assert len(result.duplicate_keys) == 1

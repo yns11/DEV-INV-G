@@ -36,6 +36,7 @@ from ..domain.models import (
     Zone,
     normalise_key,
 )
+from .contracts import is_active_status
 from .parser import RowError
 
 __all__ = [
@@ -169,19 +170,6 @@ def _commonality(value: Any, program: Any) -> ItemCommonality:
     return ItemCommonality.SPECIFIC if program else ItemCommonality.COMMON
 
 
-#: How the ERP spells "in force". Anything else — « Inactif », a blank, a
-#: version marker — is treated as retired, which is the safe direction: a link
-#: wrongly kept out of the explosion shows up as an un-explodable assembly,
-#: while one wrongly kept in silently invents components.
-_ACTIVE_WORDS = frozenset({"actif", "active", "1", "true", "vrai", "o", "oui", "y", "yes"})
-
-
-def _is_active(value: Any) -> bool:
-    if value is None or value == "":
-        return True  # a source without the column is a source of live recipes
-    return str(value).strip().lower() in _ACTIVE_WORDS
-
-
 def map_bom_links(
     campaign_id: str, rows: Iterable[Mapping[str, Any]]
 ) -> tuple[list[BomLink], list[RowError]]:
@@ -208,7 +196,7 @@ def map_bom_links(
                 child_item=row["child_item"],
                 qty_per=row["qty_per"],
                 unit=row.get("unit") or "PCE",
-                active=_is_active(row.get("statut")),
+                active=is_active_status(row.get("statut")),
             )
         except (ValueError, KeyError) as exc:
             errors.append(RowError(index, "qty_per", row.get("qty_per"), str(exc)))

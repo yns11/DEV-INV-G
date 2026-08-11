@@ -19,6 +19,7 @@ validation messages and the downloadable template all follow.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -58,6 +59,26 @@ class FieldSpec:
         }
 
 
+#: How the ERP spells "in force" in a ``statut`` column. Declared here, with the
+#: contracts, because it is what the column *means* — the mappers and the
+#: duplicate check both read it, and two definitions would drift.
+ACTIVE_STATUSES = frozenset(
+    {"actif", "active", "1", "true", "vrai", "o", "oui", "y", "yes"}
+)
+
+
+def is_active_status(value: Any) -> bool:
+    """Whether a ``statut`` cell marks the row as in force.
+
+    An empty cell counts as in force: a source that predates the column is a
+    source of live recipes, and treating its rows as retired would silently
+    empty every bill of materials.
+    """
+    if value is None or value == "":
+        return True
+    return str(value).strip().lower() in ACTIVE_STATUSES
+
+
 @dataclass(frozen=True, slots=True)
 class GridContract:
     """The full contract of one importable/editable grid."""
@@ -68,6 +89,14 @@ class GridContract:
     fields: tuple[FieldSpec, ...]
     #: Columns forming the natural key; duplicates on these are reported.
     natural_key: tuple[str, ...] = ()
+    #: Rows the duplicate check applies to. ``None`` means all of them.
+    #:
+    #: A grid where several rows legitimately share a key needs the check
+    #: narrowed rather than switched off: the bill of materials holds every
+    #: version of a recipe, so the same pair appears once per retired version —
+    #: normal — but twice in force is an anomaly worth naming. Reporting both
+    #: buried the second under fifty of the first.
+    duplicate_scope: Callable[[Mapping[str, Any]], bool] | None = None
     #: Short usage note rendered above the grid.
     hint: str = ""
     examples: tuple[dict[str, Any], ...] = field(default=())
@@ -166,10 +195,13 @@ BOMS = GridContract(
         "Une ligne par couple assemblage/composant. La quantité est celle consommée "
         "par UNE unité de l'assemblage."
     ),
-    # The status is part of the key: the ERP holds several versions of the same
-    # pair, so "same parent, same child" is no longer an anomaly. A genuine
-    # duplicate is the same pair *twice in the same state*.
-    natural_key=("parent_item", "child_item", "statut"),
+    natural_key=("parent_item", "child_item"),
+    # Only the versions in force are checked. The ERP keeps every version of a
+    # recipe, so a retired pair appearing three times is three versions of the
+    # same link, not three mistakes — and reporting them drowned the one case
+    # that matters: the same link declared twice, both in force, where the
+    # explosion would have to pick one quantity and could not.
+    duplicate_scope=lambda row: is_active_status(row.get("statut")),
     fields=(
         FieldSpec("parent_item", "Assemblage (parent)", required=True,
                   aliases=("ref_mere", "parent", "article/ressource"), width=180),

@@ -47,7 +47,50 @@ def discover(directory: Path | None = None) -> list[tuple[str, Path]]:
 
 
 def _checksum(path: Path) -> str:
+    """Fingerprint of a migration, insensitive to line endings.
+
+    The first version hashed the raw bytes, which made the fingerprint depend on
+    how the file happened to be checked out: the same migration deployed from a
+    Windows working copy and from a Linux one produced two different sums, and
+    the runner would have reported the second as "modified after application".
+    Nothing about a CRLF changes what Postgres executes.
+
+    Everything else is still compared byte for byte. A migration that has run
+    must not change, and this function is not the place to be generous about it.
+    """
+    return hashlib.sha256(_normalised(path)).hexdigest()
+
+
+def _normalised(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def _legacy_checksum(path: Path) -> str:
+    """The raw-bytes fingerprint, as recorded before the normalisation.
+
+    Kept so an existing ledger keeps validating: a row written by an older
+    version is recognised, then re-stamped in the new form. Without it, every
+    deployed environment would see all of its migrations as modified at once —
+    a false alarm that would drown the true one this check exists to raise.
+    """
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _legacy_crlf_checksum(path: Path) -> str:
+    """The raw-bytes fingerprint of the same file with Windows line endings.
+
+    A ledger written from a Windows working copy recorded that form; the file in
+    this container has Unix endings. The two describe the same migration.
+    """
+    return hashlib.sha256(_normalised(path).replace(b"\n", b"\r\n")).hexdigest()
+
+
+def _restamp(db: Database, version: str, checksum: str) -> None:
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE schema_migration SET checksum = %s WHERE version = %s",
+            (checksum, version),
+        )
 
 
 def applied_versions(db: Database) -> dict[str, str]:
@@ -74,13 +117,20 @@ def apply_all(db: Database, *, directory: Path | None = None) -> list[str]:
     for version, path in discover(directory):
         checksum = _checksum(path)
         if version in already:
-            if already[version] != checksum:
-                raise RuntimeError(
-                    f"La migration {version} a été modifiée après application "
-                    f"(checksum {already[version][:12]}… ≠ {checksum[:12]}…). "
-                    "Créez une nouvelle migration plutôt que d'éditer celle-ci."
-                )
-            continue
+            recorded = already[version]
+            if recorded == checksum:
+                continue
+            # A row written before the normalisation: the file is unchanged, only
+            # the way it was fingerprinted. Re-stamp it and carry on.
+            if recorded in (_legacy_checksum(path), _legacy_crlf_checksum(path)):
+                _restamp(db, version, checksum)
+                log.info("Migration %s re-empreintée (format hérité)", version)
+                continue
+            raise RuntimeError(
+                f"La migration {version} a été modifiée après application "
+                f"(checksum {recorded[:12]}… ≠ {checksum[:12]}…). "
+                "Créez une nouvelle migration plutôt que d'éditer celle-ci."
+            )
 
         log.info("Applying migration %s", version)
         started = time.monotonic()

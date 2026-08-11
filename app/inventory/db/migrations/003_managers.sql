@@ -16,10 +16,10 @@
 -- `warehouse_manager.warehouse_id` accepte la valeur réservée « AUTRES » :
 -- elle affecte d'un coup tous les entrepôts sans affectation explicite, ce qui
 -- évite d'avoir à réaffecter à la main chaque entrepôt découvert par un nouvel
--- import de stock ERP.
+-- import de stock livre.
 --
 -- Aucune contrainte de clé étrangère vers `warehouse` : le référentiel des
--- entrepôts naît du stock ERP, chargé *après* la préparation, et l'on doit
+-- entrepôts naît du stock livre, chargé *après* la préparation, et l'on doit
 -- pouvoir répartir les entrepôts connus du site avant qu'il n'existe.
 --
 -- Idempotent : rejouable sans effet de bord.

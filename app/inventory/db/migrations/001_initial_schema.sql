@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS location (
 CREATE INDEX IF NOT EXISTS location_status_idx ON location (campaign_id, status);
 
 -- --------------------------------------------------------------------------
--- Book stock snapshot (stock ERP), frozen once per campaign
+-- Book stock snapshot (stock livre), frozen once per campaign
 -- --------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS book_stock (
     id           UUID PRIMARY KEY,

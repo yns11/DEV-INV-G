@@ -116,12 +116,21 @@ def _exclusions(value: Any) -> set[ExclusionScope]:
 def map_items(
     campaign_id: str, rows: Iterable[Mapping[str, Any]], *, source: DataSource
 ) -> tuple[list[Item], list[RowError]]:
-    """Build :class:`Item` objects from parsed ``items`` rows."""
-    items: list[Item] = []
+    """Build :class:`Item` objects from parsed ``items`` rows.
+
+    One object per article number, the first occurrence winning. The silver
+    table computes the programme by cascading up the bill of materials, and that
+    climb can fan out: the same article came back twice, with two programmes.
+    The upsert downstream would have taken whichever row came last — that is,
+    whichever the ERP happened to emit last — so the referential would differ
+    between two loads of the same data. The parser still reports the duplicated
+    keys; what changes is that the outcome is now decided here, and stable.
+    """
+    by_number: dict[str, Item] = {}
     errors: list[RowError] = []
     for index, row in enumerate(rows, start=2):
         try:
-            items.append(
+            item = (
                 Item(
                     campaign_id=campaign_id,
                     item_number=row["item_number"],
@@ -141,7 +150,9 @@ def map_items(
             )
         except (ValueError, KeyError) as exc:
             errors.append(RowError(index, "item_number", row.get("item_number"), str(exc)))
-    return items, errors
+            continue
+        by_number.setdefault(item.item_number, item)
+    return list(by_number.values()), errors
 
 
 def _commonality(value: Any, program: Any) -> ItemCommonality:

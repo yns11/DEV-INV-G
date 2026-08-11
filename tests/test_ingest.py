@@ -420,3 +420,51 @@ class TestSeveralVersionsOfTheSameRecipe:
             {"parent_item": "MEL", "child_item": "VIS", "qty_per": "8"},
         ])
         assert links[0].active
+
+
+class TestAnArticleThatArrivesTwice:
+    """La table silver calcule le programme en remontant les nomenclatures.
+
+    Cette remontée fait éventail : le même article est revenu deux fois, avec
+    deux programmes. En base, l'upsert prenait la ligne arrivée en dernier —
+    c'est-à-dire celle que l'ERP avait émise en dernier — si bien que deux
+    chargements des mêmes données pouvaient donner deux référentiels.
+    """
+
+    def rows(self, *programmes):
+        return [
+            {"item_number": "mass-00046610", "name": "CARTER",
+             "item_type": "COMPONENT", "unit": "PCE", "std_price": "10",
+             "program": p}
+            for p in programmes
+        ]
+
+    def test_only_one_article_survives(self):
+        items, errors = map_items("c", self.rows("M3", "M4"), source=DataSource.ERP_IMPORT)
+        assert not errors
+        assert len(items) == 1
+
+    def test_the_first_occurrence_decides(self):
+        """Déterministe : la lecture ERP est ordonnée, donc reproductible."""
+        first, _ = map_items("c", self.rows("M3", "M4"), source=DataSource.ERP_IMPORT)
+        again, _ = map_items("c", self.rows("M3", "M4"), source=DataSource.ERP_IMPORT)
+        assert first[0].program == again[0].program == "M3"
+
+    def test_distinct_articles_are_untouched(self):
+        items, _ = map_items("c", [
+            {"item_number": "A", "name": "A", "item_type": "COMPONENT",
+             "unit": "PCE", "std_price": "1"},
+            {"item_number": "B", "name": "B", "item_type": "COMPONENT",
+             "unit": "PCE", "std_price": "1"},
+        ], source=DataSource.ERP_IMPORT)
+        assert {i.item_number for i in items} == {"A", "B"}
+
+    def test_a_rejected_row_does_not_take_a_valid_twin_with_it(self):
+        """Une ligne fautive est rejetée seule, pas au titre de sa clé."""
+        items, errors = map_items("c", [
+            {"item_number": "", "name": "SANS RÉFÉRENCE"},
+            {"item_number": "A", "name": "A", "item_type": "COMPONENT",
+             "unit": "PCE", "std_price": "1"},
+        ], source=DataSource.ERP_IMPORT)
+        assert len(errors) == 1
+        assert [i.item_number for i in items] == ["A"]

@@ -115,7 +115,19 @@ print(f"Miroir : {conf['pg_host']} / {conf['pg_database']} / {conf['pg_schema']}
 
 # COMMAND ----------
 
-def read(fqn, columns):
+def read(fqn, columns, unique_on=""):
+    """Les colonnes demandées, celles qui manquent copiées à NULL.
+
+    `unique_on` déduplique à la source. La table des articles a livré deux
+    lignes pour le même `item_id` — le programme y est calculé en cascade, et
+    une remontée de nomenclature peut faire éventail — ce qui violait la clé
+    primaire du miroir en fin de chargement, après tout le travail utile. Cette
+    clé n'est pas du confort : un article y est une ligne, et l'application lit
+    le miroir en supposant exactement cela. On déduplique donc plutôt que de la
+    lever, de façon déterministe pour que deux exécutions donnent le même
+    miroir, et le nombre de lignes écartées est affiché : c'est une anomalie de
+    la source, pas une routine.
+    """
     available = {f.name.lower() for f in spark.table(fqn).schema.fields}
     missing = [c for c in columns if c.lower() not in available]
     if missing:
@@ -126,12 +138,27 @@ def read(fqn, columns):
         for c in columns
     )
     query = f"SELECT {projection} FROM {fqn}"
+    if unique_on and unique_on.lower() in available:
+        query = (
+            f"SELECT {', '.join(columns)} FROM ("
+            f"  SELECT {projection}, ROW_NUMBER() OVER ("
+            f"    PARTITION BY {unique_on} ORDER BY {', '.join(columns)}"
+            f"  ) AS _rang FROM {fqn}"
+            f") WHERE _rang = 1"
+        )
     if limit:
         query += f" LIMIT {limit}"
-    return [tuple(row) for row in spark.sql(query).collect()]
+
+    rows = [tuple(row) for row in spark.sql(query).collect()]
+    if unique_on and not limit:
+        total = spark.table(fqn).count()
+        if total > len(rows):
+            print(f"  {fqn} : {total - len(rows)} ligne(s) en double sur "
+                  f"{unique_on}, une seule conservée par clé")
+    return rows
 
 
-items = read(items_fqn, ITEM_COLUMNS)
+items = read(items_fqn, ITEM_COLUMNS, unique_on="item_id")
 boms = read(bom_fqn, BOM_COLUMNS)
 print(f"\n{len(items)} articles, {len(boms)} liens de nomenclature")
 
@@ -282,10 +309,19 @@ print("Connecté.")
 
 # COMMAND ----------
 
-def swap(conn, table, columns, rows):
+def swap(conn, table, columns, rows, unique_on=""):
+    """`unique_on` filtre une dernière fois à l'insertion.
+
+    La déduplication a déjà eu lieu à la lecture, mais c'est ici que l'échec
+    coûte le plus cher : il survient après le chargement complet, sur la
+    dernière instruction. Deux mots de SQL rendent la violation impossible
+    plutôt que rare.
+    """
     staging = f"{table}_staging"
     names = ", ".join(columns)
     placeholders = ", ".join(["%s"] * len(columns))
+    distinct = f"DISTINCT ON ({unique_on}) " if unique_on else ""
+    order = f" ORDER BY {unique_on}, {names}" if unique_on else ""
 
     conn.execute(
         f"CREATE TEMP TABLE {staging} (LIKE {table} INCLUDING DEFAULTS) "
@@ -300,7 +336,7 @@ def swap(conn, table, columns, rows):
     conn.execute(f"TRUNCATE {table}")
     conn.execute(
         f"INSERT INTO {table} ({names}, synced_at) "
-        f"SELECT {names}, now() FROM {staging}"
+        f"SELECT {distinct}{names}, now() FROM {staging}{order}"
     )
     print(f"  {table} : {len(rows)} lignes")
 
@@ -308,7 +344,7 @@ def swap(conn, table, columns, rows):
 with connection as conn:
     conn.execute(f"SET search_path TO {conf['pg_schema']}, public")
     try:
-        swap(conn, "erp_base_article", ITEM_COLUMNS, items)
+        swap(conn, "erp_base_article", ITEM_COLUMNS, items, unique_on="item_id")
         swap(conn, "erp_bom", BOM_COLUMNS, boms)
     except Exception as exc:
         if "permission denied" in str(exc).lower():

@@ -328,3 +328,63 @@ class TestAuthenticatingWithTheSdkThatIsThere:
 
         with pytest.raises(RuntimeError, match="PGPASSWORD"):
             sync._lakebase_conninfo(Args(pg_host="direct.example"), Nothing())
+
+
+class TestTheFinalInsertCannotViolateTheKey:
+    """L'échec le plus cher du job : la dernière instruction.
+
+    La source a livré deux lignes pour ``mass-00046610`` — le programme y est
+    calculé par une remontée de nomenclature qui fait éventail — et la clé
+    primaire du miroir a sauté après le chargement complet, soit après tout le
+    travail utile. La déduplication a lieu à la lecture ; ce filtre-ci est la
+    ceinture, à l'endroit exact où ça a cassé.
+    """
+
+    class RecordingConn:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, statement: str) -> None:
+            self.statements.append(statement)
+
+        def cursor(self):
+            outer = self
+
+            class Cur:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return False
+
+                def executemany(self, statement, rows):
+                    outer.statements.append(statement)
+
+            return Cur()
+
+    def statements_for(self, **kwargs) -> str:
+        conn = self.RecordingConn()
+        sync._swap(conn, "erp_base_article", ("item_id", "item_name"),
+                   [("A", "x"), ("A", "y")], **kwargs)
+        return "\n".join(conn.statements)
+
+    def test_the_article_load_keeps_one_row_per_key(self):
+        assert "DISTINCT ON (item_id)" in self.statements_for(unique_on="item_id")
+
+    def test_and_orders_so_two_runs_choose_the_same_one(self):
+        """Sans ORDER BY, DISTINCT ON retient une ligne arbitraire."""
+        assert "ORDER BY item_id" in self.statements_for(unique_on="item_id")
+
+    def test_the_bom_load_keeps_every_row(self):
+        """Une nomenclature a plusieurs versions par couple : c'est normal."""
+        assert "DISTINCT" not in self.statements_for()
+
+    def test_the_swap_stays_atomic(self):
+        """TRUNCATE puis INSERT dans la transaction ouverte par l'appelant."""
+        statements = self.statements_for(unique_on="item_id").split("\n")
+        truncate = next(i for i, s in enumerate(statements) if s.startswith("TRUNCATE"))
+        final = next(
+            i for i, s in enumerate(statements)
+            if s.startswith("INSERT INTO erp_base_article (")
+        )
+        assert truncate < final

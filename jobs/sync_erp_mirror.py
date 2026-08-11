@@ -126,7 +126,8 @@ def main() -> int:
     items_fqn = f"{args.catalog}.{args.schema}.{args.items_table}"
     bom_fqn = f"{args.catalog}.{args.schema}.{args.bom_table}"
 
-    items = _read(spark, items_fqn, ITEM_COLUMNS, limit=args.limit)
+    items = _read(spark, items_fqn, ITEM_COLUMNS, limit=args.limit,
+                  unique_on="item_id")
     boms = _read(spark, bom_fqn, BOM_COLUMNS, limit=args.limit)
     log.info("Lu %d articles et %d liens de nomenclature", len(items), len(boms))
 
@@ -147,7 +148,8 @@ def main() -> int:
     with connection as conn:
         conn.execute(f"SET search_path TO {args.pg_schema}, public")
         try:
-            _swap(conn, "erp_base_article", ITEM_COLUMNS, items)
+            _swap(conn, "erp_base_article", ITEM_COLUMNS, items,
+                  unique_on="item_id")
             _swap(conn, "erp_bom", BOM_COLUMNS, boms)
         except Exception as exc:
             raise RuntimeError(_write_advice(exc, args.pg_schema)) from exc
@@ -157,12 +159,29 @@ def main() -> int:
     return 0
 
 
-def _read(spark: Any, fqn: str, columns: tuple[str, ...], *, limit: int) -> list[tuple]:
+def _read(
+    spark: Any,
+    fqn: str,
+    columns: tuple[str, ...],
+    *,
+    limit: int,
+    unique_on: str = "",
+) -> list[tuple]:
     """Les colonnes demandées, celles qui manquent renvoyées à NULL.
 
     Une colonne absente de la table silver ne doit pas arrêter la
     synchronisation : ``statut`` n'existait pas avant que la table porte toutes
     les versions, et l'application traite son absence comme « en vigueur ».
+
+    ``unique_on`` déduplique à la source. La table des articles a livré deux
+    lignes pour le même ``item_id`` — le programme y est calculé en cascade, et
+    une remontée de nomenclature peut faire éventail — ce qui violait la clé
+    primaire du miroir en fin de chargement. Cette clé n'est pas une contrainte
+    de confort : un article y est une ligne, et l'application lit le miroir en
+    supposant exactement cela. On déduplique donc plutôt que de la lever, de
+    façon déterministe pour que deux exécutions donnent le même miroir, et le
+    nombre de lignes écartées est journalisé — c'est une anomalie de la source,
+    pas une routine.
     """
     available = {f.name.lower() for f in spark.table(fqn).schema.fields}
     missing = [c for c in columns if c.lower() not in available]
@@ -173,21 +192,52 @@ def _read(spark: Any, fqn: str, columns: tuple[str, ...], *, limit: int) -> list
         c if c.lower() in available else f"CAST(NULL AS STRING) AS {c}" for c in columns
     )
     query = f"SELECT {projection} FROM {fqn}"
+    if unique_on and unique_on.lower() in available:
+        order = ", ".join(columns)
+        query = (
+            f"SELECT {', '.join(columns)} FROM ("
+            f"  SELECT {projection}, ROW_NUMBER() OVER ("
+            f"    PARTITION BY {unique_on} ORDER BY {order}"
+            f"  ) AS _rang FROM {fqn}"
+            f") WHERE _rang = 1"
+        )
     if limit:
         query += f" LIMIT {int(limit)}"
-    return [tuple(row) for row in spark.sql(query).collect()]
+
+    rows = [tuple(row) for row in spark.sql(query).collect()]
+    if unique_on:
+        total = spark.table(fqn).count()
+        if total > len(rows):
+            log.warning(
+                "%s : %d ligne(s) en double sur %s, une seule conservée par clé",
+                fqn, total - len(rows), unique_on,
+            )
+    return rows
 
 
-def _swap(conn: Any, table: str, columns: tuple[str, ...], rows: list[tuple]) -> None:
+def _swap(
+    conn: Any,
+    table: str,
+    columns: tuple[str, ...],
+    rows: list[tuple],
+    *,
+    unique_on: str = "",
+) -> None:
     """Remplit une table temporaire puis substitue, dans une seule transaction.
 
     Le ``TRUNCATE`` et l'``INSERT`` partagent la transaction ouverte par le
     contexte appelant : à aucun moment l'application ne voit un miroir vide ou
     à moitié rempli.
+
+    ``unique_on`` filtre une dernière fois à l'insertion. La déduplication a
+    déjà eu lieu à la lecture, mais c'est ici que l'échec coûte le plus cher :
+    il survient après le chargement complet, sur la dernière instruction. Deux
+    mots de SQL rendent la violation impossible plutôt que rare.
     """
     staging = f"{table}_staging"
     names = ", ".join(columns)
     placeholders = ", ".join(["%s"] * len(columns))
+    distinct = f"DISTINCT ON ({unique_on}) " if unique_on else ""
 
     conn.execute(f"CREATE TEMP TABLE {staging} (LIKE {table} INCLUDING DEFAULTS) "
                  "ON COMMIT DROP")
@@ -200,7 +250,8 @@ def _swap(conn: Any, table: str, columns: tuple[str, ...], rows: list[tuple]) ->
     conn.execute(f"TRUNCATE {table}")
     conn.execute(
         f"INSERT INTO {table} ({names}, synced_at) "
-        f"SELECT {names}, now() FROM {staging}"
+        f"SELECT {distinct}{names}, now() FROM {staging}"
+        + (f" ORDER BY {unique_on}, {names}" if unique_on else "")
     )
     log.info("%s : %d lignes", table, len(rows))
 

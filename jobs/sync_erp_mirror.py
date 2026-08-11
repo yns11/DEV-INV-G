@@ -148,15 +148,21 @@ def main() -> int:
         boms = _read(spark, bom_fqn, BOM_COLUMNS, limit=args.limit)
         log.info("Lu %d articles et %d liens de nomenclature", len(items), len(boms))
 
-        if not items:
-            # Écraser un référentiel valide par un vide fait disparaître la
-            # possibilité même de lancer une campagne. Un ERP qui ne renvoie
-            # rien est une anomalie, pas une mise à jour.
-            log.error(
-                "La table %s n'a renvoyé aucune ligne — miroir laissé intact",
-                items_fqn,
-            )
-            return 1
+        # Écraser un référentiel valide par un vide fait disparaître la
+        # possibilité même de lancer une campagne. Un ERP qui ne renvoie rien
+        # est une anomalie, pas une mise à jour — et cela vaut pour les deux
+        # tables : le remplacement étant intégral, une lecture vide effacerait
+        # tout aussi silencieusement les nomenclatures.
+        for label, fqn, loaded in (
+            ("articles", items_fqn, items),
+            ("nomenclatures", bom_fqn, boms),
+        ):
+            if not loaded:
+                log.error(
+                    "La table %s (%s) n'a renvoyé aucune ligne — miroir laissé "
+                    "intact", fqn, label,
+                )
+                return 1
 
         try:
             _swap(conn, "erp_base_article", ITEM_COLUMNS, items,
@@ -258,13 +264,18 @@ def _swap(
                 f"INSERT INTO {staging} ({names}) VALUES ({placeholders})",
                 rows[start:start + BATCH],
             )
+    before = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
     conn.execute(f"TRUNCATE {table}")
     conn.execute(
         f"INSERT INTO {table} ({names}, synced_at) "
         f"SELECT {distinct}{names}, now() FROM {staging}"
         + (f" ORDER BY {unique_on}, {names}" if unique_on else "")
     )
-    log.info("%s : %d lignes", table, len(rows))
+    after = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+    # Le remplacement est intégral, pas un ajout : le dire en chiffres évite
+    # d'avoir à le déduire. Une référence retirée de l'ERP doit disparaître du
+    # miroir, et rien à l'écran ne le montrait.
+    log.info("%s : %d ligne(s) supprimée(s), %d écrite(s)", table, before, after)
 
 
 def _lakebase_conninfo(args: Any, client: Any = None) -> str:

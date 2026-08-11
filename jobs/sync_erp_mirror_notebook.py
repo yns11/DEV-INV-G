@@ -5,6 +5,12 @@
 # MAGIC Copie `silver_base_article` et `silver_bom` d'Unity Catalog vers le miroir
 # MAGIC local de l'application, dans sa base Lakebase.
 # MAGIC
+# MAGIC **Remplacement, pas ajout.** Chaque exécution vide entièrement les deux
+# MAGIC tables du miroir puis les réécrit, dans une seule transaction : une
+# MAGIC référence retirée de l'ERP disparaît du miroir, et une exécution
+# MAGIC interrompue laisse la copie précédente intacte. Le compte des lignes
+# MAGIC supprimées et écrites est affiché à chaque table.
+# MAGIC
 # MAGIC **Pourquoi ce miroir.** Lire les tables silver depuis l'application exige
 # MAGIC `USE CATALOG` sur le catalogue de l'ERP pour *son* service principal, et ce
 # MAGIC privilège ne s'accorde que par un propriétaire du catalogue. Ce notebook
@@ -331,11 +337,15 @@ print(f"\n{len(items)} articles, {len(boms)} liens de nomenclature")
 
 # Écraser un référentiel valide par un vide fait disparaître la possibilité même
 # de lancer une campagne. Un ERP qui ne renvoie rien est une anomalie, pas une
-# mise à jour.
-if not items:
-    raise RuntimeError(
-        f"{items_fqn} n'a renvoyé aucune ligne — miroir laissé intact."
-    )
+# mise à jour — et cela vaut pour les deux tables : le remplacement étant
+# intégral, une lecture vide effacerait tout aussi silencieusement les
+# nomenclatures.
+for label, fqn, loaded in (("articles", items_fqn, items),
+                           ("nomenclatures", bom_fqn, boms)):
+    if not loaded:
+        raise RuntimeError(
+            f"{fqn} ({label}) n'a renvoyé aucune ligne — miroir laissé intact."
+        )
 
 # COMMAND ----------
 
@@ -373,12 +383,17 @@ def swap(conn, table, columns, rows, unique_on=""):
                 f"INSERT INTO {staging} ({names}) VALUES ({placeholders})",
                 rows[start:start + BATCH],
             )
+    before = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
     conn.execute(f"TRUNCATE {table}")
     conn.execute(
         f"INSERT INTO {table} ({names}, synced_at) "
         f"SELECT {distinct}{names}, now() FROM {staging}{order}"
     )
-    print(f"  {table} : {len(rows)} lignes")
+    after = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+    # Le remplacement est intégral, pas un ajout : le dire en chiffres évite
+    # d'avoir à le déduire. Une référence retirée de l'ERP doit disparaître du
+    # miroir, et rien ne le montrait.
+    print(f"  {table} : {before} ligne(s) supprimée(s), {after} écrite(s)")
 
 
 with connection as conn:

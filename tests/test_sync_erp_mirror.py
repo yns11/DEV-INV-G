@@ -344,8 +344,16 @@ class TestTheFinalInsertCannotViolateTheKey:
         def __init__(self) -> None:
             self.statements: list[str] = []
 
-        def execute(self, statement: str) -> None:
+        def execute(self, statement: str) -> Any:
             self.statements.append(statement)
+
+            class Count:
+                def fetchone(self):
+                    # Le remplacement compte les lignes avant et après ; la
+                    # valeur importe peu ici, la présence du comptage si.
+                    return (0,)
+
+            return Count()
 
         def cursor(self):
             outer = self
@@ -428,3 +436,25 @@ class TestTheMirrorIsCheckedBeforeAnythingIsRead:
     def test_the_comparison_ignores_case(self):
         conn = self.Catalogue(["PARENT_ITEMID", "STATUT"])
         assert sync._assert_mirror_shape(conn, "erp_bom", ("parent_itemid", "statut")) is None
+
+
+class TestTheMirrorIsReplacedNotAppended:
+    """Chaque synchronisation remplace intégralement les deux tables.
+
+    C'était déjà le cas — TRUNCATE puis INSERT, dans la transaction ouverte par
+    l'appelant — mais rien ne le montrait : le journal annonçait « 1735 lignes »
+    sans dire que 1740 venaient de partir. Une référence retirée de l'ERP
+    disparaît bien du miroir ; encore faut-il pouvoir le constater sans lire le
+    code.
+    """
+
+    def test_the_table_is_emptied_before_being_written(self):
+        conn = TestTheFinalInsertCannotViolateTheKey.RecordingConn()
+        sync._swap(conn, "erp_bom", ("parent_itemid",), [("A",)])
+        assert "TRUNCATE erp_bom" in conn.statements
+
+    def test_the_rows_are_counted_on_both_sides_of_the_replacement(self):
+        conn = TestTheFinalInsertCannotViolateTheKey.RecordingConn()
+        sync._swap(conn, "erp_bom", ("parent_itemid",), [("A",)])
+        counts = [s for s in conn.statements if s.startswith("SELECT count(*)")]
+        assert len(counts) == 2, "avant et après, sinon le chiffre ne veut rien dire"

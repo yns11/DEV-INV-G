@@ -12,9 +12,11 @@
  * with a whole band of its own.
  */
 
+import { useQuery } from '@tanstack/react-query'
 import { NavLink, useLocation } from 'react-router-dom'
+import { api } from '../lib/api'
 import type { Overview } from '../lib/types'
-import { PHASE_GROUPS, SECTIONS, labelOf, type Section } from '../lib/navigation'
+import { PHASE_GROUPS, SECTIONS, labelOf, type Alerts, type Section } from '../lib/navigation'
 import { subSectionPath, VIEW_PARAM } from '../lib/subsection'
 import { useFocusMode } from '../lib/focus'
 import { Icons } from './ui'
@@ -26,6 +28,16 @@ export function CampaignNav({ overview }: { overview: Overview }) {
   const [focus] = useFocusMode()
   const base = `/campagnes/${overview.campaign.id}`
   const current = STATUS_ORDER.indexOf(overview.campaign.status)
+
+  // Sa propre requête : la calculer fait tourner toute la batterie de
+  // contrôles, et l'aperçu est demandé à chaque changement d'écran.
+  const alertQuery = useQuery({
+    queryKey: ['alerts', overview.campaign.id],
+    queryFn: () => api.alerts(overview.campaign.id),
+    staleTime: 45_000,
+    refetchInterval: 120_000,
+  })
+  const alerts: Alerts = alertQuery.data ?? { controls: 0, consolidation: 0 }
 
   return (
     <>
@@ -49,6 +61,7 @@ export function CampaignNav({ overview }: { overview: Overview }) {
                 section={section}
                 base={base}
                 overview={overview}
+                alerts={alerts}
                 focus={focus}
                 open={isOpen(section, location.pathname, base)}
                 view={new URLSearchParams(location.search).get(VIEW_PARAM)}
@@ -70,6 +83,7 @@ function SectionLink({
   section,
   base,
   overview,
+  alerts,
   focus,
   open,
   view,
@@ -77,13 +91,14 @@ function SectionLink({
   section: Section
   base: string
   overview: Overview
+  alerts: Alerts
   focus: boolean
   open: boolean
   view: string | null
 }) {
   const Icon = Icons[section.icon]
   const enabled = section.enabled(overview)
-  const badge = section.badge?.(overview, focus)
+  const badge = section.badge?.(overview, focus, alerts)
   const target = section.to ? `${base}/${section.to}` : base
   const fallback = section.subs?.[0]?.id ?? ''
   const active = view && section.subs?.some((s) => s.id === view) ? view : fallback
@@ -111,7 +126,7 @@ function SectionLink({
           {section.subs.map((sub, index) => {
             const heading =
               sub.group && sub.group !== section.subs?.[index - 1]?.group ? sub.group : null
-            const count = sub.count?.(overview)
+            const count = sub.count?.(overview, alerts)
             return (
               <div key={sub.id}>
                 {heading && <div className="subnav__heading">{heading}</div>}

@@ -6,12 +6,14 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
+from ...domain.controls import group_findings
 from ...errors import ValidationError
 from ...services import GenericService
 from ..deps import CampaignDep, Ctx, generic_service, resolve_perimeter
 from ..schemas import (
     ArbitrationDecisionRequest,
     ReclassifyRequest,
+    SheetLineDeleteRequest,
     SheetLinesRequest,
     SheetTransitionRequest,
     ZoneNegativeRequest,
@@ -112,6 +114,37 @@ def delete_zone(
 ) -> dict[str, bool]:
     service.delete_zone(campaign, zone_id)
     return {"deleted": True}
+
+
+@router.get("/lines", summary="Toutes les lignes de feuilles de la campagne")
+def list_all_lines(
+    campaign: CampaignDep,
+    ctx: Ctx,
+    service: Service,
+    zone_id: Annotated[str | None, Query(alias="zoneId")] = None,
+) -> list[dict[str, Any]]:
+    """Every counting-sheet line, flat, with its zone and pass.
+
+    The zone-by-zone screens answer "what is on this sheet?"; this one answers
+    "where does this reference appear at all?", which is the question when a
+    line was typed into the wrong zone or a whole family has to be added to
+    fifteen sheets at once. Same lines, one list, so a correction is one edit
+    instead of fifteen navigations.
+    """
+    return service.list_all_lines(campaign, zone_id=zone_id)
+
+
+@router.post("/lines/delete", summary="Supprimer un lot de lignes")
+def delete_sheet_lines(
+    campaign: CampaignDep, payload: SheetLineDeleteRequest, service: Service
+) -> dict[str, int]:
+    """Remove a selection of lines in one go.
+
+    Lines arrive by the hundred from an ERP list and are pruned by hand; doing
+    that one confirmation at a time is what makes people give up and count
+    references nobody stocks any more.
+    """
+    return {"deleted": service.delete_sheet_lines(campaign, payload.line_ids)}
 
 
 @router.get("/sheets/{sheet_id}", summary="Contenu d'une feuille de comptage")
@@ -315,6 +348,7 @@ def preview_consolidation(campaign: CampaignDep, service: Service) -> dict[str, 
         "zonesIncluded": result.zones_included,
         "zonesSkipped": result.zones_skipped,
         "findings": [f.model_dump(mode="json") for f in result.findings],
+        "groups": [g.to_summary() for g in group_findings(result.findings)],
         "blocking": len(result.blocking),
     }
 

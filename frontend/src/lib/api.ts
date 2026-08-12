@@ -130,8 +130,18 @@ const qs = (params: Record<string, string | number | boolean | undefined>) => {
  * user saw nothing happen at all. Fetching first means an error can be raised
  * as an ApiError and shown like any other.
  */
-export async function download(path: string): Promise<void> {
-  const response = await fetch(`${BASE}${path}`, { headers: { accept: '*/*' } })
+export async function download(path: string, body?: unknown): Promise<void> {
+  const response = await fetch(`${BASE}${path}`, {
+    // A body means the file is built *from what the client is showing* — a
+    // table export carries its own rows — so it cannot be a GET.
+    ...(body === undefined
+      ? { headers: { accept: '*/*' } }
+      : {
+          method: 'POST',
+          headers: { accept: '*/*', 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+  })
   if (!response.ok) {
     let body: { code?: string; message?: string; details?: Record<string, unknown> } = {}
     try {
@@ -244,6 +254,28 @@ export const api = {
       `/campaigns/${id}/items/exclusions`,
       { method: 'POST', body: JSON.stringify({ itemNumbers, exclusions }) },
     ),
+  setBomActivation: (
+    id: string,
+    links: Array<{ parentItem: string; childItem: string }>,
+    active: boolean,
+  ) =>
+    request<{ updated: number; unchanged: number }>(
+      `/campaigns/${id}/boms/activation`,
+      { method: 'POST', body: JSON.stringify({ links, active }) },
+    ),
+  sheetLines: (id: string, zoneId?: string) =>
+    request<Array<Record<string, unknown>>>(
+      `/campaigns/${id}/generic/lines${qs({ zoneId })}`,
+    ),
+  deleteSheetLines: (id: string, lineIds: string[]) =>
+    request<{ deleted: number }>(`/campaigns/${id}/generic/lines/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ lineIds }),
+    }),
+  alerts: (id: string) =>
+    request<{ controls: number; consolidation: number }>(
+      `/campaigns/${id}/analysis/alerts`,
+    ),
   deleteItem: (id: string, itemNumber: string) =>
     request<{ deleted: boolean }>(
       `/campaigns/${id}/items/${encodeURIComponent(itemNumber)}`,
@@ -268,9 +300,15 @@ export const api = {
       groups: FindingGroup[]
       findings: Finding[]
     }>(`/campaigns/${id}/bom-health`),
-  bookStock: (id: string, params: { limit?: number; offset?: number } = {}) =>
+  bookStock: (
+    id: string,
+    params: { limit?: number; offset?: number; top?: number } = {},
+  ) =>
     request<{
       total: number
+      totalValue: number
+      /** Part de la valeur portée par les lignes retenues, `null` sans filtre. */
+      topShare: number | null
       frozenAt: string | null
       rows: Array<Record<string, unknown>>
     }>(`/campaigns/${id}/book-stock${qs(params)}`),
@@ -477,6 +515,7 @@ export const api = {
       zonesIncluded: string[]
       zonesSkipped: string[]
       findings: Finding[]
+      groups: FindingGroup[]
       blocking: number
     }>(`/campaigns/${id}/generic/consolidation/preview`),
   consolidation: (id: string) =>
@@ -642,8 +681,16 @@ export const downloads = {
     `/campaigns/${id}/reports/journals/${journalId}.xlsx`,
   countingSheet: (id: string, sheetId: string, options: PrintOptions = {}) =>
     `/campaigns/${id}/reports/counting-sheets/${sheetId}.pdf${qs(printQuery(options))}`,
-  allCountingSheets: (id: string, passNo: number, options: PrintOptions = {}) =>
-    `/campaigns/${id}/reports/counting-sheets.pdf${qs({ passNo, ...printQuery(options) })}`,
+  allCountingSheets: (
+    id: string,
+    passNo: number,
+    options: PrintOptions & { zoneIds?: string } = {},
+  ) =>
+    `/campaigns/${id}/reports/counting-sheets.pdf${qs({
+      passNo,
+      zoneIds: options.zoneIds,
+      ...printQuery(options),
+    })}`,
   // Les filtres de l'écran voyagent avec l'export : un fichier qui ne
   // contiendrait pas ce qu'on avait sous les yeux au moment de cliquer serait
   // le genre d'écart qu'on ne découvre qu'en réunion.
@@ -652,4 +699,7 @@ export const downloads = {
     format: 'xlsx' | 'pdf',
     params: { granularity?: string; materialOnly?: boolean } = {},
   ) => `/campaigns/${id}/reports/variances.${format}${qs(params)}`,
+  //ostensiblement générique : chaque grille poste ses propres colonnes et ses
+  // propres lignes, donc un tableau ajouté demain a le bouton sans rien coder.
+  table: (id: string) => `/campaigns/${id}/reports/table.xlsx`,
 }

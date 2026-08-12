@@ -13,6 +13,7 @@ import { useSubSection } from '../lib/subsection'
 import type {
   Arbitration,
   ConsolidationLine,
+  Finding,
   MultiScanReport,
   Overview,
   PrintMode,
@@ -811,6 +812,8 @@ function SheetModal({
             <DataGrid
               columns={columns}
               rows={rows}
+              exportTitle="Arbitrages"
+              campaignId={campaignId}
               getRowId={(row, index) => String(row.id ?? index)}
               editable={editable && Boolean(draft)}
               onRowsChange={setDraft}
@@ -1233,6 +1236,8 @@ function ConsolidationTab({
         </AsyncBoundary>
       </Card>
 
+      <ConsolidationExceptions findings={preview.data?.findings ?? []} />
+
       <AsyncBoundary
         query={current}
         skeleton={<Skeleton height={280} />}
@@ -1247,7 +1252,13 @@ function ConsolidationTab({
           </Card>
         }
       >
-        {(data) => <ConsolidationResult lines={data.lines} onExploreWip={setWipItem} />}
+        {(data) => (
+          <ConsolidationResult
+            campaignId={campaignId}
+            lines={data.lines}
+            onExploreWip={setWipItem}
+          />
+        )}
       </AsyncBoundary>
 
       {wipItem && (
@@ -1257,10 +1268,113 @@ function ConsolidationTab({
   )
 }
 
+/**
+ * Ce que la consolidation a écarté, ou ajouté de sa propre initiative.
+ *
+ * Trois listes que le journal seul ne montre pas, et qui sont précisément
+ * celles qu'on doit pouvoir relire :
+ *
+ *  - un produit fini compté en bord de ligne est une erreur de section, et sa
+ *    quantité n'entre pas dans le stock — il faut aller chercher la feuille ;
+ *  - compté en WIP assemblé il est noté à titre indicatif, ses composants étant
+ *    déjà comptés par l'éclatement ;
+ *  - un article que l'ERP porte et que personne n'a compté est soldé à zéro,
+ *    et cette décision-là mérite d'être vue avant d'être postée.
+ *
+ * Chacune est une pilule plutôt qu'un tableau de plus, parce que les trois
+ * partagent les mêmes colonnes et qu'empilées elles se noieraient.
+ */
+const EXCEPTION_PILLS: Array<{ code: string; label: string; hint: string }> = [
+  {
+    code: 'FINISHED_ON_LINE_SIDE',
+    label: 'Produits finis en bord de ligne',
+    hint: 'Erreur de section : la quantité n’est pas retenue. À corriger sur la feuille.',
+  },
+  {
+    code: 'FINISHED_IN_WIP_OK',
+    label: 'Produits finis en WIP assemblé',
+    hint: 'Noté à titre indicatif : les composants sont déjà comptés par l’éclatement.',
+  },
+  {
+    code: 'UNCOUNTED_WITH_BOOK_STOCK',
+    label: 'Soldés à zéro',
+    hint: 'Stock ERP en GENERIQUE que personne n’a compté : le journal le solde explicitement.',
+  },
+]
+
+function ConsolidationExceptions({ findings }: { findings: Finding[] }) {
+  const [code, setCode] = useState(EXCEPTION_PILLS[0]!.code)
+  const counts = useMemo(() => {
+    const tally: Record<string, number> = {}
+    for (const finding of findings) {
+      tally[finding.code] = (tally[finding.code] ?? 0) + 1
+    }
+    return tally
+  }, [findings])
+
+  const total = EXCEPTION_PILLS.reduce((sum, p) => sum + (counts[p.code] ?? 0), 0)
+  if (total === 0) return null
+
+  const rows = findings.filter((f) => f.code === code)
+  const active = EXCEPTION_PILLS.find((p) => p.code === code)
+
+  return (
+    <Card
+      title="Signalements de la consolidation"
+      message={active?.hint}
+      flush
+    >
+      <div className="chips" style={{ padding: '0 var(--space-4)' }}>
+        {EXCEPTION_PILLS.map((pill) => (
+          <button
+            key={pill.code}
+            className={`chip${code === pill.code ? ' chip--active' : ''}`}
+            title={pill.hint}
+            onClick={() => setCode(pill.code)}
+          >
+            {pill.label} <span className="num">{counts[pill.code] ?? 0}</span>
+          </button>
+        ))}
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState title="Rien à signaler dans cette catégorie" />
+      ) : (
+        <div className="table-wrap" style={{ maxHeight: 320 }}>
+          <table className="data">
+            <thead>
+              <tr>
+                <th style={{ width: 170 }}>Article</th>
+                <th style={{ width: 170 }}>Zone</th>
+                <th style={{ width: 190 }}>Feuille</th>
+                <th className="num" style={{ width: 130 }}>Quantité</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 300).map((finding, index) => (
+                <tr key={`${finding.item_number}-${index}`}>
+                  <td className="mono">{finding.item_number || '—'}</td>
+                  <td>{String(finding.context?.zone ?? '—')}</td>
+                  <td>{String(finding.context?.sheets || '—')}</td>
+                  <td className="num">
+                    {qty(Number(finding.context?.qty ?? finding.context?.bookQty ?? 0))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 function ConsolidationResult({
+  campaignId,
   lines,
   onExploreWip,
 }: {
+  campaignId: string
   lines: ConsolidationLine[]
   onExploreWip: (itemNumber: string) => void
 }) {
@@ -1359,6 +1473,8 @@ function ConsolidationResult({
         <DataGrid
           columns={columns}
           rows={lines}
+          exportTitle="Consolidation"
+          campaignId={campaignId}
           getRowId={(row) => row.item_number}
           searchPlaceholder="Filtrer par article…"
           maxHeight={560}

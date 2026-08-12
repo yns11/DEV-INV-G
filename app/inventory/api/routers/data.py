@@ -17,6 +17,7 @@ from ...ingest import get_contract, list_contracts
 from ...services import ImportService
 from ..deps import CampaignDep, Ctx, import_service
 from ..schemas import (
+    BomActivationRequest,
     BomLinkPatch,
     ItemExclusionsRequest,
     ItemPatch,
@@ -442,9 +443,62 @@ def list_boms(
             l for l in links
             if l.parent_item in stocked or l.child_item in stocked
         ]
+    # Les désignations viennent avec : une nomenclature lue en références seules
+    # oblige à ouvrir le référentiel à chaque ligne pour savoir de quoi on parle.
+    items = ctx.referentials.items_by_number(campaign.id)
     return [
-        {**l.model_dump(mode="json"), "qtyPer": float(l.qty_per)} for l in links
+        {
+            **l.model_dump(mode="json"),
+            "qtyPer": float(l.qty_per),
+            "parentName": items[l.parent_item].name if l.parent_item in items else "",
+            "childName": items[l.child_item].name if l.child_item in items else "",
+        }
+        for l in links
     ]
+
+
+@router.post(
+    "/campaigns/{campaign_id}/boms/activation",
+    summary="Activer ou désactiver un lot de liens",
+)
+def set_bom_activation(
+    campaign: CampaignDep, payload: BomActivationRequest, ctx: Ctx
+) -> dict[str, Any]:
+    """Put a batch of bill-of-materials edges in force, or retire them.
+
+    A version change arrives as a set — a whole assembly's recipe is replaced,
+    not one edge of it — so this is the operation, and doing it link by link is
+    how half a version ends up in force and the other half retired.
+    """
+    ctx.guard(campaign, "boms")
+    wanted = {(l.parent_item, l.child_item) for l in payload.links}
+    known = {(l.parent_item, l.child_item): l for l in ctx.referentials.list_bom_links(campaign.id)}
+    missing = sorted(wanted - set(known))
+    if missing:
+        raise ValidationError(
+            f"{len(missing)} lien(s) introuvables, dont "
+            f"« {missing[0][0]} → {missing[0][1]} ». Rechargez la liste.",
+            missing=[f"{p} → {c}" for p, c in missing[:20]],
+        )
+
+    changed = [
+        known[key].model_copy(update={"active": payload.active})
+        for key in sorted(wanted)
+        if known[key].active != payload.active
+    ]
+    if changed:
+        ctx.referentials.upsert_bom_links(changed, actor=ctx.actor)
+        ctx.record(
+            campaign_id=campaign.id,
+            action="UPDATE",
+            entity_type="bom_link",
+            summary=(
+                f"{len(changed)} lien(s) "
+                f"{'remis en vigueur' if payload.active else 'retirés'}"
+            ),
+            after={"active": str(payload.active)},
+        )
+    return {"updated": len(changed), "unchanged": len(wanted) - len(changed)}
 
 
 @router.patch("/campaigns/{campaign_id}/boms", summary="Modifier un lien de nomenclature")
@@ -537,10 +591,29 @@ def book_stock(
     ctx: Ctx,
     limit: Annotated[int, Query(ge=1, le=20_000)] = 1000,
     offset: Annotated[int, Query(ge=0)] = 0,
+    top: Annotated[int | None, Query(ge=1, le=1000)] = None,
 ) -> dict[str, Any]:
+    """The ERP snapshot, and what the biggest lines of it weigh.
+
+    ``top=25`` keeps the twenty-five most valuable article / warehouse /
+    location triples. Stock value is concentrated — a handful of lines usually
+    carry most of it — and those are the ones worth counting twice and checking
+    first. ``topShare`` says how much of the total they actually represent, so
+    the claim is measured rather than assumed.
+    """
     lines = ctx.book_stock.list(campaign.id)
+    total_value = sum(float(l.value) for l in lines)
+    top_share: float | None = None
+    if top is not None:
+        lines = sorted(lines, key=lambda l: abs(float(l.value)), reverse=True)[:top]
+        kept = sum(float(l.value) for l in lines)
+        top_share = kept / total_value if total_value else 0.0
     return {
         "total": len(lines),
+        "totalValue": total_value,
+        # Part de la valeur portée par les lignes retenues. `null` sans filtre :
+        # « 100 % » se lirait comme un résultat alors que c'est une tautologie.
+        "topShare": top_share,
         "frozenAt": campaign.book_stock_frozen_at.isoformat()
         if campaign.book_stock_frozen_at else None,
         "rows": [

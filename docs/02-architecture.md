@@ -119,7 +119,7 @@ structurellement impossible.
 | Seuils | ✅ | ❌ | ❌ | ❌ |
 | Articles, nomenclatures | ✅ | ❌ | ❌ | ❌ |
 | Emplacements | ✅ | ✅ | ❌ | ❌ |
-| Stock livre | ❌ | ✅ | ❌ | ❌ |
+| Stock ERP | ❌ | ✅ | ❌ | ❌ |
 | Zones GENERIQUE | ✅ | ✅ | ❌ | ❌ |
 | Journaux de comptage | ❌ | ✅ | ❌ | ❌ |
 | Feuilles de comptage | ✅ | ✅ | ❌ | ❌ |
@@ -175,7 +175,7 @@ avec un badge de provenance (`Import ERP`, `Saisie manuelle`, `Extraction IA`,
 
 Trois mécanismes garantissent qu'un chiffre est recalculable à l'identique :
 
-1. **Snapshots figés** : le stock livre, les articles, les nomenclatures et les
+1. **Snapshots figés** : le stock ERP, les articles, les nomenclatures et les
    prix sont copiés dans la campagne, pas référencés.
 2. **Arithmétique décimale** : quantités en `Decimal` à 6 décimales, montants à
    2 décimales, arrondi *half-up*. Aucun flottant binaire dans le domaine.

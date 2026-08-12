@@ -36,6 +36,9 @@ __all__ = [
     "ItemPatch",
     "ItemExclusionsRequest",
     "BomLinkPatch",
+    "BomLinkKey",
+    "BomActivationRequest",
+    "TableExportRequest",
     "ImportRequest",
     "PasteRequest",
     "RowsRequest",
@@ -52,6 +55,7 @@ __all__ = [
     "WarehouseAssignmentRequest",
     "SheetTransitionRequest",
     "SheetLinesRequest",
+    "SheetLineDeleteRequest",
     "ArbitrationDecisionRequest",
     "ReclassifyRequest",
     "AnalysisRequest",
@@ -145,6 +149,38 @@ class BomLinkPatch(ApiModel):
     unit: str | None = None
     #: Whether this version is in force. Only those are exploded.
     active: bool | None = None
+
+
+class BomLinkKey(ApiModel):
+    parent_item: str = Field(alias="parentItem", min_length=1)
+    child_item: str = Field(alias="childItem", min_length=1)
+
+
+class BomActivationRequest(ApiModel):
+    """Put a batch of edges in force, or retire them."""
+
+    links: list[BomLinkKey] = Field(min_length=1, max_length=50_000)
+    active: bool
+
+
+class TableColumn(ApiModel):
+    key: str = Field(min_length=1)
+    label: str = ""
+
+
+class TableExportRequest(ApiModel):
+    """A grid's visible rows, on their way to a spreadsheet.
+
+    The rows come *from the client* rather than being recomputed server-side,
+    and that is the point: what gets exported is what is on screen — the
+    filtering, the sorting and the selection the user actually made. Rebuilding
+    it from the query parameters would work for the two or three grids backed by
+    a single endpoint and quietly lie for all the others.
+    """
+
+    title: str = Field(default="Export", max_length=120)
+    columns: list[TableColumn] = Field(min_length=1, max_length=80)
+    rows: list[dict[str, Any]] = Field(max_length=50_000)
 
 
 class CreateCampaignRequest(ApiModel):
@@ -307,6 +343,12 @@ class SheetLineRow(ApiModel):
 class SheetLinesRequest(ApiModel):
     lines: list[SheetLineRow]
     replace: bool = False
+
+
+class SheetLineDeleteRequest(ApiModel):
+    """A selection of counting-sheet lines to remove."""
+
+    line_ids: list[str] = Field(min_length=1, max_length=20_000, alias="lineIds")
 
 
 class ArbitrationDecisionRequest(ApiModel):

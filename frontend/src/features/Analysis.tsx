@@ -408,6 +408,8 @@ function VariancesTab({
             <DataGrid
               columns={columns}
               rows={rows}
+              exportTitle="Écarts"
+              campaignId={campaignId}
               getRowId={(row, index) => `${row.itemNumber}-${row.warehouseId}-${row.locationId}-${index}`}
               searchPlaceholder="Filtrer par article, désignation, programme…"
               maxHeight={640}
@@ -1024,6 +1026,8 @@ function AdjustmentsTab({
             <DataGrid
               columns={columns}
               rows={rows}
+              exportTitle="Ajustements"
+              campaignId={campaignId}
               getRowId={(row, index) => String(row.id ?? index)}
               searchPlaceholder="Filtrer les mouvements…"
               maxHeight={560}
@@ -1110,6 +1114,8 @@ function ControlsTab({ campaignId }: { campaignId: string }) {
                 { key: 'message', label: 'Constat', width: 520 },
               ]}
               rows={data.findings as unknown as Array<Record<string, unknown>>}
+              exportTitle="Constats de contrôle"
+              campaignId={campaignId}
               getRowId={(_, index) => String(index)}
               searchPlaceholder="Filtrer les constats…"
               maxHeight={600}

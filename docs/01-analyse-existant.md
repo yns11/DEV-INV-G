@@ -15,7 +15,7 @@
                       ┌─────────────────────────────────────────┐
                       │              ERP (D365)                 │
                       └───┬──────────────┬──────────────┬───────┘
-   export stock livre     │              │              │  export mouvements
+   export stock ERP     │              │              │  export mouvements
    ┌──────────────────────┘              │              └──────────────────┐
    ▼                                     │ journaux INVE (scan étiquettes) ▼
 STOCK AVANT                              │ journaux INVV (saisie vrac)   BILAN
@@ -37,7 +37,7 @@ INVENTAIRE.xlsx                          │                            INVENTAI
 
 | Classeur | Rôle | Volume constaté |
 |---|---|---|
-| `STOCK AVANT INVENTAIRE.xlsx` | Snapshot du stock livre ERP | 1 436 lignes, 20 colonnes |
+| `STOCK AVANT INVENTAIRE.xlsx` | Snapshot du stock ERP ERP | 1 436 lignes, 20 colonnes |
 | `Compil GENERIQUE.xlsx` | Compilation des 40 zones de l'emplacement GENERIQUE | 54 onglets, 9 requêtes Power Query, 2 113 liens BOM |
 | `BILAN INVENTAIRE.xlsx` | Analyse des écarts et reporting | 13 onglets, 17,6 Mo, ~104 000 lignes d'ajustements |
 
@@ -106,7 +106,7 @@ L'onglet `TOP ECARTS` — celui qui pilote l'analyse — contient des
 ```
 
 L'onglet `RAPPORT` affiche `#REF!` dans la colonne **« Inventory level (before) — € »**,
-c'est-à-dire la valeur du stock livre : le chiffre d'entrée de tout le rapport.
+c'est-à-dire la valeur du stock ERP : le chiffre d'entrée de tout le rapport.
 Les colonnes concernées sont donc vides ou fausses, et les totaux qui en
 dépendent aussi.
 
@@ -153,7 +153,7 @@ frappe. Le fichier pèse 17,6 Mo.
 | Constat | Conséquence |
 |---|---|
 | Aucune trace de qui a modifié quoi | Un chiffre ne peut pas être défendu six mois plus tard |
-| Aucun gel des données | Le stock livre peut être modifié après le calcul des écarts |
+| Aucun gel des données | Le stock ERP peut être modifié après le calcul des écarts |
 | Aucun contrôle d'accès | N'importe qui peut écraser une formule |
 | Aucune reproductibilité | Le même classeur rouvert donne un résultat différent si un référentiel externe a bougé |
 | Le fichier *est* l'application | Sauvegarder, versionner et corriger sont la même opération |
@@ -220,8 +220,8 @@ intention. Plusieurs choix métier sont justes et ont été **repris tels quels*
 - **Le référentiel de 14 causes standard** (`Standard assignable causes`) :
   repris intégralement comme référentiel de site.
 - **La séparation snapshot / comptages / ajustements** : le raisonnement
-  « stock livre + écart + ajustements = stock après » est correct.
-- **Le forçage au stock livre** pour les emplacements inventoriés avant le
+  « stock ERP + écart + ajustements = stock après » est correct.
+- **Le forçage au stock ERP** pour les emplacements inventoriés avant le
   snapshot : pratique légitime, désormais explicite et tracée plutôt qu'implicite.
 - **L'analyse de contribution** (`FORT CONTRIB STK`, `CONTRIB ECARTS`) :
   l'intuition Pareto était juste ; elle est maintenant calculée et non saisie.

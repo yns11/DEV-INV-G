@@ -48,6 +48,7 @@ from .variance import is_material
 __all__ = [
     "CONTROL_LABELS",
     "group_findings",
+    "check_items",
     "check_referentials",
     "check_book_stock",
     "check_journals",
@@ -131,6 +132,11 @@ def check_referentials(
     for item in items.values():
         if not item.is_assembly or item.excluded_everywhere:
             continue
+        # « Ignoré en nomenclature » est une décision, pas un oubli : l'article
+        # ne sera jamais éclaté, donc lui réclamer une structure revient à
+        # signaler comme manquant ce que quelqu'un a explicitement retiré.
+        if item.excluded_from_bom:
+            continue
         if index.has_bom(item.item_number):
             continue
         kind = "produit fini" if item.item_type is ItemType.FINISHED else "semi-fini"
@@ -163,7 +169,19 @@ def check_referentials(
             )
         )
 
-    # -- valuation gaps --------------------------------------------------------
+    return findings
+
+
+def check_items(*, items: Mapping[str, Item]) -> list[ControlFinding]:
+    """Defects of the article referential itself.
+
+    Kept apart from :func:`check_referentials`, which answers "can a bill of
+    materials be exploded?". A missing standard price has nothing to do with a
+    structure — it was showing up under « santé des nomenclatures », where
+    whoever is repairing a BOM cannot act on it and whoever owns prices never
+    looks.
+    """
+    findings: list[ControlFinding] = []
     unpriced = [
         i.item_number
         for i in items.values()
@@ -664,10 +682,12 @@ def run_all_controls(
 #: deliberately not a second copy of the message: the message is the detail line
 #: shown underneath.
 CONTROL_LABELS: dict[str, str] = {
+    "ARBITRATION_PENDING": "Écarts entre les deux comptages, en attente d'arbitrage",
     "ASSEMBLY_BOM_RETIRED": "Assemblages dont toutes les versions de nomenclature sont inactives",
     "ASSEMBLY_WITHOUT_BOM": "Assemblages sans aucune nomenclature",
     "BOM_CHILD_UNKNOWN": "Composants de nomenclature absents du référentiel articles",
     "BOM_CYCLE": "Cycles de nomenclature",
+    "BOM_DEPTH_TRUNCATED": "Éclatements arrêtés à la profondeur maximale",
     "BOM_PARENT_UNKNOWN": "Assemblages de nomenclature absents du référentiel articles",
     "BOOK_STOCK_DUPLICATE_KEY": "Doublons dans le stock ERP",
     "BOOK_STOCK_EMPTY": "Stock ERP absent",
@@ -679,13 +699,21 @@ CONTROL_LABELS: dict[str, str] = {
     "DUPLICATE_COUNT_LINE": "Références saisies plusieurs fois dans un journal",
     "DUPLICATE_JOURNAL": "Emplacements portant plusieurs journaux",
     "EXCLUDED_ITEM_COUNTED": "Articles exclus pourtant comptés",
+    "FINISHED_IN_WIP_OK": "Produits finis comptés en WIP assemblé (indicatif)",
+    "FINISHED_ON_LINE_SIDE": "Produits finis comptés en bord de ligne",
     "ITEMS_WITHOUT_PRICE": "Articles sans prix standard",
     "JOURNAL_ON_DISABLED_LOCATION": "Journaux ouverts sur un emplacement désactivé",
     "JOURNAL_UNKNOWN_ITEM": "Comptages sur des articles hors référentiel",
     "MATERIAL_VARIANCE": "Écarts au-delà des seuils",
     "NEGATIVE_COUNT": "Quantités comptées négatives",
+    "NET_ZERO_CONSOLIDATION": "Sections qui se compensent exactement",
     "POSTED_JOURNAL_EMPTY": "Journaux postés sans aucune ligne",
+    "SINGLE_PASS_ONLY": "Références comptées par une seule équipe",
+    "UNCOUNTED_WITH_BOOK_STOCK": "Articles en stock ERP jamais comptés en GENERIQUE",
     "UNIT_MISMATCH": "Unités incohérentes avec le référentiel",
+    "UNKNOWN_ITEM": "Comptages GENERIQUE hors référentiel articles",
+    "WIP_OK_NOT_ASSEMBLY": "WIP assemblé déclaré sur un article qui n'en est pas un",
+    "WIP_WITHOUT_BOM": "WIP comptés sans nomenclature exploitable",
     "ZONE_MISSING_SHEET": "Zones sans feuille de comptage",
     "ZONE_WITHOUT_LINES": "Zones sans ligne à compter",
 }

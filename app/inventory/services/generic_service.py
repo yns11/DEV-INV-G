@@ -36,6 +36,7 @@ from ..domain.models import (
     Zone,
 )
 from ..domain.printing import available_print_modes
+from ..domain.quantities import ZERO
 from ..domain.workflow import assert_sheet_transition, derive_zone_status, passes_for
 from ..errors import ConflictError, NotFoundError, ValidationError
 from .context import ENGINE_VERSION, ServiceContext, utcnow
@@ -431,9 +432,18 @@ class GenericService:
         *,
         replace: bool = False,
     ) -> int:
-        """Create or update the lines of a sheet from grid edits or a paste."""
+        """Create or update the lines of a sheet from grid edits or a paste.
+
+        Two different permissions, because they are two different acts. *Which
+        articles are on the sheet* is preparation work — pruning a list, fixing a
+        section, adding the reference somebody forgot — and it stays open as long
+        as the sheets themselves are editable. *What quantity was found* is the
+        count itself, and it only opens when counting does. Guarding both under
+        the stricter of the two is what made the preparation screen refuse to let
+        anyone touch a list they were still building.
+        """
         ctx = self.ctx
-        ctx.guard(campaign, "count_entries")
+        ctx.guard(campaign, "count_sheets")
         sheet = ctx.sheets.get_sheet(sheet_id)
         if sheet.campaign_id != campaign.id:
             raise NotFoundError("Feuille introuvable dans cette campagne.")
@@ -445,6 +455,9 @@ class GenericService:
         allow_negative = bool(zone and zone.allow_negative)
 
         existing = {l.id: l for l in ctx.sheets.list_sheet_lines(sheet_id)}
+        if _touches_quantities(rows, existing):
+            ctx.guard(campaign, "count_entries")
+
         lines: list[CountSheetLine] = []
         for order, row in enumerate(rows):
             line_id = str(row.get("id") or "") or new_id()
@@ -498,9 +511,74 @@ class GenericService:
         )
         return written
 
+    def list_all_lines(
+        self, campaign: Campaign, *, zone_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Every counting-sheet line of the campaign, flat.
+
+        Carries the zone and the pass on each line: without them the list is a
+        pile of references with no way back to the paper, and correcting one
+        means guessing which sheet it came from.
+        """
+        ctx = self.ctx
+        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
+        sheets = {
+            s.id: s
+            for s in ctx.sheets.list_sheets(campaign.id)
+            if zone_id is None or s.zone_id == zone_id
+        }
+        items = ctx.referentials.items_by_number(campaign.id)
+        out: list[dict[str, Any]] = []
+        for sheet_id, lines in ctx.sheets.lines_by_sheet(campaign.id).items():
+            sheet = sheets.get(sheet_id)
+            if sheet is None:
+                continue
+            zone = zones.get(sheet.zone_id)
+            for line in lines:
+                out.append({
+                    **line.model_dump(mode="json"),
+                    "qty": float(line.qty) if line.is_counted else None,
+                    "isCounted": line.is_counted,
+                    "zoneId": sheet.zone_id,
+                    "zoneCode": zone.code if zone else "",
+                    "zoneLabel": zone.label if zone else "",
+                    "passNo": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
+                    "sheetStatus": str(sheet.status),
+                    "name": items[line.item_number].name
+                    if line.item_number in items else "",
+                    "known": line.item_number in items,
+                })
+        out.sort(key=lambda r: (r["zoneCode"], r["passNo"], r["display_order"]))
+        return out
+
+    def delete_sheet_lines(
+        self, campaign: Campaign, line_ids: Sequence[str]
+    ) -> int:
+        """Remove a selection of lines.
+
+        Structural, so it follows the sheets' own permission rather than the
+        counting one: pruning a list of references is preparation work, and it
+        is precisely what one does before printing.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "count_sheets")
+        unique = list(dict.fromkeys(i for i in line_ids if i))
+        if not unique:
+            raise ValidationError("Aucune ligne transmise.")
+        for line_id in unique:
+            ctx.sheets.delete_sheet_line(line_id, actor=ctx.actor)
+        ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.DELETE,
+            entity_type="count_sheet_line",
+            summary=f"Suppression de {len(unique)} ligne(s) de feuille",
+            after={"lineIds": ", ".join(unique[:50])},
+        )
+        return len(unique)
+
     def delete_sheet_line(self, campaign: Campaign, line_id: str) -> None:
         ctx = self.ctx
-        ctx.guard(campaign, "count_entries")
+        ctx.guard(campaign, "count_sheets")
         ctx.sheets.delete_sheet_line(line_id, actor=ctx.actor)
         ctx.record(
             campaign_id=campaign.id,
@@ -925,11 +1003,28 @@ class GenericService:
             ],
             items=items,
             bom=bom,
+            book_stock=self._generic_book_stock(campaign),
             arbitration_tolerance=campaign.config.arbitration_tolerance,
             require_done_zones=not preview,
             provisional=provisional,
         )
         return consolidate_generic(payload)
+
+    def _generic_book_stock(self, campaign: Campaign) -> dict[str, Decimal]:
+        """What the ERP says is in GENERIQUE, per article.
+
+        Only that location: the journal being built covers it and nothing else,
+        so stock sitting in a picking bin elsewhere is not something this count
+        can settle at zero.
+        """
+        warehouse = campaign.config.generic_warehouse
+        location = campaign.config.generic_location
+        totals: dict[str, Decimal] = {}
+        for line in self.ctx.book_stock.list(campaign.id):
+            if line.warehouse_id != warehouse or line.location_id != location:
+                continue
+            totals[line.item_number] = totals.get(line.item_number, ZERO) + line.qty
+        return totals
 
     def consolidate_and_save(self, campaign: Campaign) -> dict[str, Any]:
         """Consolidate, persist the run, and post it to the GENERIQUE journal.
@@ -970,9 +1065,18 @@ class GenericService:
             (j for j in ctx.journals.list(campaign.id) if j.key == generic_key), None
         )
         if journal is None:
-            ctx.journals.ensure_journals(campaign.id, [generic_key], actor=ctx.actor)
-            journal = next(
-                j for j in ctx.journals.list(campaign.id) if j.key == generic_key
+            # La consolidation ne crée plus ce journal. Un journal apparu tout
+            # seul dans la liste est un journal dont personne n'a décidé le
+            # périmètre ni le gestionnaire, et qui se retrouve à compter pour la
+            # couverture alors qu'il n'a jamais été ouvert. Il vient de l'import
+            # ERP, comme les autres, ou d'une création explicite.
+            raise ValidationError(
+                f"Aucun journal de comptage n'existe pour {generic_key.warehouse_id} / "
+                f"{generic_key.location_id}. Créez-le depuis « Journaux de "
+                "comptage » — import ERP ou création manuelle — puis relancez la "
+                "consolidation.",
+                warehouseId=generic_key.warehouse_id,
+                locationId=generic_key.location_id,
             )
 
         journal_lines = [
@@ -1218,3 +1322,22 @@ def _section(value: Any) -> CountSection:
             section=str(value),
         )
     return resolved
+
+
+def _touches_quantities(
+    rows: Sequence[dict[str, Any]], existing: dict[str, CountSheetLine]
+) -> bool:
+    """Whether this write changes any counted quantity.
+
+    Only a *change* counts. A preparation screen re-saving a sheet sends back the
+    quantities it was given, and treating that echo as a count would freeze the
+    list the moment one line happened to carry a figure.
+    """
+    for row in rows:
+        qty = row.get("qty")
+        previous = existing.get(str(row.get("id") or ""))
+        before = previous.qty_manual if previous else None
+        after = None if qty in (None, "") else Decimal(str(qty))
+        if after != before:
+            return True
+    return False

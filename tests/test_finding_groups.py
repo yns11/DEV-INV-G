@@ -80,32 +80,39 @@ class TestSeverityOfAGroup:
         assert groups[0].severity is ControlSeverity.BLOCKER
 
 
+def emitted_codes() -> set[str]:
+    """Every code the application can actually produce.
+
+    Two modules emit findings — le moteur de contrôle et la consolidation — et
+    les deux remontent au même écran. Ne lire que le premier laisserait la
+    moitié des constats s'afficher sous leur code brut.
+    """
+    import re
+    from pathlib import Path
+
+    import inventory.domain.consolidation as consolidation
+    import inventory.domain.controls as controls
+
+    codes: set[str] = set()
+    for module in (controls, consolidation):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        codes |= set(re.findall(r'code="([A-Z_0-9]+)"', source))
+    return codes
+
+
 class TestTheLabels:
     def test_every_control_the_engine_can_emit_has_a_french_title(self):
         """Un code brut à l'écran, c'est le contrôle qui n'explique rien."""
-        import re
-        from pathlib import Path
-
-        import inventory.domain.controls as controls
-
-        source = Path(controls.__file__).read_text(encoding="utf-8")
-        emitted = set(re.findall(r'code="([A-Z_0-9]+)"', source))
-        assert emitted, "aucun code trouvé — la lecture du module a échoué"
+        emitted = emitted_codes()
+        assert emitted, "aucun code trouvé — la lecture des modules a échoué"
         assert emitted <= set(CONTROL_LABELS), (
             "contrôles sans libellé : "
             f"{sorted(emitted - set(CONTROL_LABELS))}"
         )
 
     def test_no_label_is_left_behind_for_a_control_that_no_longer_exists(self):
-        import re
-        from pathlib import Path
-
-        import inventory.domain.controls as controls
-
-        source = Path(controls.__file__).read_text(encoding="utf-8")
-        emitted = set(re.findall(r'code="([A-Z_0-9]+)"', source))
-        assert set(CONTROL_LABELS) <= emitted, (
-            f"libellés orphelins : {sorted(set(CONTROL_LABELS) - emitted)}"
+        assert set(CONTROL_LABELS) <= emitted_codes(), (
+            f"libellés orphelins : {sorted(set(CONTROL_LABELS) - emitted_codes())}"
         )
 
     def test_an_unknown_code_falls_back_to_itself_rather_than_disappearing(self):

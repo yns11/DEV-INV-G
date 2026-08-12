@@ -24,7 +24,7 @@ L'en-tête porte, sur tous les écrans, le carrousel d'indicateurs, l'interrupte
 ```
 PRÉPARATION ──────► COMPTAGE ──────► ANALYSE & AJUSTEMENTS ──────► CLÔTURE
      │                  │                      │                      │
- référentiels     stock livre gelé       journaux gelés          tout gelé
+ référentiels     stock ERP gelé       journaux gelés          tout gelé
  seuils           journaux + feuilles    ajustements
  zones            consolidation          causes
 ```
@@ -62,7 +62,7 @@ de transition liste précisément ce qui sera gelé et ce qui bloque encore.
   stable d'une campagne à l'autre, et retaper cinq noms et quarante affectations
   chaque trimestre est exactement le travail que cette application supprime.
 
-**Rien de mesuré n'est copié** : ni stock livre, ni comptage, ni journal, ni
+**Rien de mesuré n'est copié** : ni stock ERP, ni comptage, ni journal, ni
 ajustement. Une campagne est une photographie d'un instant ; copier ses mesures
 n'aurait aucun sens.
 
@@ -196,7 +196,7 @@ qui demande, sans que le navigateur n'ait jamais à nommer un gestionnaire.
 - *Affectation journaux* rattache les entrepôts. Un journal de comptage suit son
   entrepôt. La ligne **AUTRES** n'est pas un entrepôt : elle rattache d'un coup
   tous ceux sans affectation explicite, pour qu'un entrepôt découvert par un
-  nouvel import de stock livre ne tombe pas hors de tout périmètre.
+  nouvel import de stock ERP ne tombe pas hors de tout périmètre.
 - *Affectation zones* rattache les feuilles GENERIQUE, sur une sélection.
 
 > **Un périmètre n'est pas une habilitation.** L'interrupteur « Mon périmètre »
@@ -247,9 +247,9 @@ articles, nomenclatures, seuils. Les zones GENERIQUE, elles, restent créables.
 
 ## 2. Comptage — le jour J
 
-### 2.1 Charger le stock livre
+### 2.1 Charger le stock ERP
 
-**Référentiels & seuils → Stock livre.**
+**Référentiels & seuils → Stock ERP.**
 
 Chargez l'export ERP « Stock physique par emplacement ». Ce chargement fait
 **trois choses en une transaction** :
@@ -259,7 +259,7 @@ Chargez l'export ERP « Stock physique par emplacement ». Ce chargement fait
    en conservant les décisions d'activation déjà prises ;
 3. il crée **un journal de comptage par emplacement actif**.
 
-Puis **Geler le stock livre**. À partir de là, tout écart est reproductible.
+Puis **Geler le stock ERP**. À partir de là, tout écart est reproductible.
 
 ### 2.2 Ne voir que son périmètre
 
@@ -299,7 +299,7 @@ Chargez l'export OData des lignes de journaux. À chaque rechargement :
 - les **corrections manuelles sont préservées** — c'est tout l'intérêt de garder
   les deux colonnes séparées ;
 - un journal présent dans le fichier mais absent du référentiel est **créé
-  automatiquement** (cas typique : stock livre à zéro, stock compté positif) ;
+  automatiquement** (cas typique : stock ERP à zéro, stock compté positif) ;
 - une ligne portant sur un emplacement **désactivé** est ignorée avec un
   avertissement explicite, jamais silencieusement ;
 - un journal dont toutes les lignes sont marquées postées passe en **Posté**.
@@ -318,14 +318,14 @@ Le bandeau de campagne affiche deux jauges :
 Ouvrez un journal, saisissez la quantité dans la colonne **Corrigé**. La valeur
 importée reste visible à côté, et le badge de source passe à *Saisie manuelle*.
 
-L'écran affiche aussi les **articles du stock livre que personne n'a comptés**
+L'écran affiche aussi les **articles du stock ERP que personne n'a comptés**
 sur cet emplacement, avec leur valeur : ce sont eux qui seront soldés à zéro à
 la clôture. Ils n'apparaissaient auparavant que trois semaines plus tard.
 
 ### 2.7 Emplacements inventoriés avant le snapshot
 
-Sélectionnez les journaux concernés → **Forcer au stock livre**. Leur quantité
-comptée devient celle du stock livre : l'écart est nul **par construction**, et
+Sélectionnez les journaux concernés → **Forcer au stock ERP**. Leur quantité
+comptée devient celle du stock ERP : l'écart est nul **par construction**, et
 non par accident. Les lignes sont matérialisées et tracées.
 
 ### 2.8 Compter les zones GENERIQUE
@@ -509,7 +509,7 @@ diffusion.
 ### 3.7 Exporter
 
 **Exporter le dossier** produit un classeur complet : indicateurs, écarts par
-article et par emplacement, stock livre, journaux, consolidation GENERIQUE,
+article et par emplacement, stock ERP, journaux, consolidation GENERIQUE,
 décomposition WIP, ajustements, causes, contrôles et journal d'audit.
 
 Le classeur porte un onglet **Provenance** : campagne, dates de gel, version du

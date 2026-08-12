@@ -39,12 +39,25 @@ export const PHASE_GROUPS: Array<{
   { id: 'ANALYSIS', label: 'Analyse', status: 'ANALYSIS' },
 ]
 
+/**
+ * Compteurs d'alertes, chargés à part.
+ *
+ * Pas dans l'aperçu : les calculer fait tourner toute la batterie de contrôles,
+ * et l'aperçu est demandé à chaque écran. La barre latérale les récupère de son
+ * côté, et affiche zéro tant qu'ils n'arrivent pas — un badge absent se lit
+ * « rien à signaler », ce qui est le bon défaut.
+ */
+export interface Alerts {
+  controls: number
+  consolidation: number
+}
+
 export interface SubSection {
   id: string
   label: string
   /** Optional heading that groups consecutive sub-sections under it. */
   group?: string
-  count?: (overview: Overview) => number | null
+  count?: (overview: Overview, alerts: Alerts) => number | null
 }
 
 export interface Section {
@@ -64,7 +77,7 @@ export interface Section {
   enabled: (overview: Overview) => boolean
   /** Why it is not available yet — shown instead of a silent dead link. */
   locked?: (overview: Overview) => string
-  badge?: (overview: Overview, focus: boolean) => number | null
+  badge?: (overview: Overview, focus: boolean, alerts: Alerts) => number | null
   subs?: SubSection[]
 }
 
@@ -181,7 +194,13 @@ export const SECTIONS: Section[] = [
         label: 'Arbitrages',
         count: (o) => o.genericProgress.pendingArbitrations || null,
       },
-      { id: 'consolidation', label: 'Consolidation' },
+      // Le nombre de constats *distincts* : « 400 » ne dirait rien d'autre
+      // que « c'est grand ».
+      {
+        id: 'consolidation',
+        label: 'Consolidation',
+        count: (_o, alerts) => alerts.consolidation || null,
+      },
     ],
   },
   {
@@ -210,6 +229,7 @@ export const SECTIONS: Section[] = [
     lede: 'Ce qui empêcherait de clôturer, et pourquoi.',
     enabled: (o) => o.campaign.book_stock_frozen_at !== null,
     locked: () => 'Disponible une fois le stock ERP gelé.',
+    badge: (_o, _focus, alerts) => alerts.controls || null,
   },
   {
     to: 'ecarts',

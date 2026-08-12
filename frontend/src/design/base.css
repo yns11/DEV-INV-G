@@ -1275,6 +1275,24 @@ table.data td.editable input.num {
   padding: 2px;
 }
 
+/* Every board on the same grid.
+   `auto-fit` sizes each board's cards to fill the row, so a board of four gets
+   wider cards than a board of five: switching slides then changes the shape of
+   the strip, and it reads as the page moving rather than the numbers changing.
+   Pinned to the widest board, the columns line up and a shorter board just ends
+   before the last one. */
+.carousel--fixed-columns .grid--kpi {
+  grid-template-columns: repeat(var(--kpi-columns, 4), minmax(0, 1fr));
+}
+
+/* Below that width five columns of figures stop being readable, and lining
+   them up matters less than being able to read one. */
+@media (max-width: 1180px) {
+  .carousel--fixed-columns .grid--kpi {
+    grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+  }
+}
+
 /* A hidden slide must not be reachable by keyboard or read aloud: a tab stop
    that scrolls to something invisible is worse than no tab stop. */
 .carousel__slide[aria-hidden='true'] {

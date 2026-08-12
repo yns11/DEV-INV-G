@@ -118,11 +118,12 @@ class TestSections:
         }
 
     def test_wip_ok_counted_as_the_assembly_itself(self):
-        result = run(zone_counts(rows_1=[("MEL", CountSection.WIP_OK, 2)]))
-        line_mel = next(l for l in result.lines if l.item_number == "MEL")
-        assert line_mel.qty == Decimal("2.000000")
-        assert line_mel.qty_wip_ok == Decimal("2.000000")
-        assert line_mel.qty_wip_exploded == 0
+        """Vrai pour un semi-fini : il est déclaré, on le compte tel quel."""
+        result = run(zone_counts(rows_1=[("STATOR", CountSection.WIP_OK, 2)]))
+        stator = next(l for l in result.lines if l.item_number == "STATOR")
+        assert stator.qty == Decimal("2.000000")
+        assert stator.qty_wip_ok == Decimal("2.000000")
+        assert stator.qty_wip_exploded == 0
 
     def test_wip_exploded_through_the_bom(self):
         result = run(zone_counts(rows_1=[("MEL", CountSection.WIP, 3)]))
@@ -149,6 +150,142 @@ class TestSections:
     def test_wip_ok_on_a_component_is_flagged(self):
         result = run(zone_counts(rows_1=[("VIS", CountSection.WIP_OK, 5)]))
         assert any(f.code == "WIP_OK_NOT_ASSEMBLY" for f in result.findings)
+
+
+class TestAFinishedProductOnlyEntersThroughWip:
+    """Un produit fini n'entre dans GENERIQUE qu'éclaté.
+
+    Ses composants sont comptés par l'éclatement ; le créditer *aussi* en bord
+    de ligne ou en WIP assemblé compterait deux fois la même matière — et un MEL
+    vaut mille euros là où ses vis en valent cinquante centimes, donc l'erreur
+    ne passe pas inaperçue longtemps, mais elle passe.
+    """
+
+    def test_on_the_line_side_it_is_not_retained(self):
+        result = run(zone_counts(rows_1=[("MEL", CountSection.LINE_SIDE, 2)]))
+        assert result.lines == []
+
+    def test_on_the_line_side_it_is_reported_with_sheet_and_quantity(self):
+        """Le constat doit permettre d'aller chercher la feuille dans la pile."""
+        result = run(zone_counts(code="FI ASSY", rows_1=[("MEL", CountSection.LINE_SIDE, 2)]))
+        (finding,) = [f for f in result.findings if f.code == "FINISHED_ON_LINE_SIDE"]
+        assert finding.item_number == "MEL"
+        assert "FI ASSY" in finding.message
+        assert "comptage n°1" in finding.message
+        assert "2" in finding.message
+        assert finding.severity is ControlSeverity.WARNING
+
+    def test_in_wip_ok_it_is_indicative_only(self):
+        result = run(zone_counts(rows_1=[("MEL", CountSection.WIP_OK, 2)]))
+        assert result.lines == []
+        (finding,) = [f for f in result.findings if f.code == "FINISHED_IN_WIP_OK"]
+        assert finding.severity is ControlSeverity.INFO
+
+    def test_in_wip_it_is_exploded_as_before(self):
+        result = run(zone_counts(rows_1=[("MEL", CountSection.WIP, 3)]))
+        assert {l.item_number for l in result.lines} == {"STATOR", "VIS"}
+        assert not [f for f in result.findings if f.code.startswith("FINISHED_")]
+
+    def test_a_semi_finished_is_untouched_by_the_rule(self):
+        """La règle vise les produits finis, pas tout ce qui s'assemble."""
+        result = run(zone_counts(rows_1=[("STATOR", CountSection.LINE_SIDE, 4)]))
+        assert {l.item_number: l.qty for l in result.lines} == {
+            "STATOR": Decimal("4.000000")
+        }
+
+    def test_the_rest_of_the_sheet_still_counts(self):
+        result = run(
+            zone_counts(
+                rows_1=[
+                    ("MEL", CountSection.LINE_SIDE, 2),
+                    ("VIS", CountSection.LINE_SIDE, 100),
+                ]
+            )
+        )
+        assert {l.item_number: l.qty for l in result.lines} == {
+            "VIS": Decimal("100.000000")
+        }
+
+
+class TestClosingTheJournalWithExplicitZeros:
+    """Dans l'ERP, une ligne absente veut dire « pas inventorié ».
+
+    Seule une ligne à zéro dit « on a cherché, il n'y avait rien ». Sans elles,
+    le stock d'une référence que personne n'a trouvée resterait debout après un
+    inventaire censé l'avoir soldée.
+    """
+
+    def stock(self, **quantities):
+        return {k: Decimal(str(v)) for k, v in quantities.items()}
+
+    def run_with(self, *zones, stock):
+        return consolidate_generic(
+            ConsolidationInput(
+                campaign_id="c", zones=list(zones), items=ITEMS, bom=BOM,
+                book_stock=stock,
+            )
+        )
+
+    def test_an_article_nobody_counted_is_closed_at_zero(self):
+        result = self.run_with(
+            zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)]),
+            stock=self.stock(VIS=100, COLLE=12),
+        )
+        by_item = {l.item_number: l.qty for l in result.lines}
+        assert by_item["COLLE"] == Decimal("0")
+
+    def test_the_zero_lines_come_last(self):
+        """« À la fin du journal » : elles ferment la liste, elles ne s'y mêlent pas."""
+        result = self.run_with(
+            zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)]),
+            stock=self.stock(VIS=100, COLLE=12),
+        )
+        assert [l.item_number for l in result.lines] == ["VIS", "COLLE"]
+
+    def test_an_article_counted_at_zero_is_closed_too(self):
+        """Compté à zéro ou pas compté du tout : le journal doit dire zéro."""
+        result = self.run_with(
+            zone_counts(rows_1=[("COLLE", CountSection.LINE_SIDE, 0)]),
+            stock=self.stock(COLLE=12),
+        )
+        assert {l.item_number: l.qty for l in result.lines} == {"COLLE": Decimal("0")}
+
+    def test_an_article_without_erp_stock_is_left_alone(self):
+        """Rien à solder : la ligne n'apprendrait rien à personne."""
+        result = self.run_with(
+            zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)]),
+            stock=self.stock(VIS=100, COLLE=0),
+        )
+        assert [l.item_number for l in result.lines] == ["VIS"]
+
+    def test_a_finished_product_is_never_closed_at_zero(self):
+        """Il n'est jamais compté comme lui-même : un zéro affirmerait un
+        constat que le comptage n'a pas fait."""
+        result = self.run_with(
+            zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)]),
+            stock=self.stock(VIS=100, MEL=5),
+        )
+        assert "MEL" not in {l.item_number for l in result.lines}
+
+    def test_an_article_excluded_from_generic_is_not_closed_either(self):
+        result = self.run_with(
+            zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)]),
+            stock=self.stock(VIS=100, EMBLG=40),
+        )
+        assert "EMBLG" not in {l.item_number for l in result.lines}
+
+    def test_each_closed_article_is_reported_so_the_list_can_be_read(self):
+        result = self.run_with(
+            zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)]),
+            stock=self.stock(VIS=100, COLLE=12),
+        )
+        (finding,) = [f for f in result.findings if f.code == "UNCOUNTED_WITH_BOOK_STOCK"]
+        assert finding.item_number == "COLLE"
+        assert "12" in finding.message
+
+    def test_without_an_erp_snapshot_nothing_is_invented(self):
+        result = run(zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)]))
+        assert [l.item_number for l in result.lines] == ["VIS"]
 
 
 class TestBlankIsNotZero:

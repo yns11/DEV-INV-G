@@ -267,7 +267,7 @@ function TopVariances({ campaignId }: { campaignId: string }) {
               <thead>
                 <tr>
                   <th>Article</th>
-                  <th className="num">Livre</th>
+                  <th className="num">Stock ERP</th>
                   <th className="num">Compté</th>
                   <th className="num">Écart</th>
                 </tr>

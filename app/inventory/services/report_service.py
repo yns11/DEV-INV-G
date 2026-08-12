@@ -123,6 +123,7 @@ class ReportService:
         mode: PrintMode = PrintMode.LIST,
         with_sources: bool = False,
         blank_lines: int = 0,
+        zone_ids: Sequence[str] | None = None,
     ) -> tuple[bytes, str]:
         """One PDF containing every printable zone's sheet for a given pass.
 
@@ -139,6 +140,15 @@ class ReportService:
         target_pass = SheetPass.PASS_1 if pass_no == 1 else SheetPass.PASS_2
         blank_lines = _validated_blank_lines(blank_lines, mode=mode)
         zones = ctx.sheets.list_zones(campaign.id)
+        if zone_ids is not None:
+            wanted = set(zone_ids)
+            zones = [z for z in zones if z.id in wanted]
+            if not zones:
+                raise ValidationError(
+                    "Aucune des zones sélectionnées n'existe encore dans cette "
+                    "campagne. Rechargez la liste.",
+                    zoneIds=list(wanted)[:20],
+                )
         sheets = {
             (s.zone_id, s.pass_no): s
             for s in ctx.sheets.list_sheets(campaign.id)
@@ -587,6 +597,48 @@ class ReportService:
         )
         suffix = "emplacement" if by_location else "reference"
         return payload, f"ecarts-{suffix}_{campaign.code}.pdf"
+
+    def table_export(
+        self,
+        campaign: Campaign,
+        *,
+        title: str,
+        columns: Sequence[tuple[str, str]],
+        rows: Sequence[Mapping[str, Any]],
+    ) -> tuple[bytes, str]:
+        """A grid's visible rows, written as a workbook.
+
+        Values are taken as they arrive and only coerced, never re-derived: a
+        cell the screen shows as a badge or a two-line figure has a plain value
+        behind it, and that value is what a spreadsheet can sort and sum. A
+        missing key becomes an empty cell rather than an error — a column added
+        to a grid and absent from an older row is a display detail, not a reason
+        to refuse the file.
+        """
+        headers = [label for _, label in columns]
+        body = [[row.get(key) for key, _ in columns] for row in rows]
+        payload = build_workbook(
+            {title[:31] or "Export": (headers, body)},
+            title=title,
+            provenance={
+                "Campagne": f"{campaign.code} — {campaign.label}",
+                "Tableau": title,
+                "Lignes": len(body),
+                "Généré le": utcnow().isoformat(timespec="seconds"),
+                "Portée": (
+                    "Les lignes telles qu'elles étaient affichées : filtres, tri "
+                    "et sélection compris."
+                ),
+            },
+        )
+        self.ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.EXPORT,
+            entity_type="table",
+            entity_id=campaign.id,
+            summary=f"Export Excel — {title} ({len(body)} ligne(s))",
+        )
+        return payload, f"{_slug(title) or 'export'}_{campaign.code}.xlsx"
 
     def grid_export(
         self, campaign: Campaign, contract_key: str

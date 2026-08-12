@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from .bom import BomCycleError, BomIndex, ExplosionResult
-from .enums import ControlSeverity, CountSection, SheetPass, SheetStatus
+from .enums import ControlSeverity, CountSection, ItemType, SheetPass, SheetStatus
 from .models import (
     ArbitrationLine,
     ConsolidatedLine,
@@ -96,6 +96,13 @@ class ConsolidationInput:
     #: When False, zones that are not fully counted are skipped instead of
     #: contributing partial data. Used for the live "preview" during counting.
     require_done_zones: bool = True
+    #: ERP stock of the GENERIQUE location, per article.
+    #:
+    #: Not used to compute anything counted — it is the list of what *should*
+    #: have been found there. An article the ERP carries and nobody wrote on any
+    #: sheet gets an explicit zero line, because in the ERP a missing line means
+    #: "untouched" and only a zero means "looked for, not found".
+    book_stock: Mapping[str, Decimal] = field(default_factory=dict)
     #: Resolve a pending arbitration instead of refusing to.
     #:
     #: The posted consolidation must never guess: a zone whose two counts
@@ -368,6 +375,19 @@ def consolidate_generic(payload: ConsolidationInput) -> ConsolidationResult:
         for (item_number, section), qty in retained.items():
             if qty == 0:
                 continue
+            # Un produit fini n'entre dans GENERIQUE que par la porte du WIP,
+            # d'où il ressort éclaté en composants. Compté en bord de ligne ou
+            # en WIP assemblé, il compterait une deuxième fois ce que ses
+            # composants comptent déjà — et il est bien plus cher qu'eux.
+            if section is not CountSection.WIP and _is_finished(item_number, items):
+                _report_finished_outside_wip(
+                    item_number=item_number,
+                    section=section,
+                    qty=qty,
+                    zone_counts=zone_counts,
+                    findings=result.findings,
+                )
+                continue
             contributors[item_number].add(zone.code)
             if section is CountSection.LINE_SIDE:
                 line_side[item_number] += qty
@@ -460,6 +480,13 @@ def consolidate_generic(payload: ConsolidationInput) -> ConsolidationResult:
             )
         )
 
+    # Ce qui a réellement produit une ligne — pas ce qui a été touché. Un
+    # article dont les sections se compensent n'a pas de ligne, et « compté à
+    # zéro » est précisément le cas que la ligne explicite doit couvrir.
+    _append_uncounted_zeros(
+        payload, counted={line.item_number for line in result.lines}, result=result
+    )
+
     result.breakdown.sort(
         key=lambda b: (b.zone_code, b.parent_item, b.child_item)
     )
@@ -480,6 +507,144 @@ def _zone_is_complete(zone: ZoneCounts) -> bool:
     if zone.passes_required >= 2:
         return SheetPass.PASS_1 in done and SheetPass.PASS_2 in done
     return bool(done)
+
+
+def _is_finished(item_number: str, items: Mapping[str, Item]) -> bool:
+    item = items.get(item_number)
+    return item is not None and item.item_type is ItemType.FINISHED
+
+
+def _sheets_carrying(
+    zone_counts: ZoneCounts, item_number: str, section: CountSection
+) -> list[str]:
+    """Which of the zone's sheets carry this line, named as a human would.
+
+    The finding has to be actionable: somebody is going to walk to a stack of
+    paper and pull one sheet out of it. « Zone FI ASSY M3.1, comptage n°2 » is
+    what lets them do that; an article number alone does not.
+    """
+    out: list[str] = []
+    for sheet in zone_counts.sheets:
+        lines = zone_counts.lines_by_sheet.get(sheet.id, ())
+        if any(
+            l.item_number == item_number and l.section is section and l.is_counted
+            for l in lines
+        ):
+            out.append(
+                f"comptage n°{1 if sheet.pass_no is SheetPass.PASS_1 else 2}"
+            )
+    return out
+
+
+def _report_finished_outside_wip(
+    *,
+    item_number: str,
+    section: CountSection,
+    qty: Decimal,
+    zone_counts: ZoneCounts,
+    findings: list[ControlFinding],
+) -> None:
+    """Say where a finished product was counted, and that it does not count.
+
+    Two different situations, deliberately two codes. On the line side it is a
+    mistake — a finished product has no business there, and the quantity is
+    almost certainly a component's. In WIP assembled it is a legitimate note:
+    the assembly exists and somebody wanted it on record, but its components are
+    already counted through the explosion, so crediting it too would double them.
+    """
+    zone = zone_counts.zone
+    sheets = _sheets_carrying(zone_counts, item_number, section)
+    where = f"zone {zone.code}" + (f" ({', '.join(sheets)})" if sheets else "")
+    if section is CountSection.LINE_SIDE:
+        findings.append(
+            ControlFinding(
+                code="FINISHED_ON_LINE_SIDE",
+                severity=ControlSeverity.WARNING,
+                message=(
+                    f"{item_number} est un produit fini compté en bord de ligne "
+                    f"— {where}, quantité {qty}. Non retenu dans le stock : un "
+                    "produit fini ne se compte qu'en WIP, pour être éclaté."
+                ),
+                entity_type="consolidation",
+                entity_id=zone.id,
+                item_number=item_number,
+                context={"zone": zone.code, "sheets": ", ".join(sheets),
+                         "qty": str(qty), "section": str(section)},
+            )
+        )
+        return
+    findings.append(
+        ControlFinding(
+            code="FINISHED_IN_WIP_OK",
+            severity=ControlSeverity.INFO,
+            message=(
+                f"{item_number} est un produit fini compté en WIP assemblé "
+                f"— {where}, quantité {qty}. Retenu à titre indicatif "
+                "seulement : ses composants sont déjà comptés par l'éclatement."
+            ),
+            entity_type="consolidation",
+            entity_id=zone.id,
+            item_number=item_number,
+            context={"zone": zone.code, "sheets": ", ".join(sheets),
+                     "qty": str(qty), "section": str(section)},
+        )
+    )
+
+
+def _append_uncounted_zeros(
+    payload: ConsolidationInput, *, counted: set[str], result: ConsolidationResult
+) -> None:
+    """Close the journal with an explicit zero for what nobody found.
+
+    In the ERP an absent line means "this article was not part of the count";
+    only a line at zero means "we looked, and there was nothing". Everything the
+    ERP carries in GENERIQUE and no sheet mentions therefore gets a zero, or the
+    count would silently leave that stock standing.
+
+    Finished products are left out: they are never counted in GENERIQUE as
+    themselves — only exploded out of a WIP line — so a zero against one would
+    assert something the count never measured.
+    """
+    items = payload.items
+    extra: list[str] = []
+    for item_number, book_qty in payload.book_stock.items():
+        if book_qty == 0 or item_number in counted:
+            continue
+        item = items.get(item_number)
+        if item is not None and (
+            item.excluded_from_generic or item.item_type is ItemType.FINISHED
+        ):
+            continue
+        extra.append(item_number)
+
+    for item_number in sorted(extra):
+        item = items.get(item_number)
+        result.lines.append(
+            ConsolidatedLine(
+                campaign_id=payload.campaign_id,
+                item_number=item_number,
+                qty=ZERO,
+                unit=item.unit if item else "PCE",
+            )
+        )
+        # Un constat par article, et non un seul qui en compterait cinquante :
+        # c'est la liste elle-même qu'on va relire, pour aller vérifier que ce
+        # stock a bien disparu. Le regroupement les ramène à une ligne à
+        # l'écran de toute façon.
+        result.findings.append(
+            ControlFinding(
+                code="UNCOUNTED_WITH_BOOK_STOCK",
+                severity=ControlSeverity.WARNING,
+                message=(
+                    f"{item_number} porte {payload.book_stock[item_number]} en stock "
+                    "ERP GENERIQUE et n'a été compté nulle part : le journal le "
+                    "solde explicitement à zéro."
+                ),
+                entity_type="consolidation",
+                item_number=item_number,
+                context={"bookQty": str(payload.book_stock[item_number])},
+            )
+        )
 
 
 def _merge_explosion(

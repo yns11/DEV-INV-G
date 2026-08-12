@@ -132,7 +132,7 @@ class AssistantService:
                 "libellé": campaign.label,
                 "phase": str(campaign.status),
                 "dateDeComptage": campaign.count_date,
-                "stockLivreGeléLe": campaign.book_stock_frozen_at,
+                "stockErpGeléLe": campaign.book_stock_frozen_at,
                 "dupliquéeDe": campaign.cloned_from_code,
                 "modifiableActuellement": mutability_of(campaign.status).as_dict(),
             },
@@ -171,8 +171,8 @@ class AssistantService:
         # the first into the second is how a model states a 0 % reliability on a
         # campaign nobody has counted yet.
         digest["indicateurs"] = {
-            "stockLivreValeurEur": float(kpis.book_value),
-            "stockLivreQté": float(kpis.book_qty),
+            "stockErpValeurEur": float(kpis.book_value),
+            "stockErpQté": float(kpis.book_qty),
             "écartNetValeurEur": float(kpis.net_variance_value),
             "écartBrutValeurEur": float(kpis.gross_variance_value),
             "fiabilitéBrute": _num(kpis.gross_reliability_value),
@@ -180,7 +180,7 @@ class AssistantService:
             "ira": _num(kpis.ira),
             "lignesAnalysées": kpis.line_count,
             "lignesAuDelàDesSeuils": kpis.material_line_count,
-            "comptéesSansStockLivre": kpis.counted_only_count,
+            "comptéesSansStockErp": kpis.counted_only_count,
             "jamaisComptées": kpis.book_only_count,
             "écartRésiduelEur": float(kpis.residual_value),
         }
@@ -230,7 +230,7 @@ class AssistantService:
                 "enAttente": journals.get("pending", 0),
             },
             "articlesAuRéférentiel": len(ctx.referentials.list_items(campaign.id)),
-            "lignesDeStockLivre": len(ctx.book_stock.list(campaign.id)),
+            "lignesDeStockErp": len(ctx.book_stock.list(campaign.id)),
         }
 
     def _referential(self, campaign: Campaign) -> dict[str, Any]:

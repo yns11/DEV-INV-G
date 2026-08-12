@@ -667,9 +667,21 @@ export function Field({
 export function Carousel({
   slides,
   storageKey,
+  alignColumns = false,
 }: {
   slides: Array<{ id: string; label: string; content: ReactNode }>
   storageKey?: string
+  /**
+   * Lay every board on the widest board's grid.
+   *
+   * Left to itself each board sizes its cards to fill the row, so a board of
+   * four gets visibly wider cards than a board of five: switching slides then
+   * changes the shape of the strip, which reads as the *page* moving rather
+   * than the numbers changing. The widest board is measured rather than
+   * declared — a count written down here would be wrong the first time somebody
+   * adds a KPI and never notices.
+   */
+  alignColumns?: boolean
 }) {
   const [index, setIndex] = useState(() => {
     if (!storageKey) return 0
@@ -691,13 +703,29 @@ export function Carousel({
   // user moves.
   const slideRefs = useRef<Array<HTMLDivElement | null>>([])
   const [height, setHeight] = useState<number | undefined>(undefined)
+  // Cards on the widest board. Counted from what is actually rendered, because
+  // a board can arrive late — a skeleton first, then five figures — and a
+  // number written down in the source would be right until somebody adds a KPI.
+  const [columns, setColumns] = useState(0)
   useEffect(() => {
     const node = slideRefs.current[current]
     if (!node) return
-    const measure = () => setHeight(node.offsetHeight)
+    const measure = () => {
+      setHeight(node.offsetHeight)
+      setColumns(
+        Math.max(
+          0,
+          ...slideRefs.current.map(
+            (slide) => slide?.querySelectorAll('.grid--kpi > .kpi').length ?? 0,
+          ),
+        ),
+      )
+    }
     measure()
     const observer = new ResizeObserver(measure)
-    observer.observe(node)
+    // Every slide, not just the visible one: the widest board is often one the
+    // reader has not opened yet, and its cards land while another is on screen.
+    for (const slide of slideRefs.current) if (slide) observer.observe(slide)
     return () => observer.disconnect()
   }, [current, slides.length])
 
@@ -718,7 +746,12 @@ export function Carousel({
 
   return (
     <section
-      className="carousel"
+      className={`carousel${alignColumns && columns ? ' carousel--fixed-columns' : ''}`}
+      style={
+        alignColumns && columns
+          ? ({ '--kpi-columns': columns } as React.CSSProperties)
+          : undefined
+      }
       aria-roledescription="carrousel"
       aria-label="Indicateurs de la campagne"
       onKeyDown={(event) => {

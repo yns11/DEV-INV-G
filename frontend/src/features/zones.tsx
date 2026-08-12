@@ -167,10 +167,16 @@ export function ZonesAdminGrid({
   campaignId,
   editable,
   managers = [],
+  onPrint,
+  onOpen,
 }: {
   campaignId: string
   editable: boolean
   managers?: Manager[]
+  /** Print the selected zones. Absent on screens where printing has no place. */
+  onPrint?: (zones: Zone[]) => void
+  /** Open one zone's article list for editing. */
+  onOpen?: (zone: Zone) => void
 }) {
   const queryClient = useQueryClient()
   const toast = useToast()
@@ -284,6 +290,21 @@ export function ZonesAdminGrid({
         ),
       value: (row) => (row.allow_negative ? 1 : 0),
     },
+    ...(onOpen
+      ? [
+          {
+            key: 'open',
+            label: '',
+            width: 90,
+            sortable: false,
+            render: (row: Zone) => (
+              <Button size="sm" onClick={() => onOpen(row)}>
+                Ouvrir
+              </Button>
+            ),
+          } satisfies Column<Zone>,
+        ]
+      : []),
     ...(managers.length > 0
       ? [
           {
@@ -344,15 +365,31 @@ export function ZonesAdminGrid({
           <DataGrid
               columns={columns}
               rows={zones}
+              exportTitle="Zones"
+              campaignId={campaignId}
               getRowId={(row) => row.id}
-              selectable={editable}
+              selectable={editable || Boolean(onPrint)}
               selected={selected}
               onSelectedChange={setSelected}
               searchPlaceholder="Filtrer par zone, libellé, secteur…"
               maxHeight={520}
               toolbar={
-                editable && selected.size > 0 ? (
+                selected.size > 0 ? (
                   <div className="row-wrap" style={{ gap: 'var(--space-2)' }}>
+                    {onPrint && (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        icon={<Icons.printer size={13} />}
+                        onClick={() =>
+                          onPrint(zones.filter((z) => selected.has(z.id)))
+                        }
+                      >
+                        Imprimer la sélection
+                      </Button>
+                    )}
+                    {editable && (
+                    <>
                     <Button
                       size="sm"
                       disabled={setPasses.isPending}
@@ -407,6 +444,8 @@ export function ZonesAdminGrid({
                           </option>
                         ))}
                       </select>
+                    )}
+                    </>
                     )}
                   </div>
                 ) : null

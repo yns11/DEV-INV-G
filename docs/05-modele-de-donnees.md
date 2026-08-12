@@ -121,9 +121,9 @@ zone.manager_code
 client ne nomme jamais un gestionnaire — c'est ce qui rend le filtrage
 opposable. `warehouse_manager.warehouse_id` accepte la valeur réservée
 **`AUTRES`** : elle rattache d'un coup tout entrepôt sans affectation explicite,
-sinon un entrepôt découvert par un nouvel import de stock livre tomberait hors
+sinon un entrepôt découvert par un nouvel import de stock ERP tomberait hors
 de tout périmètre sans que personne ne le voie. Aucune clé étrangère vers
-`warehouse` : le référentiel des entrepôts naît du stock livre, chargé *après*
+`warehouse` : le référentiel des entrepôts naît du stock ERP, chargé *après*
 la préparation.
 
 Le périmètre est un **filtre, jamais une permission** : aucune écriture n'en
@@ -195,7 +195,7 @@ confondait.
 ### Fiabilité nette
 
 ```
-1 − |Σ écart €| / Σ stock livre €
+1 − |Σ écart €| / Σ stock ERP €
 ```
 
 Les excédents compensent les manques. Répond à **« avons-nous gagné ou perdu de
@@ -204,7 +204,7 @@ la valeur ? »**. C'est la mesure comptable — et la plus flatteuse.
 ### Fiabilité brute
 
 ```
-1 − Σ |écart €| / Σ stock livre €
+1 − Σ |écart €| / Σ stock ERP €
 ```
 
 Chaque erreur compte, dans les deux sens. Répond à **« de combien nous

@@ -12,6 +12,7 @@ from ...domain.printing import PrintMode
 from ...services import ReportService
 from ...services.report_service import MAX_BLANK_LINES
 from ..deps import CampaignDep, report_service
+from ..schemas import TableExportRequest
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/reports", tags=["rapports"])
 
@@ -79,11 +80,23 @@ def all_counting_sheets(
     mode: _Mode = PrintMode.LIST,
     with_sources: _WithSources = False,
     blank_lines: _BlankLines = 0,
+    zone_ids: Annotated[str | None, Query(alias="zoneIds")] = None,
 ) -> Response:
-    """The eve-of-inventory print: every zone the mode applies to, in zone order."""
+    """The eve-of-inventory print: every zone the mode applies to, in zone order.
+
+    ``zoneIds`` narrows it to a selection. Reprinting one sector's sheets, or the
+    four zones whose stack got soaked, is the common case the day after — and
+    printing the whole site again to get them is how a second, contradictory
+    stack of paper ends up on the floor.
+    """
+    selection = (
+        [z for z in (part.strip() for part in zone_ids.split(",")) if z]
+        if zone_ids else None
+    )
     payload, filename = service.all_counting_sheets_pdf(
         campaign, pass_no=pass_no,
         mode=mode, with_sources=with_sources, blank_lines=blank_lines,
+        zone_ids=selection,
     )
     return _download(payload, filename, "application/pdf")
 
@@ -99,6 +112,26 @@ def journal_export(
     """
     payload, filename = service.journal_export(campaign, journal_id)
     return _download(payload, filename, _XLSX)
+
+
+@router.post("/table.xlsx", summary="Exporter un tableau affiché")
+def table_export(
+    campaign: CampaignDep, payload: TableExportRequest, service: Service
+) -> Response:
+    """Any grid, exactly as it is on screen, as a workbook.
+
+    One endpoint for every table in the application rather than one export route
+    per screen: the grid component knows its own columns and its own selection,
+    so it can ask for the file itself, and a table added tomorrow gets the
+    button for free instead of getting it eventually.
+    """
+    payload_bytes, filename = service.table_export(
+        campaign,
+        title=payload.title,
+        columns=[(c.key, c.label or c.key) for c in payload.columns],
+        rows=payload.rows,
+    )
+    return _download(payload_bytes, filename, _XLSX)
 
 
 #: Which variance table is being exported — the same two the screen offers.

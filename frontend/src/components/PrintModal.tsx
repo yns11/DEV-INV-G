@@ -28,12 +28,21 @@ import {
 export function PrintModal({
   campaignId,
   sheetId,
+  zoneIds,
   modes,
   zonesByMode,
   onClose,
 }: {
   campaignId: string
   sheetId?: string
+  /**
+   * Restrict the batch to these zones.
+   *
+   * Reprinting one sector, or the four zones whose stack got soaked, is the
+   * common case the day after — and printing the whole site again to get them
+   * is how a second, contradictory pile of paper ends up on the floor.
+   */
+  zoneIds?: string[]
   modes: PrintMode[]
   /** For the batch print: how many zones each mode would produce a sheet for. */
   zonesByMode?: Record<PrintMode, number>
@@ -58,7 +67,10 @@ export function PrintModal({
     startDownload(
       sheetId
         ? downloads.countingSheet(campaignId, sheetId, options)
-        : downloads.allCountingSheets(campaignId, passNo, options),
+        : downloads.allCountingSheets(campaignId, passNo, {
+            ...options,
+            zoneIds: zoneIds?.length ? zoneIds.join(',') : undefined,
+          }),
     )
     onClose()
   }
@@ -80,7 +92,13 @@ export function PrintModal({
 
   return (
     <Modal
-      title={sheetId ? 'Imprimer cette feuille' : 'Imprimer les feuilles'}
+      title={
+        sheetId
+          ? 'Imprimer cette feuille'
+          : zoneIds?.length
+            ? `Imprimer ${zoneIds.length} zone(s)`
+            : 'Imprimer les feuilles'
+      }
       onClose={onClose}
       width={600}
       footer={

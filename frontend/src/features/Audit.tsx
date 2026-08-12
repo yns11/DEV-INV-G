@@ -168,6 +168,8 @@ function Imports({ campaignId }: { campaignId: string }) {
           <DataGrid
             columns={columns}
             rows={rows}
+            exportTitle="Journal d’audit"
+            campaignId={campaignId}
             getRowId={(row, index) => String(row.id ?? index)}
             searchPlaceholder="Filtrer les imports…"
             maxHeight={620}

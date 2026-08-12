@@ -182,7 +182,7 @@ class InsightEngine:
                     "cle": g.key,
                     "ecartValeur": float(g.variance_value),
                     "ecartAbsolu": float(g.abs_variance_value),
-                    "stockLivre": float(g.book_value),
+                    "stockErp": float(g.book_value),
                     "lignes": g.line_count,
                 }
                 for g in top_variances[:15]
@@ -190,7 +190,7 @@ class InsightEngine:
             "parEntrepot": [
                 {
                     "entrepot": g.key,
-                    "stockLivre": float(g.book_value),
+                    "stockErp": float(g.book_value),
                     "ecartValeur": float(g.variance_value),
                     "ecartAbsolu": float(g.abs_variance_value),
                 }
@@ -265,15 +265,15 @@ def _variance_payload(
         "categorie": line.category,
         "programme": line.program,
         "unite": line.unit,
-        "stockLivreQte": float(line.book_qty),
-        "stockLivreValeur": float(line.book_value),
+        "stockErpQte": float(line.book_qty),
+        "stockErpValeur": float(line.book_value),
         "compteQte": float(line.counted_qty),
         "ecartQte": float(line.variance_qty),
         "ecartValeur": float(line.variance_value),
         "ajusteQte": float(line.adjusted_qty),
         "residuelValeur": float(line.residual_value),
-        "compteSansStockLivre": line.counted_only,
-        "stockLivreNonCompte": line.book_only,
+        "compteSansStockErp": line.counted_only,
+        "stockErpNonCompte": line.book_only,
     }
     if line.warehouse_id:
         payload["entrepot"] = line.warehouse_id

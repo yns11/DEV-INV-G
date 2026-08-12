@@ -349,7 +349,7 @@ function KpiCarousel({ overview }: { overview: Overview }) {
     })
   }
 
-  return <Carousel slides={slides} storageKey={`campaign.${campaign.id}`} />
+  return <Carousel slides={slides} alignColumns storageKey={`campaign.${campaign.id}`} />
 }
 
 function FocusSwitch({ overview }: { overview: Overview }) {

@@ -27,7 +27,8 @@ import {
 } from 'react'
 import type { FieldSpec, GridContract } from '../lib/types'
 import { DASH, SOURCE_LABELS } from '../lib/format'
-import { Badge, Button, EmptyState, Icons, SearchInput } from './ui'
+import { download, downloads } from '../lib/api'
+import { Badge, Button, EmptyState, Icons, SearchInput, useErrorToast } from './ui'
 
 /**
  * A grid row.
@@ -107,6 +108,8 @@ export function DataGrid<T extends Row>({
   initialSort,
   rowClassName,
   dense = false,
+  exportTitle,
+  campaignId,
 }: {
   columns: Column<T>[]
   rows: T[]
@@ -130,6 +133,11 @@ export function DataGrid<T extends Row>({
   initialSort?: SortState
   rowClassName?: (row: T) => string | undefined
   dense?: boolean
+  /** Name of the exported workbook's sheet. Both this and `campaignId` are
+   *  required for the export button to appear — without a name the file would
+   *  be called « export » on every screen. */
+  exportTitle?: string
+  campaignId?: string
 }) {
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<SortState>(initialSort ?? null)
@@ -278,6 +286,47 @@ export function DataGrid<T extends Row>({
   const showToolbar = searchable || toolbar || editable
   const selectedCount = selected?.size ?? 0
 
+  // ---- export --------------------------------------------------------------
+  //
+  // What leaves is what is on screen: the search box, the sort and the
+  // selection have already been applied to `sorted`, and re-deriving the rows
+  // server-side would give a file that does not match the table it came from.
+  // With nothing selected the whole filtered table goes, which is what somebody
+  // who filtered and then clicked "Excel" is asking for.
+  const exportable = exportTitle !== undefined && campaignId !== undefined
+  const [exporting, setExporting] = useState(false)
+  const showError = useErrorToast()
+  const exportRows = async () => {
+    if (!exportable) return
+    const chosen =
+      selectedCount > 0
+        ? sorted.filter((row, index) => selected?.has(getRowId(row, index)))
+        : sorted
+    setExporting(true)
+    try {
+      await download(downloads.table(campaignId), {
+        title: exportTitle,
+        columns: columns
+          .filter((c) => c.label)
+          .map((c) => ({ key: c.key, label: c.label })),
+        rows: chosen.map((row) =>
+          Object.fromEntries(
+            columns
+              .filter((c) => c.label)
+              // La valeur, pas ce qui est peint : une cellule rendue en badge ou
+              // en deux lignes a derrière elle un nombre, et c'est lui qu'un
+              // tableur peut trier et sommer.
+              .map((c) => [c.key, defaultValue(row, c)]),
+          ),
+        ),
+      })
+    } catch (error) {
+      showError(error, 'Export impossible')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div
       ref={containerRef}
@@ -316,6 +365,26 @@ export function DataGrid<T extends Row>({
             <Badge tone="accent">{selectedCount} sélectionnée(s)</Badge>
           )}
           <span className="spacer" />
+          {exportable && sorted.length > 0 && (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Icons.download size={13} />}
+              disabled={exporting}
+              onClick={() => void exportRows()}
+              title={
+                selectedCount > 0
+                  ? `Exporter les ${selectedCount} ligne(s) sélectionnée(s)`
+                  : `Exporter les ${sorted.length} ligne(s) affichée(s)`
+              }
+            >
+              {exporting
+                ? 'Export…'
+                : selectedCount > 0
+                  ? `Excel (${selectedCount})`
+                  : 'Excel'}
+            </Button>
+          )}
           {editable && (
             <Button size="sm" icon={<Icons.plus size={13} />} onClick={addRow}>
               Ajouter une ligne

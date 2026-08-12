@@ -20,6 +20,7 @@ import pandas as pd
 from ..db import new_id
 from ..domain.controls import (
     check_book_stock,
+    check_items,
     check_referentials,
     check_variances,
     check_zones,
@@ -306,10 +307,26 @@ class AnalysisService:
 
     def controls(self, campaign: Campaign) -> dict[str, Any]:
         """Every control applicable to the campaign's current data."""
+        findings = self._all_findings(campaign)
+        return {
+            "summary": summarise(findings),
+            # One entry per control, in reading order; the screen opens a group
+            # by filtering `findings` on its code.
+            "groups": [g.to_summary() for g in group_findings(findings)],
+            "findings": [f.model_dump(mode="json") for f in findings],
+        }
+
+    def _all_findings(self, campaign: Campaign) -> list[Any]:
+        """The control run itself, shared by the screen and by the badge.
+
+        Two callers, one computation: a badge announcing a number the screen
+        then contradicts is worse than no badge.
+        """
         ctx = self.ctx
         items = ctx.referentials.items_by_number(campaign.id)
         bom_links = ctx.referentials.list_bom_links(campaign.id)
         findings = check_referentials(items=items, bom_links=bom_links)
+        findings += check_items(items=items)
 
         zones = ctx.sheets.list_zones(campaign.id)
         if zones:
@@ -329,13 +346,24 @@ class AnalysisService:
             findings += check_variances(
                 campaign=campaign, variances=self.variances(campaign, granularity="item")
             )
-        return {
-            "summary": summarise(findings),
-            # One entry per control, in reading order; the screen opens a group
-            # by filtering `findings` on its code.
-            "groups": [g.to_summary() for g in group_findings(findings)],
-            "findings": [f.model_dump(mode="json") for f in findings],
-        }
+        return findings
+
+    def alert_counts(self, campaign: Campaign) -> dict[str, int]:
+        """One number per screen that carries a badge.
+
+        Each is a count of *distinct* controls, which is what a badge can
+        usefully carry: it answers "is there something new here?" and stays
+        readable, where a raw occurrence count reads as noise the moment one
+        control fires on four hundred articles.
+        """
+        from .generic_service import GenericService
+
+        controls = len(group_findings(self._all_findings(campaign)))
+        consolidation = 0
+        if self.ctx.sheets.list_zones(campaign.id):
+            result = GenericService(self.ctx).consolidate(campaign, preview=True)
+            consolidation = len(group_findings(result.findings))
+        return {"controls": controls, "consolidation": consolidation}
 
     # ---------------------------------------------------------------- frames
 

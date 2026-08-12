@@ -94,6 +94,22 @@ def controls(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     return service.controls(campaign)
 
 
+@router.get("/alerts", summary="Compteurs d'alertes pour la navigation")
+def alerts(campaign: CampaignDep, service: Service) -> dict[str, int]:
+    """How many *distinct* things are wrong, per screen.
+
+    Distinct, not total: a control firing on four hundred articles is one thing
+    to go and look at, and a badge reading « 400 » next to « Contrôles » says
+    nothing except that the number is large. What the sidebar has to answer is
+    "is there something here I have not seen?", and that is a count of controls.
+
+    Its own endpoint rather than a field of the overview: computing it runs the
+    whole control suite, and the overview is fetched on every screen of every
+    page load.
+    """
+    return service.alert_counts(campaign)
+
+
 @router.get("/analytics", summary="Analyses statistiques et machine learning")
 def analytics(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     """ABC/XYZ, Pareto, anomalies, clustering, recount priority, data forensics.

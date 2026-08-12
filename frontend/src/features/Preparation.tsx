@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { GRID_ROW_CEILING, api } from '../lib/api'
 import type {
-  GridContract, Manager, Overview, PrintMode, Threshold,
+  GridContract, Manager, Overview, PrintMode, Threshold, Zone,
 } from '../lib/types'
 import { ITEM_TYPE_LABELS, moneyShort, qty, percent } from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
@@ -20,6 +20,7 @@ import {
   Badge,
   Button,
   Card,
+  EmptyState,
   Field,
   Icons,
   Modal,
@@ -44,6 +45,50 @@ export type PreparationView =
   | 'book_stock'
   | 'count_sheets'
   | 'gestion'
+
+/**
+ * Combien de lignes de stock la pilule « Top » retient.
+ *
+ * Vingt-cinq parce que c'est ce qui tient sur un écran sans faire défiler : la
+ * liste sert à décider quoi recompter en priorité, et une liste qu'on fait
+ * défiler n'est plus une priorité.
+ */
+const TOP_STOCK_LINES = 25
+
+/**
+ * Les trois lectures d'une nomenclature.
+ *
+ * « Produits fabriqués » change de grain volontairement : une ligne par
+ * assemblage et non par lien. C'est la liste de ce que l'usine sait encore
+ * construire, elle se lit en dizaines là où les liens se comptent en milliers,
+ * et la donner sous forme de liens obligerait à la dédoublonner de tête.
+ */
+type BomView = 'all' | 'active' | 'parents'
+
+const BOM_VIEWS: Array<{ id: BomView; label: string; hint: string }> = [
+  { id: 'all', label: 'Tous les liens', hint: 'Toutes les versions, en vigueur ou retirées.' },
+  {
+    id: 'active',
+    label: 'Liens en vigueur',
+    hint: 'Les seuls que la consolidation éclate.',
+  },
+  {
+    id: 'parents',
+    label: 'Produits fabriqués en vigueur',
+    hint: 'Un assemblage par ligne : ceux qui portent au moins un lien en vigueur.',
+  },
+]
+
+const PARENT_COLUMNS: Column[] = [
+  { key: 'parent', label: 'Assemblage', width: 200 },
+  { key: 'name', label: 'Désignation', width: 320 },
+  {
+    key: 'children',
+    label: 'Composants en vigueur',
+    numeric: true,
+    width: 180,
+  },
+]
 
 type GestionTab = 'managers' | 'zone_scope' | 'journal_scope' | 'thresholds'
 
@@ -240,6 +285,8 @@ function ItemsTab({
             <DataGrid
               columns={columns}
               rows={data.rows}
+              exportTitle="Articles"
+              campaignId={campaignId}
               getRowId={(row) => String(row.item_number)}
               selectable={editable}
               selected={selected}
@@ -327,12 +374,24 @@ function StockedFilter({
 /**
  * L'exclusion d'une sélection entière, en un geste.
  *
- * Les quatre cas de figure et rien d'autre : c'est ainsi que la décision se
- * prend — « toute cette gamme est après-vente », « ce programme a quitté le
- * site ». La combinaison GENERIQUE + nomenclature reste possible article par
- * article dans la fenêtre de modification, où elle a un sens ; ici elle
- * n'ajouterait qu'une case à cocher de plus devant une liste de mille lignes.
+ * Les deux facettes se cumulent : un article peut être hors GENERIQUE **et**
+ * ignoré en nomenclature tout en restant dans le périmètre — ce sont deux
+ * décisions séparées, pas deux valeurs d'un même réglage. Elles sont donc
+ * offertes ensemble, et « hors périmètre » est le seul choix qui les remplace,
+ * puisqu'il les recouvre déjà toutes les deux.
  */
+const BULK_EXCLUSIONS: Array<{ value: string; label: string; scopes: string[] }> = [
+  { value: 'NONE', label: 'Aucune — remettre dans le périmètre', scopes: [] },
+  { value: 'GENERIC', label: EXCLUSION_LABELS.GENERIC!, scopes: ['GENERIC'] },
+  { value: 'BOM', label: EXCLUSION_LABELS.BOM!, scopes: ['BOM'] },
+  {
+    value: 'GENERIC+BOM',
+    label: 'Hors GENERIQUE et ignoré en BOM',
+    scopes: ['GENERIC', 'BOM'],
+  },
+  { value: 'ALL', label: EXCLUSION_LABELS.ALL!, scopes: ['ALL'] },
+]
+
 function ExclusionBulkAction({
   disabled,
   onPick,
@@ -343,21 +402,21 @@ function ExclusionBulkAction({
   return (
     <select
       className="input"
-      style={{ width: 240 }}
+      style={{ width: 260 }}
       value=""
       disabled={disabled}
       aria-label="Exclusion de la sélection"
       onChange={(event) => {
-        const choice = event.target.value
-        if (choice === '') return
-        onPick(choice === 'NONE' ? [] : [choice])
+        const choice = BULK_EXCLUSIONS.find((o) => o.value === event.target.value)
+        if (choice) onPick(choice.scopes)
       }}
     >
       <option value="">Exclusion de la sélection…</option>
-      <option value="NONE">Aucune — remettre dans le périmètre</option>
-      <option value="GENERIC">{EXCLUSION_LABELS.GENERIC}</option>
-      <option value="BOM">{EXCLUSION_LABELS.BOM}</option>
-      <option value="ALL">{EXCLUSION_LABELS.ALL}</option>
+      {BULK_EXCLUSIONS.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
     </select>
   )
 }
@@ -570,6 +629,8 @@ function BomsTab({
   const [editing, setEditing] = useState<Record<string, unknown> | null>(null)
   const [counted, setCounted] = useState(false)
   const editable = overview.permissions.boms
+  const [selectedLinks, setSelectedLinks] = useState<Set<string>>(new Set())
+  const [bomView, setBomView] = useState<BomView>('all')
   const health = useQuery({
     queryKey: ['bom-health', campaignId],
     queryFn: () => api.bomHealth(campaignId),
@@ -594,9 +655,65 @@ function BomsTab({
     onError: (error) => showError(error, 'Suppression impossible'),
   })
 
+  // Un changement de version arrive par lot — c'est toute la recette d'un
+  // assemblage qu'on remplace, pas une de ses lignes — donc c'est l'opération.
+  const activate = useMutation({
+    mutationFn: (active: boolean) =>
+      api.setBomActivation(
+        campaignId,
+        [...selectedLinks].map((key) => {
+          const [parentItem, childItem] = key.split(' ')
+          return { parentItem: parentItem!, childItem: childItem! }
+        }),
+        active,
+      ),
+    onSuccess: (result, active) => {
+      refresh()
+      setSelectedLinks(new Set())
+      toast.success(
+        `${result.updated} lien(s) ${active ? 'remis en vigueur' : 'retirés'}`,
+        result.unchanged > 0 ? `${result.unchanged} l’étaient déjà.` : undefined,
+      )
+    },
+    onError: (error) => showError(error, 'Changement impossible'),
+  })
+
+  // Les trois lectures d'une nomenclature. « Produits fabriqués » change de
+  // grain : une ligne par assemblage, pas par lien — c'est la liste de ce que
+  // l'usine sait encore construire, et elle se lit en dizaines quand les liens
+  // se comptent en milliers.
+  const { visibleLinks, parentRows, counts } = useMemo(() => {
+    const rows = links.data ?? []
+    const active = rows.filter((r) => r.active !== false)
+    const byParent = new Map<string, { parent: string; name: string; children: number }>()
+    for (const row of active) {
+      const parent = String(row.parent_item)
+      const entry = byParent.get(parent) ?? {
+        parent,
+        name: String(row.parentName ?? ''),
+        children: 0,
+      }
+      entry.children += 1
+      byParent.set(parent, entry)
+    }
+    const parents = [...byParent.values()].sort((a, b) =>
+      a.parent.localeCompare(b.parent, 'fr'),
+    )
+    return {
+      visibleLinks: bomView === 'active' ? active : rows,
+      parentRows: parents,
+      counts: { all: rows.length, active: active.length, parents: parents.length },
+    }
+  }, [links.data, bomView])
+
   const columns: Column[] = [
-    { key: 'parent_item', label: 'Assemblage', width: 180 },
-    { key: 'child_item', label: 'Composant', width: 180 },
+    { key: 'parent_item', label: 'Assemblage', width: 170 },
+    // Les désignations, parce qu'une nomenclature lue en références seules
+    // oblige à ouvrir le référentiel à chaque ligne pour savoir de quoi il
+    // s'agit — et c'est là que les erreurs de relecture se glissent.
+    { key: 'parentName', label: 'Désignation assemblage', width: 240 },
+    { key: 'child_item', label: 'Composant', width: 170 },
+    { key: 'childName', label: 'Désignation composant', width: 240 },
     {
       key: 'qtyPer',
       label: 'Qté par assemblage',
@@ -704,15 +821,77 @@ function BomsTab({
       </AsyncBoundary>
 
       <Card title="Liens de nomenclature" flush>
-        <AsyncBoundary query={links} isEmpty={(rows) => rows.length === 0}>
-          {(rows) => (
+        <div className="chips" style={{ padding: '0 var(--space-4)' }}>
+          {BOM_VIEWS.map(({ id, label, hint }) => (
+            <button
+              key={id}
+              className={`chip${bomView === id ? ' chip--active' : ''}`}
+              title={hint}
+              onClick={() => {
+                setBomView(id)
+                setSelectedLinks(new Set())
+              }}
+            >
+              {label} <span className="num">{counts[id === 'parents' ? 'parents' : id]}</span>
+            </button>
+          ))}
+        </div>
+
+        {bomView === 'parents' ? (
+          <DataGrid
+            columns={PARENT_COLUMNS}
+            rows={parentRows}
+            exportTitle="Produits fabriqués"
+            campaignId={campaignId}
+            getRowId={(row) => row.parent}
+            searchPlaceholder="Filtrer par assemblage…"
+            maxHeight={520}
+            emptyTitle="Aucun assemblage en vigueur"
+            footer={
+              <span>
+                Assemblages portant au moins un lien en vigueur — ce que l’usine
+                sait construire aujourd’hui.
+              </span>
+            }
+          />
+        ) : (
+        <AsyncBoundary query={links} isEmpty={() => visibleLinks.length === 0}>
+          {() => (
             <DataGrid
               columns={columns}
-              rows={rows}
-              getRowId={(row, index) => `${row.parent_item}-${row.child_item}-${index}`}
+              rows={visibleLinks}
+              exportTitle="Nomenclatures"
+              campaignId={campaignId}
+              selectable={editable}
+              selected={selectedLinks}
+              onSelectedChange={setSelectedLinks}
+              getRowId={(row) => `${row.parent_item} ${row.child_item}`}
               searchPlaceholder="Filtrer par assemblage ou composant…"
               maxHeight={520}
-              toolbar={<StockedFilter value={counted} onChange={setCounted} />}
+              toolbar={
+                <div className="row-wrap" style={{ gap: 'var(--space-2)' }}>
+                  <StockedFilter value={counted} onChange={setCounted} />
+                  {editable && selectedLinks.size > 0 && (
+                    <>
+                      <Button
+                        size="sm"
+                        disabled={activate.isPending}
+                        onClick={() => activate.mutate(true)}
+                      >
+                        Activer
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={activate.isPending}
+                        onClick={() => activate.mutate(false)}
+                      >
+                        Désactiver
+                      </Button>
+                    </>
+                  )}
+                </div>
+              }
               footer={
                 counted ? (
                   <span>
@@ -723,6 +902,7 @@ function BomsTab({
             />
           )}
         </AsyncBoundary>
+        )}
       </Card>
 
       {editing && (
@@ -856,9 +1036,16 @@ function BookStockTab({
   const queryClient = useQueryClient()
   const toast = useToast()
   const showError = useErrorToast()
+  // La valeur du stock est concentrée : une poignée de lignes en portent
+  // l'essentiel, et ce sont celles qu'on recompte en priorité.
+  const [top, setTop] = useState(false)
   const query = useQuery({
-    queryKey: ['book-stock', campaignId],
-    queryFn: () => api.bookStock(campaignId, { limit: GRID_ROW_CEILING }),
+    queryKey: ['book-stock', campaignId, top],
+    queryFn: () =>
+      api.bookStock(campaignId, {
+        limit: GRID_ROW_CEILING,
+        top: top ? TOP_STOCK_LINES : undefined,
+      }),
   })
 
   const freeze = useMutation({
@@ -934,12 +1121,31 @@ function BookStockTab({
         onImported={() => void queryClient.invalidateQueries()}
       />
 
-      <Card title="Stock ERP (snapshot ERP)" flush>
+      <Card
+        title="Stock ERP (snapshot ERP)"
+        message={
+          top && query.data?.topShare != null
+            ? `Ces ${query.data.total} ligne(s) portent ${percent(query.data.topShare)} de la valeur du stock ERP (${moneyShort(query.data.totalValue)}).`
+            : undefined
+        }
+        flush
+      >
         <AsyncBoundary query={query} isEmpty={(d) => d.rows.length === 0}>
           {(data) => (
             <DataGrid
               columns={columns}
               rows={data.rows}
+              toolbar={
+                <button
+                  className={`chip${top ? ' chip--active' : ''}`}
+                  title={`Les ${TOP_STOCK_LINES} couples article / entrepôt / emplacement les plus lourds en valeur.`}
+                  onClick={() => setTop((value) => !value)}
+                >
+                  Top {TOP_STOCK_LINES}
+                </button>
+              }
+              exportTitle="Stock ERP"
+              campaignId={campaignId}
               getRowId={(row, index) =>
                 `${row.item_number}-${row.warehouse_id}-${row.location_id}-${index}`
               }
@@ -974,6 +1180,9 @@ function CountSheetsTab({
 }) {
   const queryClient = useQueryClient()
   const [printing, setPrinting] = useState(false)
+  const [printZones, setPrintZones] = useState<string[] | null>(null)
+  const [sheetView, setSheetView] = useState<'zones' | 'lines'>('zones')
+  const [zoneFilter, setZoneFilter] = useState('')
   const managers = useQuery({
     queryKey: ['managers', campaignId],
     queryFn: () => api.managers(campaignId),
@@ -1051,21 +1260,279 @@ function CountSheetsTab({
         </Alert>
       )}
 
-      <ZonesAdminGrid
-        campaignId={campaignId}
-        editable={overview.permissions.zones}
-        managers={managers.data?.managers ?? []}
-      />
+      <div className="chips">
+        {(['zones', 'lines'] as const).map((id) => (
+          <button
+            key={id}
+            className={`chip${sheetView === id ? ' chip--active' : ''}`}
+            title={
+              id === 'zones'
+                ? 'Une ligne par zone : le nombre de comptages, le gestionnaire, l’impression.'
+                : 'Une ligne par article à compter, toutes zones confondues — pour corriger une référence posée au mauvais endroit.'
+            }
+            onClick={() => {
+              setSheetView(id)
+              if (id === 'zones') setZoneFilter('')
+            }}
+          >
+            {id === 'zones' ? 'Zones et feuilles' : 'Toutes les lignes'}
+          </button>
+        ))}
+      </div>
 
-      {printing && (
+      {sheetView === 'zones' ? (
+        <ZonesAdminGrid
+          campaignId={campaignId}
+          editable={overview.permissions.zones}
+          managers={managers.data?.managers ?? []}
+          onPrint={(selection) => setPrintZones(selection.map((z) => z.id))}
+          onOpen={(zone) => {
+            setZoneFilter(zone.id)
+            setSheetView('lines')
+          }}
+        />
+      ) : (
+        <SheetLinesView
+          campaignId={campaignId}
+          zones={zones.data ?? []}
+          zoneId={zoneFilter}
+          onZoneChange={setZoneFilter}
+          editable={overview.permissions.countSheets}
+        />
+      )}
+
+      {(printing || printZones !== null) && (
         <PrintModal
           campaignId={campaignId}
           modes={batch.modes}
-          zonesByMode={batch.counts}
-          onClose={() => setPrinting(false)}
+          zonesByMode={printZones === null ? batch.counts : undefined}
+          zoneIds={printZones ?? undefined}
+          onClose={() => {
+            setPrinting(false)
+            setPrintZones(null)
+          }}
         />
       )}
     </div>
+  )
+}
+
+/**
+ * Toutes les lignes de feuilles, à plat.
+ *
+ * Les écrans par zone répondent à « qu'y a-t-il sur cette feuille ? ». Celui-ci
+ * répond à « où cette référence apparaît-elle ? », qui est la question quand une
+ * ligne a été posée sur la mauvaise zone ou qu'une famille entière doit être
+ * retirée de quinze feuilles. Mêmes lignes, une seule liste : la correction
+ * coûte une modification au lieu de quinze navigations.
+ *
+ * Les quantités n'y sont pas éditables — elles ne le sont qu'au comptage, et
+ * c'est le serveur qui le décide. Ce qui se règle ici, c'est *ce qu'il y a à
+ * compter*, pas ce qui a été trouvé.
+ */
+function SheetLinesView({
+  campaignId,
+  zones,
+  zoneId,
+  onZoneChange,
+  editable,
+}: {
+  campaignId: string
+  zones: Zone[]
+  zoneId: string
+  onZoneChange: (next: string) => void
+  editable: boolean
+}) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [draft, setDraft] = useState<Record<string, unknown>[] | null>(null)
+
+  const query = useQuery({
+    queryKey: ['sheet-lines', campaignId, zoneId],
+    queryFn: () => api.sheetLines(campaignId, zoneId || undefined),
+  })
+
+  const refresh = () => {
+    setDraft(null)
+    setSelected(new Set())
+    void queryClient.invalidateQueries({ queryKey: ['sheet-lines'] })
+    void queryClient.invalidateQueries({ queryKey: ['zones'] })
+  }
+
+  const remove = useMutation({
+    mutationFn: (lineIds: string[]) => api.deleteSheetLines(campaignId, lineIds),
+    onSuccess: (result) => {
+      refresh()
+      toast.success(`${result.deleted} ligne(s) supprimée(s)`)
+    },
+    onError: (error) => showError(error, 'Suppression impossible'),
+  })
+
+  // Une sauvegarde par feuille : l'endpoint travaille feuille par feuille, et
+  // la grille à plat en couvre plusieurs. Regrouper ici évite d'inventer un
+  // endpoint « lignes de partout » dont personne ne saurait dire ce qu'il gèle.
+  const save = useMutation({
+    mutationFn: async (rows: Record<string, unknown>[]) => {
+      const bySheet = new Map<string, Record<string, unknown>[]>()
+      for (const row of rows) {
+        const sheetId = String(row.sheet_id ?? '')
+        if (!sheetId) continue
+        bySheet.set(sheetId, [...(bySheet.get(sheetId) ?? []), row])
+      }
+      let written = 0
+      for (const [sheetId, sheetRows] of bySheet) {
+        const result = await api.saveSheetLines(
+          campaignId,
+          sheetId,
+          sheetRows.map((row) => ({
+            id: row.id,
+            itemNumber: String(row.item_number ?? ''),
+            section: String(row.section ?? 'LINE_SIDE'),
+            // La quantité repart telle quelle : ne pas la renvoyer l'effacerait,
+            // et la modifier ici serait refusé par le serveur de toute façon.
+            qty: row.qty ?? null,
+            unit: String(row.unit ?? 'PCE'),
+            comment: String(row.comment ?? ''),
+          })),
+        )
+        written += result.written
+      }
+      return written
+    },
+    onSuccess: (written) => {
+      refresh()
+      toast.success(`${written} ligne(s) enregistrée(s)`)
+    },
+    onError: (error) => showError(error, 'Enregistrement impossible'),
+  })
+
+  const rows = draft ?? query.data ?? []
+  const columns: Column[] = [
+    { key: 'zoneCode', label: 'Zone', width: 160, editable: false },
+    { key: 'passNo', label: 'Comptage', numeric: true, width: 100, editable: false },
+    { key: 'item_number', label: 'Article', width: 170 },
+    { key: 'name', label: 'Désignation', width: 240, editable: false },
+    {
+      key: 'section',
+      label: 'Section',
+      width: 150,
+      choices: ['LINE_SIDE', 'WIP', 'WIP_OK'],
+    },
+    { key: 'unit', label: 'Unité', width: 90 },
+    { key: 'comment', label: 'Commentaire', width: 220 },
+    {
+      key: 'qty',
+      label: 'Quantité',
+      numeric: true,
+      width: 120,
+      editable: false,
+      render: (row) =>
+        row.qty === null || row.qty === undefined ? (
+          <span className="subtle">non compté</span>
+        ) : (
+          <span className="num">{qty(Number(row.qty))}</span>
+        ),
+      value: (row) => (row.qty === null ? null : Number(row.qty)),
+    },
+  ]
+
+  return (
+    <Card
+      title="Lignes de feuilles"
+      message="Ce qu’il y a à compter, zone par zone. Les quantités se saisissent au comptage, pas ici."
+      actions={
+        <select
+          className="input"
+          style={{ width: 250 }}
+          value={zoneId}
+          onChange={(event) => {
+            onZoneChange(event.target.value)
+            setDraft(null)
+            setSelected(new Set())
+          }}
+        >
+          <option value="">Toutes les zones</option>
+          {zones.map((zone) => (
+            <option key={zone.id} value={zone.id}>
+              {zone.label || zone.code}
+            </option>
+          ))}
+        </select>
+      }
+      flush
+    >
+      <AsyncBoundary query={query} isEmpty={() => rows.length === 0}
+        empty={
+          <EmptyState title="Aucune ligne">
+            Chargez la grille « Feuilles de comptage » ci-dessus, ou créez une zone
+            en saisie libre.
+          </EmptyState>
+        }
+      >
+        {() => (
+          <DataGrid
+            columns={columns}
+            rows={rows}
+            exportTitle="Lignes de feuilles"
+            campaignId={campaignId}
+            getRowId={(row, index) => String(row.id ?? index)}
+            selectable={editable}
+            selected={selected}
+            onSelectedChange={setSelected}
+            editable={editable}
+            onRowsChange={(next) => setDraft(next as Record<string, unknown>[])}
+            searchPlaceholder="Filtrer par zone, article, désignation…"
+            maxHeight={560}
+            toolbar={
+              <div className="row-wrap" style={{ gap: 'var(--space-2)' }}>
+                {editable && selected.size > 0 && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={<Icons.trash size={13} />}
+                    disabled={remove.isPending}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Supprimer ${selected.size} ligne(s) de feuille ?`,
+                        )
+                      ) {
+                        remove.mutate([...selected])
+                      }
+                    }}
+                  >
+                    Supprimer la sélection
+                  </Button>
+                )}
+                {draft && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={save.isPending}
+                      onClick={() => save.mutate(draft)}
+                    >
+                      Enregistrer
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setDraft(null)}>
+                      Annuler
+                    </Button>
+                  </>
+                )}
+              </div>
+            }
+            footer={
+              <span>
+                {rows.length.toLocaleString('fr-FR')} ligne(s)
+                {zoneId ? ' sur cette zone' : ' sur toute la campagne'}
+              </span>
+            }
+          />
+        )}
+      </AsyncBoundary>
+    </Card>
   )
 }
 

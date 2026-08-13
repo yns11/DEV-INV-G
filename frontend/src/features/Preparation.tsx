@@ -11,6 +11,7 @@ import { ITEM_TYPE_LABELS, moneyShort, qty, percent } from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { FindingGroups } from '../components/Findings'
+import { SubSectionTabs } from '../components/SubSectionTabs'
 import { PrintModal } from '../components/PrintModal'
 import { useSubSection } from '../lib/subsection'
 import { ZonesAdminGrid } from './zones'
@@ -112,8 +113,7 @@ const GESTION_TABS: GestionTab[] = [
 export function Preparation({ view }: { view: PreparationView }) {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
-  // The sidebar draws this level, so the screen only reads it.
-  const [gestion] = useSubSection<GestionTab>('managers', GESTION_TABS)
+  const [gestion, setGestion] = useSubSection<GestionTab>('managers', GESTION_TABS)
   const tab = view
 
   const contracts = useQuery({ queryKey: ['contracts'], queryFn: api.contracts })
@@ -123,6 +123,15 @@ export function Preparation({ view }: { view: PreparationView }) {
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
       {contracts.isPending && <Skeleton height={240} />}
+
+      {tab === 'gestion' && (
+        <SubSectionTabs
+          section="gestion"
+          overview={overview}
+          value={gestion}
+          onChange={setGestion}
+        />
+      )}
 
       {tab === 'items' && contract('items') && (
         <ItemsTab campaignId={campaignId} contract={contract('items')!} overview={overview} />

@@ -59,7 +59,7 @@ export function App() {
       <aside className="sidebar">
         <div className="sidebar__brand">
           <div className="stack" style={{ gap: 'var(--space-1)' }}>
-            <Logo size={30} />
+            <Logo height={38} />
             <div className="sidebar__title">Campagnes Inventaire</div>
           </div>
         </div>

@@ -13,18 +13,16 @@
  */
 
 import { useQuery } from '@tanstack/react-query'
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink } from 'react-router-dom'
 import { api } from '../lib/api'
 import type { Overview } from '../lib/types'
 import { PHASE_GROUPS, SECTIONS, labelOf, type Alerts, type Section } from '../lib/navigation'
-import { subSectionPath, VIEW_PARAM } from '../lib/subsection'
 import { useFocusMode } from '../lib/focus'
 import { Icons } from './ui'
 
 const STATUS_ORDER = ['PREPARATION', 'COUNTING', 'ANALYSIS', 'CLOSED']
 
 export function CampaignNav({ overview }: { overview: Overview }) {
-  const location = useLocation()
   const [focus] = useFocusMode()
   const base = `/campagnes/${overview.campaign.id}`
   const current = STATUS_ORDER.indexOf(overview.campaign.status)
@@ -63,8 +61,6 @@ export function CampaignNav({ overview }: { overview: Overview }) {
                 overview={overview}
                 alerts={alerts}
                 focus={focus}
-                open={isOpen(section, location.pathname, base)}
-                view={new URLSearchParams(location.search).get(VIEW_PARAM)}
               />
             ))}
           </div>
@@ -74,37 +70,25 @@ export function CampaignNav({ overview }: { overview: Overview }) {
   )
 }
 
-function isOpen(section: Section, pathname: string, base: string): boolean {
-  const target = section.to ? `${base}/${section.to}` : base
-  return section.to ? pathname.startsWith(target) : pathname === base
-}
-
 function SectionLink({
   section,
   base,
   overview,
   alerts,
   focus,
-  open,
-  view,
 }: {
   section: Section
   base: string
   overview: Overview
   alerts: Alerts
   focus: boolean
-  open: boolean
-  view: string | null
 }) {
   const Icon = Icons[section.icon]
   const enabled = section.enabled(overview)
   const badge = section.badge?.(overview, focus, alerts)
   const target = section.to ? `${base}/${section.to}` : base
-  const fallback = section.subs?.[0]?.id ?? ''
-  const active = view && section.subs?.some((s) => s.id === view) ? view : fallback
 
   return (
-    <>
       <NavLink
         to={target}
         end={section.to === ''}
@@ -121,27 +105,5 @@ function SectionLink({
         {badge ? <span className="navlink__count num">{badge}</span> : null}
       </NavLink>
 
-      {open && enabled && section.subs && (
-        <div className="subnav">
-          {section.subs.map((sub, index) => {
-            const heading =
-              sub.group && sub.group !== section.subs?.[index - 1]?.group ? sub.group : null
-            const count = sub.count?.(overview, alerts)
-            return (
-              <div key={sub.id}>
-                {heading && <div className="subnav__heading">{heading}</div>}
-                <NavLink
-                  to={subSectionPath(target, sub.id, fallback)}
-                  className={`subnav__link${active === sub.id ? ' subnav__link--active' : ''}`}
-                >
-                  <span className="truncate">{sub.label}</span>
-                  {count ? <span className="subnav__count num">{count}</span> : null}
-                </NavLink>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </>
   )
 }

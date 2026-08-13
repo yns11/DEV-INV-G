@@ -35,6 +35,7 @@ import {
 import { CompositionBar } from '../components/charts'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
 import { PrintModal } from '../components/PrintModal'
+import { SubSectionTabs } from '../components/SubSectionTabs'
 import { parseSheetLines } from '../lib/pasteSheetLines'
 import { useFocusMode } from '../lib/focus'
 import { CreateZoneModal } from './zones'
@@ -115,11 +116,16 @@ function stageOf(zone: Zone): ZoneStage {
 export function Generic() {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
-  // The sidebar draws this level, so the screen only reads it.
-  const [tab] = useSubSection<Tab>('zones', TABS)
+  const [tab, setTab] = useSubSection<Tab>('zones', TABS)
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
+      <SubSectionTabs
+        section="compil"
+        overview={overview}
+        value={tab}
+        onChange={setTab}
+      />
       {tab === 'zones' && <ZonesTab campaignId={campaignId} overview={overview} />}
       {tab === 'arbitration' && <ArbitrationTab campaignId={campaignId} overview={overview} />}
       {tab === 'consolidation' && (

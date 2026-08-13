@@ -29,7 +29,7 @@ import {
   Icons,
   Modal,
   Skeleton,
-  Tabs,
+  ViewTabs,
   useErrorToast,
   useToast,
 } from '../components/ui'
@@ -55,7 +55,7 @@ export function Counting() {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
-      <Tabs<Tab>
+      <ViewTabs<Tab>
         value={tab}
         onChange={setTab}
         tabs={[

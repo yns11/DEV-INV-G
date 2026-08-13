@@ -461,40 +461,44 @@ export function Kpi({
 }
 
 // --------------------------------------------------------------------------- //
-// Tabs
+// Sous-navigation d'écran
 // --------------------------------------------------------------------------- //
 
 /**
- * A horizontal choice *inside* a screen.
+ * La sous-navigation d'un écran : quel volet on regarde.
  *
- * Shaped as a segmented control rather than as underlined tabs, and that is the
- * whole point: navigation now lives in the sidebar, so anything horizontal must
- * read as a filter over the content, never as a second place to navigate. Two
- * bars of identical shape were what made the old layout tiring to read.
+ * Distincte des pilules à dessein. Une pilule filtre des lignes dans un
+ * tableau ; un onglet change ce que l'écran montre. Les deux étaient des
+ * rectangles arrondis empilés l'un sous l'autre, et rien ne disait lequel
+ * faisait quoi — celui-ci est souligné et posé sur une règle pleine largeur,
+ * juste sous le titre, là où le regard cherche « où suis-je ».
+ *
+ * Un compte à zéro n'est pas affiché : sur un onglet il se lirait comme une
+ * anomalie, alors qu'il ne dit rien de plus que l'onglet lui-même.
  */
-export function Tabs<T extends string>({
+export function ViewTabs<T extends string>({
   tabs,
   value,
   onChange,
 }: {
-  tabs: Array<{ id: T; label: string; count?: number | null }>
+  tabs: Array<{ id: T; label: string; count?: number | null; hint?: string }>
   value: T
   onChange: (id: T) => void
 }) {
+  if (tabs.length <= 1) return null
   return (
-    <div className="segmented" role="tablist">
+    <div className="viewtabs" role="tablist">
       {tabs.map((tab) => (
         <button
           key={tab.id}
           role="tab"
           aria-selected={value === tab.id}
-          className={`segmented__item${value === tab.id ? ' segmented__item--active' : ''}`}
+          title={tab.hint}
+          className={`viewtabs__item${value === tab.id ? ' viewtabs__item--active' : ''}`}
           onClick={() => onChange(tab.id)}
         >
           {tab.label}
-          {tab.count !== undefined && tab.count !== null && (
-            <span className="segmented__count num">{tab.count}</span>
-          )}
+          {tab.count ? <span className="viewtabs__count">{tab.count}</span> : null}
         </button>
       ))}
     </div>

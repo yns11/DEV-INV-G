@@ -25,6 +25,7 @@ import {
 import { CompositionBar, DistributionChart, Pareto, VarianceBars } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { FindingGroups } from '../components/Findings'
+import { SubSectionTabs } from '../components/SubSectionTabs'
 import { useSubSection } from '../lib/subsection'
 import { ImportPanel } from '../components/ImportPanel'
 import {
@@ -51,7 +52,7 @@ const CAUSES_TABS: CausesTab[] = ['causes', 'analytics', 'summary']
 export function Analysis({ view }: { view: AnalysisView }) {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
-  const [causesTab] = useSubSection<CausesTab>('causes', CAUSES_TABS)
+  const [causesTab, setCausesTab] = useSubSection<CausesTab>('causes', CAUSES_TABS)
 
   if (!overview.campaign.book_stock_frozen_at) {
     return (
@@ -66,6 +67,14 @@ export function Analysis({ view }: { view: AnalysisView }) {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
+      {view === 'causes' && (
+        <SubSectionTabs
+          section="causes"
+          overview={overview}
+          value={causesTab}
+          onChange={setCausesTab}
+        />
+      )}
       {view === 'variances' && <VariancesTab campaignId={campaignId} overview={overview} />}
       {view === 'controls' && <ControlsTab campaignId={campaignId} />}
       {view === 'adjustments' && (

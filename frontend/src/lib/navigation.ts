@@ -300,3 +300,14 @@ export function sectionFor(pathname: string, campaignId: string): Section | unde
       }
     : undefined
 }
+
+/**
+ * Les volets d'un écran, pour la barre horizontale qui les porte.
+ *
+ * Déclarés ici et lus là-bas : la liste et les compteurs n'existent qu'une
+ * fois, donc un onglet ajouté à la déclaration apparaît sans que l'écran ait
+ * quoi que ce soit à savoir.
+ */
+export function subsOf(to: string): SubSection[] {
+  return SECTIONS.find((s) => s.to === to)?.subs ?? []
+}

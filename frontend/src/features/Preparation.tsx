@@ -56,6 +56,19 @@ export type PreparationView =
 const TOP_STOCK_LINES = 25
 
 /**
+ * Préfixe des lignes qui n'existent que dans le navigateur.
+ *
+ * Une ligne neuve n'a pas encore d'identifiant : lui donner son indice de
+ * tableau en guise d'identité la rendait indiscernable d'une ligne enregistrée,
+ * et « 11 » partait vers le serveur comme s'il s'agissait d'un UUID. Le préfixe
+ * rend la distinction visible partout où elle compte.
+ */
+const DRAFT_PREFIX = 'brouillon:'
+
+const rowKey = (row: Record<string, unknown>, index: number) =>
+  row.id ? String(row.id) : `${DRAFT_PREFIX}${index}`
+
+/**
  * Les trois lectures d'une nomenclature.
  *
  * « Produits fabriqués » change de grain volontairement : une ligne par
@@ -1370,16 +1383,56 @@ function SheetLinesView({
     onError: (error) => showError(error, 'Suppression impossible'),
   })
 
+  /**
+   * Supprimer la sélection.
+   *
+   * Une ligne ajoutée à la grille et pas encore enregistrée n'existe que dans
+   * ce navigateur : la « supprimer » c'est la retirer du brouillon, et
+   * l'envoyer au serveur reviendrait à lui demander d'effacer quelque chose
+   * qu'il n'a jamais vu.
+   */
+  const deleteSelection = () => {
+    const saved = [...selected].filter((id) => !id.startsWith(DRAFT_PREFIX))
+    const drafts = selected.size - saved.length
+    if (drafts > 0 && draft) {
+      setDraft(
+        draft.filter(
+          (row, index) => !selected.has(rowKey(row, index)) || Boolean(row.id),
+        ),
+      )
+    }
+    if (saved.length === 0) {
+      setSelected(new Set())
+      toast.success(`${drafts} ligne(s) non enregistrée(s) retirée(s)`)
+      return
+    }
+    remove.mutate(saved)
+  }
+
   // Une sauvegarde par feuille : l'endpoint travaille feuille par feuille, et
   // la grille à plat en couvre plusieurs. Regrouper ici évite d'inventer un
   // endpoint « lignes de partout » dont personne ne saurait dire ce qu'il gèle.
+  //
+  // Une ligne neuve n'a pas de feuille : elle va sur *toutes* celles de la zone
+  // filtrée, comme le fait l'import — une référence à compter l'est par les deux
+  // équipes, sinon le second comptage n'a rien à comparer. C'est aussi pourquoi
+  // on n'ajoute rien sans zone choisie : la ligne n'aurait nulle part où aller.
   const save = useMutation({
     mutationFn: async (rows: Record<string, unknown>[]) => {
+      const targets = zones
+        .filter((z) => z.id === zoneId)
+        .flatMap((z) => z.sheets.map((s) => s.id))
       const bySheet = new Map<string, Record<string, unknown>[]>()
       for (const row of rows) {
         const sheetId = String(row.sheet_id ?? '')
-        if (!sheetId) continue
-        bySheet.set(sheetId, [...(bySheet.get(sheetId) ?? []), row])
+        if (sheetId) {
+          bySheet.set(sheetId, [...(bySheet.get(sheetId) ?? []), row])
+          continue
+        }
+        if (!String(row.item_number ?? '').trim()) continue
+        for (const target of targets) {
+          bySheet.set(target, [...(bySheet.get(target) ?? []), { ...row, id: null }])
+        }
       }
       let written = 0
       for (const [sheetId, sheetRows] of bySheet) {
@@ -1477,8 +1530,9 @@ function SheetLinesView({
             rows={rows}
             exportTitle="Lignes de feuilles"
             campaignId={campaignId}
-            getRowId={(row, index) => String(row.id ?? index)}
+            getRowId={rowKey}
             selectable={editable}
+            canAdd={Boolean(zoneId)}
             selected={selected}
             onSelectedChange={setSelected}
             editable={editable}
@@ -1499,7 +1553,7 @@ function SheetLinesView({
                           `Supprimer ${selected.size} ligne(s) de feuille ?`,
                         )
                       ) {
-                        remove.mutate([...selected])
+                        deleteSelection()
                       }
                     }}
                   >

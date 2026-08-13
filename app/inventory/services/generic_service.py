@@ -559,12 +559,33 @@ class GenericService:
         Structural, so it follows the sheets' own permission rather than the
         counting one: pruning a list of references is preparation work, and it
         is precisely what one does before printing.
+
+        Every identifier is resolved against *this campaign's* lines before
+        anything is written. That is two guarantees in one: an identifier the
+        campaign does not own is refused rather than deleted, and one that is
+        not an identifier at all — a row index sent by a client that mistook a
+        blank row for a saved one — comes back as a clear refusal instead of a
+        driver error five layers down.
         """
         ctx = self.ctx
         ctx.guard(campaign, "count_sheets")
         unique = list(dict.fromkeys(i for i in line_ids if i))
         if not unique:
             raise ValidationError("Aucune ligne transmise.")
+
+        known = {
+            line.id
+            for lines in ctx.sheets.lines_by_sheet(campaign.id).values()
+            for line in lines
+        }
+        missing = [i for i in unique if i not in known]
+        if missing:
+            raise ValidationError(
+                f"{len(missing)} ligne(s) introuvables dans cette campagne, dont "
+                f"« {missing[0]} ». Rechargez la liste avant de recommencer.",
+                missing=missing[:20],
+            )
+
         for line_id in unique:
             ctx.sheets.delete_sheet_line(line_id, actor=ctx.actor)
         ctx.record(
@@ -577,16 +598,13 @@ class GenericService:
         return len(unique)
 
     def delete_sheet_line(self, campaign: Campaign, line_id: str) -> None:
-        ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
-        ctx.sheets.delete_sheet_line(line_id, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.DELETE,
-            entity_type="count_sheet_line",
-            entity_id=line_id,
-            summary="Suppression logique d'une ligne de feuille",
-        )
+        """One line — the same path as a batch of one.
+
+        Deleting by identifier alone would delete it wherever it lives, another
+        campaign included, and would hand an unparsable identifier straight to
+        the driver. Both are the batch's job to check, so this goes through it.
+        """
+        self.delete_sheet_lines(campaign, [line_id])
 
     # ---------------------------------------------------------- AI extraction
 

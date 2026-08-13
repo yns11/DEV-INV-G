@@ -100,6 +100,7 @@ export function DataGrid<T extends Row>({
   selected,
   onSelectedChange,
   editable = false,
+  canAdd = true,
   onRowsChange,
   onPaste,
   onDropFile,
@@ -124,6 +125,15 @@ export function DataGrid<T extends Row>({
   selected?: Set<string>
   onSelectedChange?: (selected: Set<string>) => void
   editable?: boolean
+  /**
+   * Whether a blank row may be added.
+   *
+   * Off when a new row would have nowhere to be saved — a flat list spanning
+   * several sheets, before one is chosen. Offering the button anyway produces
+   * a row somebody fills in and that is then silently dropped on save, which is
+   * worse than not offering it.
+   */
+  canAdd?: boolean
   onRowsChange?: (rows: T[]) => void
   /** Receives a clipboard block pasted anywhere in the grid. */
   onPaste?: (text: string) => void
@@ -385,7 +395,7 @@ export function DataGrid<T extends Row>({
                   : 'Excel'}
             </Button>
           )}
-          {editable && (
+          {editable && canAdd && (
             <Button size="sm" icon={<Icons.plus size={13} />} onClick={addRow}>
               Ajouter une ligne
             </Button>

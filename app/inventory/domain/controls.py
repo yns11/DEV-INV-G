@@ -42,7 +42,6 @@ from .models import (
     VarianceLine,
     Zone,
 )
-from .quantities import ZERO
 from .variance import is_material
 
 __all__ = [
@@ -182,22 +181,25 @@ def check_items(*, items: Mapping[str, Item]) -> list[ControlFinding]:
     looks.
     """
     findings: list[ControlFinding] = []
-    unpriced = [
+    unpriced = sorted(
         i.item_number
         for i in items.values()
         if i.std_price == 0 and not i.excluded_everywhere
-    ]
-    if unpriced:
+    )
+    # Un constat par article, et non un seul qui en compterait cent cinq : c'est
+    # la liste elle-même qu'on va relire pour aller chercher les prix, et un
+    # compte sans les références ne dit à personne par où commencer.
+    for item_number in unpriced:
         findings.append(
             ControlFinding(
                 code="ITEMS_WITHOUT_PRICE",
                 severity=ControlSeverity.WARNING,
                 message=(
-                    f"{len(unpriced)} article(s) ont un prix standard nul : leurs écarts "
-                    "seront valorisés à 0 € et disparaîtront des analyses en valeur."
+                    f"{item_number} a un prix standard nul : ses écarts seront "
+                    "valorisés à 0 € et disparaîtront des analyses en valeur."
                 ),
                 entity_type="item",
-                context={"sample": sorted(unpriced)[:20], "count": len(unpriced)},
+                item_number=item_number,
             )
         )
     return findings
@@ -229,17 +231,17 @@ def check_book_stock(
     unknown_items = sorted({
         line.item_number for line in book_stock if line.item_number not in items
     })
-    if unknown_items:
+    for item_number in unknown_items:
         findings.append(
             ControlFinding(
                 code="BOOK_STOCK_UNKNOWN_ITEM",
                 severity=ControlSeverity.WARNING,
                 message=(
-                    f"{len(unknown_items)} article(s) du stock ERP sont absents du "
+                    f"{item_number} porte du stock ERP mais est absent du "
                     "référentiel de la campagne."
                 ),
                 entity_type="book_stock",
-                context={"sample": unknown_items[:20], "count": len(unknown_items)},
+                item_number=item_number,
             )
         )
 
@@ -251,18 +253,19 @@ def check_book_stock(
         ).items()
         if n > 1
     ]
-    if duplicates:
+    for item_number, warehouse_id, location_id in sorted(duplicates):
         findings.append(
             ControlFinding(
                 code="BOOK_STOCK_DUPLICATE_KEY",
                 severity=ControlSeverity.WARNING,
                 message=(
-                    f"{len(duplicates)} triplet(s) article/entrepôt/emplacement "
-                    "apparaissent plusieurs fois dans le stock ERP ; les quantités "
-                    "ont été sommées."
+                    f"{item_number} apparaît plusieurs fois en {warehouse_id} / "
+                    f"{location_id} dans le stock ERP ; les quantités ont été sommées."
                 ),
                 entity_type="book_stock",
-                context={"sample": [list(d) for d in duplicates[:20]]},
+                item_number=item_number,
+                warehouse_id=warehouse_id,
+                location_id=location_id,
             )
         )
 
@@ -492,35 +495,50 @@ def check_variances(
     """Findings derived from the reconciled variances."""
     findings: list[ControlFinding] = []
 
-    never_counted = [v for v in variances if v.book_only and v.book_qty != 0]
-    if never_counted:
-        value = sum((abs(v.book_value) for v in never_counted), ZERO)
+    # Un constat par couple, et non un seul qui en compterait dix-sept. Le
+    # nombre dit l'ampleur, mais ce qu'on va faire ensuite — aller voir dans
+    # l'allée si les palettes y sont encore — demande la liste, article et
+    # emplacement. Le regroupement les ramène à une ligne à l'écran de toute
+    # façon, et « voir plus » les rouvre toutes.
+    for line in variances:
+        if not (line.book_only and line.book_qty != 0):
+            continue
         findings.append(
             ControlFinding(
                 code="BOOK_STOCK_NOT_COUNTED",
                 severity=ControlSeverity.BLOCKER,
                 message=(
-                    f"{len(never_counted)} couple(s) article/emplacement portent du "
-                    f"stock ERP ({value:,.0f} €) sans aucun comptage. Ils seront "
-                    "soldés à zéro si l'inventaire est clôturé en l'état."
+                    f"{line.item_number} porte {line.book_qty} en stock ERP "
+                    f"({line.book_value:,.0f} €) en {line.warehouse_id} / "
+                    f"{line.location_id} sans aucun comptage. Sera soldé à zéro si "
+                    "l'inventaire est clôturé en l'état."
                 ),
                 entity_type="variance",
-                context={"count": len(never_counted), "bookValue": str(value)},
+                item_number=line.item_number,
+                warehouse_id=line.warehouse_id,
+                location_id=line.location_id,
+                context={"bookQty": str(line.book_qty),
+                         "bookValue": str(line.book_value)},
             )
         )
 
-    ghosts = [v for v in variances if v.counted_only and v.counted_qty != 0]
-    if ghosts:
+    for line in variances:
+        if not (line.counted_only and line.counted_qty != 0):
+            continue
         findings.append(
             ControlFinding(
                 code="COUNTED_WITHOUT_BOOK_STOCK",
                 severity=ControlSeverity.WARNING,
                 message=(
-                    f"{len(ghosts)} couple(s) article/emplacement ont été comptés alors "
-                    "que l'ERP n'y voyait aucun stock."
+                    f"{line.item_number} a été compté à {line.counted_qty} en "
+                    f"{line.warehouse_id} / {line.location_id} alors que l'ERP n'y "
+                    "voyait aucun stock."
                 ),
                 entity_type="variance",
-                context={"count": len(ghosts)},
+                item_number=line.item_number,
+                warehouse_id=line.warehouse_id,
+                location_id=line.location_id,
+                context={"countedQty": str(line.counted_qty)},
             )
         )
 

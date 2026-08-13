@@ -25,7 +25,7 @@ import type { CampaignStatus, Overview } from './types'
 export type IconName = keyof typeof Icons
 
 /** The lifecycle stage a section belongs to. Ordered as the campaign runs. */
-export type PhaseGroup = 'PILOTAGE' | 'PREPARATION' | 'COUNTING' | 'ANALYSIS'
+export type PhaseGroup = 'PREPARATION' | 'COUNTING' | 'ANALYSIS'
 
 export const PHASE_GROUPS: Array<{
   id: PhaseGroup
@@ -33,7 +33,6 @@ export const PHASE_GROUPS: Array<{
   /** The campaign status this group is the working phase of, if any. */
   status?: CampaignStatus
 }> = [
-  { id: 'PILOTAGE', label: 'Pilotage' },
   { id: 'PREPARATION', label: 'Préparation', status: 'PREPARATION' },
   { id: 'COUNTING', label: 'Comptage', status: 'COUNTING' },
   { id: 'ANALYSIS', label: 'Analyse', status: 'ANALYSIS' },
@@ -61,7 +60,7 @@ export interface SubSection {
 }
 
 export interface Section {
-  /** Route segment, relative to the campaign. `''` is the dashboard. */
+  /** Route segment, relative to the campaign. */
   to: string
   label: string
   /**
@@ -93,33 +92,40 @@ const generic = (o: Overview) => o.campaign.config.generic_warehouse
 const blocked = (o: Overview, aspect: string) => o.sequence?.blockedBy?.[aspect]
 const ready = (o: Overview, aspect: string) => !blocked(o, aspect)
 
-export const SECTIONS: Section[] = [
-  // --- Pilotage -------------------------------------------------------------
-  {
-    to: '',
-    label: 'Tableau de bord',
-    icon: 'dashboard',
-    phase: 'PILOTAGE',
-    lede: 'L’état de la campagne en un écran.',
-    enabled: () => true,
-  },
+/**
+ * Les écrans qui ne sont pas une étape du travail.
+ *
+ * L'assistant et le journal d'audit ne se rangent sous aucune phase : ils
+ * s'ouvrent depuis n'importe où, à propos de ce qu'on est en train de faire. Ils
+ * vivent donc avec les actions de l'en-tête plutôt que dans l'arborescence, où
+ * ils formaient un groupe « Pilotage » qui n'était pas une étape et qu'il
+ * fallait traverser à chaque fois pour atteindre la première.
+ */
+export const UTILITIES: Array<{
+  to: string
+  label: string
+  /** Plus court dans l'en-tête, où la place se compte. */
+  short: string
+  icon: IconName
+  lede: string
+}> = [
   {
     to: 'assistant',
     label: 'Assistant',
+    short: 'Assistant',
     icon: 'sparkles',
-    phase: 'PILOTAGE',
     lede: 'Posez vos questions sur la campagne en français.',
-    enabled: () => true,
   },
   {
     to: 'audit',
     label: 'Journal d’audit',
+    short: 'Audit',
     icon: 'history',
-    phase: 'PILOTAGE',
     lede: 'Qui a changé quoi, quand.',
-    enabled: () => true,
   },
+]
 
+export const SECTIONS: Section[] = [
   // --- Préparation ----------------------------------------------------------
   {
     to: 'articles',
@@ -270,10 +276,27 @@ export function labelOf(section: Section, overview: Overview): string {
   return section.labelFor ? section.labelFor(overview) : section.label
 }
 
-/** The section a pathname is currently on. */
+/**
+ * The section a pathname is currently on.
+ *
+ * The two utility screens answer here too: they are no longer in the tree, but
+ * the page still has to be able to say what it is showing.
+ */
 export function sectionFor(pathname: string, campaignId: string): Section | undefined {
   const base = `/campagnes/${campaignId}`
   const rest = pathname.startsWith(base) ? pathname.slice(base.length) : ''
   const segment = rest.replace(/^\/+/, '').split('/')[0] ?? ''
-  return SECTIONS.find((s) => s.to === segment)
+  const section = SECTIONS.find((s) => s.to === segment)
+  if (section) return section
+  const utility = UTILITIES.find((u) => u.to === segment)
+  return utility
+    ? {
+        to: utility.to,
+        label: utility.label,
+        icon: utility.icon,
+        phase: 'PREPARATION',
+        lede: utility.lede,
+        enabled: () => true,
+      }
+    : undefined
 }

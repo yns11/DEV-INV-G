@@ -46,13 +46,16 @@ class TestWhereThePriceWarningLives:
                                exclusions=["ALL"])}
         ) == []
 
-    def test_the_message_counts_them_rather_than_repeating_itself(self):
+    def test_each_article_gets_its_own_finding_so_the_list_can_be_read(self):
+        """Un seul constat comptant « 105 articles » ne dit pas *lesquels*, et
+        c'est précisément la liste qu'on va relire pour aller chercher les prix.
+        Le regroupement les ramène à une ligne à l'écran de toute façon."""
         findings = check_items(items={
             f"P-{n}": item(f"P-{n}", ItemType.COMPONENT, std_price=0)
             for n in range(40)
         })
-        assert len(findings) == 1
-        assert "40 article(s)" in findings[0].message
+        assert len(findings) == 40
+        assert {f.item_number for f in findings} == {f"P-{n}" for n in range(40)}
 
 
 class TestAnAssemblyDeliberatelyIgnoredInBills:

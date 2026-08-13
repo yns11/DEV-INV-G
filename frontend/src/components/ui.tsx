@@ -429,7 +429,13 @@ export function Kpi({
   /** Comparison line: prior period, target, or the complementary measure. */
   compare?: ReactNode
   tone?: 'pos' | 'neg' | 'neutral'
-  /** Provenance and freshness — a KPI without them is not trustworthy. */
+  /**
+   * Provenance and freshness — a KPI without them is not trustworthy.
+   *
+   * Inside a carousel, use it on every board or none: it adds a third line, and
+   * a board one line taller than its neighbours makes the whole strip change
+   * size at each arrow press.
+   */
   source?: ReactNode
   hero?: boolean
   hint?: string

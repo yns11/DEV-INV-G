@@ -17,6 +17,7 @@
 
 import { useState } from 'react'
 import type { Finding, FindingGroup } from '../lib/types'
+import { DASH } from '../lib/format'
 import { Alert, Badge, Button } from './ui'
 
 const TONE: Record<string, string> = {
@@ -33,6 +34,25 @@ const SEVERITY_LABELS: Record<string, string> = {
 
 /** Combien d'occurrences on montre avant de s'arrêter, une fois déplié. */
 const DETAIL_CEILING = 200
+
+/**
+ * Sur quoi porte un constat.
+ *
+ * Tous ne portent pas sur un article : un journal en double porte sur un
+ * emplacement, un cycle de nomenclature sur un chemin d'assemblages. La colonne
+ * affichait « article » et donc un tiret pour tous ceux-là — c'est-à-dire
+ * exactement rien de ce qui permet d'aller voir. Elle affiche maintenant la
+ * coordonnée la plus précise que le constat porte.
+ */
+function subjectOf(finding: Finding): string {
+  const place = [finding.warehouse_id, finding.location_id].filter(Boolean).join(' / ')
+  if (finding.item_number && place) return `${finding.item_number} · ${place}`
+  if (finding.item_number) return finding.item_number
+  if (place) return place
+  const cycle = finding.context?.cycle
+  if (Array.isArray(cycle)) return cycle.join(' → ')
+  return DASH
+}
 
 export function FindingGroups({
   groups,
@@ -83,7 +103,10 @@ export function FindingGroups({
               </strong>
               {!single && (
                 <>
-                  <span className="subtle num">{group.count} article(s)</span>
+                  {/* « constat » et non « article » : tous ne portent pas sur
+                      un article — un journal en double porte sur un
+                      emplacement, un cycle sur un chemin d'assemblages. */}
+                  <span className="subtle num">{group.count} constat(s)</span>
                   <span className="spacer" />
                   <Button
                     variant="ghost"
@@ -105,14 +128,14 @@ export function FindingGroups({
                 <table className="data">
                   <thead>
                     <tr>
-                      <th style={{ width: 170 }}>Article</th>
+                      <th style={{ width: 200 }}>Concerne</th>
                       <th>Constat</th>
                     </tr>
                   </thead>
                   <tbody>
                     {occurrences.slice(0, DETAIL_CEILING).map((finding, index) => (
                       <tr key={`${finding.item_number}-${index}`}>
-                        <td className="mono">{finding.item_number || '—'}</td>
+                        <td className="mono">{subjectOf(finding)}</td>
                         <td>{finding.message}</td>
                       </tr>
                     ))}

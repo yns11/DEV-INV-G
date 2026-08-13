@@ -14,12 +14,11 @@
 
 import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Outlet, useLocation, useParams } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, downloads } from '../lib/api'
 import type { CampaignStatus, Overview } from '../lib/types'
 import {
   CAMPAIGN_STATUS_LABELS,
-  date as fmtDate,
   moneyShort,
   qty,
   percent,
@@ -29,7 +28,7 @@ import {
   label as toLabel,
 } from '../lib/format'
 import { useFocusMode } from '../lib/focus'
-import { labelOf, sectionFor } from '../lib/navigation'
+import { UTILITIES, labelOf, sectionFor } from '../lib/navigation'
 import {
   Alert, AsyncBoundary, Badge, Button, Carousel, ErrorState, Icons, Kpi, Modal,
   Skeleton, Switch, useDownload, useErrorToast, useToast,
@@ -73,6 +72,7 @@ export function CampaignShell() {
 function CampaignHeader({ overview }: { overview: Overview }) {
   const startDownload = useDownload()
   const location = useLocation()
+  const navigate = useNavigate()
   const { campaign } = overview
   const [transitionTarget, setTransitionTarget] = useState<CampaignStatus | null>(null)
   const [focus] = useFocusMode()
@@ -86,29 +86,36 @@ function CampaignHeader({ overview }: { overview: Overview }) {
           <h1 className="page-head__title" style={{ marginBottom: 0 }}>
             {section ? labelOf(section, overview) : campaign.code}
           </h1>
-          {/* The campaign's own dates belong on the campaign's own screen. On
-              every other one they are a line of noise above the actual work. */}
-          <p className="page-head__lede">
-            {section?.lede ?? campaign.label}
-            {section?.to === '' && (
-              <>
-                {' '}
-                — {campaign.label}, comptage du{' '}
-                <strong>{fmtDate(campaign.count_date)}</strong>
-                {campaign.book_stock_frozen_at && (
-                  <> · stock ERP gelé le {fmtDate(campaign.book_stock_frozen_at)}</>
-                )}
-              </>
-            )}
-          </p>
+          <p className="page-head__lede">{section?.lede ?? campaign.label}</p>
         </div>
         <div className="row-wrap">
           <FocusSwitch overview={overview} />
+          {/* L'assistant et l'audit s'ouvrent à propos de ce qu'on est en train
+              de faire, depuis n'importe quel écran. Ils appartiennent donc à la
+              barre d'actions, pas à l'arborescence des étapes — où ils
+              formaient un groupe qu'il fallait traverser pour atteindre la
+              première. */}
+          {UTILITIES.map((utility) => {
+            const Icon = Icons[utility.icon]
+            const here = location.pathname.endsWith(`/${utility.to}`)
+            return (
+              <Button
+                key={utility.to}
+                variant={here ? 'primary' : 'secondary'}
+                icon={<Icon size={14} />}
+                title={utility.lede}
+                onClick={() => navigate(`/campagnes/${campaign.id}/${utility.to}`)}
+              >
+                {utility.short}
+              </Button>
+            )
+          })}
           <Button
             icon={<Icons.download size={14} />}
+            title="Le dossier complet de la campagne, en un classeur Excel"
             onClick={() => startDownload(downloads.campaignWorkbook(campaign.id))}
           >
-            Exporter le dossier
+            Exporter
           </Button>
           {next && (
             <Button
@@ -186,7 +193,7 @@ function PerimeterNote({ overview }: { overview: Overview }) {
  * offered empty.
  */
 function KpiCarousel({ overview }: { overview: Overview }) {
-  const { campaign, journalProgress, genericProgress, counts, perimeter } = overview
+  const { campaign, journalProgress, genericProgress, counts } = overview
   const hasBookStock = campaign.book_stock_frozen_at !== null
 
   const kpis = useQuery({
@@ -226,19 +233,30 @@ function KpiCarousel({ overview }: { overview: Overview }) {
             tone={genericProgress.pendingArbitrations ? 'neg' : 'neutral'}
             compare={<span>écarts entre les deux comptages</span>}
           />
+          {/* Le gestionnaire ne figure plus ici : cette troisième ligne
+              rendait la carte — et donc toute la planche — plus haute que les
+              autres, et le carrousel changeait de taille à chaque flèche. Il
+              est déjà nommé par l'interrupteur « Mon périmètre », qui est
+              l'endroit d'où il se change. */}
           <Kpi
-            label="Dossier"
+            label="Articles au dossier"
             value={counts.items.toLocaleString('fr-FR')}
             compare={
               <span className="num">
                 {counts.bookStockLines.toLocaleString('fr-FR')} lignes de stock ERP
               </span>
             }
-            source={
-              perimeter.resolved
-                ? `Gestionnaire : ${perimeter.managerLabel || perimeter.managerCode}`
-                : undefined
+          />
+          <Kpi
+            label="Journaux en cours"
+            value={journalProgress.running.toLocaleString('fr-FR')}
+            tone={journalProgress.running ? 'neg' : 'neutral'}
+            compare={
+              <span className="num">
+                {journalProgress.pending.toLocaleString('fr-FR')} pas encore ouverts
+              </span>
             }
+            hint="Saisis mais pas encore postés à l’ERP."
           />
         </div>
       ),
@@ -341,6 +359,13 @@ function KpiCarousel({ overview }: { overview: Overview }) {
                 value={moneyShort(data.residualValue)}
                 compare={<span>après ajustements postés</span>}
                 hint="Ce qui reste inexpliqué une fois les corrections prises en compte."
+              />
+              <Kpi
+                label="Lignes hors seuils"
+                value={data.materialLineCount.toLocaleString('fr-FR')}
+                tone={data.materialLineCount ? 'neg' : 'neutral'}
+                compare={<span>à analyser une par une</span>}
+                hint="Celles dont l’écart dépasse le seuil de leur type d’article."
               />
             </div>
           )}

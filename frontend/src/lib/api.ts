@@ -272,6 +272,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ lineIds }),
     }),
+  // « D'où vient ce chiffre ? » — une seule forme de réponse pour toutes les
+  // colonnes, donc une seule fenêtre côté écran.
+  breakdown: (
+    id: string,
+    itemNumber: string,
+    aspect: string,
+    params: { warehouseId?: string; locationId?: string } = {},
+  ) =>
+    request<{
+      itemNumber: string
+      name: string
+      aspect: string
+      unit: string
+      unitCost: number
+      total: number
+      totalValue: number
+      rows: Array<Record<string, unknown>>
+    }>(
+      `/campaigns/${id}/analysis/breakdown/${encodeURIComponent(itemNumber)}${qs({
+        aspect,
+        ...params,
+      })}`,
+    ),
   alerts: (id: string) =>
     request<{ controls: number; consolidation: number }>(
       `/campaigns/${id}/analysis/alerts`,

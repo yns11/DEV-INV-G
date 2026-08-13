@@ -49,6 +49,15 @@ __all__ = ["AnalysisService"]
 #: Dimensions the analysis screens may group by.
 DIMENSIONS = ("item", "warehouse", "location", "item_type", "category", "program")
 
+#: How a movement names itself in a breakdown. The enum value would do, but
+#: « Ajustement ADJUSTMENT » is not a sentence anybody wrote on purpose.
+ADJUSTMENT_ORIGINS = {
+    "COUNT": "Mouvement de comptage",
+    "ADJUSTMENT": "Ajustement saisi",
+    "RECOUNT": "Recomptage",
+    "OTHER": "Autre mouvement",
+}
+
 
 class AnalysisService:
     """Reconciliation and analysis of a campaign."""
@@ -348,6 +357,249 @@ class AnalysisService:
             )
         return findings
 
+    # ------------------------------------------------------------ breakdowns
+
+    #: The figures a screen can ask "where does this come from?" about.
+    BREAKDOWN_ASPECTS = (
+        "book", "counted", "line_side", "wip_ok", "wip", "variance", "residual",
+    )
+
+    def breakdown(
+        self,
+        campaign: Campaign,
+        item_number: str,
+        aspect: str,
+        *,
+        warehouse_id: str = "",
+        location_id: str = "",
+    ) -> dict[str, Any]:
+        """Where one figure comes from, in one shape whatever the figure is.
+
+        The WIP column was explorable and the others were not, so a quantity one
+        could not explain was a quantity one could only believe. Every column now
+        answers the same question the same way — origin, place, detail, quantity,
+        value — which is also what lets a single dialog serve all of them instead
+        of six that would drift apart.
+
+        Totals are computed from the rows returned, not fetched separately: a
+        drill-down whose total disagrees with its own lines is worse than none.
+        """
+        if aspect not in self.BREAKDOWN_ASPECTS:
+            raise ValidationError(
+                f"Décomposition inconnue : {aspect!r}.",
+                allowed=list(self.BREAKDOWN_ASPECTS),
+            )
+        item_number = item_number.strip().upper()
+        ctx = self.ctx
+        item = ctx.referentials.items_by_number(campaign.id).get(item_number)
+        if item is None:
+            raise NotFoundError(
+                f"{item_number} est absent du référentiel de cette campagne.",
+                itemNumber=item_number,
+            )
+        unit_cost = float(item.std_price)
+
+        rows = {
+            "book": self._book_rows,
+            "counted": self._counted_rows,
+            "line_side": lambda c, i: self._sheet_rows(c, i, "LINE_SIDE"),
+            "wip_ok": lambda c, i: self._sheet_rows(c, i, "WIP_OK"),
+            "wip": self._wip_rows,
+            "variance": self._variance_rows_for,
+            "residual": self._residual_rows,
+        }[aspect](campaign, item_number)
+
+        if warehouse_id:
+            rows = [r for r in rows if r.get("warehouseId", warehouse_id) == warehouse_id]
+        if location_id:
+            rows = [r for r in rows if r.get("locationId", location_id) == location_id]
+
+        for row in rows:
+            row.setdefault("value", row["qty"] * unit_cost)
+        return {
+            "itemNumber": item_number,
+            "name": item.name,
+            "aspect": aspect,
+            "unit": item.unit,
+            "unitCost": unit_cost,
+            "total": sum(r["qty"] for r in rows),
+            "totalValue": sum(r["value"] for r in rows),
+            "rows": rows,
+        }
+
+    def _book_rows(self, campaign: Campaign, item_number: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "origin": "Stock ERP",
+                "where": f"{line.warehouse_id} / {line.location_id}",
+                "warehouseId": line.warehouse_id,
+                "locationId": line.location_id,
+                "detail": "",
+                "qty": float(line.qty),
+                "value": float(line.value),
+            }
+            for line in self.ctx.book_stock.list(campaign.id)
+            if line.item_number == item_number
+        ]
+
+    def _counted_rows(self, campaign: Campaign, item_number: str) -> list[dict[str, Any]]:
+        """One row per journal, and the GENERIQUE one split by zone.
+
+        GENERIQUE is a single ERP location covering dozens of physical areas, so
+        "counted 1 240 in GENERIQUE" explains nothing on its own. Its share is
+        broken down by the zones that produced it — which is the only form in
+        which somebody can go and check.
+        """
+        ctx = self.ctx
+        generic = campaign.config.generic_key
+        out: list[dict[str, Any]] = []
+        for row in ctx.journals.counted_quantities(campaign.id):
+            if row["item_number"] != item_number:
+                continue
+            key = (row["warehouse_id"], row["location_id"])
+            if key == (generic.warehouse_id, generic.location_id):
+                continue
+            out.append({
+                "origin": "Journal de comptage",
+                "where": f"{row['warehouse_id']} / {row['location_id']}",
+                "warehouseId": row["warehouse_id"],
+                "locationId": row["location_id"],
+                "detail": "",
+                "qty": float(row["qty"]),
+            })
+
+        from .generic_service import GenericService
+
+        result = GenericService(ctx).consolidate(
+            campaign, preview=True, provisional=True
+        )
+        line = next(
+            (l for l in result.lines if l.item_number == item_number), None
+        )
+        if line is not None:
+            for label, qty_part in (
+                ("Bord de ligne", line.qty_line_side),
+                ("WIP assemblé", line.qty_wip_ok),
+                ("WIP éclaté en composants", line.qty_wip_exploded),
+            ):
+                if qty_part == 0:
+                    continue
+                out.append({
+                    "origin": label,
+                    "where": f"{generic.warehouse_id} / {generic.location_id}",
+                    "warehouseId": generic.warehouse_id,
+                    "locationId": generic.location_id,
+                    "detail": ", ".join(line.zone_codes[:8]),
+                    "qty": float(qty_part),
+                })
+        return out
+
+    def _sheet_rows(
+        self, campaign: Campaign, item_number: str, section: str
+    ) -> list[dict[str, Any]]:
+        """The counting-sheet lines behind a GENERIQUE section total."""
+        ctx = self.ctx
+        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
+        sheets = {s.id: s for s in ctx.sheets.list_sheets(campaign.id)}
+        generic = campaign.config.generic_key
+        out: list[dict[str, Any]] = []
+        for sheet_id, lines in ctx.sheets.lines_by_sheet(campaign.id).items():
+            sheet = sheets.get(sheet_id)
+            if sheet is None:
+                continue
+            zone = zones.get(sheet.zone_id)
+            for line in lines:
+                if line.item_number != item_number or str(line.section) != section:
+                    continue
+                if not line.is_counted:
+                    continue
+                out.append({
+                    "origin": zone.label or zone.code if zone else "",
+                    "where": f"{generic.warehouse_id} / {generic.location_id}",
+                    "warehouseId": generic.warehouse_id,
+                    "locationId": generic.location_id,
+                    "detail": (
+                        f"zone {zone.code if zone else '?'} · comptage n°"
+                        f"{1 if str(sheet.pass_no) == 'PASS_1' else 2}"
+                    ),
+                    "qty": float(line.qty),
+                })
+        return out
+
+    def _wip_rows(self, campaign: Campaign, item_number: str) -> list[dict[str, Any]]:
+        generic = campaign.config.generic_key
+        return [
+            {
+                "origin": str(row.get("parent_item", "")),
+                "where": f"{generic.warehouse_id} / {generic.location_id}",
+                "warehouseId": generic.warehouse_id,
+                "locationId": generic.location_id,
+                "detail": (
+                    f"zone {row.get('zone_code', '')} · "
+                    f"{row.get('parent_qty', '')} × {row.get('qty_per', '')}"
+                ),
+                "qty": float(row.get("child_qty", 0) or 0),
+            }
+            for row in self.ctx.consolidation.wip_breakdown(
+                campaign.id, child_item=item_number
+            )
+        ]
+
+    def _variance_rows_for(
+        self, campaign: Campaign, item_number: str
+    ) -> list[dict[str, Any]]:
+        """The gap, place by place — where the money actually went."""
+        return [
+            {
+                "origin": "Écart",
+                "where": f"{line.warehouse_id} / {line.location_id}",
+                "warehouseId": line.warehouse_id,
+                "locationId": line.location_id,
+                "detail": (
+                    f"ERP {_plain(line.book_qty)} − compté {_plain(line.counted_qty)}"
+                ),
+                "qty": float(line.variance_qty),
+                "value": float(line.variance_value),
+            }
+            for line in self.variances(campaign, granularity="item_location")
+            if line.item_number == item_number and line.variance_qty != 0
+        ]
+
+    def _residual_rows(
+        self, campaign: Campaign, item_number: str
+    ) -> list[dict[str, Any]]:
+        """What is left once the adjustments already posted are taken off."""
+        out = [
+            {
+                "origin": "Écart constaté",
+                "where": f"{line.warehouse_id} / {line.location_id}",
+                "warehouseId": line.warehouse_id,
+                "locationId": line.location_id,
+                "detail": "",
+                "qty": float(line.variance_qty),
+                "value": float(line.variance_value),
+            }
+            for line in self.variances(campaign, granularity="item_location")
+            if line.item_number == item_number and line.variance_qty != 0
+        ]
+        for adjustment in self.ctx.adjustments.list(campaign.id):
+            if adjustment.item_number != item_number:
+                continue
+            out.append({
+                "origin": ADJUSTMENT_ORIGINS.get(
+                    str(adjustment.kind), "Ajustement"
+                ),
+                "where": f"{adjustment.warehouse_id} / {adjustment.location_id}",
+                "warehouseId": adjustment.warehouse_id,
+                "locationId": adjustment.location_id,
+                "detail": adjustment.journal_number or adjustment.comment,
+                # Retranché : c'est ce que l'ajustement a déjà corrigé, donc ce
+                # qui ne reste plus à expliquer.
+                "qty": -float(adjustment.qty),
+                "value": -float(adjustment.value),
+            })
+        return out
+
     def alert_counts(self, campaign: Campaign) -> dict[str, int]:
         """One number per screen that carries a badge.
 
@@ -412,7 +664,11 @@ class AnalysisService:
             "available": True,
             "abcXyz": {
                 "summary": _records(segmentation.summary),
-                "items": _records(segmentation.frame.head(500)),
+                # Toute la population, pas les cinq cents premiers. Le segment AZ
+                # — forte valeur, faible fiabilité — est celui qu'on vient
+                # chercher, et il n'a aucune raison de tomber dans les premières
+                # lignes d'un classement fait sur la valeur.
+                "items": _records(segmentation.frame),
             },
             "pareto": _records(pareto_frontier(frame)),
             "anomalies": {
@@ -422,15 +678,30 @@ class AnalysisService:
                 "flagged": _records(
                     anomalies.frame[anomalies.frame["is_anomaly"]]
                     .sort_values("anomaly_score", ascending=False)
-                    .head(100)
                 ),
             },
             "clusters": {
                 "n": clusters.n_clusters,
                 "silhouette": clusters.silhouette,
                 "profiles": _records(clusters.profiles),
+                # Les articles avec leur profil : un graphique de profils sans
+                # la liste de ce qu'il y a dedans se regarde et ne se travaille
+                # pas. C'est la liste qu'on emporte en réunion.
+                "items": _records(
+                    clusters.frame[[
+                        c for c in (
+                            "item_number", "warehouse_id", "location_id", "cluster",
+                            "item_type", "category", "program", "book_value",
+                            "variance_value", "abs_variance_value", "variance_ratio",
+                        )
+                        if c in clusters.frame.columns
+                    ]]
+                ) if clusters.n_clusters > 0 else [],
             },
-            "recountPriority": _records(recount_priority(anomalies.frame, top_n=50)),
+            # 500 et non 50 : la liste sert à décider où envoyer les équipes,
+            # et une équipe qui a fini ses cinquante lignes doit trouver la
+            # suite ici plutôt que de redemander l'analyse.
+            "recountPriority": _records(recount_priority(anomalies.frame, top_n=500)),
             "dataQuality": {
                 "benford": benford_check(counted).as_dict(),
                 "digitPreference": digit_preference(counted),
@@ -673,6 +944,19 @@ class AnalysisService:
 # --------------------------------------------------------------------------- #
 # Serialisation helpers
 # --------------------------------------------------------------------------- #
+
+def _plain(value: Any) -> str:
+    """A quantity written as somebody would say it.
+
+    ``Decimal`` renders its scale — ``40.000000`` for forty screws — and a
+    breakdown that reads "ERP 40.000000 − compté 0.000000" makes the reader
+    work out what it is looking at before it can read it.
+    """
+    number = float(value)
+    return f"{number:,.0f}".replace(",", " ") if number == int(number) else (
+        f"{number:,.3f}".replace(",", " ").rstrip("0").rstrip(".")
+    )
+
 
 def _group_payload(group: VarianceSet) -> dict[str, Any]:
     return {

@@ -202,6 +202,80 @@ class ImportService:
             "sample": [_jsonable(r) for r in result.rows[:limit]],
         }
 
+    def _retire_stale_locations(
+        self,
+        campaign: Campaign,
+        stale: Sequence[LocationKey],
+        *,
+        outcome: ImportOutcome,
+        conn: Any,
+    ) -> tuple[int, set[LocationKey]]:
+        """Close the locations a new ERP snapshot no longer knows about.
+
+        Returns how many journals were removed, and the locations kept back.
+
+        A journal nobody has opened is a leftover and goes with its location. A
+        journal that carries a line, or that somebody has already posted, is
+        *work*: reloading the snapshot is not a decision to throw it away. Those
+        locations stay active and the import says so — an emplacement counted
+        under a snapshot that no longer lists it is exactly the sort of thing
+        that has to be looked at, not cleaned up in silence.
+        """
+        ctx = self.ctx
+        if not stale:
+            return 0, set()
+
+        untouched = ctx.journals.untouched_journal_keys(campaign.id, stale, conn=conn)
+        existing_journals = ctx.journals.journal_keys(campaign.id, stale, conn=conn)
+        kept = {
+            k for k in stale
+            if (k.warehouse_id, k.location_id) in existing_journals - untouched
+        }
+        # GENERIQUE ne porte pas de ligne de journal : son comptage vit dans les
+        # feuilles. Le juger sur ses lignes de journal le déclarerait vierge
+        # alors qu'une zone entière y a été comptée, et le rechargement d'un
+        # snapshot emporterait tout ce travail sans le dire.
+        generic = campaign.config.generic_key
+        if generic in stale and ctx.sheets.count_counted_lines(campaign.id, conn=conn):
+            kept.add(generic)
+        removable = [
+            k for k in stale
+            if (k.warehouse_id, k.location_id) in untouched and k not in kept
+        ]
+
+        removed = ctx.journals.delete_journals_for_locations(
+            campaign.id, removable, conn=conn
+        )
+        # L'emplacement suit son journal : le désactiver alors qu'un comptage y
+        # est encore ouvert le ferait disparaître des écrans où ce comptage doit
+        # rester visible.
+        closing = [k for k in stale if k not in kept]
+        if closing:
+            ctx.referentials.set_location_status(
+                campaign.id, closing, LocationStatus.DISABLED,
+                actor=ctx.actor, conn=conn,
+            )
+
+        outcome.details["locationsRetired"] = len(closing)
+        outcome.details["journalsRemoved"] = removed
+        if kept:
+            outcome.details["locationsKept"] = sorted(
+                f"{k.warehouse_id} / {k.location_id}" for k in kept
+            )[:50]
+            outcome.warnings.append(
+                RowError(
+                    line=0,
+                    column="",
+                    value="",
+                    message=(
+                        f"{len(kept)} emplacement(s) absents du nouveau stock ERP "
+                        "portent déjà un comptage : leur journal est conservé. "
+                        "Vérifiez-les avant la clôture."
+                    ),
+                )
+            )
+        return removed, kept
+
     # -------------------------------------------------------------- importers
 
     def import_items(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
@@ -414,9 +488,33 @@ class ImportService:
                 ),
             )
 
+        # Un snapshot *remplace* le précédent. Les emplacements que seul l'ancien
+        # connaissait n'ont donc plus de raison d'être — et sans cela leurs
+        # journaux restaient dans la liste, s'ajoutant aux nouveaux : la
+        # couverture comptait des emplacements qui n'existent plus, et personne
+        # ne pouvait dire lesquels étaient à compter.
+        #
+        # Seuls les emplacements *nés d'un snapshot* sont retirés. Celui qu'on a
+        # déclaré à la main reste : quelqu'un a décidé qu'il existait, et un
+        # chargement ERP n'est pas un avis sur cette décision.
+        snapshot_keys = {
+            LocationKey(warehouse_id=l.warehouse_id, location_id=l.location_id)
+            for l in lines
+        }
+        stale = [
+            key
+            for key, location in existing.items()
+            if key not in snapshot_keys
+            and location.source is DataSource.SYSTEM
+            and location.status is LocationStatus.ACTIVE
+        ]
+
         batch_id = new_id()
         with ctx.db.transaction() as conn:
             ctx.book_stock.replace(campaign.id, lines, batch_id=batch_id, conn=conn)
+            removed, kept = self._retire_stale_locations(
+                campaign, stale, outcome=outcome, conn=conn
+            )
             if warehouses:
                 ctx.referentials.upsert_warehouses(
                     warehouses.values(), actor=ctx.actor, conn=conn
@@ -425,12 +523,13 @@ class ImportService:
                 ctx.referentials.upsert_locations(
                     discovered.values(), actor=ctx.actor, conn=conn
                 )
+            retired = set(stale) - kept
             active_keys = [
                 key
                 for key, location in {
                     **existing, **discovered
                 }.items()
-                if location.status is LocationStatus.ACTIVE
+                if location.status is LocationStatus.ACTIVE and key not in retired
             ]
             created = ctx.journals.ensure_journals(
                 campaign.id,
@@ -464,26 +563,29 @@ class ImportService:
                 summary=(
                     f"Stock ERP chargé : {len(lines)} lignes, "
                     f"{len(discovered)} nouvel(s) emplacement(s), "
-                    f"{created} journal(aux) créé(s)."
+                    f"{created} journal(aux) créé(s), "
+                    f"{removed} journal(aux) retiré(s)."
                 ),
                 after={
                     "lines": len(lines),
                     "newLocations": len(discovered),
                     "journalsCreated": created,
+                    "journalsRemoved": removed,
                 },
                 conn=conn,
             )
 
         outcome.batch_id = batch_id
         outcome.rows_accepted = len(lines)
-        outcome.details = {
+        # Fusionner, et non remplacer : le retrait des emplacements périmés a
+        # déjà écrit ce qu'il a fait, et c'est précisément ce que l'utilisateur
+        # doit lire après un rechargement.
+        outcome.details.update({
             "newLocations": len(discovered),
             "totalLocations": len(existing) + len(discovered),
             "journalsCreated": created,
-            "warehouses": sorted(
-                {l.warehouse_id for l in lines}
-            ),
-        }
+            "warehouses": sorted({l.warehouse_id for l in lines}),
+        })
         return outcome
 
     def freeze_book_stock(self, campaign: Campaign) -> Campaign:

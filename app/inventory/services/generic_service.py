@@ -30,6 +30,7 @@ from ..domain.enums import (
 )
 from ..domain.models import (
     Campaign,
+    ConsolidatedLine,
     CountJournalLine,
     CountSheet,
     CountSheetLine,
@@ -1239,6 +1240,31 @@ class GenericService:
             )
         return updated
 
+    def line_payload(
+        self, line: ConsolidatedLine, items: dict[str, Any]
+    ) -> dict[str, Any]:
+        """One consolidation line, as the screens read it.
+
+        The four quantities are floats, not the strings ``Decimal`` serialises
+        to. JavaScript adds strings by gluing them together, so a column that
+        displayed correctly line by line totalled to ``NaN`` the moment the
+        composition bar summed it — the sort of fault that only shows up on the
+        aggregate, which is exactly where nobody thinks to check.
+        """
+        known = line.item_number in items
+        return {
+            **line.model_dump(mode="json"),
+            "qty": float(line.qty),
+            "qty_line_side": float(line.qty_line_side),
+            "qty_wip_ok": float(line.qty_wip_ok),
+            "qty_wip_exploded": float(line.qty_wip_exploded),
+            "name": items[line.item_number].name if known else "",
+            "value": float(
+                line.qty * items[line.item_number].std_price
+            ) if known else 0.0,
+            "hasWip": line.has_wip,
+        }
+
     def current_consolidation(self, campaign: Campaign) -> dict[str, Any]:
         """The stored consolidation, with its WIP drill-down."""
         ctx = self.ctx
@@ -1246,20 +1272,11 @@ class GenericService:
         if run is None:
             return {"run": None, "lines": [], "breakdown": []}
         items = ctx.referentials.items_by_number(campaign.id)
-        lines = ctx.consolidation.current_lines(campaign.id)
         return {
             "run": {**run, "id": str(run["id"])},
             "lines": [
-                {
-                    **line.model_dump(mode="json"),
-                    "name": items[line.item_number].name
-                    if line.item_number in items else "",
-                    "value": float(
-                        line.qty * items[line.item_number].std_price
-                    ) if line.item_number in items else 0.0,
-                    "hasWip": line.has_wip,
-                }
-                for line in lines
+                self.line_payload(line, items)
+                for line in ctx.consolidation.current_lines(campaign.id)
             ],
             "breakdown": ctx.consolidation.wip_breakdown(campaign.id),
         }

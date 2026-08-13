@@ -623,6 +623,7 @@ export interface Analytics {
   clusters?: {
     n: number
     silhouette: number | null
+    items: Array<Record<string, unknown>>
     profiles: Array<{
       cluster: number
       items: number

@@ -897,6 +897,55 @@ class JournalRepository(_Base):
             conn=conn,
         )
 
+    def untouched_journal_keys(
+        self, campaign_id: str, keys: Sequence[LocationKey],
+        *, conn: psycopg.Connection | None = None,
+    ) -> set[tuple[str, str]]:
+        """Which of these locations have a journal nobody has used yet.
+
+        "Used" is deliberately generous: a journal that carries a single line,
+        or that somebody has merely opened, is work — and work is not something
+        a reload of the ERP snapshot gets to throw away. Only a journal still
+        ``PENDING`` and still empty is a leftover.
+        """
+        if not keys:
+            return set()
+        rows = self._fetch_all(
+            """
+            SELECT j.warehouse_id, j.location_id
+            FROM count_journal j
+            WHERE j.campaign_id = %s
+              AND (j.warehouse_id, j.location_id)
+                  IN (SELECT * FROM unnest(%s::text[], %s::text[]))
+              AND j.status = 'PENDING'
+              AND NOT EXISTS (
+                    SELECT 1 FROM count_journal_line l
+                    WHERE l.journal_id = j.id AND l.deleted_at IS NULL
+              )
+            """,
+            (campaign_id, [k.warehouse_id for k in keys],
+             [k.location_id for k in keys]),
+            conn=conn,
+        )
+        return {(str(r["warehouse_id"]), str(r["location_id"])) for r in rows}
+
+    def journal_keys(
+        self, campaign_id: str, keys: Sequence[LocationKey],
+        *, conn: psycopg.Connection | None = None,
+    ) -> set[tuple[str, str]]:
+        """Which of these locations have a journal at all."""
+        if not keys:
+            return set()
+        rows = self._fetch_all(
+            "SELECT warehouse_id, location_id FROM count_journal "
+            "WHERE campaign_id = %s AND (warehouse_id, location_id) "
+            "IN (SELECT * FROM unnest(%s::text[], %s::text[]))",
+            (campaign_id, [k.warehouse_id for k in keys],
+             [k.location_id for k in keys]),
+            conn=conn,
+        )
+        return {(str(r["warehouse_id"]), str(r["location_id"])) for r in rows}
+
     def delete_journals_for_locations(
         self, campaign_id: str, keys: Sequence[LocationKey],
         *, conn: psycopg.Connection | None = None,
@@ -1369,6 +1418,25 @@ class SheetRepository(_Base):
             (campaign_id,),
         )
         return {str(r["item_number"]) for r in rows}
+
+    def count_counted_lines(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> int:
+        """How many GENERIQUE sheet lines carry a quantity.
+
+        The GENERIQUE journal holds no line of its own — its counting lives in
+        the sheets — so "has anybody worked here?" cannot be answered by looking
+        at journal lines alone. Asked as a count rather than a list: the caller
+        only needs to know whether the answer is zero.
+        """
+        rows = self._fetch_all(
+            "SELECT count(*) AS n FROM count_sheet_line "
+            "WHERE campaign_id = %s AND deleted_at IS NULL "
+            "AND (qty_manual IS NOT NULL OR qty_imported IS NOT NULL)",
+            (campaign_id,),
+            conn=conn,
+        )
+        return int(rows[0]["n"]) if rows else 0
 
     def lines_by_sheet(self, campaign_id: str) -> dict[str, list[CountSheetLine]]:
         rows = self._fetch_all(

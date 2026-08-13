@@ -34,6 +34,7 @@ import {
 } from '../lib/format'
 import { CompositionBar } from '../components/charts'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
+import { BreakdownModal, DrillCell, type BreakdownAspect } from '../components/BreakdownModal'
 import { PrintModal } from '../components/PrintModal'
 import { SubSectionTabs } from '../components/SubSectionTabs'
 import { parseSheetLines } from '../lib/pasteSheetLines'
@@ -1384,6 +1385,12 @@ function ConsolidationResult({
   lines: ConsolidationLine[]
   onExploreWip: (itemNumber: string) => void
 }) {
+  // Les trois colonnes d'origine s'ouvrent comme le WIP le faisait déjà : une
+  // quantité qu'on ne peut pas expliquer est une quantité qu'on ne peut pas
+  // défendre, et c'est en réunion que la question se pose.
+  const [drill, setDrill] = useState<
+    { itemNumber: string; aspect: BreakdownAspect } | null
+  >(null)
   const totals = useMemo(() => {
     return lines.reduce(
       (acc, line) => ({
@@ -1403,7 +1410,14 @@ function ConsolidationResult({
       label: 'Quantité totale',
       numeric: true,
       width: 150,
-      render: (row) => <strong className="num">{qty(row.qty)}</strong>,
+      render: (row) => (
+        <DrillCell
+          disabled={row.qty === 0}
+          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'counted' })}
+        >
+          <strong className="num">{qty(row.qty)}</strong>
+        </DrillCell>
+      ),
       value: (row) => row.qty,
     },
     {
@@ -1411,7 +1425,14 @@ function ConsolidationResult({
       label: 'Bord de ligne',
       numeric: true,
       width: 140,
-      render: (row) => <span className="num">{qty(row.qty_line_side)}</span>,
+      render: (row) => (
+        <DrillCell
+          disabled={row.qty_line_side === 0}
+          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'line_side' })}
+        >
+          <span className="num">{qty(row.qty_line_side)}</span>
+        </DrillCell>
+      ),
       value: (row) => row.qty_line_side,
     },
     {
@@ -1419,7 +1440,14 @@ function ConsolidationResult({
       label: 'WIP assemblé',
       numeric: true,
       width: 140,
-      render: (row) => <span className="num">{qty(row.qty_wip_ok)}</span>,
+      render: (row) => (
+        <DrillCell
+          disabled={row.qty_wip_ok === 0}
+          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'wip_ok' })}
+        >
+          <span className="num">{qty(row.qty_wip_ok)}</span>
+        </DrillCell>
+      ),
       value: (row) => row.qty_wip_ok,
     },
     {
@@ -1487,6 +1515,15 @@ function ConsolidationResult({
           initialSort={{ key: 'value', direction: 'desc' }}
         />
       </Card>
+
+      {drill && (
+        <BreakdownModal
+          campaignId={campaignId}
+          itemNumber={drill.itemNumber}
+          aspect={drill.aspect}
+          onClose={() => setDrill(null)}
+        />
+      )}
     </div>
   )
 }

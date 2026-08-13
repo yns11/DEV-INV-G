@@ -94,6 +94,31 @@ def controls(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     return service.controls(campaign)
 
 
+@router.get("/breakdown/{item_number}", summary="D'où vient un chiffre")
+def breakdown(
+    campaign: CampaignDep,
+    item_number: str,
+    service: Service,
+    aspect: Annotated[str, Query()] = "counted",
+    warehouse_id: Annotated[str, Query(alias="warehouseId")] = "",
+    location_id: Annotated[str, Query(alias="locationId")] = "",
+) -> dict[str, Any]:
+    """The lines behind one figure, whichever figure it is.
+
+    Only the WIP column could be explored; every other quantity had to be taken
+    on trust. One endpoint, one shape — origin, place, detail, quantity, value —
+    so a single dialog serves the consolidated journal, the variances, the root
+    causes and the adjustments instead of four that would drift apart.
+    """
+    return service.breakdown(
+        campaign,
+        item_number,
+        aspect,
+        warehouse_id=warehouse_id,
+        location_id=location_id,
+    )
+
+
 @router.get("/alerts", summary="Compteurs d'alertes pour la navigation")
 def alerts(campaign: CampaignDep, service: Service) -> dict[str, int]:
     """How many *distinct* things are wrong, per screen.

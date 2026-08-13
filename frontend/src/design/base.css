@@ -1500,6 +1500,23 @@ table.data td.editable input.num {
   color: var(--accent);
 }
 
+/* Une cellule chiffrée qu'on peut interroger.
+   Discrète au repos : c'est une valeur qu'on lit d'abord, et souligner tous les
+   nombres d'un tableau le rendrait illisible. Le pointillé n'apparaît qu'au
+   survol, là où la main est déjà. */
+.drill {
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  border-bottom: 1px dashed transparent;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.drill:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
 .segmented {
   display: inline-flex;
   background: var(--bg-sunken);

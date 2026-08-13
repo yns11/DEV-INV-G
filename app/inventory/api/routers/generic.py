@@ -340,10 +340,9 @@ def preview_consolidation(campaign: CampaignDep, service: Service) -> dict[str, 
     would contain right now, and which zones are still missing.
     """
     result = service.consolidate(campaign, preview=True)
+    items = service.ctx.referentials.items_by_number(campaign.id)
     return {
-        "lines": [
-            {**l.model_dump(mode="json"), "qty": float(l.qty)} for l in result.lines
-        ],
+        "lines": [service.line_payload(line, items) for line in result.lines],
         "totalQty": float(result.total_qty),
         "zonesIncluded": result.zones_included,
         "zonesSkipped": result.zones_skipped,

@@ -33,6 +33,8 @@ SHIPPED = {
     "005_erp_mirror": "a0a9eba8628e",
     "006_erp_mirror_grants": "fccbea4b4991",
     "007_bom_status": "8fa704d7ae3d",
+    "008_backflush": "e265ddaa359f",
+    "009_stock_flow": "734f4e0f2141",
 }
 
 

@@ -7,6 +7,7 @@ and ``.../paste`` and ``.../rows`` accept the same target with JSON bodies.
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
@@ -38,6 +39,7 @@ _TARGETS = {
     "count_journal_lines": "import_journal_lines",
     "count_sheets": "import_count_sheets",
     "adjustments": "import_adjustments",
+    "backflush": "import_backflush",
     "locations": "import_locations",
 }
 
@@ -80,6 +82,8 @@ async def import_file(
     sheet: Annotated[str | None, Form()] = None,
     replace: Annotated[bool, Form()] = False,
     dry_run: Annotated[bool, Form(alias="dryRun")] = False,
+    borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
+    borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
 ) -> dict[str, Any]:
     """Upload a ``.xlsx`` / ``.csv`` into a grid.
 
@@ -93,6 +97,7 @@ async def import_file(
         "payload": payload,
         "filename": file.filename or "",
         "sheet": sheet,
+        **_period(target, borne_debut, borne_fin),
     }
 
     if dry_run:
@@ -117,21 +122,49 @@ async def import_file(
     summary="Importer un collage depuis Excel",
 )
 def import_paste(
-    campaign: CampaignDep, target: str, payload: PasteRequest, importer: Importer
+    campaign: CampaignDep,
+    target: str,
+    payload: PasteRequest,
+    importer: Importer,
+    borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
+    borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
 ) -> dict[str, Any]:
     """Accept a Ctrl-C / Ctrl-V block pasted into a grid cell."""
     method = _resolve(target)
-    kwargs: dict[str, Any] = {"mode": "paste", "text": payload.text}
+    kwargs: dict[str, Any] = {
+        "mode": "paste", "text": payload.text,
+        **_period(target, borne_debut, borne_fin),
+    }
     if payload.dry_run:
         return importer.preview(target, **kwargs)
     extra = {"replace": payload.replace} if target == "boms" else {}
     return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
 
 
-#: The two grids the ERP is authoritative for. Book stock deliberately stays a
-#: file: it is a snapshot taken at a precise instant, and reading it live would
-#: give a picture of "now" rather than of the moment the count began.
-ERP_TARGETS = ("items", "boms")
+#: The grids the ERP is authoritative for. Book stock deliberately stays a file:
+#: it is a snapshot taken at a precise instant, and reading it live would give a
+#: picture of "now" rather than of the moment the count began.
+ERP_TARGETS = ("items", "boms", "backflush")
+
+#: Grids read from a *fact* table, which therefore need a period. A referential
+#: has a state; a fact table has a history, and one cannot be read without
+#: saying over what.
+PERIOD_TARGETS = ("backflush",)
+
+
+def _period(
+    target: str, start: dt.date | None, end: dt.date | None
+) -> dict[str, Any]:
+    """The period arguments, only for the grids that take one.
+
+    Passed as query parameters on all four input modes rather than added to the
+    JSON bodies: the bounds qualify *the read*, not the payload, and a file
+    upload has no body to put them in anyway. One shape for the four routes
+    beats three that would drift.
+    """
+    if target not in PERIOD_TARGETS:
+        return {}
+    return {"period_start": start, "period_end": end}
 
 
 @router.get("/erp/source", summary="État de la source ERP")
@@ -178,6 +211,8 @@ def import_erp(
     importer: Importer,
     dry_run: Annotated[bool, Query(alias="dryRun")] = False,
     replace: Annotated[bool, Query()] = False,
+    borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
+    borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
 ) -> dict[str, Any]:
     """Read the referential straight from the ERP silver tables.
 
@@ -192,7 +227,9 @@ def import_erp(
             allowed=list(ERP_TARGETS),
         )
     method = _resolve(target)
-    kwargs: dict[str, Any] = {"mode": "erp"}
+    kwargs: dict[str, Any] = {
+        "mode": "erp", **_period(target, borne_debut, borne_fin),
+    }
     if dry_run:
         return importer.preview(target, **kwargs)
     extra = {"replace": replace} if target == "boms" else {}
@@ -204,10 +241,18 @@ def import_erp(
     summary="Enregistrer des lignes saisies dans la grille",
 )
 def import_rows(
-    campaign: CampaignDep, target: str, payload: RowsRequest, importer: Importer
+    campaign: CampaignDep,
+    target: str,
+    payload: RowsRequest,
+    importer: Importer,
+    borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
+    borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
 ) -> dict[str, Any]:
     method = _resolve(target)
-    kwargs: dict[str, Any] = {"mode": "rows", "rows": payload.rows}
+    kwargs: dict[str, Any] = {
+        "mode": "rows", "rows": payload.rows,
+        **_period(target, borne_debut, borne_fin),
+    }
     if payload.dry_run:
         return importer.preview(target, **kwargs)
     extra = {"replace": payload.replace} if target == "boms" else {}

@@ -86,6 +86,15 @@ class Editable:
     adjustments: bool
     #: Human analysis (cause assignment, comments) on variances.
     analysis: bool
+    #: Reading and refreshing the frozen backflush variance. Open for as long as
+    #: the campaign is: the gold table is rebuilt nightly, so a past week's
+    #: figure can move, and re-reading it is a legitimate correction. Closing the
+    #: campaign is what makes it final — and it has to, or a variance a
+    #: controller signed off could still change afterwards.
+    backflush: bool = True
+    #: The stock-flow reconciliation against an earlier campaign, and the three
+    #: quantities it is given. Same rule, same reason.
+    stock_flow: bool = True
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -100,6 +109,8 @@ class Editable:
             "countEntries": self.count_entries,
             "adjustments": self.adjustments,
             "analysis": self.analysis,
+            "backflush": self.backflush,
+            "stockFlow": self.stock_flow,
         }
 
 
@@ -164,6 +175,8 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         count_entries=False,
         adjustments=False,
         analysis=False,
+        backflush=False,
+        stock_flow=False,
     ),
 }
 

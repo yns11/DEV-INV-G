@@ -31,6 +31,7 @@ __all__ = [
     "CountSection",
     "DataSource",
     "AdjustmentKind",
+    "FlowKind",
     "ControlSeverity",
     "AuditAction",
     "legacy_section_alias",
@@ -206,6 +207,25 @@ class AdjustmentKind(StrEnum):
     ADJUSTMENT = "ADJUSTMENT"    # journal d'ajustement saisi après analyse
     RECOUNT = "RECOUNT"          # recomptage post-inventaire
     OTHER = "OTHER"
+
+
+class FlowKind(StrEnum):
+    """A quantity the user loads to explain the period between two campaigns.
+
+    Only the three the application cannot derive on its own. Production and
+    theoretical consumption are read from the backflush fact table instead —
+    asking somebody to retype what a warehouse already knows is how the legacy
+    process introduced most of its errors.
+
+    The sign lives here, not in the quantity: a shipment is stored positive and
+    subtracted by the calculation. Letting it be typed negative would mean an
+    expedition entered the wrong way round is added to the stock, and nothing on
+    screen would show it.
+    """
+
+    RECEIPT = "RECEIPT"      # réceptions : entrées en stock sur la période
+    SHIPMENT = "SHIPMENT"    # expéditions : sorties vers le client
+    SCRAP = "SCRAP"          # rebuts : étape facultative
 
 
 class ControlSeverity(StrEnum):

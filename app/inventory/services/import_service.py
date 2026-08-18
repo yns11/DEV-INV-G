@@ -11,6 +11,7 @@ which ones were rejected and why. Nothing is ever loaded blind.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import logging
 from collections.abc import Sequence
@@ -43,6 +44,7 @@ from ..ingest import (
     RowError,
     get_contract,
     map_adjustments,
+    map_backflush,
     map_bom_links,
     map_book_stock,
     map_count_sheets,
@@ -53,11 +55,15 @@ from ..ingest import (
     parse_rows,
     parse_tabular_bytes,
 )
+from ..ingest.erp import validate_period
 from .context import ServiceContext, utcnow
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ImportOutcome", "ImportService", "InputMode"]
+__all__ = [
+    "ImportOutcome", "ImportService", "InputMode", "monday_of",
+    "suggested_period",
+]
 
 InputMode = Literal["file", "paste", "rows", "erp"]
 
@@ -120,6 +126,8 @@ class ImportService:
         sheet: str | None = None,
         text: str | None = None,
         rows: Sequence[dict[str, Any]] | None = None,
+        period_start: dt.date | None = None,
+        period_end: dt.date | None = None,
     ) -> tuple[GridContract, ParseResult]:
         """Parse input in any of the supported modes.
 
@@ -136,7 +144,10 @@ class ImportService:
             case "erp":
                 result = parse_rows(
                     contract,
-                    self._read_erp(contract_key, limit=limit),
+                    self._read_erp(
+                        contract_key, limit=limit,
+                        period_start=period_start, period_end=period_end,
+                    ),
                     max_rows=limit,
                 )
             case "file":
@@ -163,9 +174,20 @@ class ImportService:
         return contract, result
 
     def _read_erp(
-        self, contract_key: str, *, limit: int
+        self,
+        contract_key: str,
+        *,
+        limit: int,
+        period_start: dt.date | None = None,
+        period_end: dt.date | None = None,
     ) -> list[dict[str, Any]]:
-        """Rows from the ERP silver tables, in the grid's shape."""
+        """Rows from the ERP tables, in the grid's shape.
+
+        The two period arguments are only meaningful for the grids that read a
+        *fact* table rather than a referential: a referential has a state, a fact
+        table has a history, and reading the second without bounds would answer
+        a question nobody asked.
+        """
         from ..ingest.erp import ErpReader
 
         reader = ErpReader()
@@ -174,10 +196,16 @@ class ImportService:
                 return reader.fetch_items(limit=limit)
             case "boms":
                 return reader.fetch_bom_links(limit=limit)
+            case "backflush":
+                start, end = _require_period(period_start, period_end)
+                return reader.fetch_backflush(
+                    period_start=start, period_end=end, limit=limit
+                )
             case _:
                 raise ValidationError(
                     f"La grille « {contract_key} » n'a pas de source ERP. "
-                    "Seuls les articles et les nomenclatures en ont une."
+                    "Seuls les articles, les nomenclatures et l'écart backflush "
+                    "en ont une."
                 )
 
     def preview(
@@ -615,6 +643,84 @@ class ImportService:
         ctx.forget_progress(campaign.id)
         return ctx.campaigns.get(campaign.id)
 
+    # ------------------------------------------------------------- backflush
+
+    def import_backflush(
+        self,
+        campaign: Campaign,
+        *,
+        period_start: dt.date | None = None,
+        period_end: dt.date | None = None,
+        **kwargs: Any,
+    ) -> ImportOutcome:
+        """Freeze the backflush variance of one period onto the campaign.
+
+        Read once and written here rather than queried on every display. The gold
+        table is rebuilt in full every night — a nomenclature correction, a
+        movement booked late, a standard cost updated — so the variance of a week
+        already past can move. Reading live would mean the same campaign consulted
+        a fortnight apart shows two figures, and a residual variance a controller
+        signed off could no longer be reproduced.
+
+        Refreshing stays possible for as long as the campaign is open, and the
+        freeze matrix stops it at closure. Each refresh replaces the whole read:
+        an article whose variance has gone must disappear, not keep an old figure
+        under new bounds.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "backflush")
+
+        start, end = _require_period(period_start, period_end)
+        _, parsed = self.parse(
+            "backflush", period_start=start, period_end=end, **kwargs
+        )
+        outcome = _base_outcome("backflush", parsed)
+
+        items = ctx.referentials.items_by_number(campaign.id)
+        lines, errors = map_backflush(
+            campaign.id, parsed.rows,
+            period_start=start, period_end=end, items=items,
+        )
+        outcome.errors.extend(errors)
+        outcome.rows_rejected += len(errors)
+
+        batch_id = new_id()
+        with ctx.db.transaction() as conn:
+            written = ctx.backflush.replace(
+                campaign.id, lines, batch_id=batch_id, conn=conn
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.IMPORT,
+                entity_type="backflush",
+                summary=(
+                    f"Écart backflush figé : {written} article(s), "
+                    f"du {start:%d/%m/%Y} au {end:%d/%m/%Y} (exclu)"
+                ),
+                after={
+                    "items": written,
+                    "periodStart": start.isoformat(),
+                    "periodEnd": end.isoformat(),
+                },
+                conn=conn,
+            )
+
+        outcome.batch_id = batch_id
+        outcome.rows_accepted = written
+        # The two halves are reported separately from the net: forty of
+        # under-consumption against thirty-eight of over-consumption does not
+        # read like two, and the summary is where that distinction survives.
+        outcome.details.update({
+            "periodStart": start.isoformat(),
+            "periodEnd": end.isoformat(),
+            "weeks": (end - start).days // 7,
+            "netQty": float(sum(line.net_qty for line in lines)),
+            "underConsumed": float(sum(line.under_consumed_qty for line in lines)),
+            "overConsumed": float(sum(line.over_consumed_qty for line in lines)),
+            "outOfScope": max(0, len(parsed.rows) - written - len(errors)),
+        })
+        return outcome
+
     # -------------------------------------------------------- count journals
 
     def import_journal_lines(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
@@ -1045,3 +1151,54 @@ def _jsonable(row: dict[str, Any]) -> dict[str, Any]:
         else:
             out[key] = value
     return out
+
+
+def _require_period(
+    start: dt.date | None, end: dt.date | None
+) -> tuple[dt.date, dt.date]:
+    """The two bounds, refused rather than guessed when they are missing.
+
+    A default period would be the worst of both worlds here: the figure would
+    look computed, the header would show bounds nobody chose, and the number
+    would be wrong for every campaign whose period is not the default. The
+    screen proposes a period; it is the user who fixes it.
+    """
+    if start is None or end is None:
+        raise ValidationError(
+            "L'écart backflush se lit sur une période : indiquez la borne de "
+            "début et la borne de fin (des lundis ISO, fin exclue).",
+            borneDebut=start.isoformat() if start else None,
+            borneFin=end.isoformat() if end else None,
+        )
+    # Validated here rather than in the query builder, so a file or a paste is
+    # held to the same rule as an ERP read. It was not, and a Wednesday typed
+    # into the form was stored as a bound the source could never have produced.
+    validate_period(start, end)
+    return start, end
+
+
+def monday_of(day: dt.date) -> dt.date:
+    """The Monday of *day*'s ISO week."""
+    return day - dt.timedelta(days=day.weekday())
+
+
+def suggested_period(
+    count_date: dt.date, *, previous: dt.date | None = None, weeks: int = 13
+) -> tuple[dt.date, dt.date]:
+    """A period the screen can propose, and that a user can override.
+
+    The end is the Monday of the counting week, *excluded*: the week in which the
+    count happens is cut in two by the count itself, and charging a whole week's
+    production against the days that preceded it would overstate the variance on
+    every article produced that week.
+
+    The start is the previous campaign's counting week when there is one — that
+    is the period nobody has looked at yet — and a quarter otherwise, which is
+    long enough to be worth reading and short enough to stay explainable.
+    """
+    end = monday_of(count_date)
+    if previous is not None:
+        start = monday_of(previous)
+        if start < end:
+            return start, end
+    return end - dt.timedelta(weeks=weeks), end

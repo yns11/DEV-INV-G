@@ -14,6 +14,7 @@ import type {
   Arbitration,
   AssignableCause,
   AuditEvent,
+  BackflushView,
   Campaign,
   CauseSplit,
   ConsolidationLine,
@@ -36,6 +37,9 @@ import type {
   Overview,
   PrintMode,
   SheetStatus,
+  StockFlowCandidate,
+  StockFlowReport,
+  StockFlowRun,
   Threshold,
   TransferAnalysis,
   TransitionReadiness,
@@ -348,16 +352,18 @@ export const api = {
     sheet?: string
     replace?: boolean
     dryRun?: boolean
+    /** Paramètres propres à la grille — les bornes de période, par exemple. */
+    params?: Record<string, string | number | boolean | undefined>
   } = {}) => {
     const form = new FormData()
     form.append('file', file)
     if (options.sheet) form.append('sheet', options.sheet)
     if (options.replace) form.append('replace', 'true')
     if (options.dryRun) form.append('dryRun', 'true')
-    return request<ImportResult & ImportPreview>(`/campaigns/${id}/import/${target}`, {
-      method: 'POST',
-      body: form,
-    })
+    return request<ImportResult & ImportPreview>(
+      `/campaigns/${id}/import/${target}${qs(options.params ?? {})}`,
+      { method: 'POST', body: form },
+    )
   },
   /** Whether an ERP read is possible, and from which tables. */
   erpSource: () => request<ErpSource>('/erp/source'),
@@ -371,31 +377,39 @@ export const api = {
     dryRun?: boolean
     replace?: boolean
     approvedOnly?: boolean
+    params?: Record<string, string | number | boolean | undefined>
   } = {}) =>
     request<ImportResult & ImportPreview>(
       `/campaigns/${id}/import/${target}/erp${qs({
         dryRun: options.dryRun || undefined,
         replace: options.replace || undefined,
         approvedOnly: options.approvedOnly || undefined,
+        ...(options.params ?? {}),
       })}`,
       { method: 'POST' },
     ),
   importPaste: (id: string, target: string, text: string, options: {
     dryRun?: boolean
     replace?: boolean
-  } = {}) =>
-    request<ImportResult & ImportPreview>(`/campaigns/${id}/import/${target}/paste`, {
-      method: 'POST',
-      body: JSON.stringify({ text, ...options }),
-    }),
+    params?: Record<string, string | number | boolean | undefined>
+  } = {}) => {
+    const { params, ...body } = options
+    return request<ImportResult & ImportPreview>(
+      `/campaigns/${id}/import/${target}/paste${qs(params ?? {})}`,
+      { method: 'POST', body: JSON.stringify({ text, ...body }) },
+    )
+  },
   importRows: (id: string, target: string, rows: Array<Record<string, unknown>>, options: {
     dryRun?: boolean
     replace?: boolean
-  } = {}) =>
-    request<ImportResult & ImportPreview>(`/campaigns/${id}/import/${target}/rows`, {
-      method: 'POST',
-      body: JSON.stringify({ rows, ...options }),
-    }),
+    params?: Record<string, string | number | boolean | undefined>
+  } = {}) => {
+    const { params, ...body } = options
+    return request<ImportResult & ImportPreview>(
+      `/campaigns/${id}/import/${target}/rows${qs(params ?? {})}`,
+      { method: 'POST', body: JSON.stringify({ rows, ...body }) },
+    )
+  },
 
   // ---------------------------------------------------------------- counting
   // `focus` is a server-side filter: the browser asks for it, the server
@@ -638,6 +652,81 @@ export const api = {
     request<{ deleted: boolean }>(`/campaigns/${id}/analysis/adjustments/${lineId}`, {
       method: 'DELETE',
     }),
+
+  // --------------------------------------------------------------- backflush
+  backflush: (id: string) =>
+    request<BackflushView>(`/campaigns/${id}/analysis/backflush`),
+  /** La période que l'écran pré-remplit, et que l'utilisateur peut changer. */
+  backflushPeriod: (id: string) =>
+    request<{ periodStart: string; periodEnd: string }>(
+      `/campaigns/${id}/analysis/backflush/period`,
+    ),
+
+  // ----------------------------------------------- réconciliation de campagnes
+  stockFlowCandidates: (id: string) =>
+    request<StockFlowCandidate[]>(`/campaigns/${id}/stock-flow/candidates`),
+  stockFlowRuns: (id: string) =>
+    request<StockFlowRun[]>(`/campaigns/${id}/stock-flow`),
+  openStockFlow: (id: string, baselineCampaignId: string) =>
+    request<StockFlowRun>(`/campaigns/${id}/stock-flow`, {
+      method: 'POST',
+      body: JSON.stringify({ baselineCampaignId }),
+    }),
+  deleteStockFlow: (id: string, runId: string) =>
+    request<{ deleted: boolean }>(`/campaigns/${id}/stock-flow/${runId}`, {
+      method: 'DELETE',
+    }),
+  stockFlowReport: (id: string, runId: string) =>
+    request<StockFlowReport>(`/campaigns/${id}/stock-flow/${runId}`),
+  refreshStockFlowErp: (id: string, runId: string) =>
+    request<{
+      items: number
+      outOfScope: number
+      producedQty: number
+      consumedQty: number
+      sourceLoadedAt: string | null
+    }>(`/campaigns/${id}/stock-flow/${runId}/erp`, { method: 'POST' }),
+  skipStockFlowScrap: (id: string, runId: string) =>
+    request<{ scrapLoaded: boolean }>(
+      `/campaigns/${id}/stock-flow/${runId}/scrap/skip`, { method: 'POST' },
+    ),
+  stockFlowInputs: (id: string, runId: string, kind: string) =>
+    request<Array<Record<string, unknown>>>(
+      `/campaigns/${id}/stock-flow/${runId}/inputs/${kind}`,
+    ),
+  // Les trois chargements passent par la même boucle « voir avant d'écrire »
+  // que toutes les autres grilles : c'est elle qui empêche un fichier de
+  // devenir la vérité de la campagne sans que personne l'ait regardé.
+  loadStockFlowFile: (
+    id: string, runId: string, kind: string, file: File,
+    options: { dryRun?: boolean; sheet?: string } = {},
+  ) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (options.sheet) form.append('sheet', options.sheet)
+    if (options.dryRun) form.append('dryRun', 'true')
+    return request<ImportResult & ImportPreview>(
+      `/campaigns/${id}/stock-flow/${runId}/inputs/${kind}`,
+      { method: 'POST', body: form },
+    )
+  },
+  loadStockFlowPaste: (
+    id: string, runId: string, kind: string, text: string,
+    options: { dryRun?: boolean } = {},
+  ) =>
+    request<ImportResult & ImportPreview>(
+      `/campaigns/${id}/stock-flow/${runId}/inputs/${kind}/paste`,
+      { method: 'POST', body: JSON.stringify({ text, ...options }) },
+    ),
+  loadStockFlowRows: (
+    id: string, runId: string, kind: string,
+    rows: Array<Record<string, unknown>>,
+    options: { dryRun?: boolean } = {},
+  ) =>
+    request<ImportResult & ImportPreview>(
+      `/campaigns/${id}/stock-flow/${runId}/inputs/${kind}/rows`,
+      { method: 'POST', body: JSON.stringify({ rows, ...options }) },
+    ),
 }
 
 /** Download URLs, kept next to the API so paths live in one file. */

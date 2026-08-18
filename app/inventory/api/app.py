@@ -39,6 +39,7 @@ from .routers import (
     generic,
     managers,
     reports,
+    stock_flow,
 )
 
 log = logging.getLogger("inventory")
@@ -341,6 +342,7 @@ def create_app() -> FastAPI:
         analysis.router,
         reports.router,
         assistant.router,
+        stock_flow.router,
     )
     for router in api_routers:
         app.include_router(router, prefix="/api")

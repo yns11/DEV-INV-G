@@ -58,6 +58,9 @@ export interface Permissions {
   countSheets: boolean
   adjustments: boolean
   analysis: boolean
+  /** Ouverts tant que la campagne l'est ; la clôture les fige. */
+  backflush: boolean
+  stockFlow: boolean
 }
 
 /**
@@ -154,6 +157,14 @@ export interface Kpis {
   grossVarianceQty: number | null
   grossVarianceValue: number | null
   residualValue: number | null
+  /** Ce que le backflush explique, et ce qui reste. */
+  backflushShareValue: number | null
+  unexplainedValue: number | null
+  grossUnexplainedValue: number | null
+  /** L'écart d'inventaire des seuls articles mesurés : les trois se soustraient. */
+  backflushVarianceValue: number | null
+  backflushExplanationRate: number | null
+  backflushLineCount: number
   netReliabilityValue: number | null
   grossReliabilityValue: number | null
   grossReliabilityQty: number | null
@@ -183,6 +194,16 @@ export interface VarianceRow {
   adjustedQty: number
   residualQty: number
   residualValue: number
+  /** Écart backflush brut, dans la convention backflush (théorique − réel). */
+  backflushQty: number
+  /** Le même, dans la convention d'inventaire : c'est lui qu'on soustrait. */
+  backflushShareQty: number
+  backflushShareValue: number
+  unexplainedQty: number
+  unexplainedValue: number
+  explanationRate: number | null
+  /** Distingue « mesuré et nul » de « jamais mesuré ». */
+  backflushMeasured: boolean
   finalQty: number
   countedOnly: boolean
   bookOnly: boolean
@@ -735,4 +756,150 @@ export interface AssistantProfiles {
   /** The profile used when the request names none — the deployment default. */
   active: string
   profiles: AssistantProfile[]
+}
+
+
+// --------------------------------------------------------------------------- //
+// Écart backflush
+// --------------------------------------------------------------------------- //
+
+/**
+ * La période sur laquelle l'écart a été lu, et la fraîcheur de la source.
+ *
+ * Voyage avec les lignes plutôt que d'être demandée à part : un chiffre de
+ * backflush sans ses bornes n'est pas interprétable, et deux réponses séparées
+ * finissent par se contredire à l'écran.
+ */
+export interface BackflushPeriod {
+  periodStart: string
+  periodEnd: string
+  weeks: number
+  sourceLoadedAt: string | null
+  refreshedAt: string | null
+  items: number
+}
+
+export interface BackflushRow {
+  itemNumber: string
+  name: string
+  itemType: string
+  category: string
+  program: string
+  unit: string
+  unitCost: number
+  netQty: number
+  underConsumedQty: number
+  overConsumedQty: number
+  theoreticalQty: number
+  actualQty: number
+  parentCount: number
+  weekCount: number
+  backflushShareQty: number
+  backflushShareValue: number
+  typeEcart: string
+  /** `null` tant que l'article n'a pas été compté : « non comparé » n'est pas 0. */
+  varianceQty: number | null
+  varianceValue: number | null
+  unexplainedQty: number | null
+  unexplainedValue: number | null
+  explanationRate: number | null
+  compared: boolean
+}
+
+export interface BackflushView {
+  period: BackflushPeriod | null
+  kpis: Kpis
+  rows: BackflushRow[]
+}
+
+// --------------------------------------------------------------------------- //
+// Réconciliation entre deux campagnes
+// --------------------------------------------------------------------------- //
+
+export interface StockFlowCandidate {
+  id: string
+  code: string
+  label: string
+  countDate: string
+  status: string
+  weeks: number
+}
+
+export interface StockFlowRun {
+  id: string
+  campaignId: string
+  baselineCampaignId: string
+  periodStart: string
+  periodEnd: string
+  weeks: number
+  scrapLoaded: boolean
+  sourceLoadedAt: string | null
+  erpRefreshedAt: string | null
+  baselineCode?: string
+  baselineLabel?: string
+  baselineCountDate?: string
+  campaignCode?: string
+  campaignCountDate?: string
+}
+
+/** Où en est chaque étape de chargement. */
+export interface StockFlowStep {
+  kind: string
+  label: string
+  items: number
+  totalQty: number
+  loaded: boolean
+  optional: boolean
+}
+
+/** Un maillon de la chaîne, du stock initial au stock compté final. */
+export interface StockFlowChainStep {
+  key: string
+  label: string
+  qty: number
+  value: number
+  sign: number
+  terminal: boolean
+}
+
+export interface StockFlowRow {
+  itemNumber: string
+  name: string
+  unit: string
+  unitCost: number
+  openingQty: number
+  receivedQty: number
+  producedQty: number
+  shippedQty: number
+  consumedQty: number
+  scrappedQty: number
+  expectedQty: number
+  closingQty: number
+  varianceQty: number
+  varianceValue: number
+  varianceRatio: number | null
+  countedOpening: boolean
+  countedClosing: boolean
+  complete: boolean
+}
+
+export interface StockFlowKpis {
+  lineCount: number
+  completeCount: number
+  incompleteCount: number
+  matchedCount: number
+  expectedValue: number
+  closingValue: number
+  netVarianceValue: number
+  grossVarianceValue: number
+  netReliability: number | null
+  grossReliability: number | null
+}
+
+export interface StockFlowReport {
+  run: StockFlowRun
+  steps: StockFlowStep[]
+  kpis: StockFlowKpis
+  chain: StockFlowChainStep[]
+  rows: StockFlowRow[]
 }

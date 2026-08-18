@@ -119,6 +119,23 @@ def breakdown(
     )
 
 
+@router.get("/backflush", summary="Écart backflush de la campagne")
+def backflush(campaign: CampaignDep, service: Service) -> dict[str, Any]:
+    """One line per article: what production explains, and what it does not.
+
+    The period header travels with the rows rather than being fetched apart:
+    a backflush figure without its bounds is not interpretable, and the two
+    arriving in separate responses is how they end up disagreeing on screen.
+    """
+    return service.backflush(campaign)
+
+
+@router.get("/backflush/period", summary="Période proposée pour l'écart backflush")
+def backflush_period(campaign: CampaignDep, service: Service) -> dict[str, str]:
+    """A period the screen pre-fills, and that the user is free to change."""
+    return service.suggested_backflush_period(campaign)
+
+
 @router.get("/alerts", summary="Compteurs d'alertes pour la navigation")
 def alerts(campaign: CampaignDep, service: Service) -> dict[str, int]:
     """How many *distinct* things are wrong, per screen.

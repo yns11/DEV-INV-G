@@ -14,6 +14,7 @@ from .generic_service import GenericService
 from .import_service import ImportOutcome, ImportService
 from .manager_service import ManagerService, Perimeter
 from .report_service import ReportService
+from .stock_flow_service import StockFlowService
 
 __all__ = [
     "AnalysisService",
@@ -29,5 +30,6 @@ __all__ = [
     "Perimeter",
     "ReportService",
     "ServiceContext",
+    "StockFlowService",
     "utcnow",
 ]

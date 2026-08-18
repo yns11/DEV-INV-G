@@ -283,6 +283,51 @@ function VariancesTab({
       ),
       value: (row) => row.residualValue,
     },
+    // Le backflush n'apparaît que là où il a été mesuré. Une colonne pleine de
+    // tirets sur une campagne qui ne l'a pas chargé serait une colonne à
+    // ignorer, c'est-à-dire une colonne à retirer.
+    ...(variances.data?.some((row) => row.backflushMeasured)
+      ? [
+          {
+            key: 'unexplainedValue',
+            label: 'Inexpliqué',
+            numeric: true,
+            width: 150,
+            render: (row: VarianceRow) =>
+              row.backflushMeasured ? (
+                <DrillCell
+                  disabled={row.backflushShareQty === 0}
+                  onOpen={() => openDrill(row, 'variance')}
+                >
+                  <QtyOverValue
+                    qty={signedNum(row.unexplainedQty)}
+                    value={signedMoney(row.unexplainedValue)}
+                    tone={signClass(row.unexplainedValue)}
+                  />
+                </DrillCell>
+              ) : (
+                <span className="subtle">{DASH}</span>
+              ),
+            value: (row: VarianceRow) => row.unexplainedValue,
+          } as Column<VarianceRow>,
+          {
+            key: 'backflushShareQty',
+            label: 'Part backflush',
+            numeric: true,
+            width: 140,
+            render: (row: VarianceRow) =>
+              row.backflushMeasured ? (
+                <QtyOverValue
+                  qty={signedNum(row.backflushShareQty)}
+                  value={signedMoney(row.backflushShareValue)}
+                />
+              ) : (
+                <span className="subtle">{DASH}</span>
+              ),
+            value: (row: VarianceRow) => row.backflushShareQty,
+          } as Column<VarianceRow>,
+        ]
+      : []),
     {
       key: 'flags',
       label: 'Signalements',

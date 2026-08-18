@@ -236,6 +236,17 @@ class RowsRequest(ApiModel):
     replace: bool = False
 
 
+class StockFlowRunRequest(ApiModel):
+    """Which earlier campaign to compare against.
+
+    The period is not part of the request: it *is* the two count dates. Letting
+    it be typed would allow a period that does not match the inventories it
+    claims to bracket.
+    """
+
+    baseline_campaign_id: str = Field(alias="baselineCampaignId", min_length=1)
+
+
 # --------------------------------------------------------------------------- #
 # Counting
 # --------------------------------------------------------------------------- #

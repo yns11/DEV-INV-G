@@ -94,6 +94,13 @@ PREREQUISITES: dict[str, tuple[_Requirement, ...]] = {
     # --- Comptage ---------------------------------------------------------
     "count_journals": (_BOOK_STOCK,),
     "count_entries": (_BOOK_STOCK,),
+    # L'écart backflush est rattaché aux articles de la campagne : sans
+    # référentiel, il n'y a rien à quoi le rattacher, et la lecture ramènerait
+    # toute l'usine.
+    "backflush": (_ITEMS,),
+    # La réconciliation part du stock *compté* d'une campagne antérieure et le
+    # compare au stock compté de celle-ci : les deux se lisent par article.
+    "stock_flow": (_ITEMS,),
     # Posting is the irreversible one, and the only one that needs the snapshot
     # to have stopped moving.
     "post_journal": (_BOOK_STOCK, _BOOK_STOCK_FROZEN),

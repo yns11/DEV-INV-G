@@ -10,6 +10,7 @@ from .repositories import (
     AdjustmentRepository,
     AnalysisRepository,
     AuditRepository,
+    BackflushRepository,
     BookStockRepository,
     CampaignRepository,
     ConsolidationRepository,
@@ -17,6 +18,7 @@ from .repositories import (
     JournalRepository,
     ReferentialRepository,
     SheetRepository,
+    StockFlowRepository,
     new_id,
 )
 
@@ -33,6 +35,8 @@ __all__ = [
     "ConsolidationRepository",
     "ImportBatchRepository",
     "JournalRepository",
+    "BackflushRepository",
     "ReferentialRepository",
     "SheetRepository",
+    "StockFlowRepository",
 ]

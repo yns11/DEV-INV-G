@@ -105,6 +105,7 @@ class AnalysisService:
             items=ctx.referentials.items_by_number(campaign.id),
             locations=ctx.referentials.locations_by_key(campaign.id),
             adjustments=ctx.adjustments.list(campaign.id),
+            backflush=ctx.backflush.by_item(campaign.id),
             granularity=granularity,
         )
         self._variance_cache[key] = lines
@@ -215,6 +216,15 @@ class AnalysisService:
                 "adjustedQty": float(line.adjusted_qty),
                 "residualQty": float(line.residual_qty),
                 "residualValue": float(line.residual_value),
+                "backflushQty": float(line.backflush_qty),
+                "backflushShareQty": float(line.backflush_share_qty),
+                "backflushShareValue": float(line.backflush_share_value),
+                "unexplainedQty": float(line.unexplained_qty),
+                "unexplainedValue": float(line.unexplained_value),
+                "explanationRate": (
+                    None if (rate := line.explanation_rate) is None else float(rate)
+                ),
+                "backflushMeasured": line.backflush_measured,
                 "finalQty": float(line.final_qty),
                 "countedOnly": line.counted_only,
                 "bookOnly": line.book_only,
@@ -313,6 +323,103 @@ class AnalysisService:
         return [_group_payload(g) for g in pareto(groups, coverage=Decimal(str(coverage)))]
 
     # ---------------------------------------------------------------- controls
+
+    # ------------------------------------------------------------- backflush
+
+    def backflush(self, campaign: Campaign) -> dict[str, Any]:
+        """The backflush view: one line per article, and what it explains.
+
+        Sorted by unexplained value rather than by backflush variance. A large
+        backflush that the count confirms is *good news* — it was measured and it
+        matched; what deserves the top of the list is what nobody can account
+        for. Sorting on the raw variance would put the best-understood articles
+        first and bury the problems.
+
+        Articles the campaign excludes are left out, per the guide: an article
+        removed from the referential's scope has no inventory variance to explain,
+        so a backflush figure attached to it would be an orphan.
+        """
+        ctx = self.ctx
+        items = ctx.referentials.items_by_number(campaign.id)
+        lines = ctx.backflush.list(campaign.id)
+        period = ctx.backflush.period(campaign.id) or {}
+        variances = {
+            line.item_number: line
+            for line in self.variances(campaign, granularity="item")
+        }
+
+        rows: list[dict[str, Any]] = []
+        for line in lines:
+            item = items.get(line.item_number)
+            if item is not None and item.excluded_everywhere:
+                continue
+            variance = variances.get(line.item_number)
+            unit_cost = float(item.std_price) if item else 0.0
+            share = float(line.inventory_share_qty)
+            row = {
+                "itemNumber": line.item_number,
+                "name": item.name if item else "",
+                "itemType": str(item.item_type) if item else "UNKNOWN",
+                "category": item.category if item else "",
+                "program": item.program if item else "",
+                "unit": line.unit,
+                "unitCost": unit_cost,
+                "netQty": float(line.net_qty),
+                "underConsumedQty": float(line.under_consumed_qty),
+                "overConsumedQty": float(line.over_consumed_qty),
+                "theoreticalQty": float(line.theoretical_qty),
+                "actualQty": float(line.actual_qty),
+                "parentCount": line.parent_count,
+                "weekCount": line.week_count,
+                "backflushShareQty": share,
+                "backflushShareValue": share * unit_cost,
+                "typeEcart": _backflush_label(line.net_qty),
+                # The inventory half is only there once the article has been
+                # counted. Reported as null rather than zero: « not compared »
+                # and « compared, and it agrees » are different answers.
+                "varianceQty": None,
+                "varianceValue": None,
+                "unexplainedQty": None,
+                "unexplainedValue": None,
+                "explanationRate": None,
+                "compared": False,
+            }
+            if variance is not None:
+                rate = variance.explanation_rate
+                row.update({
+                    "varianceQty": float(variance.variance_qty),
+                    "varianceValue": float(variance.variance_value),
+                    "unexplainedQty": float(variance.unexplained_qty),
+                    "unexplainedValue": float(variance.unexplained_value),
+                    "explanationRate": None if rate is None else float(rate),
+                    "compared": True,
+                })
+            rows.append(row)
+
+        rows.sort(key=lambda r: abs(r["unexplainedValue"] or 0.0), reverse=True)
+        return {
+            "period": _period_payload(period),
+            "kpis": self.kpis(campaign).as_dict(),
+            "rows": rows,
+        }
+
+    def suggested_backflush_period(self, campaign: Campaign) -> dict[str, str]:
+        """A period the screen can propose, computed from the campaign dates.
+
+        The previous campaign is the one with the closest earlier *count* date —
+        never the closest earlier creation date. Two campaigns created in one
+        order and counted in the other exist, and it is the count that bounds the
+        period production ran over.
+        """
+        from .import_service import suggested_period
+
+        earlier = [
+            other for other in self.ctx.campaigns.list()
+            if other.id != campaign.id and other.count_date < campaign.count_date
+        ]
+        previous = max(earlier, key=lambda c: c.count_date).count_date if earlier else None
+        start, end = suggested_period(campaign.count_date, previous=previous)
+        return {"periodStart": start.isoformat(), "periodEnd": end.isoformat()}
 
     def controls(self, campaign: Campaign) -> dict[str, Any]:
         """Every control applicable to the campaign's current data."""
@@ -944,6 +1051,44 @@ class AnalysisService:
 # --------------------------------------------------------------------------- #
 # Serialisation helpers
 # --------------------------------------------------------------------------- #
+
+#: The guide's 0.5-unit threshold. Below it the two consumptions agree as far as
+#: anybody can tell, and labelling a rounding difference « surconsommation »
+#: would put a page of noise in front of the cases that matter.
+_BACKFLUSH_TOLERANCE = Decimal("0.5")
+
+
+def _backflush_label(net: Decimal) -> str:
+    """« Non-consommation » / « Surconsommation » / « Conforme »."""
+    if net > _BACKFLUSH_TOLERANCE:
+        return "Non-consommation"
+    if net < -_BACKFLUSH_TOLERANCE:
+        return "Surconsommation"
+    return "Conforme"
+
+
+def _period_payload(period: dict[str, Any]) -> dict[str, Any] | None:
+    """The period header, or ``None`` when nothing has been read yet.
+
+    Both timestamps are carried: the freshness of the gold table at read time,
+    and the instant of the read. Either alone is not enough to replay a figure —
+    the first says which version of the source was seen, the second when.
+    """
+    if not period or not period.get("period_start"):
+        return None
+
+    def iso(value: Any) -> str | None:
+        return value.isoformat() if value is not None else None
+
+    return {
+        "periodStart": iso(period["period_start"]),
+        "periodEnd": iso(period["period_end"]),
+        "weeks": (period["period_end"] - period["period_start"]).days // 7,
+        "sourceLoadedAt": iso(period.get("source_loaded_at")),
+        "refreshedAt": iso(period.get("refreshed_at")),
+        "items": int(period.get("items") or 0),
+    }
+
 
 def _plain(value: Any) -> str:
     """A quantity written as somebody would say it.

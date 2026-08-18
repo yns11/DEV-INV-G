@@ -26,6 +26,7 @@ from .enums import (
     CountSection,
     DataSource,
     ExclusionScope,
+    FlowKind,
     ItemCommonality,
     ItemType,
     JournalKind,
@@ -62,6 +63,11 @@ __all__ = [
     "ConsolidatedLine",
     "WipBreakdown",
     "AdjustmentLine",
+    "BackflushLine",
+    "StockFlowRun",
+    "StockFlowInput",
+    "StockFlowErp",
+    "StockFlowLine",
     "VarianceLine",
     "ControlFinding",
     "FindingGroup",
@@ -834,6 +840,221 @@ class AdjustmentLine(DomainModel):
         return _as_money(v if v not in (None, "") else 0)
 
 
+# --------------------------------------------------------------------------- #
+# Backflush
+# --------------------------------------------------------------------------- #
+
+class BackflushLine(DomainModel):
+    """The backflush variance of one article, frozen on a campaign.
+
+    Production does not book component issues line by line: they are deducted
+    from the declared output according to the bill of materials. That deduction
+    assumes real consumption equals theoretical consumption, and this figure is
+    exactly the measure of that assumption:
+
+        écart = consommation théorique − consommation réelle
+
+    Its sign says which way the system stock drifted, and the sign is the whole
+    point for an inventory. A **positive** backflush variance means the deduction
+    took *less* than theory: the part left the store without the ERP recording
+    it, so the system stock is overstated and the count will find less than the
+    ERP claims. A negative one says the opposite.
+
+    Which is why it enters the inventory formula with its sign changed — the two
+    conventions are mirror images, and reconciling them anywhere but in one
+    named property is how a sign error survives a review.
+    """
+
+    campaign_id: str
+    item_number: str
+    #: ISO Mondays. Start inclusive, end exclusive — the fact table's own grain.
+    period_start: dt.date
+    period_end: dt.date
+    unit: str = "PCE"
+    #: ``ecart_backflush_net``, in the backflush convention.
+    net_qty: Decimal = ZERO
+    #: The two halves of the net. They do not feed the recalculation — the net
+    #: does — but they say what it is made of: 40 of under-consumption against
+    #: 38 of over-consumption does not read like 2.
+    under_consumed_qty: Decimal = ZERO
+    over_consumed_qty: Decimal = ZERO
+    theoretical_qty: Decimal = ZERO
+    actual_qty: Decimal = ZERO
+    parent_count: int = 0
+    week_count: int = 0
+    #: Freshness of the gold table when it was read, and when the read happened.
+    #: Both are needed to replay a figure months later.
+    source_loaded_at: dt.datetime | None = None
+    refreshed_at: dt.datetime | None = None
+
+    @field_validator("item_number", "unit", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @field_validator(
+        "net_qty", "under_consumed_qty", "over_consumed_qty",
+        "theoretical_qty", "actual_qty", mode="before",
+    )
+    @classmethod
+    def _qty(cls, v: Any) -> Decimal:
+        return _as_qty(v if v not in (None, "") else 0)
+
+    @field_validator("parent_count", "week_count", mode="before")
+    @classmethod
+    def _count(cls, v: Any) -> int:
+        return int(v) if v not in (None, "") else 0
+
+    @property
+    def inventory_share_qty(self) -> Decimal:
+        """``part_backflush`` — the same figure, in the inventory convention.
+
+        The inventory reads ``compté − ERP``; the backflush reads
+        ``théorique − réel``. Changing the sign here, once, is what lets every
+        caller downstream stay in a single convention.
+        """
+        return quantize_qty(-self.net_qty)
+
+
+# --------------------------------------------------------------------------- #
+# Stock-flow reconciliation between two campaigns
+# --------------------------------------------------------------------------- #
+
+class StockFlowRun(DomainModel):
+    """One comparison of two campaigns, and the period it spans."""
+
+    id: str
+    #: The campaign whose counted stock we are trying to explain.
+    campaign_id: str
+    #: The earlier one, by *count date* — never by creation date. Two campaigns
+    #: created in one order and counted in the other exist, and it is the count
+    #: that bounds the period.
+    baseline_campaign_id: str
+    period_start: dt.date
+    period_end: dt.date
+    #: Distinguishes « no scrap » from « scrap not entered », which are two very
+    #: different readings of the same zero.
+    scrap_loaded: bool = False
+    source_loaded_at: dt.datetime | None = None
+    erp_refreshed_at: dt.datetime | None = None
+    created_by: str = ""
+    created_at: dt.datetime | None = None
+    updated_at: dt.datetime | None = None
+
+
+class StockFlowInput(DomainModel):
+    """One quantity the user loaded for the period."""
+
+    run_id: str
+    item_number: str
+    kind: FlowKind
+    #: Always positive; the direction is carried by :attr:`kind`.
+    qty: Decimal = ZERO
+    unit: str = "PCE"
+
+    @field_validator("item_number", "unit", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @field_validator("qty", mode="before")
+    @classmethod
+    def _qty(cls, v: Any) -> Decimal:
+        return abs(_as_qty(v if v not in (None, "") else 0))
+
+
+class StockFlowErp(DomainModel):
+    """The two backflush measures of one article, frozen with the run."""
+
+    run_id: str
+    item_number: str
+    #: Output declared for this article *as a parent*, de-duplicated by week.
+    produced_qty: Decimal = ZERO
+    #: Theoretical consumption of this article *as a component*.
+    consumed_qty: Decimal = ZERO
+
+    @field_validator("item_number", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @field_validator("produced_qty", "consumed_qty", mode="before")
+    @classmethod
+    def _qty(cls, v: Any) -> Decimal:
+        return _as_qty(v if v not in (None, "") else 0)
+
+
+class StockFlowLine(DomainModel):
+    """One article's walk from the opening count to the closing one.
+
+    Computed, never stored: every term is recoverable from the two campaigns,
+    the loaded quantities and the frozen ERP snapshot, so the whole report can be
+    rebuilt months later from the same inputs.
+    """
+
+    item_number: str
+    name: str = ""
+    unit: str = "PCE"
+    unit_cost: Decimal = ZERO
+    #: Counted stock of the earlier campaign — the opening balance.
+    opening_qty: Decimal = ZERO
+    received_qty: Decimal = ZERO
+    produced_qty: Decimal = ZERO
+    shipped_qty: Decimal = ZERO
+    consumed_qty: Decimal = ZERO
+    scrapped_qty: Decimal = ZERO
+    #: Counted stock of the later campaign — what actually turned up.
+    closing_qty: Decimal = ZERO
+    #: Whether each campaign counted this article at all. A reference absent
+    #: from one of the two counts is not a zero: it is a hole in the comparison,
+    #: and reading it as a zero would produce a variance the size of the stock.
+    counted_opening: bool = False
+    counted_closing: bool = False
+
+    @property
+    def expected_qty(self) -> Decimal:
+        """The whole chain, in the order the flows happen."""
+        return quantize_qty(
+            self.opening_qty
+            + self.received_qty
+            + self.produced_qty
+            - self.shipped_qty
+            - self.consumed_qty
+            - self.scrapped_qty
+        )
+
+    @property
+    def variance_qty(self) -> Decimal:
+        """Counted minus expected — what none of the flows explains."""
+        return quantize_qty(self.closing_qty - self.expected_qty)
+
+    @property
+    def variance_value(self) -> Decimal:
+        return quantize_money(self.variance_qty * self.unit_cost)
+
+    @property
+    def abs_variance_value(self) -> Decimal:
+        return abs(self.variance_value)
+
+    @property
+    def variance_ratio(self) -> Decimal | None:
+        """Relative to the expected stock. ``None`` when nothing was expected.
+
+        Returned as ``None`` rather than zero: an article expected at zero and
+        found at twelve has an undefined ratio, not a nil one, and showing 0 %
+        next to a real discrepancy is worse than showing nothing.
+        """
+        expected = self.expected_qty
+        if expected == 0:
+            return None
+        return quantize_qty(self.variance_qty / expected)
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether both campaigns counted it — the comparison is only valid then."""
+        return self.counted_opening and self.counted_closing
+
+
 class VarianceLine(DomainModel):
     """A computed variance between book stock and counted stock.
 
@@ -854,6 +1075,12 @@ class VarianceLine(DomainModel):
     book_qty: Decimal = ZERO
     counted_qty: Decimal = ZERO
     adjusted_qty: Decimal = ZERO
+    #: ``ecart_backflush_net``, in the *backflush* convention (théorique − réel).
+    #: Zero when the period holds no backflush line for this article, which is
+    #: the honest reading: production did not touch it, so it has no such
+    #: variance. :attr:`backflush_measured` distinguishes that from « not loaded ».
+    backflush_qty: Decimal = ZERO
+    backflush_measured: bool = False
 
     #: True when the article/location appears in a count but not in the book
     #: stock, or vice-versa — the two cases that used to disappear silently.
@@ -886,6 +1113,57 @@ class VarianceLine(DomainModel):
     def final_qty(self) -> Decimal:
         """Stock after inventory = book + variance."""
         return quantize_qty(self.book_qty + self.variance_qty)
+
+    # -- backflush ---------------------------------------------------------- #
+    #
+    # Deliberately independent of the adjustments above. « Résiduel » answers
+    # « what has not been corrected in the ERP yet »; the three below answer
+    # « what does production explain ». Netting one into the other would produce
+    # a figure that is neither, and that nobody could reconcile with either.
+
+    @property
+    def backflush_share_qty(self) -> Decimal:
+        """``part_backflush`` — the backflush figure, sign flipped once."""
+        return quantize_qty(-self.backflush_qty)
+
+    @property
+    def backflush_share_value(self) -> Decimal:
+        return quantize_money(self.backflush_share_qty * self.unit_cost)
+
+    @property
+    def unexplained_qty(self) -> Decimal:
+        """What production does *not* explain — the figure to investigate.
+
+        Named « inexpliqué » rather than « résiduel », which this application
+        already spends on the post-adjustment variance. Two different subtractions
+        sharing one word on the same screen is a reading error waiting to happen.
+        """
+        return quantize_qty(self.variance_qty - self.backflush_share_qty)
+
+    @property
+    def unexplained_value(self) -> Decimal:
+        return quantize_money(self.unexplained_qty * self.unit_cost)
+
+    @property
+    def explanation_rate(self) -> Decimal | None:
+        """How much of the variance the backflush removes, in [−∞, 1].
+
+        A plain ``part / écart`` ratio is misleading: it passes 100 % as soon as
+        the backflush over-explains, and has no readable sign when the two terms
+        point opposite ways. Framing it as a *reduction of the gap* behaves:
+
+            1  the backflush explains the variance exactly
+            0  it brings nothing
+           <0  taking it into account widens the gap instead of closing it
+
+        That last case is a signal, not a defect of the formula, so it is
+        returned as it stands rather than floored at zero. ``None`` when the
+        variance is nil, because a share of nothing is undefined, not total.
+        """
+        gap = abs(self.variance_qty)
+        if gap == 0:
+            return None
+        return quantize_qty(1 - abs(self.unexplained_qty) / gap)
 
 
 class ControlFinding(DomainModel):

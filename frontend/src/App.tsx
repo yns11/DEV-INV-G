@@ -23,6 +23,8 @@ import { Preparation } from './features/Preparation'
 import { Counting } from './features/Counting'
 import { Generic } from './features/Generic'
 import { Analysis } from './features/Analysis'
+import { Backflush } from './features/Backflush'
+import { Reconciliation } from './features/Reconciliation'
 import { Audit } from './features/Audit'
 import { Assistant } from './features/Assistant'
 
@@ -135,12 +137,14 @@ export function App() {
                 <Route path="gestion" element={<Preparation view="gestion" />} />
 
                 <Route path="stock-erp" element={<Preparation view="book_stock" />} />
+                <Route path="backflush" element={<Backflush />} />
                 <Route path="compil" element={<Generic />} />
                 <Route path="comptage" element={<Counting />} />
 
                 <Route path="controles" element={<Analysis view="controls" />} />
                 <Route path="ecarts" element={<Analysis view="variances" />} />
                 <Route path="causes" element={<Analysis view="causes" />} />
+                <Route path="reconciliation" element={<Reconciliation />} />
                 <Route path="ajustements" element={<Analysis view="adjustments" />} />
 
                 {/* Anciennes adresses : un lien en favori doit continuer de

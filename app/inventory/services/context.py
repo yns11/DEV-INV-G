@@ -20,6 +20,7 @@ from ..db import (
     AdjustmentRepository,
     AnalysisRepository,
     AuditRepository,
+    BackflushRepository,
     BookStockRepository,
     CampaignRepository,
     ConsolidationRepository,
@@ -28,6 +29,7 @@ from ..db import (
     JournalRepository,
     ReferentialRepository,
     SheetRepository,
+    StockFlowRepository,
     get_database,
 )
 from ..domain.enums import AuditAction, CampaignStatus
@@ -89,6 +91,14 @@ class ServiceContext:
     @functools.cached_property
     def adjustments(self) -> AdjustmentRepository:
         return AdjustmentRepository(self.db)
+
+    @functools.cached_property
+    def backflush(self) -> BackflushRepository:
+        return BackflushRepository(self.db)
+
+    @functools.cached_property
+    def stock_flow(self) -> StockFlowRepository:
+        return StockFlowRepository(self.db)
 
     @functools.cached_property
     def analysis(self) -> AnalysisRepository:
@@ -212,6 +222,8 @@ _ASPECT_LABELS = {
     "post_journal": "Le postage des journaux",
     "adjustments": "Les ajustements",
     "analysis": "L'analyse des écarts",
+    "backflush": "L'écart backflush",
+    "stock_flow": "La réconciliation entre campagnes",
 }
 
 _STATUS_LABELS = {

@@ -571,3 +571,147 @@ export function CompositionBar({
     </div>
   )
 }
+
+// --------------------------------------------------------------------------- //
+// Waterfall
+// --------------------------------------------------------------------------- //
+
+export interface WaterfallStep {
+  label: string
+  value: number
+  /**
+   * A total rather than a movement: drawn from the baseline, not stacked on the
+   * previous bar. The two ends of a reconciliation are totals; the six terms
+   * between them are movements.
+   */
+  terminal?: boolean
+}
+
+/**
+ * A running balance, term by term.
+ *
+ * The only shape in which a chain of six additions and subtractions reads as one
+ * story instead of seven separate numbers: each bar starts where the previous
+ * one ended, so the eye follows the balance down the page rather than comparing
+ * heights.
+ *
+ * Colour carries the *direction* of the movement and nothing else — an addition
+ * is an addition whether or not the analyst is pleased about it. Judging them
+ * would be a second meaning on the same channel, and the two would be read at
+ * once.
+ */
+export function Waterfall({
+  data,
+  format = qty,
+  height = 260,
+}: {
+  data: WaterfallStep[]
+  format?: Formatter
+  height?: number
+}) {
+  if (data.length === 0) return null
+
+  // Walk the chain once to find where every bar starts and ends, then scale to
+  // the full excursion — including the running balance, which can go higher
+  // than any single bar.
+  let running = 0
+  const spans = data.map((step) => {
+    if (step.terminal) return { start: 0, end: step.value, step }
+    const start = running
+    running += step.value
+    return { start, end: running, step }
+  })
+
+  const bounds = spans.flatMap((s) => [s.start, s.end])
+  const upper = niceMax(Math.max(0, ...bounds))
+  const lower = -niceMax(Math.abs(Math.min(0, ...bounds)))
+  const span = upper - lower || 1
+
+  const width = Math.max(data.length * 96, 420)
+  const padTop = 22
+  const padBottom = 52
+  const plot = height - padTop - padBottom
+  const slot = width / data.length
+  const barWidth = Math.min(46, slot * 0.5)
+  const y = (value: number) => padTop + ((upper - value) / span) * plot
+
+  return (
+    <svg
+      className="chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label="Chaîne des flux de la période"
+      style={{ maxWidth: '100%' }}
+    >
+      <line className="zero-line" x1={0} y1={y(0)} x2={width} y2={y(0)} />
+
+      {spans.map(({ start, end, step }, index) => {
+        const centre = index * slot + slot / 2
+        const top = Math.min(y(start), y(end))
+        const barHeight = Math.max(Math.abs(y(end) - y(start)), 2)
+        const colour = step.terminal
+          ? 'var(--cat-1)'
+          : end >= start
+            ? 'var(--variance-positive)'
+            : 'var(--variance-negative)'
+        return (
+          <g key={`${step.label}-${index}`}>
+            {/* Le trait de liaison, du bord droit de la barre précédente au
+                bord gauche de celle-ci. C'est lui qui fait lire la chaîne comme
+                une chaîne plutôt que comme huit barres côte à côte — sans lui,
+                rien ne dit que chaque barre repart où l'autre s'arrête. */}
+            {index > 0 && !step.terminal && (
+              <line
+                x1={(index - 1) * slot + slot / 2 + barWidth / 2}
+                y1={y(start)}
+                x2={centre - barWidth / 2}
+                y2={y(start)}
+                stroke="var(--fg-subtle)"
+                strokeDasharray="3 3"
+                opacity={0.6}
+              />
+            )}
+            <rect
+              x={centre - barWidth / 2}
+              y={top}
+              width={barWidth}
+              height={barHeight}
+              rx={2}
+              fill={colour}
+              opacity={step.terminal ? 0.95 : 0.85}
+            >
+              <title>{`${step.label} : ${format(step.value)}`}</title>
+            </rect>
+            <text
+              className="value-label"
+              x={centre}
+              y={top - 5}
+              textAnchor="middle"
+            >
+              {format(step.value)}
+            </text>
+            <text
+              x={centre}
+              y={height - padBottom + 16}
+              textAnchor="middle"
+              fontSize={10}
+            >
+              {step.label.length > 18 ? `${step.label.slice(0, 17)}…` : step.label}
+            </text>
+            {step.terminal && (
+              <text
+                x={centre}
+                y={height - padBottom + 30}
+                textAnchor="middle"
+                fontSize={9}
+                fill="var(--fg-subtle)"
+              >
+                total
+              </text>
+            )}
+          </g>
+        )
+      })}
+    </svg>
+  )
+}

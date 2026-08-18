@@ -392,6 +392,75 @@ ADJUSTMENTS = GridContract(
     ),
 )
 
+BACKFLUSH = GridContract(
+    key="backflush",
+    title="Écart backflush par article",
+    description=(
+        "Écart entre la consommation théorique déduite des nomenclatures et la "
+        "consommation réellement sortie du stock, sur la période retenue."
+    ),
+    hint=(
+        "Convention backflush : positif = non-consommation (le stock système est "
+        "surévalué, on comptera moins). Les bornes sont des lundis ISO, début "
+        "inclus et fin exclue."
+    ),
+    natural_key=("item_number",),
+    fields=(
+        FieldSpec("item_number", "Numéro d'article", required=True,
+                  aliases=("numero d'article", "child_itemid", "itemnumber",
+                           "reference", "composant"), width=170),
+        FieldSpec("name", "Désignation",
+                  aliases=("child_name", "libelle", "designation"), width=240),
+        FieldSpec("unit", "Unité", default="PCE",
+                  aliases=("child_unite", "unite", "unit"), width=90),
+        FieldSpec("net_qty", "Écart backflush", type="number", required=True,
+                  default=0,
+                  aliases=("ecart_backflush_net", "ecart_brut", "ecart", "net"),
+                  help="Théorique − réel, toutes lignes confondues.", width=160),
+        FieldSpec("under_consumed_qty", "Non-consommation", type="number", default=0,
+                  aliases=("non_consommation",), width=160),
+        FieldSpec("over_consumed_qty", "Surconsommation", type="number", default=0,
+                  aliases=("surconsommation",), width=160),
+        FieldSpec("theoretical_qty", "Conso. théorique", type="number", default=0,
+                  aliases=("conso_theorique",), width=160),
+        FieldSpec("actual_qty", "Conso. réelle", type="number", default=0,
+                  aliases=("conso_reelle",), width=150),
+        FieldSpec("parent_count", "Parents", type="integer", default=0,
+                  aliases=("nb_parents",), width=100),
+        FieldSpec("week_count", "Semaines", type="integer", default=0,
+                  aliases=("nb_semaines",), width=100),
+        FieldSpec("source_loaded_at", "Fraîcheur de la source", type="datetime",
+                  aliases=("source_loaded_at", "loaded_at"), width=190),
+    ),
+)
+
+#: The three quantities the stock-flow reconciliation has to be given, because
+#: nothing in the application can derive them. One contract rather than three:
+#: the columns are identical, and the nature of the load is a property of the
+#: screen it was started from, not of the file.
+STOCK_FLOW = GridContract(
+    key="stock_flow",
+    title="Quantités de la période",
+    description=(
+        "Quantités réceptionnées, expédiées ou rebutées par article, entre les "
+        "deux campagnes comparées."
+    ),
+    hint=(
+        "Une ligne par article, quantité positive : le sens (entrée ou sortie) "
+        "est donné par l'étape, pas par le signe."
+    ),
+    natural_key=("item_number",),
+    fields=(
+        FieldSpec("item_number", "Numéro d'article", required=True,
+                  aliases=("numero d'article", "itemnumber", "reference"),
+                  width=170),
+        FieldSpec("qty", "Quantité", type="number", required=True, default=0,
+                  aliases=("quantite", "qty", "quantity"), width=150),
+        FieldSpec("unit", "Unité", default="PCE", aliases=("unite", "unit"),
+                  width=90),
+    ),
+)
+
 ZONES = GridContract(
     key="zones",
     title="Zones de l'emplacement GENERIQUE",
@@ -450,6 +519,8 @@ CONTRACTS: dict[str, GridContract] = {
         COUNT_JOURNAL_LINES,
         COUNT_SHEETS,
         ADJUSTMENTS,
+        BACKFLUSH,
+        STOCK_FLOW,
         ZONES,
         LOCATIONS,
     )

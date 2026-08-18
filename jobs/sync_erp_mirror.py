@@ -67,6 +67,16 @@ BOM_COLUMNS = (
     "parent_itemid", "child_itemid", "child_qty", "child_unitid", "statut",
 )
 
+#: L'écart backflush, à la maille semaine — celle de la source. Un job ne peut
+#: pas pré-agréger sur une période qu'il ignore : les bornes sont choisies
+#: campagne par campagne. Seules les colonnes que l'application lit sont
+#: copiées ; la table gold en porte une vingtaine d'autres.
+BACKFLUSH_COLUMNS = (
+    "semaine_debut", "parent_itemid", "child_itemid", "child_name", "child_unite",
+    "qty_parent_produite", "conso_theorique", "conso_reelle", "ecart_brut",
+    "loaded_at",
+)
+
 #: Nombre de lignes envoyées par ordre d'insertion. Assez grand pour que le
 #: référentiel entier passe en quelques dizaines d'allers-retours, assez petit
 #: pour ne pas construire une requête de plusieurs mégaoctets.
@@ -83,6 +93,25 @@ def main() -> int:
     )
     parser.add_argument("--items-table", default="silver_base_article")
     parser.add_argument("--bom-table", default="silver_bom")
+    # La table de faits est publiée par un autre pipeline, dans son propre
+    # schéma : la rattacher au schéma silver ferait qu'un renommage de l'un
+    # casserait l'autre.
+    parser.add_argument(
+        "--backflush-schema",
+        default=os.environ.get("INV_ERP_BACKFLUSH_UC_SCHEMA", "backflush"),
+    )
+    parser.add_argument("--backflush-table", default="fact_ecart_backflush")
+    parser.add_argument(
+        "--backflush-since", default=os.environ.get("INV_BACKFLUSH_SINCE", ""),
+        help=(
+            "Lundi ISO à partir duquel copier l'écart backflush (AAAA-MM-JJ). "
+            "Vide = tout l'historique publié."
+        ),
+    )
+    parser.add_argument(
+        "--skip-backflush", action="store_true",
+        help="Ne synchronise que les articles et les nomenclatures.",
+    )
     parser.add_argument(
         "--pg-schema", default=os.environ.get("INV_PG_SCHEMA", "inventory")
     )
@@ -125,6 +154,9 @@ def main() -> int:
 
     items_fqn = f"{args.catalog}.{args.schema}.{args.items_table}"
     bom_fqn = f"{args.catalog}.{args.schema}.{args.bom_table}"
+    backflush_fqn = (
+        f"{args.catalog}.{args.backflush_schema}.{args.backflush_table}"
+    )
 
     import psycopg
 
@@ -142,6 +174,8 @@ def main() -> int:
         conn.execute(f"SET search_path TO {args.pg_schema}, public")
         _assert_mirror_shape(conn, "erp_base_article", ITEM_COLUMNS)
         _assert_mirror_shape(conn, "erp_bom", BOM_COLUMNS)
+        if not args.skip_backflush:
+            _assert_mirror_shape(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
 
         items = _read(spark, items_fqn, ITEM_COLUMNS, limit=args.limit,
                       unique_on="item_id")
@@ -164,15 +198,49 @@ def main() -> int:
                 )
                 return 1
 
+        # L'écart backflush est lu après le référentiel, et son échec n'annule
+        # pas ce dernier : un pipeline gold indisponible ne doit pas priver
+        # l'application de ses articles. Le miroir garde alors sa copie
+        # précédente, dont la fraîcheur est affichée à l'écran.
+        backflush: list[tuple] = []
+        if not args.skip_backflush:
+            try:
+                backflush = _read(
+                    spark, backflush_fqn, BACKFLUSH_COLUMNS, limit=args.limit,
+                    where=(
+                        f"semaine_debut >= DATE '{args.backflush_since}'"
+                        if args.backflush_since else ""
+                    ),
+                )
+                log.info("Lu %d ligne(s) d'écart backflush", len(backflush))
+            except Exception as exc:
+                log.error(
+                    "Écart backflush (%s) illisible, miroir laissé intact : %s",
+                    backflush_fqn, exc,
+                )
+                args.skip_backflush = True
+
         try:
             _swap(conn, "erp_base_article", ITEM_COLUMNS, items,
                   unique_on="item_id")
             _swap(conn, "erp_bom", BOM_COLUMNS, boms)
+            # Même règle que pour les deux autres : une lecture vide est une
+            # anomalie, pas une mise à jour. On garde la copie précédente.
+            if backflush:
+                _swap(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS, backflush)
+            elif not args.skip_backflush:
+                log.error(
+                    "La table %s n'a renvoyé aucune ligne — miroir de l'écart "
+                    "backflush laissé intact", backflush_fqn,
+                )
         except Exception as exc:
             raise RuntimeError(_write_advice(exc, args.pg_schema)) from exc
         conn.commit()
 
-    log.info("Miroir ERP synchronisé (%d articles, %d liens)", len(items), len(boms))
+    log.info(
+        "Miroir ERP synchronisé (%d articles, %d liens, %d lignes d'écart)",
+        len(items), len(boms), len(backflush),
+    )
     return 0
 
 
@@ -183,6 +251,7 @@ def _read(
     *,
     limit: int,
     unique_on: str = "",
+    where: str = "",
 ) -> list[tuple]:
     """Les colonnes demandées, celles qui manquent renvoyées à NULL.
 
@@ -208,14 +277,15 @@ def _read(
     projection = ", ".join(
         c if c.lower() in available else f"CAST(NULL AS STRING) AS {c}" for c in columns
     )
-    query = f"SELECT {projection} FROM {fqn}"
+    clause = f" WHERE {where}" if where else ""
+    query = f"SELECT {projection} FROM {fqn}{clause}"
     if unique_on and unique_on.lower() in available:
         order = ", ".join(columns)
         query = (
             f"SELECT {', '.join(columns)} FROM ("
             f"  SELECT {projection}, ROW_NUMBER() OVER ("
             f"    PARTITION BY {unique_on} ORDER BY {order}"
-            f"  ) AS _rang FROM {fqn}"
+            f"  ) AS _rang FROM {fqn}{clause}"
             f") WHERE _rang = 1"
         )
     if limit:

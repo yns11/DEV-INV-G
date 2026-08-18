@@ -181,6 +181,19 @@ export const SECTIONS: Section[] = [
     locked: () => 'Se charge au passage en comptage.',
   },
   {
+    // Juste après le stock ERP, et pour la même raison qu'il vient là : les deux
+    // disent ce que le système *croit* avoir. L'un le dit à un instant, l'autre
+    // sur la période — et c'est la confrontation des deux au comptage qui sépare
+    // ce que la production explique de ce qui reste à expliquer.
+    to: 'backflush',
+    label: 'Backflush',
+    icon: 'layers',
+    phase: 'COUNTING',
+    lede: 'Ce que la production a consommé sans que l’ERP l’enregistre.',
+    enabled: (o) => ready(o, 'backflush'),
+    locked: (o) => blocked(o, 'backflush') ?? '',
+  },
+  {
     to: 'compil',
     label: 'Compil',
     labelFor: (o) => `Compil ${generic(o)}`,
@@ -259,6 +272,15 @@ export const SECTIONS: Section[] = [
       { id: 'analytics', label: 'Analyses & ML' },
       { id: 'summary', label: 'Synthèse IA' },
     ],
+  },
+  {
+    to: 'reconciliation',
+    label: 'Comparaison',
+    icon: 'history',
+    phase: 'ANALYSIS',
+    lede: 'Deux inventaires, et tout ce qui s’est passé entre les deux.',
+    enabled: (o) => ready(o, 'stock_flow'),
+    locked: (o) => blocked(o, 'stock_flow') ?? '',
   },
   {
     to: 'ajustements',

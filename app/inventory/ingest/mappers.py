@@ -20,6 +20,7 @@ from ..domain.enums import (
     CountSection,
     DataSource,
     ExclusionScope,
+    FlowKind,
     ItemCommonality,
     ItemType,
     JournalKind,
@@ -29,10 +30,12 @@ from ..domain.enums import (
 )
 from ..domain.models import (
     AdjustmentLine,
+    BackflushLine,
     BomLink,
     BookStockLine,
     Item,
     Location,
+    StockFlowInput,
     Zone,
     normalise_key,
 )
@@ -48,6 +51,8 @@ __all__ = [
     "map_journal_lines",
     "map_count_sheets",
     "map_adjustments",
+    "map_backflush",
+    "map_stock_flow_inputs",
     "map_zones",
     "map_locations",
 ]
@@ -630,3 +635,142 @@ def _adjustment_kind(value: Any) -> AdjustmentKind:
     if key in AdjustmentKind.__members__:
         return AdjustmentKind[key]
     return _KIND_ALIASES.get(key, AdjustmentKind.OTHER)
+
+
+def map_backflush(
+    campaign_id: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    period_start: dt.date,
+    period_end: dt.date,
+    items: Mapping[str, Item] | None = None,
+) -> tuple[list[BackflushLine], list[RowError]]:
+    """Build the frozen backflush read.
+
+    Duplicate article numbers are **summed**, like the book stock and for the
+    same reason: an export split by parent, or a workbook with one tab per
+    production line, legitimately carries the same component twice, and keeping
+    only the last row would understate the variance rather than report it.
+
+    Rows whose net variance, both components and both consumptions are all zero
+    are dropped. Absence of data means a nil variance — the guide is explicit —
+    so storing an explicit zero adds a row to every screen and changes no
+    figure. The exception is a row that carries a *count* of parents or weeks:
+    that one says « measured, and it came out at zero », which is worth keeping.
+
+    ``items`` filters to the campaign's own referential when it is supplied. The
+    fact table covers the whole plant; an article the campaign does not hold has
+    no variance to attribute to it.
+    """
+    aggregated: dict[str, BackflushLine] = {}
+    errors: list[RowError] = []
+
+    for index, row in enumerate(rows, start=2):
+        try:
+            line = BackflushLine(
+                campaign_id=campaign_id,
+                item_number=row["item_number"],
+                period_start=period_start,
+                period_end=period_end,
+                unit=row.get("unit") or "PCE",
+                net_qty=row.get("net_qty") or 0,
+                under_consumed_qty=row.get("under_consumed_qty") or 0,
+                over_consumed_qty=row.get("over_consumed_qty") or 0,
+                theoretical_qty=row.get("theoretical_qty") or 0,
+                actual_qty=row.get("actual_qty") or 0,
+                parent_count=row.get("parent_count") or 0,
+                week_count=row.get("week_count") or 0,
+                source_loaded_at=_as_datetime(row.get("source_loaded_at")),
+            )
+        except (ValueError, KeyError) as exc:
+            errors.append(
+                RowError(index, "net_qty", row.get("net_qty"), str(exc))
+            )
+            continue
+
+        if items is not None and line.item_number not in items:
+            continue
+        if not _carries_information(line):
+            continue
+
+        existing = aggregated.get(line.item_number)
+        if existing is None:
+            aggregated[line.item_number] = line
+            continue
+        existing.net_qty += line.net_qty
+        existing.under_consumed_qty += line.under_consumed_qty
+        existing.over_consumed_qty += line.over_consumed_qty
+        existing.theoretical_qty += line.theoretical_qty
+        existing.actual_qty += line.actual_qty
+        existing.parent_count = max(existing.parent_count, line.parent_count)
+        existing.week_count = max(existing.week_count, line.week_count)
+
+    return list(aggregated.values()), errors
+
+
+def _carries_information(line: BackflushLine) -> bool:
+    """Whether the row says anything a missing row would not say."""
+    return bool(
+        line.net_qty
+        or line.under_consumed_qty
+        or line.over_consumed_qty
+        or line.theoretical_qty
+        or line.actual_qty
+        or line.parent_count
+        or line.week_count
+    )
+
+
+def map_stock_flow_inputs(
+    run_id: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    kind: FlowKind,
+    items: Mapping[str, Item] | None = None,
+) -> tuple[list[StockFlowInput], list[RowError]]:
+    """Build one step's loaded quantities.
+
+    Summed on duplicates, again: a year of receipts exported month by month
+    lists the same reference twelve times, and that is the normal shape of the
+    file rather than a mistake to report.
+    """
+    aggregated: dict[str, StockFlowInput] = {}
+    errors: list[RowError] = []
+
+    for index, row in enumerate(rows, start=2):
+        try:
+            line = StockFlowInput(
+                run_id=run_id,
+                item_number=row["item_number"],
+                kind=kind,
+                qty=row.get("qty") or 0,
+                unit=row.get("unit") or "PCE",
+            )
+        except (ValueError, KeyError) as exc:
+            errors.append(RowError(index, "qty", row.get("qty"), str(exc)))
+            continue
+
+        if items is not None and line.item_number not in items:
+            continue
+
+        existing = aggregated.get(line.item_number)
+        if existing is None:
+            aggregated[line.item_number] = line
+        else:
+            existing.qty += line.qty
+
+    return list(aggregated.values()), errors
+
+
+def _as_datetime(value: Any) -> dt.datetime | None:
+    """A timestamp from a cell, whatever the source spelled it as."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, dt.date):
+        return dt.datetime.combine(value, dt.time.min, tzinfo=dt.UTC)
+    try:
+        return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None

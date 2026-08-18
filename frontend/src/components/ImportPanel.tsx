@@ -30,7 +30,7 @@ import {
 import { DataGrid, columnsFromContract } from './DataGrid'
 
 /** Grids the ERP is authoritative for — mirrors `ERP_TARGETS` on the API. */
-const ERP_TARGETS = ['items', 'boms']
+const ERP_TARGETS = ['items', 'boms', 'backflush']
 
 type Stage =
   | { kind: 'idle' }
@@ -50,6 +50,8 @@ export function ImportPanel({
   disabled = false,
   disabledReason,
   replace = false,
+  params,
+  transport,
   onImported,
   extraActions,
 }: {
@@ -59,6 +61,27 @@ export function ImportPanel({
   disabled?: boolean
   disabledReason?: string
   replace?: boolean
+  /**
+   * Paramètres propres à la grille, ajoutés à chaque appel.
+   *
+   * Les bornes de période de l'écart backflush passent par là : elles
+   * qualifient *la lecture*, pas le contenu du fichier — un fichier n'a pas de
+   * corps où les mettre, et un téléversement non plus.
+   */
+  params?: Record<string, string | number | boolean | undefined>
+  /**
+   * Transport de remplacement, quand la grille n'est pas servie par la route
+   * d'import générique.
+   *
+   * Les trois chargements de la réconciliation ont leurs propres points
+   * d'entrée — ils écrivent dans une série, pas dans la campagne. Le panneau
+   * reste identique : c'est la boucle « voir avant d'écrire » qui compte, et
+   * elle ne doit pas se dédoubler.
+   */
+  transport?: {
+    file: (file: File, options: { dryRun?: boolean }) => Promise<ImportResult>
+    paste: (text: string, options: { dryRun?: boolean }) => Promise<ImportResult>
+  }
   onImported?: (result: ImportResult) => void
   extraActions?: React.ReactNode
 }) {
@@ -84,10 +107,18 @@ export function ImportPanel({
     setStage({ kind: 'validating' })
     try {
       const result = source.erp
-        ? await api.importErp(campaignId, target, { dryRun: true, replace })
+        ? await api.importErp(campaignId, target, { dryRun: true, replace, params })
         : source.file
-          ? await api.importFile(campaignId, target, source.file, { dryRun: true, replace })
-          : await api.importPaste(campaignId, target, source.text ?? '', { dryRun: true })
+          ? transport
+            ? await transport.file(source.file, { dryRun: true })
+            : await api.importFile(campaignId, target, source.file, {
+                dryRun: true, replace, params,
+              })
+          : transport
+            ? await transport.paste(source.text ?? '', { dryRun: true })
+            : await api.importPaste(campaignId, target, source.text ?? '', {
+                dryRun: true, params,
+              })
       setStage({ kind: 'preview', result, source })
     } catch (error) {
       showError(error, source.erp ? 'Lecture ERP impossible' : 'Analyse impossible')
@@ -101,10 +132,16 @@ export function ImportPanel({
     setStage({ kind: 'importing' })
     try {
       const result = source.erp
-        ? await api.importErp(campaignId, target, { replace })
+        ? await api.importErp(campaignId, target, { replace, params })
         : source.file
-          ? await api.importFile(campaignId, target, source.file, { replace })
-          : await api.importPaste(campaignId, target, source.text ?? '', { replace })
+          ? transport
+            ? await transport.file(source.file, {})
+            : await api.importFile(campaignId, target, source.file, { replace, params })
+          : transport
+            ? await transport.paste(source.text ?? '', {})
+            : await api.importPaste(campaignId, target, source.text ?? '', {
+                replace, params,
+              })
       setStage({ kind: 'done', result })
       setPasteText('')
       setPasting(false)

@@ -66,6 +66,16 @@ class Settings(BaseSettings):
         default="silver_base_article", alias="INV_ERP_ITEMS_TABLE"
     )
     erp_bom_table: str = Field(default="silver_bom", alias="INV_ERP_BOM_TABLE")
+    #: Gold table holding the backflush variance, at parent × child × week grain.
+    #: Its own schema: it is published by a different pipeline than the silver
+    #: referential, and pinning both to one setting would make a rename of either
+    #: break the other.
+    erp_backflush_schema: str = Field(
+        default="emotors_data_champions.backflush", alias="INV_ERP_BACKFLUSH_SCHEMA"
+    )
+    erp_backflush_table: str = Field(
+        default="fact_ecart_backflush", alias="INV_ERP_BACKFLUSH_TABLE"
+    )
     #: Where the referential is read from. ``uc`` queries the silver tables
     #: directly and needs USE CATALOG on the ERP's catalog for the application's
     #: service principal — a grant only a catalog owner can make. ``mirror``
@@ -154,6 +164,11 @@ class Settings(BaseSettings):
     @property
     def erp_bom_fqn(self) -> str:
         return f"{self.erp_schema}.{self.erp_bom_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_backflush_fqn(self) -> str:
+        return f"{self.erp_backflush_schema}.{self.erp_backflush_table}"
 
 
 @functools.lru_cache(maxsize=1)

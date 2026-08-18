@@ -40,8 +40,9 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "ErpReader", "ERP_ITEM_TYPES", "erp_available", "unavailable_reason",
-    "reading_from_mirror", "mirror_state", "ITEM_COLUMNS",
-    "MIRROR_ITEMS_TABLE", "MIRROR_BOM_TABLE",
+    "reading_from_mirror", "mirror_state", "validate_period",
+    "ITEM_COLUMNS", "BACKFLUSH_COLUMNS",
+    "MIRROR_ITEMS_TABLE", "MIRROR_BOM_TABLE", "MIRROR_BACKFLUSH_TABLE",
 ]
 
 #: ERP functional group → the campaign's article type. Packaging never appears:
@@ -92,6 +93,16 @@ _BOM_SELECT = (
 #: Mirror tables, in the application's own Lakebase schema (migration 005).
 MIRROR_ITEMS_TABLE = "erp_base_article"
 MIRROR_BOM_TABLE = "erp_bom"
+MIRROR_BACKFLUSH_TABLE = "erp_ecart_backflush"
+
+#: Columns the backflush mirror carries, in the order the sync job copies them.
+#: Only what the application reads: the gold table holds a score of others that
+#: would cost storage here for nothing.
+BACKFLUSH_COLUMNS = (
+    "semaine_debut", "parent_itemid", "child_itemid", "child_name", "child_unite",
+    "qty_parent_produite", "conso_theorique", "conso_reelle", "ecart_brut",
+    "loaded_at",
+)
 
 #: Past this age, the mirror is reported as stale. A referential is not a live
 #: feed — a week-old copy is usually fine — but a campaign counted against a
@@ -148,7 +159,11 @@ def mirror_state() -> dict[str, Any]:
     fail to display at all when the mirror has not been created yet.
     """
     state: dict[str, Any] = {}
-    for key, table in (("items", MIRROR_ITEMS_TABLE), ("boms", MIRROR_BOM_TABLE)):
+    for key, table in (
+        ("items", MIRROR_ITEMS_TABLE),
+        ("boms", MIRROR_BOM_TABLE),
+        ("backflush", MIRROR_BACKFLUSH_TABLE),
+    ):
         try:
             from ..db.engine import get_database
 
@@ -253,6 +268,144 @@ class ErpReader:
         )
         return [_bom_row(r) for r in rows]
 
+    # -------------------------------------------------------------- backflush
+
+    def fetch_backflush(
+        self, *, period_start: dt.date, period_end: dt.date, limit: int
+    ) -> list[dict[str, Any]]:
+        """The backflush variance per component, as ``backflush`` grid rows.
+
+        This is the guide's reference query, and three of its choices are load
+        bearing rather than stylistic:
+
+        * **No filter on** ``type_ecart``. Dropping the lines labelled
+          « Conforme » would remove thousands of small variances whose sum is
+          not small.
+        * **No filter on** ``statut_ligne``. « Hors nomenclature » and « Sans
+          consommation » are the two cases where the system stock drifted most;
+          they are signal, and excluding them removes exactly the evidence.
+        * ``qty_parent_produite`` **is never summed here**. It is repeated on
+          every component line of a parent, so its sum means nothing. The one
+          place it is legitimately totalled — :meth:`fetch_stock_flow` — first
+          collapses it to one value per parent and week.
+
+        Bounds are ISO Mondays, start inclusive and end exclusive, because that
+        is the grain of the fact table: a period cut mid-week would either count
+        a whole week's production against three of its days or drop it entirely.
+        """
+        start, end = _assert_bounds(period_start, period_end)
+        table = self._table()
+        statement = f"""
+            SELECT
+                f.child_itemid                  AS item_number,
+                MAX(f.child_name)               AS name,
+                MAX(f.child_unite)              AS unit,
+                SUM(f.ecart_brut)               AS net_qty,
+                SUM(GREATEST(f.ecart_brut, 0))  AS under_consumed_qty,
+                SUM(GREATEST(-f.ecart_brut, 0)) AS over_consumed_qty,
+                SUM(f.conso_theorique)          AS theoretical_qty,
+                SUM(f.conso_reelle)             AS actual_qty,
+                COUNT(DISTINCT f.parent_itemid) AS parent_count,
+                COUNT(DISTINCT f.semaine_debut) AS week_count,
+                MAX(f.loaded_at)                AS source_loaded_at
+            FROM {table} AS f
+            WHERE f.semaine_debut >= DATE '{start}'
+              AND f.semaine_debut <  DATE '{end}'
+            GROUP BY f.child_itemid
+            ORDER BY f.child_itemid
+            LIMIT {int(limit)}
+        """
+        return [
+            _backflush_row(row, start=period_start, end=period_end)
+            for row in self._read(statement, source=table)
+        ]
+
+    def fetch_stock_flow(
+        self, *, period_start: dt.date, period_end: dt.date, limit: int
+    ) -> list[dict[str, Any]]:
+        """Production and theoretical consumption per article, over a period.
+
+        Two measures at two different grains, joined on the article: an article
+        is produced *as a parent* and consumed *as a component*, and a
+        sub-assembly is legitimately both.
+
+        The production half collapses to one row per parent and week before
+        summing. ``qty_parent_produite`` is repeated across every component line
+        of the parent, so summing it raw multiplies the output by the size of the
+        bill of materials — the single most expensive mistake available in this
+        table. ``MAX`` rather than ``DISTINCT`` on purpose: if one week ever
+        carried two different values for the same parent, ``DISTINCT`` would keep
+        both and double-count, where ``MAX`` still yields one row per week.
+        """
+        start, end = _assert_bounds(period_start, period_end)
+        table = self._table()
+        window = (
+            f"WHERE semaine_debut >= DATE '{start}' AND semaine_debut < DATE '{end}'"
+        )
+        statement = f"""
+            WITH production AS (
+                SELECT parent_itemid AS item_number, SUM(qty) AS produced_qty
+                FROM (
+                    SELECT parent_itemid, semaine_debut,
+                           MAX(qty_parent_produite) AS qty
+                    FROM {table}
+                    {window}
+                    GROUP BY parent_itemid, semaine_debut
+                ) AS weekly
+                GROUP BY parent_itemid
+            ),
+            consommation AS (
+                SELECT child_itemid AS item_number,
+                       SUM(conso_theorique) AS consumed_qty
+                FROM {table}
+                {window}
+                GROUP BY child_itemid
+            )
+            SELECT
+                COALESCE(p.item_number, c.item_number) AS item_number,
+                COALESCE(p.produced_qty, 0)            AS produced_qty,
+                COALESCE(c.consumed_qty, 0)            AS consumed_qty
+            FROM production p
+            FULL OUTER JOIN consommation c ON p.item_number = c.item_number
+            ORDER BY 1
+            LIMIT {int(limit)}
+        """
+        return [_stock_flow_row(row) for row in self._read(statement, source=table)]
+
+    def backflush_loaded_at(
+        self, *, period_start: dt.date, period_end: dt.date
+    ) -> dt.datetime | None:
+        """Freshness of the fact table over the period, for the audit trail."""
+        start, end = _assert_bounds(period_start, period_end)
+        table = self._table()
+        rows = self._read(
+            f"SELECT MAX(loaded_at) AS loaded_at FROM {table} "
+            f"WHERE semaine_debut >= DATE '{start}' AND semaine_debut < DATE '{end}'",
+            source=table,
+        )
+        return _timestamp(rows[0][0]) if rows and rows[0] else None
+
+    def _table(self) -> str:
+        """Where the fact table is read from, mirror or catalogue."""
+        return (
+            MIRROR_BACKFLUSH_TABLE
+            if self._from_mirror
+            else self._settings.erp_backflush_fqn
+        )
+
+    def _read(self, statement: str, *, source: str) -> list[Sequence[Any]]:
+        """One statement, against whichever transport this reader is bound to.
+
+        The two dialects agree on everything these statements use — ``GREATEST``,
+        ``FULL OUTER JOIN``, ``DATE 'yyyy-mm-dd'``, ordinal ``ORDER BY`` — so the
+        SQL is written once. It is the aggregation that makes this affordable on
+        both: whatever the grain of the source, what comes back is a few thousand
+        rows.
+        """
+        if not self._from_mirror:
+            return self._query(statement, source=source)
+        return _mirror_statement(statement, source=source)
+
     # ---------------------------------------------------------------- transport
 
     def _query(self, statement: str, *, source: str) -> list[Sequence[Any]]:
@@ -322,6 +475,124 @@ def _mirror_rows(
             "fichier."
         )
     return [[row[name] for name in names] for row in rows]
+
+
+def _mirror_statement(statement: str, *, source: str) -> list[Sequence[Any]]:
+    """Run a read-only statement against the local mirror, returning tuples.
+
+    Tuples rather than the dictionaries psycopg hands back, so the row
+    translation below is shared by both transports — the mirror is a copy of the
+    ERP, not a second vocabulary.
+    """
+    from ..db.engine import get_database
+
+    try:
+        with get_database().cursor() as cur:
+            cur.execute(statement)
+            rows = cur.fetchall()
+    except Exception as exc:
+        log.error("Lecture du miroir backflush impossible (%s) : %s", source, exc)
+        raise UpstreamError(
+            "Lecture du miroir de l'écart backflush impossible. Le job "
+            f"« Synchronisation du miroir ERP » a-t-il déjà tourné ? ({exc})",
+            cause=str(exc),
+        ) from exc
+    # psycopg's dict rows preserve the SELECT order, which is the contract the
+    # translators below rely on.
+    return [tuple(row.values()) for row in rows]
+
+
+def validate_period(start: dt.date, end: dt.date) -> None:
+    """What makes a period readable against the fact table.
+
+    Mondays are required rather than snapped silently: the grain is the ISO
+    week, and a period quietly widened by four days would produce a figure whose
+    header says one thing and whose value means another.
+
+    Exported, and called on *every* input mode rather than only on the ERP read.
+    The first version validated inside the query builder, so a file or a paste
+    carrying a Wednesday sailed through and was stored under bounds the source
+    could never have produced.
+    """
+    for label, value in (("de début", start), ("de fin", end)):
+        if not isinstance(value, dt.date) or isinstance(value, dt.datetime):
+            raise ValidationError(
+                f"La borne {label} doit être une date (lundi ISO)."
+            )
+        if value.weekday() != 0:
+            raise ValidationError(
+                f"La borne {label} ({value:%d/%m/%Y}) n'est pas un lundi. "
+                "L'écart backflush est calculé à la semaine ISO : une borne en "
+                "milieu de semaine compterait une production entière contre "
+                "quelques jours.",
+                borne=value.isoformat(),
+            )
+    if end <= start:
+        raise ValidationError(
+            "La borne de fin doit être postérieure à la borne de début "
+            f"({start:%d/%m/%Y} → {end:%d/%m/%Y}). La fin est exclue : pour une "
+            "seule semaine, prenez le lundi suivant.",
+            debut=start.isoformat(),
+            fin=end.isoformat(),
+        )
+
+
+def _assert_bounds(start: dt.date, end: dt.date) -> tuple[str, str]:
+    """The validated period, rendered as two literals safe to interpolate.
+
+    The bounds reach SQL as text, so this is the gate against injection — hence
+    the type check in :func:`validate_period` rather than a duck-typed
+    ``str()``. A ``datetime.date`` cannot carry a quote, and nothing else gets
+    through.
+    """
+    validate_period(start, end)
+    return start.isoformat(), end.isoformat()
+
+
+def _backflush_row(
+    row: Sequence[Any], *, start: dt.date, end: dt.date
+) -> dict[str, Any]:
+    (item, name, unit, net, under, over, theoretical, actual,
+     parents, weeks, loaded_at) = _pad(row, 11)
+    return {
+        "item_number": _text(item),
+        "name": _text(name),
+        "unit": _text(unit) or "PCE",
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "net_qty": _number(net),
+        "under_consumed_qty": _number(under),
+        "over_consumed_qty": _number(over),
+        "theoretical_qty": _number(theoretical),
+        "actual_qty": _number(actual),
+        "parent_count": int(_number(parents)),
+        "week_count": int(_number(weeks)),
+        "source_loaded_at": (
+            stamp.isoformat() if (stamp := _timestamp(loaded_at)) else ""
+        ),
+    }
+
+
+def _stock_flow_row(row: Sequence[Any]) -> dict[str, Any]:
+    item, produced, consumed = _pad(row, 3)
+    return {
+        "item_number": _text(item),
+        "produced_qty": _number(produced),
+        "consumed_qty": _number(consumed),
+    }
+
+
+def _timestamp(value: Any) -> dt.datetime | None:
+    """A timestamp from either transport: psycopg gives a datetime, the API text."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    try:
+        return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        log.warning("Horodatage de source illisible : %r", value)
+        return None
 
 
 def _workspace_client() -> Any:

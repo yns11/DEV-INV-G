@@ -224,6 +224,23 @@ class TestTheColumnsCopied:
         notebook = JOB.with_name("sync_erp_mirror_notebook.py")
         assert declared_in(notebook, "BOM_COLUMNS") == sync.BOM_COLUMNS
 
+    def test_the_three_agree_on_the_backflush_columns_too(self):
+        """La table de faits est lue de la même façon : positionnellement.
+
+        Une colonne ajoutée au notebook et pas à l'application décalerait
+        `conso_theorique` sur `qty_parent_produite`, et le rapport de
+        réconciliation soustrairait une production au lieu d'une consommation —
+        des chiffres plausibles, faux, et que rien ne signalerait.
+        """
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+        from inventory.ingest.erp import BACKFLUSH_COLUMNS
+
+        notebook = JOB.with_name("sync_erp_mirror_notebook.py")
+        assert BACKFLUSH_COLUMNS == sync.BACKFLUSH_COLUMNS
+        assert declared_in(notebook, "BACKFLUSH_COLUMNS") == BACKFLUSH_COLUMNS
+
 
 class TestWhenTheDiscoveryIsRefused:
     """Le deuxième lancement en production s'est arrêté sur « Impossible de

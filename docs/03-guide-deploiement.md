@@ -613,7 +613,7 @@ déjà accès à l'ERP.
 | `INV_ERP_SOURCE` | Lit | Exige |
 |---|---|---|
 | `uc` (défaut) | les tables silver, en direct | `USE CATALOG` + `SELECT` pour le SP de l'App |
-| `mirror` | `erp_base_article` / `erp_bom` (Lakebase) | que le job de synchronisation ait tourné |
+| `mirror` | `erp_base_article`, `erp_bom`, `erp_ecart_backflush` (Lakebase) | que le job de synchronisation ait tourné |
 
 **La voie recommandée est le notebook**, `jobs/sync_erp_mirror_notebook.py` :
 importez-le dans le workspace (*Workspace → Import → File*), renseignez les
@@ -623,6 +623,14 @@ runtime serverless fige en deçà de l'API Lakebase (voir plus bas). Un seul
 widget demande une valeur qui ne se devine pas, `pg_host` : console Lakebase → le
 projet → l'endpoint en écriture, ou le `PGHOST` de l'App dans son onglet
 *Environment*.
+
+L'écart backflush est copié par le même notebook, sous deux widgets :
+`sync_backflush` (`non` pour ne copier que le référentiel) et `backflush_since`,
+le lundi ISO à partir duquel copier. La table de faits est à la maille semaine
+et grossit indéfiniment, d'où la borne. La dernière cellule affiche les semaines
+effectivement couvertes — c'est la réponse à la seule question que pose l'écran
+*Backflush* quand il n'affiche rien : une période d'inventaire hors de cet
+intervalle ne renverra jamais de ligne.
 
 ```bash
 # 1. l'App d'abord : la migration 006 s'applique à son démarrage et ouvre

@@ -348,3 +348,53 @@ class TestMappingTheLoadedRows:
     def test_the_article_number_is_normalised(self):
         lines, _ = self.rows({"item_number": " art-1 ", "net_qty": 5})
         assert lines[0].item_number == "ART-1"
+
+
+class TestWhatClosureFreezes:
+    """La clôture ne fige pas les deux chantiers pour la même raison.
+
+    L'écart backflush entre dans l'écart d'inventaire de la campagne : un
+    contrôleur qui a signé un chiffre doit être certain qu'il ne bougera plus,
+    et le guide le dit explicitement.
+
+    La réconciliation entre deux campagnes, non. Elle n'écrit que dans ses
+    propres tables et lit le stock compté de deux campagnes sans toucher ni à
+    l'une ni à l'autre. Et le moment utile est précisément celui-là : on compare
+    deux inventaires une fois qu'ils sont terminés. La figer à la clôture
+    interdisait l'usage principal de la fonction.
+    """
+
+    def editable(self, status):
+        from inventory.domain.workflow import mutability_of
+
+        return mutability_of(status)
+
+    def test_the_backflush_is_frozen_once_the_campaign_is_closed(self):
+        from inventory.domain.enums import CampaignStatus
+
+        assert self.editable(CampaignStatus.CLOSED).backflush is False
+
+    def test_the_comparison_stays_open_after_closure(self):
+        from inventory.domain.enums import CampaignStatus
+
+        assert self.editable(CampaignStatus.CLOSED).stock_flow is True
+
+    def test_both_are_open_while_the_campaign_is(self):
+        from inventory.domain.enums import CampaignStatus
+
+        for status in (
+            CampaignStatus.PREPARATION,
+            CampaignStatus.COUNTING,
+            CampaignStatus.ANALYSIS,
+        ):
+            editable = self.editable(status)
+            assert editable.backflush is True, status
+            assert editable.stock_flow is True, status
+
+    def test_the_interface_is_told_about_both(self):
+        """La barre latérale et l'API lisent la même charge utile."""
+        from inventory.domain.enums import CampaignStatus
+
+        payload = self.editable(CampaignStatus.CLOSED).as_dict()
+        assert payload["backflush"] is False
+        assert payload["stockFlow"] is True

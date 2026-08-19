@@ -124,7 +124,15 @@ export function Reconciliation() {
     onError: (error) => showError(error, 'Suppression impossible'),
   })
 
+  // La clôture ne ferme *pas* cet écran : la comparaison n'écrit rien qui entre
+  // dans les chiffres de la campagne, et c'est une fois les deux inventaires
+  // terminés qu'on la fait. Le drapeau reste lu plutôt que supposé — si la
+  // matrice de gel change un jour, l'écran suivra sans mentir entre-temps, et
+  // il dira pourquoi au lieu de refuser le clic en silence.
   const editable = overview.permissions.stockFlow
+  const locked =
+    'La phase actuelle de la campagne fige la comparaison : le rapport reste ' +
+    'consultable et exportable, mais rien ne peut y être chargé.'
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
@@ -142,7 +150,11 @@ export function Reconciliation() {
           ) : (
             <Card
               title="Campagne de départ"
-              message="Son stock compté sert de stock initial. La période va d’un lundi d’inventaire à l’autre, fin exclue."
+              message={
+                editable
+                  ? 'Son stock compté sert de stock initial. La période va d’un lundi d’inventaire à l’autre, fin exclue.'
+                  : undefined
+              }
               actions={
                 current && editable ? (
                   <Button
@@ -157,6 +169,15 @@ export function Reconciliation() {
                 ) : undefined
               }
             >
+              {/* Un contrôle désactivé doit dire pourquoi. Sans cette phrase,
+                  la pilule refusait le clic avec un curseur barré et rien
+                  d'autre — ce qui ne laisse aucune piste pour savoir quoi
+                  faire. */}
+              {!editable && (
+                <Alert tone="info" title="Comparaison en lecture seule">
+                  {locked}
+                </Alert>
+              )}
               <div className="row-wrap">
                 {list.map((candidate) => {
                   const existing = runs.data?.find(
@@ -167,8 +188,14 @@ export function Reconciliation() {
                     <button
                       key={candidate.id}
                       className={`chip${active ? ' chip--active' : ''}`}
-                      disabled={!editable || open.isPending}
-                      title={`Comptée le ${formatDate(candidate.countDate)} — ${candidate.weeks} semaine(s) avant celle-ci`}
+                      // Une comparaison déjà ouverte se rouvre même en lecture
+                      // seule : la consulter ne modifie rien.
+                      disabled={(!editable && !existing) || open.isPending}
+                      title={
+                        !editable && !existing
+                          ? locked
+                          : `Comptée le ${formatDate(candidate.countDate)} — ${candidate.weeks} semaine(s) avant celle-ci`
+                      }
                       onClick={() =>
                         existing ? setRunId(existing.id) : open.mutate(candidate.id)
                       }
@@ -415,8 +442,8 @@ function Steps({
 
         {!editable && (
           <span className="subtle">
-            La campagne est clôturée : les quantités de la période ne sont plus
-            modifiables.
+            Les quantités de la période ne sont plus modifiables ; le rapport
+            reste consultable et exportable.
           </span>
         )}
         {overview.permissions.stockFlow && !erpStep?.loaded && (

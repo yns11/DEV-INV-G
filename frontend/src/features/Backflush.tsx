@@ -241,6 +241,13 @@ function PeriodHeader({
         )}
       </div>
 
+      {!editable && (
+        <span className="subtle">
+          La campagne est clôturée : la période et l’écart sont figés. C’est ce
+          qui rend le chiffre défendable — il entre dans l’écart d’inventaire, et
+          ne peut donc plus bouger après la signature.
+        </span>
+      )}
       {loaded && (
         <div className="row-wrap" style={{ gap: 'var(--space-3)', marginTop: 'var(--space-3)' }}>
           <span className="subtle">

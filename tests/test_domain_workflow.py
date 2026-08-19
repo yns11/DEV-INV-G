@@ -73,9 +73,21 @@ class TestFreezeMatrix:
         assert not editable.book_stock and not editable.locations
         assert editable.adjustments and editable.analysis
 
-    def test_closed_freezes_everything(self):
+    def test_closed_freezes_everything_that_feeds_the_campaign_s_figures(self):
+        """Une seule exception, et elle est nommée ici pour ne pas s'étendre.
+
+        La réconciliation entre deux campagnes n'écrit que dans ses propres
+        tables : elle ne change ni un écart, ni un IRA, ni un total que
+        quelqu'un a validé. Et c'est une fois les deux inventaires terminés
+        qu'on la fait — la figer à la clôture interdisait l'usage principal de
+        la fonction. Tout le reste, y compris l'écart backflush qui entre dans
+        l'écart d'inventaire, est bel et bien gelé.
+        """
         editable = mutability_of(CampaignStatus.CLOSED)
-        assert not any(editable.as_dict().values())
+        open_aspects = {
+            name for name, value in editable.as_dict().items() if value
+        }
+        assert open_aspects == {"stockFlow"}
 
 
 class TestTransitionBlockers:

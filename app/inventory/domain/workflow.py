@@ -93,7 +93,21 @@ class Editable:
     #: controller signed off could still change afterwards.
     backflush: bool = True
     #: The stock-flow reconciliation against an earlier campaign, and the three
-    #: quantities it is given. Same rule, same reason.
+    #: quantities it is given. Open in *every* status, closure included — the one
+    #: aspect that is.
+    #:
+    #: The rule differs from the backflush above, and deliberately. The backflush
+    #: enters the campaign's own variance, so a controller who signed off a
+    #: figure must be sure it cannot move afterwards. This does not: it writes
+    #: only into its own three tables, and reads the counted stock of two
+    #: campaigns without touching either. Nothing it stores changes a variance,
+    #: an IRA or a total anybody validated.
+    #:
+    #: And the useful moment is precisely the closed one. Comparing two
+    #: inventories through the flows of the period between them is something one
+    #: does once both are finished; freezing it at closure forbade the main use
+    #: of the feature, which is how this was found — a chip that would not
+    #: click, on a campaign where the comparison was the whole point.
     stock_flow: bool = True
 
     def as_dict(self) -> dict[str, bool]:
@@ -176,7 +190,9 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         adjustments=False,
         analysis=False,
         backflush=False,
-        stock_flow=False,
+        # Voir le champ : la réconciliation n'écrit rien qui entre dans les
+        # chiffres de la campagne, et c'est une fois close qu'on la fait.
+        stock_flow=True,
     ),
 }
 

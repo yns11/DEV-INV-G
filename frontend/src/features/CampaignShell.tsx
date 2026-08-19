@@ -503,5 +503,9 @@ const FREEZE_NOTES: Partial<Record<CampaignStatus, string[]>> = {
     'Feuilles GENERIQUE, arbitrages et consolidation.',
     'Référentiel emplacements.',
   ],
-  CLOSED: ['Tout : ajustements, causes, commentaires. Exports et audit restent lisibles.'],
+  CLOSED: [
+    'Ajustements, causes, commentaires, et l’écart backflush.',
+    'La comparaison entre deux campagnes reste ouverte : elle ne change aucun chiffre de celle-ci, et c’est une fois close qu’on la fait.',
+    'Exports et audit restent lisibles.',
+  ],
 }

@@ -257,7 +257,7 @@ class StockFlowService:
         that quantity on every component line, so summing it raw multiplies the
         output by the size of the bill of materials.
         """
-        from ..ingest.erp import ErpReader
+        from ..ingest.erp import ErpReader, reading_from_mirror
 
         ctx = self.ctx
         ctx.guard(campaign, "stock_flow")
@@ -272,8 +272,14 @@ class StockFlowService:
         loaded_at = reader.backflush_loaded_at(
             period_start=run.period_start, period_end=run.period_end
         )
+        # Le modèle est construit *avant* le filtre, pas après. La table de faits
+        # écrit ses identifiants comme l'ERP les lui donne, le référentiel les
+        # stocke normalisés (majuscules, espaces réduits) : comparer la chaîne
+        # brute à des clés normalisées écartait des lignes parfaitement valides,
+        # et l'écran n'annonçait qu'un « 0 article » sans dire pourquoi. Tous les
+        # autres imports construisent puis filtrent ; celui-ci faisait l'inverse.
         items = ctx.referentials.items_by_number(campaign.id)
-        lines = [
+        read = [
             StockFlowErp(
                 run_id=run.id,
                 item_number=row["item_number"],
@@ -281,8 +287,8 @@ class StockFlowService:
                 consumed_qty=row["consumed_qty"],
             )
             for row in rows
-            if row["item_number"] in items
         ]
+        lines = [line for line in read if line.item_number in items]
 
         with ctx.db.transaction() as conn:
             written = ctx.stock_flow.replace_erp(run.id, lines, conn=conn)
@@ -306,11 +312,25 @@ class StockFlowService:
                 conn=conn,
             )
 
+        # Trois situations très différentes donnaient le même « 0 article » :
+        # l'ERP n'a rien sur la période, il a répondu mais aucun de ses articles
+        # n'est au référentiel de la campagne, ou tout s'est bien passé. Le
+        # chiffre seul ne les distingue pas — d'où les deux compteurs, la période
+        # réellement interrogée et la table lue, qui permettent de rejouer la
+        # même requête à la main.
         return {
             "items": written,
+            "rowsRead": len(rows),
             "outOfScope": len(rows) - written,
             "producedQty": float(sum(line.produced_qty for line in lines)),
             "consumedQty": float(sum(line.consumed_qty for line in lines)),
+            "periodStart": run.period_start.isoformat(),
+            "periodEnd": run.period_end.isoformat(),
+            "source": reader.backflush_source,
+            # Une table vide ne se lit pas pareil selon d'où elle vient : dans le
+            # catalogue c'est une période sans production, dans le miroir c'est
+            # souvent le job de synchronisation qui n'a pas encore tourné.
+            "mirror": reading_from_mirror(),
             "sourceLoadedAt": loaded_at.isoformat() if loaded_at else None,
         }
 

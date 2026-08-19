@@ -566,6 +566,14 @@ type Toast = { id: number; tone: 'info' | 'success' | 'warning' | 'danger'; titl
 type ToastApi = {
   push: (toast: Omit<Toast, 'id'>) => void
   success: (title: string, body?: string) => void
+  /**
+   * L'opération a abouti, mais pas à ce qu'on attendait.
+   *
+   * « Zéro ligne lue » n'est ni un succès ni une erreur : la requête a
+   * fonctionné et n'a rien ramené. Faute de ce ton, le message partait en vert
+   * — un petit mensonge, et celui qui fait qu'on cherche l'explication ailleurs.
+   */
+  warning: (title: string, body?: string) => void
   error: (title: string, body?: string) => void
 }
 
@@ -578,8 +586,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const push = useCallback((toast: Omit<Toast, 'id'>) => {
     const id = nextId.current++
     setToasts((current) => [...current, { ...toast, id }])
-    // Errors stay longer: they usually carry something to act on.
-    const ttl = toast.tone === 'danger' ? 9000 : 4500
+    // Errors and warnings stay longer: they carry something to act on, and a
+    // sentence naming a table and a period is not read in four seconds.
+    const ttl = toast.tone === 'danger' || toast.tone === 'warning' ? 9000 : 4500
     window.setTimeout(() => setToasts((c) => c.filter((t) => t.id !== id)), ttl)
   }, [])
 
@@ -587,6 +596,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     () => ({
       push,
       success: (title, body) => push({ tone: 'success', title, body }),
+      warning: (title, body) => push({ tone: 'warning', title, body }),
       error: (title, body) => push({ tone: 'danger', title, body }),
     }),
     [push],

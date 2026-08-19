@@ -385,6 +385,17 @@ class ErpReader:
         )
         return _timestamp(rows[0][0]) if rows and rows[0] else None
 
+    @property
+    def backflush_source(self) -> str:
+        """Which table the backflush is read from, mirror or catalogue.
+
+        Reported with every read: « zéro ligne » is a different problem
+        depending on whether it came from Unity Catalog or from a local mirror
+        the synchronisation job has not filled yet, and the name is what lets
+        somebody run the same query by hand.
+        """
+        return self._table()
+
     def _table(self) -> str:
         """Where the fact table is read from, mirror or catalogue."""
         return (

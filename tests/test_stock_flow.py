@@ -297,3 +297,35 @@ class TestTheEarlierCampaignIsTheEarlierOneByCountDate:
         twin = self.campaign("B", dt.date(2026, 6, 29), created=1)
         with pytest.raises(ValidationError):
             self.service(now, twin)._baseline(now, twin.id)
+
+
+class TestReadingTheErpFiguresIntoTheRun:
+    """Ce que « 0 article lu » recouvrait, et pourquoi il ne le recouvre plus.
+
+    La table de faits écrit ses identifiants comme l'ERP les lui donne ; le
+    référentiel de la campagne les stocke normalisés. Comparer la chaîne brute
+    à des clés normalisées écartait des lignes parfaitement valides — et l'écran
+    n'annonçait qu'un « 0 » sans rien dire de plus, ce qui ne laisse aucune
+    piste : l'ERP n'a rien sur la période, ou il a répondu mais rien ne
+    correspond ? Les deux compteurs répondent.
+    """
+
+    def test_a_lowercase_erp_identifier_still_matches_the_referential(self):
+        """C'est le défaut trouvé en production : tout était écarté en silence."""
+        from inventory.domain.models import StockFlowErp
+
+        lines = [
+            StockFlowErp(run_id="r", item_number=raw, produced_qty=1, consumed_qty=2)
+            for raw in (" art-000 ", "ART-001", "art  002")
+        ]
+        assert [line.item_number for line in lines] == ["ART-000", "ART-001", "ART 002"]
+
+    def test_the_model_normalises_before_the_membership_test(self):
+        """Construire puis filtrer, comme tous les autres imports."""
+        from inventory.domain.models import Item, StockFlowErp
+
+        items = {"ART-000": Item(campaign_id="c", item_number="ART-000")}
+        built = StockFlowErp(run_id="r", item_number="art-000")
+        assert built.item_number in items
+        # Le test que la version fautive faisait, et qui échouait :
+        assert "art-000" not in items

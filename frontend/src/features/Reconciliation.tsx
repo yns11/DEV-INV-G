@@ -337,9 +337,35 @@ function Steps({
     mutationFn: () => api.refreshStockFlowErp(campaignId, runId),
     onSuccess: (result) => {
       void queryClient.invalidateQueries()
+      // « 0 article » recouvrait trois situations sans les distinguer : la
+      // table de faits n'a rien sur la période, elle a répondu mais aucun de
+      // ses articles n'est au référentiel de la campagne, ou la lecture s'est
+      // bien passée. Un compteur seul ne dit pas laquelle, et sans la période
+      // ni le nom de la table on ne peut même pas rejouer la requête.
+      const period = `du ${formatDate(result.periodStart)} au ${formatDate(result.periodEnd)} (exclu)`
+      if (result.rowsRead === 0) {
+        toast.warning(
+          'Aucune production sur cette période',
+          `${result.source} ne renvoie aucune ligne ${period}. ` +
+            (result.mirror
+              ? 'La lecture passe par le miroir local : le job « Synchronisation du miroir ERP » a-t-il déjà copié la table de faits ?'
+              : 'Vérifiez les dates d’inventaire des deux campagnes, et que la table de faits couvre bien cette période.'),
+        )
+        return
+      }
+      if (result.items === 0) {
+        toast.warning(
+          `${result.rowsRead} ligne(s) lues, aucune retenue`,
+          `Aucun des articles renvoyés par ${result.source} ${period} n’est au référentiel de cette campagne. Chargez le référentiel articles, ou vérifiez que les deux sources parlent des mêmes références.`,
+        )
+        return
+      }
       toast.success(
-        `${result.items} article(s) lus`,
-        `Production ${qty(result.producedQty)} · consommation théorique ${qty(result.consumedQty)}.`,
+        `${result.items} article(s) retenus sur ${result.rowsRead} lus`,
+        `Production ${qty(result.producedQty)} · consommation théorique ${qty(result.consumedQty)}.` +
+          (result.outOfScope
+            ? ` ${result.outOfScope} ligne(s) hors référentiel, ignorées.`
+            : ''),
       )
     },
     onError: (error) => showError(error, 'Lecture ERP impossible'),

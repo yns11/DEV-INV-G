@@ -680,10 +680,19 @@ export const api = {
     request<StockFlowReport>(`/campaigns/${id}/stock-flow/${runId}`),
   refreshStockFlowErp: (id: string, runId: string) =>
     request<{
+      /** Retenus : lus *et* présents au référentiel de la campagne. */
       items: number
+      /** Lus depuis la table de faits, avant filtrage. */
+      rowsRead: number
       outOfScope: number
       producedQty: number
       consumedQty: number
+      /** La période réellement interrogée, et la table lue. */
+      periodStart: string
+      periodEnd: string
+      source: string
+      /** Lecture par le miroir local plutôt que par Unity Catalog. */
+      mirror: boolean
       sourceLoadedAt: string | null
     }>(`/campaigns/${id}/stock-flow/${runId}/erp`, { method: 'POST' }),
   skipStockFlowScrap: (id: string, runId: string) =>

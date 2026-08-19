@@ -22,6 +22,7 @@ import {
   type ReactNode,
 } from 'react'
 import { ApiError, download } from '../lib/api'
+import { useCollapsed } from '../lib/collapse'
 import { DASH } from '../lib/format'
 
 /**
@@ -158,12 +159,27 @@ export function Badge({
   )
 }
 
+/**
+ * A full-width block, foldable by its title.
+ *
+ * Every screen stacks several of these and none of them serves everybody on the
+ * same day, so the title doubles as a fold handle: what you are not using goes
+ * away and what you are lifts above the fold. The state is remembered per block
+ * — a block that springs back open on every navigation is a block you fold ten
+ * times a day.
+ *
+ * Folding needs a stable key, which a plain-string `title` provides; a rich node
+ * does not, so those cards stay open unless a `collapseKey` names them. And a
+ * card with no header has no handle to offer, so it is never foldable.
+ */
 export function Card({
   title,
   message,
   actions,
   footer,
   flush = false,
+  collapseKey,
+  collapsible,
   children,
   className = '',
 }: {
@@ -173,24 +189,51 @@ export function Card({
   actions?: ReactNode
   footer?: ReactNode
   flush?: boolean
+  /** Identity under which the folded state is remembered. */
+  collapseKey?: string
+  /** Force folding off on a block that must stay whole. */
+  collapsible?: boolean
   children: ReactNode
   className?: string
 }) {
+  const key = collapseKey ?? (typeof title === 'string' ? title : '')
+  const foldable = (collapsible ?? true) && key !== ''
+  const [collapsed, setCollapsed] = useCollapsed(key)
+  const folded = foldable && collapsed
+
   return (
-    <section className={`card ${className}`}>
+    <section className={`card${folded ? ' card--collapsed' : ''} ${className}`}>
       {(title || actions) && (
         <header className="card__head">
-          <div style={{ minWidth: 0 }}>
-            {title && <h2 className="card__title">{title}</h2>}
-            {message && <p className="card__message">{message}</p>}
+          <div className="row" style={{ minWidth: 0, gap: 'var(--space-2)' }}>
+            {foldable && (
+              <button
+                className="card__fold"
+                aria-expanded={!folded}
+                title={folded ? 'Déplier ce bloc' : 'Replier ce bloc'}
+                onClick={() => setCollapsed(!folded)}
+              >
+                {folded ? (
+                  <Icons.chevronRight size={14} />
+                ) : (
+                  <Icons.chevronDown size={14} />
+                )}
+              </button>
+            )}
+            <div style={{ minWidth: 0 }}>
+              {title && <h2 className="card__title">{title}</h2>}
+              {message && !folded && <p className="card__message">{message}</p>}
+            </div>
           </div>
-          {actions && <div className="row-wrap">{actions}</div>}
+          {actions && !folded && <div className="row-wrap">{actions}</div>}
         </header>
       )}
-      <div className={flush ? 'card__body card__body--flush' : 'card__body'}>
-        {children}
-      </div>
-      {footer && <footer className="card__foot">{footer}</footer>}
+      {!folded && (
+        <div className={flush ? 'card__body card__body--flush' : 'card__body'}>
+          {children}
+        </div>
+      )}
+      {footer && !folded && <footer className="card__foot">{footer}</footer>}
     </section>
   )
 }

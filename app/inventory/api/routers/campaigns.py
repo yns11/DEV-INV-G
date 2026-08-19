@@ -70,6 +70,17 @@ def get_campaign(campaign: CampaignDep) -> dict[str, Any]:
     return campaign.model_dump(mode="json")
 
 
+@router.delete("/{campaign_id}", summary="Supprimer une campagne")
+def delete_campaign(campaign: CampaignDep, service: Service) -> dict[str, bool]:
+    """Logical deletion, reserved to the campaign's author.
+
+    Nothing is erased: the row is flagged and stops being listed. A campaign
+    created by somebody else is refused with a 403 rather than silently ignored.
+    """
+    service.delete(campaign.id)
+    return {"deleted": True}
+
+
 @router.get("/{campaign_id}/overview", summary="Tableau de bord de la campagne")
 def overview(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     """Header data for every screen: status, permissions and both progress bars."""

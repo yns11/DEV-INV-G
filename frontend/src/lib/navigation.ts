@@ -274,6 +274,18 @@ export const SECTIONS: Section[] = [
     ],
   },
   {
+    to: 'ajustements',
+    label: 'Ajustements',
+    icon: 'scale',
+    phase: 'ANALYSIS',
+    lede: 'Les mouvements postés après le comptage.',
+    enabled: (o) => o.campaign.book_stock_frozen_at !== null,
+    locked: () => 'Disponible une fois le stock ERP gelé.',
+  },
+  {
+    // En dernier, après les ajustements : la comparaison part du stock physique
+    // — comptage ajustements compris — et la lire avant de les avoir postés
+    // reviendrait à comparer une étagère qu'on est encore en train de corriger.
     to: 'reconciliation',
     label: 'Comparaison',
     icon: 'history',
@@ -281,15 +293,6 @@ export const SECTIONS: Section[] = [
     lede: 'Deux inventaires, et tout ce qui s’est passé entre les deux.',
     enabled: (o) => ready(o, 'stock_flow'),
     locked: (o) => blocked(o, 'stock_flow') ?? '',
-  },
-  {
-    to: 'ajustements',
-    label: 'Ajustements',
-    icon: 'scale',
-    phase: 'ANALYSIS',
-    lede: 'Ce qui reste à corriger dans l’ERP.',
-    enabled: (o) => o.campaign.book_stock_frozen_at !== null,
-    locked: () => 'Disponible une fois le stock ERP gelé.',
   },
 ]
 

@@ -37,6 +37,7 @@ import type {
   Overview,
   PrintMode,
   SheetStatus,
+  StockBasis,
   StockFlowCandidate,
   StockFlowReport,
   StockFlowRun,
@@ -206,6 +207,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  deleteCampaign: (id: string) =>
+    request<void>(`/campaigns/${id}`, { method: 'DELETE' }),
   transitionReadiness: (id: string, target: string) =>
     request<TransitionReadiness>(`/campaigns/${id}/transition-readiness${qs({ target })}`),
   transition: (id: string, target: string) =>
@@ -676,8 +679,20 @@ export const api = {
     request<{ deleted: boolean }>(`/campaigns/${id}/stock-flow/${runId}`, {
       method: 'DELETE',
     }),
-  stockFlowReport: (id: string, runId: string) =>
-    request<StockFlowReport>(`/campaigns/${id}/stock-flow/${runId}`),
+  stockFlowReport: (
+    id: string,
+    runId: string,
+    basis: { opening: StockBasis; closing: StockBasis } = {
+      opening: 'PHYSICAL',
+      closing: 'PHYSICAL',
+    },
+  ) =>
+    request<StockFlowReport>(
+      `/campaigns/${id}/stock-flow/${runId}${qs({
+        openingBasis: basis.opening,
+        closingBasis: basis.closing,
+      })}`,
+    ),
   refreshStockFlowErp: (id: string, runId: string) =>
     request<{
       /** Retenus : lus *et* présents au référentiel de la campagne. */

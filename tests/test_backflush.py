@@ -117,23 +117,26 @@ class TestTheRateIsAReductionOfTheGap:
         assert variance(1000, 950, 0).explanation_rate == 0
 
 
-class TestItIsNotNettedIntoTheAdjustments:
-    """« Résiduel » et « inexpliqué » répondent à deux questions différentes.
+class TestItIsReadAgainstTheAdjustedVariance:
+    """L'inexpliqué porte sur l'écart où l'on se trouve, pas sur un état révolu.
 
-    Le premier dit ce qui n'a pas encore été corrigé dans l'ERP, le second ce que
-    la production n'explique pas. Les confondre produirait un chiffre qui n'est
-    ni l'un ni l'autre.
+    Un ajustement est un mouvement de stock : il déplace le physique, donc
+    l'écart, donc ce qui reste à expliquer. Le mesurer sur le comptage seul
+    répondrait à propos d'un stock que plus personne n'a devant lui.
     """
 
-    def test_an_adjustment_does_not_move_the_unexplained(self):
+    def test_an_adjustment_moves_the_unexplained_with_the_variance(self):
         line = variance(1000, 950, 42)
         line.adjusted_qty = Decimal("-50")
-        assert line.residual_qty == 0
-        assert line.unexplained_qty == -8
+        assert line.variance_qty == -100
+        # L'écart s'est creusé de 50 ; le backflush en explique toujours 42.
+        assert line.unexplained_qty == -58
 
-    def test_and_the_backflush_does_not_move_the_residual(self):
+    def test_the_backflush_does_not_move_the_stock_it_explains(self):
+        """Il explique un écart, il ne le corrige pas : rien ne bouge sur l'étagère."""
         line = variance(1000, 950, 42)
-        assert line.residual_qty == line.variance_qty
+        assert line.physical_qty == line.counted_qty
+        assert line.variance_qty == -50
 
 
 class TestCarryingItOntoTheVarianceLines:

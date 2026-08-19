@@ -289,6 +289,12 @@ function KpiCarousel({ overview }: { overview: Overview }) {
                 hero
               />
               <Kpi
+                label="Stock physique"
+                value={moneyShort(data.physicalValue)}
+                compare={<span className="num">{qty(data.physicalQty)} unités</span>}
+                hint="Ce qui a été compté, plus les mouvements postés depuis. C’est ce total-là que l’écart oppose au stock ERP."
+              />
+              <Kpi
                 label="Écart net"
                 value={signedMoney(data.netVarianceValue)}
                 tone={signClass(data.netVarianceValue) as 'pos' | 'neg' | 'neutral'}
@@ -355,10 +361,10 @@ function KpiCarousel({ overview }: { overview: Overview }) {
                 compare={<span>seront soldés à zéro à la clôture</span>}
               />
               <Kpi
-                label="Écart résiduel"
-                value={moneyShort(data.residualValue)}
-                compare={<span>après ajustements postés</span>}
-                hint="Ce qui reste inexpliqué une fois les corrections prises en compte."
+                label="Ajustements postés"
+                value={moneyShort(data.adjustedValue)}
+                compare={<span>déjà compris dans l’écart</span>}
+                hint={`Les mouvements postés après le comptage : ils s’ajoutent à lui pour former le stock physique. Le comptage seul montrait ${moneyShort(data.countedVarianceValue)}.`}
               />
               <Kpi
                 label="Lignes hors seuils"

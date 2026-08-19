@@ -155,7 +155,15 @@ class TestReconciliation:
         assert len(lines) == 1
         assert lines[0].location_id == "L1"
 
-    def test_adjustments_reduce_the_residual(self, campaign):
+    def test_an_adjustment_moves_the_physical_stock_and_the_variance_with_it(
+        self, campaign
+    ):
+        """Un ajustement est un *mouvement de stock*, pas une correction d'écart.
+
+        Posté après le comptage, il change ce qu'il y a sur l'étagère : le
+        comptage seul cesse d'être l'image courante, et c'est le stock physique
+        — compté plus mouvements — que l'écart mesure désormais.
+        """
         lines = build_variances(
             campaign=campaign,
             book_stock=[book("A", "B06", "L1", 100)],
@@ -167,8 +175,22 @@ class TestReconciliation:
             ],
             granularity="item_location",
         )
-        assert lines[0].variance_qty == Decimal("-20.000000")
-        assert lines[0].residual_qty == 0
+        assert lines[0].physical_qty == Decimal("60.000000")
+        assert lines[0].variance_qty == Decimal("-40.000000")
+        # Ce que le comptage seul montrait reste lisible à côté : la différence
+        # entre les deux est exactement ce que l'ajustement a fait.
+        assert lines[0].counted_variance_qty == Decimal("-20.000000")
+
+    def test_without_an_adjustment_the_two_readings_coincide(self, campaign):
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[book("A", "B06", "L1", 100)],
+            counted=[counted("A", "B06", "L1", 80)],
+            items=ITEMS,
+            granularity="item_location",
+        )
+        assert lines[0].physical_qty == lines[0].counted_qty
+        assert lines[0].variance_qty == lines[0].counted_variance_qty
 
     def test_snapshot_cost_wins_over_the_referential_price(self, campaign):
         lines = build_variances(

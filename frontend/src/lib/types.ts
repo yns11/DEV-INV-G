@@ -152,11 +152,21 @@ export interface Kpis {
   bookValue: number | null
   countedQty: number | null
   countedValue: number | null
+  /** Le stock physique — compté plus mouvements postés : le terme de l'écart. */
+  physicalQty: number | null
+  physicalValue: number | null
   netVarianceQty: number | null
   netVarianceValue: number | null
   grossVarianceQty: number | null
   grossVarianceValue: number | null
-  residualValue: number | null
+  /**
+   * L'écart tel que le comptage seul le montrait, et ce que les ajustements
+   * ont posté depuis. Leur somme vaut `netVarianceValue` : le stock physique —
+   * compté plus mouvements — est la référence, ces deux-là en sont la lecture
+   * détaillée.
+   */
+  countedVarianceValue: number | null
+  adjustedValue: number | null
   /** Ce que le backflush explique, et ce qui reste. */
   backflushShareValue: number | null
   unexplainedValue: number | null
@@ -189,11 +199,19 @@ export interface VarianceRow {
   bookQty: number
   bookValue: number
   countedQty: number
+  /**
+   * Le stock physique — compté plus les mouvements postés après — et l'écart
+   * qu'il creuse face à l'ERP gelé. C'est *la* référence : `countedVariance*`
+   * garde à côté ce que le comptage seul montrait, avant ajustements.
+   */
+  physicalQty: number
+  physicalValue: number
   varianceQty: number
   varianceValue: number
   adjustedQty: number
-  residualQty: number
-  residualValue: number
+  adjustedValue: number
+  countedVarianceQty: number
+  countedVarianceValue: number
   /** Écart backflush brut, dans la convention backflush (théorique − réel). */
   backflushQty: number
   /** Le même, dans la convention d'inventaire : c'est lui qu'on soustrait. */
@@ -224,7 +242,7 @@ export interface AggregateRow {
   varianceValue: number
   absVarianceQty: number
   absVarianceValue: number
-  residualValue: number
+  countedVarianceValue: number
   lineCount: number
   materialCount: number
 }
@@ -878,9 +896,30 @@ export interface StockFlowRow {
   varianceQty: number
   varianceValue: number
   varianceRatio: number | null
-  countedOpening: boolean
-  countedClosing: boolean
+  hasOpening: boolean
+  hasClosing: boolean
   complete: boolean
+}
+
+/**
+ * Quels stocks encadrent les flux — « physique » veut dire compté ajusté.
+ *
+ * Un paramètre de *lecture* : les quantités chargées et l'instantané ERP gelé
+ * ne bougent pas, si bien que les quatre combinaisons sont quatre vues d'une
+ * même comparaison et non quatre comparaisons.
+ */
+export type StockBasis = 'PHYSICAL' | 'BOOK'
+
+export interface StockFlowBasis {
+  opening: StockBasis
+  closing: StockBasis
+  /** « Physique » / « ERP » — la forme courte des pastilles. */
+  openingLabel: string
+  closingLabel: string
+  /** « Stock physique » / « Stock ERP » — la forme qui tient dans une phrase. */
+  openingStockLabel: string
+  closingStockLabel: string
+  label: string
 }
 
 export interface StockFlowKpis {
@@ -898,6 +937,7 @@ export interface StockFlowKpis {
 
 export interface StockFlowReport {
   run: StockFlowRun
+  basis: StockFlowBasis
   steps: StockFlowStep[]
   kpis: StockFlowKpis
   chain: StockFlowChainStep[]

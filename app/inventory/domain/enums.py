@@ -32,6 +32,7 @@ __all__ = [
     "DataSource",
     "AdjustmentKind",
     "FlowKind",
+    "StockBasis",
     "ControlSeverity",
     "AuditAction",
     "legacy_section_alias",
@@ -226,6 +227,25 @@ class FlowKind(StrEnum):
     RECEIPT = "RECEIPT"      # réceptions : entrées en stock sur la période
     SHIPMENT = "SHIPMENT"    # expéditions : sorties vers le client
     SCRAP = "SCRAP"          # rebuts : étape facultative
+
+
+class StockBasis(StrEnum):
+    """Which reading of a campaign's stock a comparison brackets itself with.
+
+    Two readings coexist in every campaign and neither is the other's draft:
+    the ERP said one thing at the freeze, the shelf said another. Comparing two
+    campaigns therefore has four legitimate forms, and which one is wanted
+    depends on the question — physique/physique measures what the plant lost,
+    ERP/ERP measures what the system thinks it lost, and the two crossed pairs
+    isolate where a divergence was born.
+
+    ``PHYSICAL`` is the counted stock plus the adjustments posted after it, the
+    same definition the inventory variance uses. Anything else would make one
+    screen's « physique » mean something different from another's.
+    """
+
+    PHYSICAL = "PHYSICAL"
+    BOOK = "BOOK"
 
 
 class ControlSeverity(StrEnum):

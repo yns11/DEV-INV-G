@@ -18,7 +18,7 @@ from ..domain.workflow import (
     mutability_of,
     passes_for,
 )
-from ..errors import ConflictError, ValidationError
+from ..errors import ConflictError, PermissionDeniedError, ValidationError
 from .context import ENGINE_VERSION, ServiceContext, utcnow
 
 log = logging.getLogger(__name__)
@@ -194,6 +194,39 @@ class CampaignService:
             )
         log.info("Campaign %s created by %s", campaign.code, ctx.actor)
         return campaign
+
+    def delete(self, campaign_id: str) -> None:
+        """Retire a campaign — logically, and only if you created it.
+
+        Two rules, and both are about the same thing: a campaign is somebody's
+        work, and it stays theirs. Only its author can retire it, because a
+        campaign disappearing from under the person running it is a far worse
+        accident than one lingering a week too long. And nothing is erased: the
+        counts, the journals and the audit trail all stay on disk, so a deletion
+        made in error is undone by a line of SQL rather than by a restore.
+        """
+        ctx = self.ctx
+        campaign = ctx.campaigns.get(campaign_id)
+        if campaign.created_by != ctx.actor:
+            raise PermissionDeniedError(
+                f"La campagne {campaign.code} a été créée par "
+                f"{campaign.created_by or 'un autre utilisateur'} : "
+                "seul son auteur peut la supprimer.",
+                campaignId=campaign_id,
+                createdBy=campaign.created_by,
+            )
+        with ctx.db.transaction() as conn:
+            ctx.record(
+                campaign_id=campaign_id,
+                action=AuditAction.DELETE,
+                entity_type="campaign",
+                entity_id=campaign_id,
+                summary=f"Suppression de la campagne {campaign.code}",
+                before={"code": campaign.code, "status": str(campaign.status)},
+                conn=conn,
+            )
+            ctx.campaigns.soft_delete(campaign_id, actor=ctx.actor, conn=conn)
+        log.info("Campaign %s deleted by %s", campaign.code, ctx.actor)
 
     def clone(
         self,

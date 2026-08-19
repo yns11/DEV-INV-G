@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
-from ...domain.enums import FlowKind
+from ...domain.enums import FlowKind, StockBasis
 from ...errors import ValidationError
 from ...services import ImportService, StockFlowService
 from ..deps import CampaignDep, Ctx, import_service
@@ -82,9 +82,26 @@ def delete_run(
 
 
 @router.get("/{run_id}", summary="Rapport de comparaison")
-def report(campaign: CampaignDep, run_id: str, service: Service) -> dict[str, Any]:
-    """Header, KPIs, the flow chain and one line per article."""
-    return service.report(campaign, run_id)
+def report(
+    campaign: CampaignDep,
+    run_id: str,
+    service: Service,
+    opening_basis: Annotated[StockBasis, Query(alias="openingBasis")] = (
+        StockBasis.PHYSICAL
+    ),
+    closing_basis: Annotated[StockBasis, Query(alias="closingBasis")] = (
+        StockBasis.PHYSICAL
+    ),
+) -> dict[str, Any]:
+    """Header, KPIs, the flow chain and one line per article.
+
+    The two bases choose which reading of each campaign brackets the flows —
+    physical (counted, adjustments included) or ERP. Query parameters and not
+    run state: they change how the same comparison is read, not what it holds.
+    """
+    return service.report(
+        campaign, run_id, opening_basis=opening_basis, closing_basis=closing_basis
+    )
 
 
 @router.post("/{run_id}/erp", summary="Lire production et consommation théorique")

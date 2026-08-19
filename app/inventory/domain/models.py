@@ -996,20 +996,22 @@ class StockFlowLine(DomainModel):
     name: str = ""
     unit: str = "PCE"
     unit_cost: Decimal = ZERO
-    #: Counted stock of the earlier campaign — the opening balance.
+    #: Stock of the earlier campaign — the opening balance. Which reading it is,
+    #: physical or ERP, is the run's ``StockBasis`` and is reported with it.
     opening_qty: Decimal = ZERO
     received_qty: Decimal = ZERO
     produced_qty: Decimal = ZERO
     shipped_qty: Decimal = ZERO
     consumed_qty: Decimal = ZERO
     scrapped_qty: Decimal = ZERO
-    #: Counted stock of the later campaign — what actually turned up.
+    #: Stock of the later campaign — what the chosen reading says turned up.
     closing_qty: Decimal = ZERO
-    #: Whether each campaign counted this article at all. A reference absent
-    #: from one of the two counts is not a zero: it is a hole in the comparison,
-    #: and reading it as a zero would produce a variance the size of the stock.
-    counted_opening: bool = False
-    counted_closing: bool = False
+    #: Whether each campaign has a figure for this article at all. A reference
+    #: absent from one of the two readings is not a zero: it is a hole in the
+    #: comparison, and reading it as a zero would produce a variance the size of
+    #: the stock.
+    has_opening: bool = False
+    has_closing: bool = False
 
     @property
     def expected_qty(self) -> Decimal:
@@ -1051,8 +1053,8 @@ class StockFlowLine(DomainModel):
 
     @property
     def is_complete(self) -> bool:
-        """Whether both campaigns counted it — the comparison is only valid then."""
-        return self.counted_opening and self.counted_closing
+        """Whether both readings carry it — the comparison is only valid then."""
+        return self.has_opening and self.has_closing
 
 
 class VarianceLine(DomainModel):
@@ -1092,34 +1094,69 @@ class VarianceLine(DomainModel):
         return quantize_money(self.book_qty * self.unit_cost)
 
     @property
+    def physical_qty(self) -> Decimal:
+        """The physical stock: counted, plus what moved after the count.
+
+        An adjustment is a *real stock movement* recorded during the analysis
+        phase — a late receipt, a recount, an issue booked afterwards. It
+        therefore changes what is on the shelf, and the count alone stops being
+        the current picture the moment one is posted.
+
+        This is the reference the whole application reads. Everything else —
+        KPIs, controls, aggregates, analytics, exports — goes through
+        :attr:`variance_qty` below, so redefining the reference here changes them
+        all at once rather than in twenty places that would drift.
+        """
+        return quantize_qty(self.counted_qty + self.adjusted_qty)
+
+    @property
+    def physical_value(self) -> Decimal:
+        return quantize_money(self.physical_qty * self.unit_cost)
+
+    @property
     def variance_qty(self) -> Decimal:
-        """Counted minus book, before adjustments."""
-        return quantize_qty(self.counted_qty - self.book_qty)
+        """Physical minus book — *the* variance, adjustments included.
+
+        The frozen ERP snapshot stays the reference on the other side: it is
+        what the campaign was counted against, and moving it would make the
+        variance irreproducible.
+        """
+        return quantize_qty(self.physical_qty - self.book_qty)
 
     @property
     def variance_value(self) -> Decimal:
         return quantize_money(self.variance_qty * self.unit_cost)
 
     @property
-    def residual_qty(self) -> Decimal:
-        """Variance still unexplained after the posted adjustments."""
-        return quantize_qty(self.variance_qty - self.adjusted_qty)
+    def counted_variance_qty(self) -> Decimal:
+        """The gap the count alone showed, before any adjustment.
+
+        Kept because it answers a different question — « what did the count
+        find? » rather than « where do we stand? » — and because the difference
+        between the two is precisely what the adjustments did. Nothing steers on
+        it; it is shown beside the variance when adjustments exist.
+        """
+        return quantize_qty(self.counted_qty - self.book_qty)
 
     @property
-    def residual_value(self) -> Decimal:
-        return quantize_money(self.residual_qty * self.unit_cost)
+    def counted_variance_value(self) -> Decimal:
+        return quantize_money(self.counted_variance_qty * self.unit_cost)
+
+    @property
+    def adjusted_value(self) -> Decimal:
+        return quantize_money(self.adjusted_qty * self.unit_cost)
 
     @property
     def final_qty(self) -> Decimal:
-        """Stock after inventory = book + variance."""
+        """Stock after inventory = book + variance = the physical stock."""
         return quantize_qty(self.book_qty + self.variance_qty)
 
     # -- backflush ---------------------------------------------------------- #
     #
-    # Deliberately independent of the adjustments above. « Résiduel » answers
-    # « what has not been corrected in the ERP yet »; the three below answer
-    # « what does production explain ». Netting one into the other would produce
-    # a figure that is neither, and that nobody could reconcile with either.
+    # Read against the *adjusted* variance, like everything else: the question is
+    # « of the gap we are left with, how much does production explain? », and
+    # asking it about a gap the adjustments have already moved would answer about
+    # a state nobody is in any more.
 
     @property
     def backflush_share_qty(self) -> Decimal:
@@ -1134,9 +1171,9 @@ class VarianceLine(DomainModel):
     def unexplained_qty(self) -> Decimal:
         """What production does *not* explain — the figure to investigate.
 
-        Named « inexpliqué » rather than « résiduel », which this application
-        already spends on the post-adjustment variance. Two different subtractions
-        sharing one word on the same screen is a reading error waiting to happen.
+        Named « inexpliqué » rather than « résiduel » : the word says what is
+        missing — an explanation — instead of merely saying that something is
+        left over, which is true of half the figures on the screen.
         """
         return quantize_qty(self.variance_qty - self.backflush_share_qty)
 

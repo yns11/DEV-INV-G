@@ -388,6 +388,46 @@ h1, h2, h3, h4 {
   font-weight: var(--weight-semibold);
 }
 
+/* La poignée de pliage. Discrète tant qu'on ne la vise pas : elle est présente
+   sur chaque bloc de chaque écran, et un chevron appuyé × huit ferait une page
+   de chevrons. */
+.card__fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  margin-top: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.card__fold:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.card__fold:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Replié, l'en-tête n'a plus rien à séparer de ce qui suit. */
+.card--collapsed .card__head {
+  border-bottom: none;
+}
+
+/* Et le bloc ne s'étire plus à la hauteur de son voisin de grille : replier
+   pour se retrouver avec un cadre vide de la taille du graphique qu'on vient
+   de cacher n'aurait rien gagné. */
+.card--collapsed {
+  align-self: start;
+}
+
 /* IBCS: the message goes in the title area, not buried under the chart. */
 .card__message {
   font-size: var(--text-sm);

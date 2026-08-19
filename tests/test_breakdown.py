@@ -59,8 +59,14 @@ def book_line(place: str, qty: str, *, number: str = "ART-1") -> BookStockLine:
     )
 
 
-def variance(place: str, book: float, counted: float) -> Any:
-    """Une ligne d'écart, réduite à ce que la décomposition en lit."""
+def variance(place: str, book: float, counted: float, adjusted: float = 0) -> Any:
+    """Une ligne d'écart, réduite à ce que la décomposition en lit.
+
+    Le stock physique est le compté augmenté des mouvements postés après, et
+    c'est lui que l'écart mesure — comme partout ailleurs depuis que le physique
+    ajusté est devenu la référence.
+    """
+    physical = counted + adjusted
     return cast(
         Any,
         SimpleNamespace(
@@ -69,8 +75,10 @@ def variance(place: str, book: float, counted: float) -> Any:
             location_id=place,
             book_qty=book,
             counted_qty=counted,
-            variance_qty=counted - book,
-            variance_value=(counted - book) * 10,
+            adjusted_qty=adjusted,
+            physical_qty=physical,
+            variance_qty=physical - book,
+            variance_value=(physical - book) * 10,
         ),
     )
 
@@ -219,8 +227,14 @@ class TestTheVarianceColumn:
         assert result["totalValue"] == 0
 
 
-class TestTheResidualColumn:
-    """L'écart constaté, moins ce que les ajustements ont déjà corrigé."""
+class TestThePhysicalColumn:
+    """Le stock physique : ce qui a été compté, puis ce qui a bougé après.
+
+    Remplace l'ancienne décomposition « résiduelle », qui retranchait les
+    ajustements d'un écart. Ils s'ajoutent maintenant au *comptage*, parce qu'un
+    ajustement est un mouvement réel — ce qui se lit comme une colonne de stock
+    et non comme une correction appliquée à un écart.
+    """
 
     def adjustment(self, qty: str, value: str) -> AdjustmentLine:
         return AdjustmentLine(
@@ -235,39 +249,47 @@ class TestTheResidualColumn:
             journal_number="AJ-42",
         )
 
-    def test_an_adjustment_is_subtracted_not_added(self, monkeypatch):
-        """Il corrige l'écart : ajouté, il le doublerait."""
+    def rows(self, svc, monkeypatch):
+        # Le physique part du compté : on neutralise la consolidation GENERIQUE,
+        # qui n'a rien à voir avec ce que ce test vérifie.
+        monkeypatch.setattr(svc, "_counted_rows", lambda c, i: [
+            {"origin": "Journal de comptage", "where": "B06 / ALLEE-A",
+             "warehouseId": "B06", "locationId": "ALLEE-A", "detail": "",
+             "qty": 100.0},
+        ])
+        return svc.breakdown(campaign(), "ART-1", "physical")
+
+    def test_an_adjustment_is_added_not_subtracted(self, monkeypatch):
+        """Il déplace du stock : le retrancher inverserait le mouvement."""
         svc = service(adjustments=[self.adjustment("-3", "-30")])
-        monkeypatch.setattr(svc, "variances", lambda c, **kw: [variance("ALLEE-A", 10, 7)])
-        result = svc.breakdown(campaign(), "ART-1", "residual")
-        assert result["total"] == 0
-        assert result["totalValue"] == 0
+        result = self.rows(svc, monkeypatch)
+        assert result["total"] == 97
+        assert result["totalValue"] == 970
+
+    def test_a_positive_movement_adds_stock(self, monkeypatch):
+        svc = service(adjustments=[self.adjustment("12", "120")])
+        assert self.rows(svc, monkeypatch)["total"] == 112
 
     def test_the_adjustment_row_names_its_journal(self, monkeypatch):
         svc = service(adjustments=[self.adjustment("-3", "-30")])
-        monkeypatch.setattr(svc, "variances", lambda c, **kw: [variance("ALLEE-A", 10, 7)])
-        rows = svc.breakdown(campaign(), "ART-1", "residual")["rows"]
+        rows = self.rows(svc, monkeypatch)["rows"]
         assert rows[1]["detail"] == "AJ-42"
-        assert rows[1]["qty"] == 3
+        assert rows[1]["qty"] == -3
 
     def test_the_movement_is_named_in_french_not_by_its_enum(self, monkeypatch):
         """« Ajustement ADJUSTMENT » n'est pas une phrase écrite exprès."""
         svc = service(adjustments=[self.adjustment("-3", "-30")])
-        monkeypatch.setattr(svc, "variances", lambda c, **kw: [variance("ALLEE-A", 10, 7)])
-        rows = svc.breakdown(campaign(), "ART-1", "residual")["rows"]
+        rows = self.rows(svc, monkeypatch)["rows"]
         assert rows[1]["origin"] == "Ajustement saisi"
 
-    def test_a_partial_adjustment_leaves_the_rest(self, monkeypatch):
-        svc = service(adjustments=[self.adjustment("-1", "-10")])
-        monkeypatch.setattr(svc, "variances", lambda c, **kw: [variance("ALLEE-A", 10, 7)])
-        result = svc.breakdown(campaign(), "ART-1", "residual")
-        assert result["total"] == -2
-        assert result["totalValue"] == -20
-
     def test_an_adjustment_on_another_article_is_ignored(self, monkeypatch):
-        other = self.adjustment("-3", "-30")
-        other = other.model_copy(update={"item_number": "ART-2"})
+        other = self.adjustment("-3", "-30").model_copy(
+            update={"item_number": "ART-2"}
+        )
         svc = service(adjustments=[other])
-        monkeypatch.setattr(svc, "variances", lambda c, **kw: [variance("ALLEE-A", 10, 7)])
-        result = svc.breakdown(campaign(), "ART-1", "residual")
-        assert result["total"] == -3
+        assert self.rows(svc, monkeypatch)["total"] == 100
+
+    def test_the_residual_aspect_no_longer_exists(self):
+        """Il ne dénotait plus rien de distinct : l'écart *est* le post-ajustement."""
+        with pytest.raises(ValidationError):
+            service().breakdown(campaign(), "ART-1", "residual")

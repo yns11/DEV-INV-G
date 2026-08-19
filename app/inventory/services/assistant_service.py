@@ -182,7 +182,7 @@ class AssistantService:
             "lignesAuDelàDesSeuils": kpis.material_line_count,
             "comptéesSansStockErp": kpis.counted_only_count,
             "jamaisComptées": kpis.book_only_count,
-            "écartRésiduelEur": float(kpis.residual_value),
+            "écartAvantAjustementsEur": float(kpis.counted_variance_value),
         }
         digest["plusGrosÉcarts"] = [
             {

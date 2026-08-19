@@ -29,11 +29,16 @@ ROW = {
     "bookValue": 128_421.0,
     "countedQty": 3400.0,
     "countedValue": 127_670.0,
-    "varianceQty": -20.0,
-    "varianceValue": -751.0,
-    "adjustedQty": 0.0,
-    "residualQty": -20.0,
-    "residualValue": -751.0,
+    "varianceQty": -15.0,
+    "varianceValue": -563.25,
+    # Un ajustement de +5 a été posté après le comptage : le stock physique
+    # vaut donc 3 405, et c'est lui que l'écart mesure. L'écart du comptage
+    # seul — −20 — reste exporté à côté, parce que la différence entre les deux
+    # est exactement ce que l'ajustement a fait.
+    "adjustedQty": 5.0,
+    "physicalQty": 3405.0,
+    "countedVarianceQty": -20.0,
+    "countedVarianceValue": -751.0,
     "isMaterial": True,
     "causeCode": "TRANSFERT",
     "comment": "palette déplacée",
@@ -65,9 +70,18 @@ class TestQuantitiesAndValuesAreNeverInTheSameColumn:
 
     @pytest.mark.parametrize("by_location", [False, True])
     def test_the_variance_too(self, by_location):
+        """L'écart exporté est celui du stock *physique*, ajustements compris."""
         row = cells(by_location=by_location)
-        assert row["Écart qté"] == -20.0
-        assert row["Écart valeur €"] == -751.0
+        assert row["Écart qté"] == -15.0
+        assert row["Écart valeur €"] == -563.25
+
+    @pytest.mark.parametrize("by_location", [False, True])
+    def test_the_count_before_adjustments_keeps_its_own_columns(self, by_location):
+        """Sans elles, on ne pourrait pas lire ce que l'ajustement a changé."""
+        row = cells(by_location=by_location)
+        assert row["Physique qté"] == 3405.0
+        assert row["Ajusté qté"] == 5.0
+        assert row["Écart avant ajust. qté"] == -20.0
 
     def test_every_figure_is_a_number_the_spreadsheet_can_sum(self):
         """Un « 3 420 PCE » en texte est une colonne qu'Excel ne totalise pas."""

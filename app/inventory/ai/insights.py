@@ -271,7 +271,7 @@ def _variance_payload(
         "ecartQte": float(line.variance_qty),
         "ecartValeur": float(line.variance_value),
         "ajusteQte": float(line.adjusted_qty),
-        "residuelValeur": float(line.residual_value),
+        "écartAvantAjustementsValeur": float(line.counted_variance_value),
         "compteSansStockErp": line.counted_only,
         "stockErpNonCompte": line.book_only,
     }

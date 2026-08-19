@@ -8,14 +8,42 @@ Ce guide suit le déroulement réel d'une campagne, de la préparation à la cl�
 
 Toute la navigation tient dans la **barre latérale**, sur trois niveaux :
 
-- la **phase** — Pilotage, Préparation, Comptage, Analyse, Traçabilité — qui
-  indique aussi où en est la campagne ;
+- la **phase** — Préparation, Comptage, Analyse — qui indique aussi où en est la
+  campagne ;
 - la **section**, c'est-à-dire l'écran ;
 - la **sous-section**, dépliée sous la section ouverte. Elle figure dans
   l'adresse : un lien vers « la grille des seuils » se copie et s'envoie.
 
 L'en-tête porte, sur tous les écrans, le carrousel d'indicateurs, l'interrupteur
 « Mon périmètre » et le passage à la phase suivante.
+
+Chaque **bloc** — filtres, graphique, grille — se replie par le chevron placé
+devant son titre. Le pli est mémorisé par bloc et par navigateur : ce que vous
+n'utilisez pas reste fermé d'une visite à l'autre, et ce que vous utilisez
+remonte en haut de l'écran.
+
+---
+
+## Retrouver une campagne
+
+**Toutes les campagnes.**
+
+La barre de filtres restreint la liste par **code ou libellé**, **statut**,
+**propriétaire** et **date de comptage** (celle de l'inventaire, pas celle de
+création). L'interrupteur **Mes campagnes** ne garde que celles que vous avez
+créées.
+
+Deux affichages, au choix, mémorisé : **icônes** — une carte par campagne, avec
+l'état du gel du stock ERP — et **liste** — une grille triable et filtrable, qui
+tient à deux cents campagnes.
+
+**Supprimer** retire une campagne de la liste. Deux règles :
+
+- seul **l'auteur** d'une campagne peut la supprimer ; le bouton est désactivé
+  pour les autres, et dit qui contacter ;
+- la suppression est **logique** : comptages, journaux, ajustements et journal
+  d'audit restent en base, la suppression y est elle-même tracée, et le code
+  redevient disponible.
 
 ---
 
@@ -466,8 +494,13 @@ absolu — typiquement moins de trente sur plusieurs centaines.
 **Écarts & analyses → Ajustements.**
 
 Chargez l'export des transactions de stock, ou saisissez les ajustements postés
-dans l'ERP. Quantité et valeur sont **signées** : négatif = diminution. Chaque
-mouvement réduit l'**écart résiduel** — ce qui reste inexpliqué.
+dans l'ERP. Quantité et valeur sont **signées** : négatif = diminution.
+
+Un ajustement est un **mouvement de stock**, pas une correction d'écart : il
+s'ajoute au comptage pour former le **stock physique**, et c'est ce dernier que
+l'écart mesure face à l'ERP gelé. Un comptage de 100 suivi d'un ajustement de
+−50 donne donc un physique de 50 et, contre un ERP de 150, un écart de −100.
+Ce que le comptage seul montrait reste lisible à côté, sous **Avant ajust.**
 
 Le cycle *analyser → agir sur le terrain → ajuster → recharger* se répète
 autant de fois que nécessaire ; les indicateurs se mettent à jour à chaque fois.
@@ -515,6 +548,37 @@ décomposition WIP, ajustements, causes, contrôles et journal d'audit.
 Le classeur porte un onglet **Provenance** : campagne, dates de gel, version du
 moteur de calcul, auteur et date de génération — et l'avertissement que le
 fichier est une photographie en lecture seule.
+
+### 3.8 Comparer deux campagnes
+
+**Comparaison.** Deux inventaires encadrent une période ; entre les deux, le
+stock a été reçu, produit, expédié, consommé et rebuté. La question est fermée :
+
+```
+stock attendu = stock initial + réceptions + production
+                              − expéditions − conso. théorique − rebuts
+```
+
+Choisissez la **campagne de départ** — la plus ancienne par date d'inventaire —
+puis chargez les réceptions, les expéditions et, si vous les avez, les rebuts.
+La production et la consommation théorique se lisent dans l'ERP.
+
+**Quels stocks sont comparés** se choisit ensuite, et se change à tout moment :
+
+| Paire | Ce qu'elle répond |
+|---|---|
+| Physique → Physique | Ce que l'usine a réellement perdu ou gagné. |
+| ERP → ERP | Ce que le système croit avoir perdu. |
+| ERP → Physique | L'écart accumulé depuis le solde ERP de départ. |
+| Physique → ERP | Ce que l'ERP n'a pas suivi. |
+
+« Physique » veut dire **compté, ajustements compris** — la même définition que
+partout ailleurs. Basculer d'une paire à l'autre ne recharge rien : les
+quantités saisies et l'instantané ERP gelé sont les mêmes dans les quatre cas.
+
+Un article présent dans une seule des deux campagnes n'est pas un zéro : ces
+lignes sont sorties des totaux et regroupées derrière la pastille **Présents
+d'un seul côté**.
 
 ---
 

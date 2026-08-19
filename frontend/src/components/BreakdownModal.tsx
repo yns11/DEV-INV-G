@@ -21,11 +21,11 @@ import { AsyncBoundary, Badge, Button, EmptyState, Modal, Skeleton } from './ui'
 export type BreakdownAspect =
   | 'book'
   | 'counted'
+  | 'physical'
   | 'line_side'
   | 'wip_ok'
   | 'wip'
   | 'variance'
-  | 'residual'
 
 const ASPECT_LABELS: Record<BreakdownAspect, { title: string; hint: string }> = {
   book: {
@@ -35,6 +35,10 @@ const ASPECT_LABELS: Record<BreakdownAspect, { title: string; hint: string }> = 
   counted: {
     title: 'Quantité comptée',
     hint: 'Chaque journal, et la part GENERIQUE ventilée par origine.',
+  },
+  physical: {
+    title: 'Stock physique',
+    hint: 'Ce qui a été compté, plus chaque mouvement posté depuis.',
   },
   line_side: {
     title: 'Bord de ligne',
@@ -52,14 +56,10 @@ const ASPECT_LABELS: Record<BreakdownAspect, { title: string; hint: string }> = 
     title: 'Écart',
     hint: 'L’écart emplacement par emplacement — là où la différence s’est faite.',
   },
-  residual: {
-    title: 'Écart résiduel',
-    hint: 'L’écart constaté, moins ce que les ajustements ont déjà corrigé.',
-  },
 }
 
 /** Les aspects dont le signe porte l'information. */
-const SIGNED: ReadonlySet<BreakdownAspect> = new Set(['variance', 'residual'])
+const SIGNED: ReadonlySet<BreakdownAspect> = new Set(['variance'])
 
 export function BreakdownModal({
   campaignId,

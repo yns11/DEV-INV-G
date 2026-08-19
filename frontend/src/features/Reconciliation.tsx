@@ -4,14 +4,14 @@
  * Deux inventaires encadrent une période. Entre les deux, le stock d'un article
  * n'a pas bougé au hasard : il a reçu, produit, expédié, consommé et rebuté des
  * quantités qu'on sait chiffrer. La question posée est donc fermée — en partant
- * du stock *compté* du premier inventaire et en appliquant les flux, retombe-t-on
- * sur le stock *compté* du second ?
+ * du stock du premier inventaire et en appliquant les flux, retombe-t-on sur le
+ * stock du second ?
  *
- *     attendu = compté(initiale) + réceptions + production
- *                                − expéditions − conso. théorique − rebuts
+ *     attendu = stock initial + réceptions + production
+ *                             − expéditions − conso. théorique − rebuts
  *
  * L'écran suit cet ordre et pas un autre : c'est une chaîne, et une chaîne se lit
- * dans le sens où elle se parcourt. D'où trois partis pris.
+ * dans le sens où elle se parcourt. D'où quatre partis pris.
  *
  * **Les étapes se présentent comme une liste de courses.** Chargé / à charger,
  * avec le nombre d'articles. Une étape oubliée fausse tout le rapport sans rien
@@ -20,9 +20,13 @@
  * **Le rebut se saute explicitement.** « Pas de rebut » et « rebut non
  * renseigné » sont le même zéro et deux lectures très différentes du rapport.
  *
- * **Les articles comptés d'un seul côté sont montrés à part.** Les lire comme
+ * **Les articles présents d'un seul côté sont montrés à part.** Les lire comme
  * des zéros fabriquerait un écart de la taille du stock entier, et une seule
  * référence de ce genre suffit à dominer le total.
+ *
+ * **Le couple de stocks comparés se choisit ici, pas à l'ouverture.** Physique
+ * ou ERP à chaque extrémité : quatre lectures d'une même comparaison, puisque
+ * ni les quantités chargées ni l'instantané ERP gelé n'en dépendent.
  */
 
 import { useMemo, useState } from 'react'
@@ -32,6 +36,8 @@ import { api } from '../lib/api'
 import type {
   GridContract,
   Overview,
+  StockBasis,
+  StockFlowBasis,
   StockFlowReport,
   StockFlowRow,
   StockFlowStep,
@@ -141,10 +147,9 @@ export function Reconciliation() {
           list.length === 0 ? (
             <Card>
               <EmptyState title="Aucune campagne antérieure" icon={<Icons.history size={20} />}>
-                La comparaison part du stock compté d’un inventaire précédent.
-                Elle sera disponible dès qu’une campagne aura été comptée avant
-                celle-ci — c’est la date d’inventaire qui compte, pas la date de
-                création.
+                La comparaison part du stock d’un inventaire précédent. Elle sera
+                disponible dès qu’une campagne aura été comptée avant celle-ci —
+                c’est la date d’inventaire qui compte, pas la date de création.
               </EmptyState>
             </Card>
           ) : (
@@ -152,7 +157,7 @@ export function Reconciliation() {
               title="Campagne de départ"
               message={
                 editable
-                  ? 'Son stock compté sert de stock initial. La période va d’un lundi d’inventaire à l’autre, fin exclue.'
+                  ? 'Son stock sert de stock initial — physique ou ERP, au choix, une fois la comparaison ouverte. La période va d’un lundi d’inventaire à l’autre, fin exclue.'
                   : undefined
               }
               actions={
@@ -234,16 +239,23 @@ function RunReport({
   editable: boolean
   overview: Overview
 }) {
+  // Le couple de stocks comparés. Paramètre de lecture et non d'exécution : il
+  // entre dans la clé de cache, si bien que basculer d'une paire à l'autre
+  // rejoue la même comparaison au lieu d'en ouvrir une seconde.
+  const [basis, setBasis] = useState<{ opening: StockBasis; closing: StockBasis }>({
+    opening: 'PHYSICAL',
+    closing: 'PHYSICAL',
+  })
   const report = useQuery({
-    queryKey: ['stock-flow-report', campaignId, runId],
-    queryFn: () => api.stockFlowReport(campaignId, runId),
+    queryKey: ['stock-flow-report', campaignId, runId, basis.opening, basis.closing],
+    queryFn: () => api.stockFlowReport(campaignId, runId, basis),
   })
 
   return (
     <AsyncBoundary query={report} skeleton={<Skeleton height={420} />}>
       {(data) => (
         <div className="stack" style={{ gap: 'var(--space-4)' }}>
-          <PeriodBanner report={data} />
+          <PeriodBanner report={data} basis={basis} onBasisChange={setBasis} />
           <Steps
             campaignId={campaignId}
             runId={runId}
@@ -256,7 +268,7 @@ function RunReport({
               <FlowKpis report={data} />
               <Card
                 title="Chaîne des flux"
-                message="Chaque barre repart où la précédente s’arrête : la dernière paire compare ce qu’on attendait à ce qu’on a compté."
+                message={`Chaque barre repart où la précédente s’arrête. La dernière paire oppose le stock attendu à ce qui est arrivé — ${data.basis.closingStockLabel}.`}
               >
                 <Waterfall
                   data={data.chain.map((step) => ({
@@ -267,7 +279,11 @@ function RunReport({
                   format={qty}
                 />
               </Card>
-              <ComparisonGrid campaignId={campaignId} rows={data.rows} />
+              <ComparisonGrid
+                campaignId={campaignId}
+                rows={data.rows}
+                basis={data.basis}
+              />
             </>
           )}
         </div>
@@ -276,27 +292,100 @@ function RunReport({
   )
 }
 
-function PeriodBanner({ report }: { report: StockFlowReport }) {
+/**
+ * Les quatre paires, et ce que chacune répond.
+ *
+ * Le mot compte : « physique » veut dire compté ajusté, comme partout ailleurs
+ * dans l'application. Chaque paire pose une question différente, et c'est cette
+ * question — pas le sigle — qui doit être lisible avant de cliquer.
+ */
+const BASIS_PAIRS: Array<{
+  opening: StockBasis
+  closing: StockBasis
+  label: string
+  hint: string
+}> = [
+  {
+    opening: 'PHYSICAL',
+    closing: 'PHYSICAL',
+    label: 'Physique → Physique',
+    hint: 'Ce que l’usine a réellement perdu ou gagné sur la période.',
+  },
+  {
+    opening: 'BOOK',
+    closing: 'BOOK',
+    label: 'ERP → ERP',
+    hint: 'Ce que le système croit avoir perdu : les flux confrontés à ses propres soldes.',
+  },
+  {
+    opening: 'BOOK',
+    closing: 'PHYSICAL',
+    label: 'ERP → Physique',
+    hint: 'Le terrain jugé contre le solde ERP d’origine : l’écart accumulé depuis.',
+  },
+  {
+    opening: 'PHYSICAL',
+    closing: 'BOOK',
+    label: 'Physique → ERP',
+    hint: 'Le solde ERP final jugé contre le terrain d’origine : ce que l’ERP n’a pas suivi.',
+  },
+]
+
+function PeriodBanner({
+  report,
+  basis,
+  onBasisChange,
+}: {
+  report: StockFlowReport
+  basis: { opening: StockBasis; closing: StockBasis }
+  onBasisChange: (basis: { opening: StockBasis; closing: StockBasis }) => void
+}) {
   const { run } = report
   return (
     <Card>
-      <div className="row-wrap" style={{ gap: 'var(--space-4)' }}>
-        <Badge tone="neutral">
-          {run.baselineCode} · {formatDate(run.baselineCountDate ?? run.periodStart)}
-        </Badge>
-        <Icons.chevronRight size={14} />
-        <Badge tone="accent">
-          {run.campaignCode} · {formatDate(run.campaignCountDate ?? run.periodEnd)}
-        </Badge>
-        <span className="subtle">
-          {run.weeks} semaine(s), du {formatDate(run.periodStart)} au{' '}
-          {formatDate(run.periodEnd)} (exclu)
-        </span>
-        {run.erpRefreshedAt && (
+      <div className="stack" style={{ gap: 'var(--space-3)' }}>
+        <div className="row-wrap" style={{ gap: 'var(--space-4)' }}>
+          <Badge tone="neutral">
+            {run.baselineCode} · {formatDate(run.baselineCountDate ?? run.periodStart)}
+          </Badge>
+          <Icons.chevronRight size={14} />
+          <Badge tone="accent">
+            {run.campaignCode} · {formatDate(run.campaignCountDate ?? run.periodEnd)}
+          </Badge>
           <span className="subtle">
-            production lue {relativeTime(run.erpRefreshedAt)}
+            {run.weeks} semaine(s), du {formatDate(run.periodStart)} au{' '}
+            {formatDate(run.periodEnd)} (exclu)
           </span>
-        )}
+          {run.erpRefreshedAt && (
+            <span className="subtle">
+              production lue {relativeTime(run.erpRefreshedAt)}
+            </span>
+          )}
+        </div>
+        <div className="row-wrap" style={{ gap: 'var(--space-2)' }}>
+          <span className="subtle">Stocks comparés</span>
+          {BASIS_PAIRS.map((pair) => {
+            const active =
+              pair.opening === basis.opening && pair.closing === basis.closing
+            return (
+              <button
+                key={pair.label}
+                className={`chip${active ? ' chip--active' : ''}`}
+                title={pair.hint}
+                onClick={() =>
+                  onBasisChange({ opening: pair.opening, closing: pair.closing })
+                }
+              >
+                {pair.label}
+              </button>
+            )
+          })}
+          <span className="subtle">
+            {BASIS_PAIRS.find(
+              (p) => p.opening === basis.opening && p.closing === basis.closing,
+            )?.hint}
+          </span>
+        </div>
       </div>
     </Card>
   )
@@ -494,7 +583,7 @@ function FlowKpis({ report }: { report: StockFlowReport }) {
         compare={`${kpis.completeCount} article(s) comparable(s)`}
       />
       <Kpi
-        label="Stock compté final"
+        label={`${report.basis.closingStockLabel} final`}
         value={moneyShort(kpis.closingValue)}
         compare={`${kpis.matchedCount} tombent juste`}
       />
@@ -523,10 +612,13 @@ function FlowKpis({ report }: { report: StockFlowReport }) {
 function ComparisonGrid({
   campaignId,
   rows,
+  basis,
 }: {
   campaignId: string
   rows: StockFlowRow[]
+  basis: StockFlowBasis
 }) {
+  const columns = useMemo(() => columnsFor(basis), [basis])
   // Les articles comptés d'un seul côté ne sont pas un écart, ce sont des trous
   // dans la comparaison. Cachés par défaut — ils domineraient la liste — et
   // atteignables d'une pilule, parce qu'il faut quand même aller les voir.
@@ -540,16 +632,16 @@ function ComparisonGrid({
   return (
     <Card title="Comparaison article par article" flush>
       <DataGrid
-        columns={COLUMNS}
+        columns={columns}
         rows={shown}
         toolbar={
           holes > 0 ? (
             <button
               className={`chip${incomplete ? ' chip--active' : ''}`}
-              title="Articles comptés dans une seule des deux campagnes : la comparaison n’a pas de sens pour eux, mais leur absence en a une."
+              title="Articles présents dans une seule des deux campagnes : la comparaison n’a pas de sens pour eux, mais leur absence en a une."
               onClick={() => setIncomplete((value) => !value)}
             >
-              Comptés d’un seul côté
+              Présents d’un seul côté
               <span className="subtle"> · {holes}</span>
             </button>
           ) : undefined
@@ -564,7 +656,7 @@ function ComparisonGrid({
           <span>
             {shown.length.toLocaleString('fr-FR')} article(s)
             {incomplete
-              ? ' comptés dans une seule campagne'
+              ? ' présents dans une seule campagne'
               : holes > 0 && ` — ${holes} exclu(s) du total`}
           </span>
         }
@@ -573,7 +665,14 @@ function ComparisonGrid({
   )
 }
 
-const COLUMNS: Column<StockFlowRow>[] = [
+/**
+ * Les colonnes, avec les deux extrémités nommées d'après la paire choisie.
+ *
+ * Un en-tête figé sur « Stock compté » alors que la colonne montre le solde ERP
+ * ferait mentir la grille — et c'est celle qu'on exporte pour la réunion.
+ */
+function columnsFor(basis: StockFlowBasis): Column<StockFlowRow>[] {
+  return [
   {
     key: 'itemNumber',
     label: 'Article',
@@ -590,14 +689,14 @@ const COLUMNS: Column<StockFlowRow>[] = [
   },
   {
     key: 'openingQty',
-    label: 'Stock initial',
+    label: `Stock initial (${basis.openingLabel})`,
     numeric: true,
-    width: 130,
+    width: 150,
     render: (row) =>
-      row.countedOpening ? (
+      row.hasOpening ? (
         <span className="num">{qty(row.openingQty)}</span>
       ) : (
-        <span className="subtle">non compté</span>
+        <span className="subtle">absent</span>
       ),
     value: (row) => row.openingQty,
   },
@@ -651,14 +750,14 @@ const COLUMNS: Column<StockFlowRow>[] = [
   },
   {
     key: 'closingQty',
-    label: 'Stock compté',
+    label: `Stock final (${basis.closingLabel})`,
     numeric: true,
-    width: 140,
+    width: 150,
     render: (row) =>
-      row.countedClosing ? (
+      row.hasClosing ? (
         <strong className="num">{qty(row.closingQty)}</strong>
       ) : (
-        <span className="subtle">non compté</span>
+        <span className="subtle">absent</span>
       ),
     value: (row) => row.closingQty,
   },
@@ -695,4 +794,5 @@ const COLUMNS: Column<StockFlowRow>[] = [
       ),
     value: (row) => row.varianceRatio ?? 0,
   },
-]
+  ]
+}

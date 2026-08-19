@@ -237,6 +237,26 @@ class CampaignRepository(_Base):
         if n == 0:
             raise NotFoundError("Campagne introuvable.", campaignId=campaign_id)
 
+    def soft_delete(
+        self, campaign_id: str, *, actor: str, conn: psycopg.Connection | None = None
+    ) -> None:
+        """Retire a campaign without destroying it.
+
+        Everything the campaign carries — counts, journals, audit entries — stays
+        on disk, because a campaign that was closed on figures somebody signed
+        cannot be made to have never existed. The row simply stops being returned
+        by :meth:`list` and :meth:`get`, which frees its code for reuse.
+        """
+        n = self._execute(
+            "UPDATE campaign SET deleted_at = now(), updated_by = %s, "
+            "updated_at = now(), row_version = row_version + 1 "
+            "WHERE id = %s AND deleted_at IS NULL",
+            (actor, campaign_id),
+            conn=conn,
+        )
+        if n == 0:
+            raise NotFoundError("Campagne introuvable.", campaignId=campaign_id)
+
     def set_cloned_from(
         self, campaign_id: str, source_code: str, *, conn: psycopg.Connection | None = None
     ) -> None:

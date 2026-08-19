@@ -2,10 +2,10 @@
 
 Deux inventaires encadrent une période. Entre les deux, le stock d'un article a
 reçu, produit, expédié, consommé et rebuté des quantités qu'on sait chiffrer. La
-question est donc fermée : en partant du stock *compté* du premier inventaire et
-en appliquant ces flux, retombe-t-on sur le stock *compté* du second ?
+question est donc fermée : en partant du stock du premier inventaire et en
+appliquant ces flux, retombe-t-on sur le stock du second ?
 
-Trois règles décident de tout, et elles sont ici parce qu'aucune ne se voit à
+Quatre règles décident de tout, et elles sont ici parce qu'aucune ne se voit à
 l'écran quand elle est fausse :
 
 * **le sens est porté par l'étape, pas par le signe** — une expédition saisie en
@@ -14,8 +14,10 @@ l'écran quand elle est fausse :
 * **la production ne se somme pas telle quelle** — la table de faits la répète
   sur chaque ligne composant du parent, et la sommer brute la multiplie par la
   taille de la nomenclature ;
-* **un article compté d'un seul côté n'est pas un zéro** — c'est un trou dans la
-  comparaison, et le lire comme un zéro fabrique un écart de la taille du stock.
+* **un article présent d'un seul côté n'est pas un zéro** — c'est un trou dans la
+  comparaison, et le lire comme un zéro fabrique un écart de la taille du stock ;
+* **« physique » veut dire compté plus ajustements** — ici comme partout, sinon
+  la comparaison repart d'une étagère que plus personne n'a vue.
 """
 
 from __future__ import annotations
@@ -27,15 +29,20 @@ from typing import Any, cast
 
 import pytest
 
-from inventory.domain.enums import FlowKind
-from inventory.domain.models import StockFlowInput, StockFlowLine
+from inventory.domain.enums import FlowKind, StockBasis
+from inventory.domain.models import (
+    AdjustmentLine,
+    BookStockLine,
+    StockFlowInput,
+    StockFlowLine,
+)
 from inventory.errors import ValidationError
 from inventory.ingest.mappers import map_stock_flow_inputs
 from inventory.services.stock_flow_service import (
     StockFlowService,
     _chain,
-    _counted_by_item,
     _kpis,
+    _stock_by_item,
 )
 
 
@@ -49,8 +56,8 @@ def line(
     scrapped: float = 0,
     closing: float = 0,
     cost: float = 10,
-    counted_opening: bool = True,
-    counted_closing: bool = True,
+    has_opening: bool = True,
+    has_closing: bool = True,
     item: str = "ART-1",
 ) -> StockFlowLine:
     return StockFlowLine(
@@ -63,8 +70,8 @@ def line(
         consumed_qty=Decimal(str(consumed)),
         scrapped_qty=Decimal(str(scrapped)),
         closing_qty=Decimal(str(closing)),
-        counted_opening=counted_opening,
-        counted_closing=counted_closing,
+        has_opening=has_opening,
+        has_closing=has_closing,
     )
 
 
@@ -108,20 +115,20 @@ class TestTheRelativeVariance:
 
 class TestAnArticleCountedOnOneSideOnly:
     def test_it_is_not_complete(self):
-        assert line(opening=100, counted_closing=False).is_complete is False
+        assert line(opening=100, has_closing=False).is_complete is False
 
     def test_it_is_excluded_from_the_totals(self):
         """Une seule référence de ce genre suffit à dominer le total."""
         kpis = _kpis([
             line(opening=100, closing=90),
-            line(opening=5000, counted_closing=False, item="ART-2"),
+            line(opening=5000, has_closing=False, item="ART-2"),
         ])
         assert kpis["completeCount"] == 1
         assert kpis["incompleteCount"] == 1
         assert kpis["netVarianceValue"] == -100
 
     def test_but_it_is_still_reported(self):
-        kpis = _kpis([line(opening=100, counted_opening=False)])
+        kpis = _kpis([line(opening=100, has_opening=False)])
         assert kpis["lineCount"] == 1
         assert kpis["incompleteCount"] == 1
 
@@ -129,7 +136,7 @@ class TestAnArticleCountedOnOneSideOnly:
         """Sinon le stock attendu du graphique contredirait celui des KPI."""
         chain = _chain([
             line(opening=100, closing=100),
-            line(opening=9999, counted_closing=False, item="ART-2"),
+            line(opening=9999, has_closing=False, item="ART-2"),
         ])
         opening = next(step for step in chain if step["key"] == "opening")
         assert opening["qty"] == 100
@@ -219,31 +226,100 @@ class TestTheDirectionComesFromTheStepNotTheSign:
         assert [entry.item_number for entry in lines] == ["ART-1"]
 
 
+def stock_ctx(
+    *,
+    counted: list[dict[str, Any]] | None = None,
+    adjustments: list[Any] | None = None,
+    book: list[Any] | None = None,
+) -> Any:
+    return cast(Any, SimpleNamespace(
+        journals=SimpleNamespace(counted_quantities=lambda cid: counted or []),
+        adjustments=SimpleNamespace(list=lambda cid, **kw: adjustments or []),
+        book_stock=SimpleNamespace(list=lambda cid: book or []),
+    ))
+
+
+def counted_row(item: str, place: str, qty: Any) -> dict[str, Any]:
+    return {"item_number": item, "warehouse_id": "B06",
+            "location_id": place, "qty": qty}
+
+
 class TestTheOpeningStockIsCollapsedToTheArticle:
     """Entre deux inventaires une palette bouge, et un déplacement n'est pas un
     écart : comparer casier par casier en signalerait un à chaque mouvement."""
 
     def test_two_bins_of_one_article_are_added(self):
-        ctx = cast(Any, SimpleNamespace(
-            journals=SimpleNamespace(counted_quantities=lambda cid: [
-                {"item_number": "ART-1", "warehouse_id": "B06",
-                 "location_id": "A", "qty": Decimal("60")},
-                {"item_number": "ART-1", "warehouse_id": "B06",
-                 "location_id": "B", "qty": Decimal("40")},
-            ])
-        ))
-        assert _counted_by_item(ctx, "camp-1") == {"ART-1": Decimal("100")}
+        ctx = stock_ctx(counted=[
+            counted_row("ART-1", "A", Decimal("60")),
+            counted_row("ART-1", "B", Decimal("40")),
+        ])
+        assert _stock_by_item(ctx, "camp-1", StockBasis.PHYSICAL) == {
+            "ART-1": Decimal("100")
+        }
 
     def test_a_float_quantity_is_read_without_binary_drift(self):
-        ctx = cast(Any, SimpleNamespace(
-            journals=SimpleNamespace(counted_quantities=lambda cid: [
-                {"item_number": "ART-1", "warehouse_id": "B06",
-                 "location_id": "A", "qty": 0.1},
-                {"item_number": "ART-1", "warehouse_id": "B06",
-                 "location_id": "B", "qty": 0.2},
-            ])
-        ))
-        assert _counted_by_item(ctx, "camp-1")["ART-1"] == Decimal("0.3")
+        ctx = stock_ctx(counted=[
+            counted_row("ART-1", "A", 0.1), counted_row("ART-1", "B", 0.2),
+        ])
+        assert _stock_by_item(ctx, "camp-1", StockBasis.PHYSICAL)["ART-1"] == (
+            Decimal("0.3")
+        )
+
+
+class TestWhichStockBracketsTheFlows:
+    """Quatre combinaisons, une seule définition de chaque mot.
+
+    « Physique » veut dire compté plus ajustements — partout, y compris ici. Une
+    comparaison qui repartirait du comptage nu alors que des mouvements ont été
+    postés démarrerait d'une étagère que plus personne n'a vue.
+    """
+
+    def adjustment(self, item: str, qty: str) -> AdjustmentLine:
+        return AdjustmentLine(
+            id="adj-1", campaign_id="camp-1", item_number=item,
+            warehouse_id="B06", location_id="A", qty=Decimal(qty),
+        )
+
+    def book_line(self, item: str, qty: str) -> BookStockLine:
+        return BookStockLine(
+            campaign_id="camp-1", item_number=item, warehouse_id="B06",
+            location_id="A", qty=Decimal(qty), unit_cost=Decimal("10"),
+        )
+
+    def test_the_physical_reading_adds_the_adjustments_to_the_count(self):
+        ctx = stock_ctx(
+            counted=[counted_row("ART-1", "A", Decimal("100"))],
+            adjustments=[self.adjustment("ART-1", "-30")],
+        )
+        assert _stock_by_item(ctx, "camp-1", StockBasis.PHYSICAL) == {
+            "ART-1": Decimal("70")
+        }
+
+    def test_an_article_only_adjusted_still_appears(self):
+        """Il porte du stock : l'omettre raccourcirait la comparaison en silence."""
+        ctx = stock_ctx(adjustments=[self.adjustment("ART-9", "12")])
+        assert _stock_by_item(ctx, "camp-1", StockBasis.PHYSICAL) == {
+            "ART-9": Decimal("12")
+        }
+
+    def test_the_erp_reading_ignores_counts_and_adjustments_alike(self):
+        """Le stock ERP est gelé : ni le comptage ni les ajustements ne le bougent."""
+        ctx = stock_ctx(
+            counted=[counted_row("ART-1", "A", Decimal("100"))],
+            adjustments=[self.adjustment("ART-1", "-30")],
+            book=[self.book_line("ART-1", "150")],
+        )
+        assert _stock_by_item(ctx, "camp-1", StockBasis.BOOK) == {
+            "ART-1": Decimal("150")
+        }
+
+    def test_the_erp_reading_is_collapsed_to_the_article_too(self):
+        ctx = stock_ctx(book=[
+            self.book_line("ART-1", "60"), self.book_line("ART-1", "40"),
+        ])
+        assert _stock_by_item(ctx, "camp-1", StockBasis.BOOK)["ART-1"] == (
+            Decimal("100")
+        )
 
 
 class TestTheEarlierCampaignIsTheEarlierOneByCountDate:

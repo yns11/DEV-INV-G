@@ -243,6 +243,24 @@ function VariancesTab({
       value: (row) => row.countedQty,
     },
     {
+      key: 'physicalQty',
+      label: 'Physique',
+      numeric: true,
+      width: 130,
+      render: (row) => (
+        <DrillCell
+          disabled={row.physicalQty === 0}
+          onOpen={() => openDrill(row, 'physical')}
+        >
+          <QtyOverValue
+            qty={qty(row.physicalQty)}
+            value={moneyShort(row.physicalValue)}
+          />
+        </DrillCell>
+      ),
+      value: (row) => row.physicalQty,
+    },
+    {
       key: 'varianceValue',
       label: 'Écart',
       numeric: true,
@@ -264,25 +282,32 @@ function VariancesTab({
       ),
       value: (row) => row.varianceValue,
     },
-    {
-      key: 'residualValue',
-      label: 'Résiduel',
-      numeric: true,
-      width: 140,
-      render: (row) => (
-        <DrillCell
-          disabled={row.residualQty === 0}
-          onOpen={() => openDrill(row, 'residual')}
-        >
-          <QtyOverValue
-            qty={signedNum(row.residualQty)}
-            value={signedMoney(row.residualValue)}
-            tone={signClass(row.residualValue)}
-          />
-        </DrillCell>
-      ),
-      value: (row) => row.residualValue,
-    },
+    // Ce que le comptage seul montrait. Sans ajustement il répète l'écart à
+    // l'identique : une colonne de doublons est une colonne qu'on apprend à
+    // sauter, donc une colonne à ne pas afficher.
+    ...(variances.data?.some((row) => row.adjustedQty !== 0)
+      ? [
+          {
+            key: 'countedVarianceValue',
+            label: 'Avant ajust.',
+            numeric: true,
+            width: 140,
+            render: (row: VarianceRow) => (
+              <DrillCell
+                disabled={row.countedVarianceQty === 0}
+                onOpen={() => openDrill(row, 'counted')}
+              >
+                <QtyOverValue
+                  qty={signedNum(row.countedVarianceQty)}
+                  value={signedMoney(row.countedVarianceValue)}
+                  tone={signClass(row.countedVarianceValue)}
+                />
+              </DrillCell>
+            ),
+            value: (row: VarianceRow) => row.countedVarianceValue,
+          } as Column<VarianceRow>,
+        ]
+      : []),
     // Le backflush n'apparaît que là où il a été mesuré. Une colonne pleine de
     // tirets sur une campagne qui ne l'a pas chargé serait une colonne à
     // ignorer, c'est-à-dire une colonne à retirer.
@@ -1192,8 +1217,8 @@ function CausesTab({ campaignId, overview }: { campaignId: string; overview: Ove
                   <tr>
                     <th>Article</th>
                     <th className="num">Compté</th>
+                    <th className="num">Physique</th>
                     <th className="num">Écart</th>
-                    <th className="num">Résiduel</th>
                     <th style={{ width: 260 }}>Cause retenue</th>
                     <th>Proposition IA</th>
                   </tr>
@@ -1217,6 +1242,16 @@ function CausesTab({ campaignId, overview }: { campaignId: string; overview: Ove
                           <span className="num">{qty(row.countedQty)}</span>
                         </DrillCell>
                       </td>
+                      <td className="num">
+                        <DrillCell
+                          disabled={row.physicalQty === 0}
+                          onOpen={() =>
+                            setDrill({ itemNumber: row.itemNumber, aspect: 'physical' })
+                          }
+                        >
+                          <span className="num">{qty(row.physicalQty)}</span>
+                        </DrillCell>
+                      </td>
                       <td className={`num ${signClass(row.varianceValue)}`}>
                         <DrillCell
                           disabled={row.varianceQty === 0}
@@ -1225,16 +1260,6 @@ function CausesTab({ campaignId, overview }: { campaignId: string; overview: Ove
                           }
                         >
                           {signedMoney(row.varianceValue)}
-                        </DrillCell>
-                      </td>
-                      <td className={`num ${signClass(row.residualValue)}`}>
-                        <DrillCell
-                          disabled={row.residualQty === 0}
-                          onOpen={() =>
-                            setDrill({ itemNumber: row.itemNumber, aspect: 'residual' })
-                          }
-                        >
-                          {signedMoney(row.residualValue)}
                         </DrillCell>
                       </td>
                       <td>
@@ -1328,8 +1353,8 @@ function AdjustmentsTab({
     queryKey: ['adjustments', campaignId],
     queryFn: () => api.adjustments(campaignId),
   })
-  // Un ajustement se juge contre ce qu'il corrige : la référence s'ouvre sur
-  // l'écart résiduel de l'emplacement concerné, ajustements déjà déduits.
+  // Un ajustement se juge contre le stock qu'il déplace : la référence s'ouvre
+  // sur le physique de l'emplacement concerné, ce mouvement-ci compris.
   const [drill, setDrill] = useState<
     { itemNumber: string; aspect: BreakdownAspect; warehouseId: string; locationId: string } | null
   >(null)
@@ -1344,7 +1369,7 @@ function AdjustmentsTab({
           onOpen={() =>
             setDrill({
               itemNumber: String(row.item_number ?? ''),
-              aspect: 'residual',
+              aspect: 'physical',
               warehouseId: String(row.warehouse_id ?? ''),
               locationId: String(row.location_id ?? ''),
             })
@@ -1400,7 +1425,7 @@ function AdjustmentsTab({
 
       <Card
         title="Mouvements et ajustements"
-        message="Quantité et valeur signées : négatif = diminution de stock. Chaque mouvement réduit l’écart résiduel — cliquez une référence pour voir ce qu’il en reste."
+        message="Quantité et valeur signées : négatif = diminution de stock. Chaque mouvement s’ajoute au comptage pour former le stock physique — cliquez une référence pour voir ce qu’il en résulte."
         flush
       >
         <AsyncBoundary

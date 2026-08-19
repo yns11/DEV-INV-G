@@ -3,10 +3,10 @@
 Two inventories bracket a stretch of time. In between, an article's stock did
 not move at random: it was received, produced, shipped, consumed and scrapped in
 quantities the plant can put a number on. So the question this module answers is
-a closed one — starting from the *counted* stock of the first inventory and
-applying the period's flows, do we land on the *counted* stock of the second?
+a closed one — starting from the stock of the first inventory and applying the
+period's flows, do we land on the stock of the second?
 
-    stock attendu = compté(campagne initiale)
+    stock attendu = stock initial (campagne initiale)
                   + réceptions          (chargées)
                   + production parent   (lue dans le backflush, dédoublonnée)
                   − expéditions         (chargées)
@@ -28,9 +28,16 @@ the count that bounds the period.
 night, so a past week can change; a report that cannot be replayed identically
 does not survive its first review meeting.
 
-**A reference missing from one of the two counts is not a zero.** It is a hole
+**A reference missing from one of the two readings is not a zero.** It is a hole
 in the comparison, and reading it as a zero would manufacture a variance the
 size of the whole stock. Those lines are reported apart, never summed in.
+
+**Which stock brackets the flows is chosen at read time.** Physique or ERP, on
+each end independently, which makes four combinations — and each answers a
+different question. Physique/physique measures what the plant actually lost;
+ERP/ERP, what the system believes it lost; the two crossed pairs say where a
+divergence between the two was born. None of it touches the run: the loaded
+quantities and the frozen ERP snapshot are the same in all four.
 """
 
 from __future__ import annotations
@@ -41,7 +48,7 @@ from decimal import Decimal
 from typing import Any
 
 from ..db import new_id
-from ..domain.enums import AuditAction, FlowKind
+from ..domain.enums import AuditAction, FlowKind, StockBasis
 from ..domain.models import (
     Campaign,
     StockFlowErp,
@@ -55,13 +62,29 @@ from .import_service import ImportOutcome, monday_of
 
 log = logging.getLogger(__name__)
 
-__all__ = ["StockFlowService", "FLOW_LABELS"]
+__all__ = ["StockFlowService", "FLOW_LABELS", "BASIS_LABELS"]
 
 #: How each loaded step names itself on screen and in the audit trail.
 FLOW_LABELS = {
     FlowKind.RECEIPT: "réceptions",
     FlowKind.SHIPMENT: "expéditions",
     FlowKind.SCRAP: "rebuts",
+}
+
+#: How each reading names itself. « Physique » is the counted stock adjustments
+#: included — the same word the rest of the application uses for it, because two
+#: screens spending it on two different quantities is how a report gets misread.
+BASIS_LABELS = {
+    StockBasis.PHYSICAL: "Physique",
+    StockBasis.BOOK: "ERP",
+}
+
+#: La même chose en toutes lettres, pour les titres et les phrases. Séparé et
+#: non dérivé : « ERP » ne se met pas en minuscules au milieu d'une phrase, et
+#: une seule forme ne peut pas servir de pastille *et* de titre d'axe.
+BASIS_STOCK_LABELS = {
+    StockBasis.PHYSICAL: "Stock physique",
+    StockBasis.BOOK: "Stock ERP",
 }
 
 
@@ -336,15 +359,29 @@ class StockFlowService:
 
     # ----------------------------------------------------------------- report
 
-    def report(self, campaign: Campaign, run_id: str) -> dict[str, Any]:
-        """The whole comparison: header, KPIs, aggregates and one line per article."""
+    def report(
+        self,
+        campaign: Campaign,
+        run_id: str,
+        *,
+        opening_basis: StockBasis = StockBasis.PHYSICAL,
+        closing_basis: StockBasis = StockBasis.PHYSICAL,
+    ) -> dict[str, Any]:
+        """The whole comparison: header, KPIs, aggregates and one line per article.
+
+        The two bases pick which reading of each campaign brackets the flows.
+        They are a parameter of the *reading*, not of the run: the frozen ERP
+        snapshot and the loaded quantities do not move, so the four combinations
+        are four views of one comparison rather than four comparisons — flip the
+        pair and the report re-renders without anything being reloaded.
+        """
         ctx = self.ctx
         run = self._run(campaign, run_id)
         baseline = ctx.campaigns.get(run.baseline_campaign_id)
         items = ctx.referentials.items_by_number(campaign.id)
 
-        opening = _counted_by_item(ctx, baseline.id)
-        closing = _counted_by_item(ctx, campaign.id)
+        opening = _stock_by_item(ctx, baseline.id, opening_basis)
+        closing = _stock_by_item(ctx, campaign.id, closing_basis)
         erp = {row.item_number: row for row in ctx.stock_flow.list_erp(run.id)}
         loaded: dict[FlowKind, dict[str, Decimal]] = {k: {} for k in FlowKind}
         for entry in ctx.stock_flow.list_inputs(run.id):
@@ -376,8 +413,8 @@ class StockFlowService:
                     consumed_qty=flow.consumed_qty if flow else ZERO,
                     scrapped_qty=loaded[FlowKind.SCRAP].get(item_number, ZERO),
                     closing_qty=closing.get(item_number, ZERO),
-                    counted_opening=item_number in opening,
-                    counted_closing=item_number in closing,
+                    has_opening=item_number in opening,
+                    has_closing=item_number in closing,
                 )
             )
 
@@ -390,9 +427,21 @@ class StockFlowService:
                 "campaignCode": campaign.code,
                 "campaignCountDate": campaign.count_date.isoformat(),
             },
+            "basis": {
+                "opening": str(opening_basis),
+                "closing": str(closing_basis),
+                "openingLabel": BASIS_LABELS[opening_basis],
+                "closingLabel": BASIS_LABELS[closing_basis],
+                "openingStockLabel": BASIS_STOCK_LABELS[opening_basis],
+                "closingStockLabel": BASIS_STOCK_LABELS[closing_basis],
+                "label": (
+                    f"{BASIS_LABELS[opening_basis]} {baseline.code} → "
+                    f"{BASIS_LABELS[closing_basis]} {campaign.code}"
+                ),
+            },
             "steps": self._steps(run, loaded, erp),
             "kpis": _kpis(lines),
-            "chain": _chain(lines),
+            "chain": _chain(lines, closing_basis),
             "rows": [_line_payload(line) for line in lines],
         }
 
@@ -460,18 +509,36 @@ class StockFlowService:
 # Computation
 # --------------------------------------------------------------------------- #
 
-def _counted_by_item(ctx: ServiceContext, campaign_id: str) -> dict[str, Decimal]:
-    """Counted stock of one campaign, collapsed to the article.
+def _stock_by_item(
+    ctx: ServiceContext, campaign_id: str, basis: StockBasis
+) -> dict[str, Decimal]:
+    """One reading of a campaign's stock, collapsed to the article.
 
     Locations are collapsed on purpose: between two inventories a pallet moves,
     and comparing bin by bin would report every move as a variance. What the
     period's flows act on is the article's total.
+
+    ``PHYSICAL`` adds the posted adjustments to the count, exactly as the
+    inventory variance does — an adjustment is a stock movement, so a comparison
+    that ignored it would start from a shelf nobody has seen since. An article
+    that has an adjustment but was never counted still appears: it holds stock,
+    and dropping it would silently shorten the comparison.
     """
     totals: dict[str, Decimal] = {}
-    for row in ctx.journals.counted_quantities(campaign_id):
-        qty = row["qty"]
+
+    def add(item_number: str, qty: Any) -> None:
         value = qty if isinstance(qty, Decimal) else Decimal(str(qty))
-        totals[row["item_number"]] = totals.get(row["item_number"], ZERO) + value
+        totals[item_number] = totals.get(item_number, ZERO) + value
+
+    if basis is StockBasis.BOOK:
+        for line in ctx.book_stock.list(campaign_id):
+            add(line.item_number, line.qty)
+    else:
+        for row in ctx.journals.counted_quantities(campaign_id):
+            add(row["item_number"], row["qty"])
+        for adjustment in ctx.adjustments.list(campaign_id):
+            add(adjustment.item_number, adjustment.qty)
+
     return {item: quantize_qty(value) for item, value in totals.items()}
 
 
@@ -525,8 +592,10 @@ _CHAIN_STEPS = (
 )
 
 
-def _chain(lines: list[StockFlowLine]) -> list[dict[str, Any]]:
-    """The six terms, then the expected stock and what was actually counted."""
+def _chain(
+    lines: list[StockFlowLine], closing_basis: StockBasis = StockBasis.PHYSICAL
+) -> list[dict[str, Any]]:
+    """The six terms, then the expected stock and the one actually found."""
     complete = [line for line in lines if line.is_complete]
 
     def total(attribute: str, sign: int) -> tuple[Decimal, Decimal]:
@@ -561,7 +630,7 @@ def _chain(lines: list[StockFlowLine]) -> list[dict[str, Any]]:
         "sign": 0, "terminal": True,
     })
     out.append({
-        "key": "closing", "label": "Stock compté",
+        "key": "closing", "label": BASIS_STOCK_LABELS[closing_basis],
         "qty": float(quantize_qty(closing_qty)),
         "value": float(quantize_money(closing_value)),
         "sign": 0, "terminal": True,
@@ -587,8 +656,8 @@ def _line_payload(line: StockFlowLine) -> dict[str, Any]:
         "varianceQty": float(line.variance_qty),
         "varianceValue": float(line.variance_value),
         "varianceRatio": None if ratio is None else float(ratio),
-        "countedOpening": line.counted_opening,
-        "countedClosing": line.counted_closing,
+        "hasOpening": line.has_opening,
+        "hasClosing": line.has_closing,
         "complete": line.is_complete,
     }
 

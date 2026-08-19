@@ -214,8 +214,11 @@ class AnalysisService:
                 "varianceQty": float(line.variance_qty),
                 "varianceValue": float(line.variance_value),
                 "adjustedQty": float(line.adjusted_qty),
-                "residualQty": float(line.residual_qty),
-                "residualValue": float(line.residual_value),
+                "physicalQty": float(line.physical_qty),
+                "physicalValue": float(line.physical_value),
+                "adjustedValue": float(line.adjusted_value),
+                "countedVarianceQty": float(line.counted_variance_qty),
+                "countedVarianceValue": float(line.counted_variance_value),
                 "backflushQty": float(line.backflush_qty),
                 "backflushShareQty": float(line.backflush_share_qty),
                 "backflushShareValue": float(line.backflush_share_value),
@@ -468,7 +471,7 @@ class AnalysisService:
 
     #: The figures a screen can ask "where does this come from?" about.
     BREAKDOWN_ASPECTS = (
-        "book", "counted", "line_side", "wip_ok", "wip", "variance", "residual",
+        "book", "counted", "physical", "line_side", "wip_ok", "wip", "variance",
     )
 
     def breakdown(
@@ -513,7 +516,7 @@ class AnalysisService:
             "wip_ok": lambda c, i: self._sheet_rows(c, i, "WIP_OK"),
             "wip": self._wip_rows,
             "variance": self._variance_rows_for,
-            "residual": self._residual_rows,
+            "physical": self._physical_rows,
         }[aspect](campaign, item_number)
 
         if warehouse_id:
@@ -663,7 +666,10 @@ class AnalysisService:
                 "warehouseId": line.warehouse_id,
                 "locationId": line.location_id,
                 "detail": (
-                    f"ERP {_plain(line.book_qty)} − compté {_plain(line.counted_qty)}"
+                    f"physique {_plain(line.physical_qty)} − ERP "
+                    f"{_plain(line.book_qty)}"
+                    + (f" (dont ajust. {_plain(line.adjusted_qty)})"
+                       if line.adjusted_qty else "")
                 ),
                 "qty": float(line.variance_qty),
                 "value": float(line.variance_value),
@@ -672,23 +678,17 @@ class AnalysisService:
             if line.item_number == item_number and line.variance_qty != 0
         ]
 
-    def _residual_rows(
+    def _physical_rows(
         self, campaign: Campaign, item_number: str
     ) -> list[dict[str, Any]]:
-        """What is left once the adjustments already posted are taken off."""
-        out = [
-            {
-                "origin": "Écart constaté",
-                "where": f"{line.warehouse_id} / {line.location_id}",
-                "warehouseId": line.warehouse_id,
-                "locationId": line.location_id,
-                "detail": "",
-                "qty": float(line.variance_qty),
-                "value": float(line.variance_value),
-            }
-            for line in self.variances(campaign, granularity="item_location")
-            if line.item_number == item_number and line.variance_qty != 0
-        ]
+        """The physical stock: what was counted, then what moved afterwards.
+
+        Replaces the former « résiduel » decomposition, which subtracted the
+        adjustments from the variance. They are added to the *count* now, because
+        an adjustment is a real movement — so this reads as one column of stock
+        rather than as a correction applied to a gap.
+        """
+        out = self._counted_rows(campaign, item_number)
         for adjustment in self.ctx.adjustments.list(campaign.id):
             if adjustment.item_number != item_number:
                 continue
@@ -700,10 +700,10 @@ class AnalysisService:
                 "warehouseId": adjustment.warehouse_id,
                 "locationId": adjustment.location_id,
                 "detail": adjustment.journal_number or adjustment.comment,
-                # Retranché : c'est ce que l'ajustement a déjà corrigé, donc ce
-                # qui ne reste plus à expliquer.
-                "qty": -float(adjustment.qty),
-                "value": -float(adjustment.value),
+                # Signé, et repris tel quel : un mouvement négatif retire du
+                # stock physique, un positif en ajoute.
+                "qty": float(adjustment.qty),
+                "value": float(adjustment.value),
             })
         return out
 
@@ -1112,7 +1112,7 @@ def _group_payload(group: VarianceSet) -> dict[str, Any]:
         "varianceValue": float(group.variance_value),
         "absVarianceQty": float(group.abs_variance_qty),
         "absVarianceValue": float(group.abs_variance_value),
-        "residualValue": float(group.residual_value),
+        "countedVarianceValue": float(group.counted_variance_value),
         "lineCount": group.line_count,
         "materialCount": group.material_count,
     }

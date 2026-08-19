@@ -82,8 +82,10 @@ def build_variances(
         because a transfer between two locations is not a stock variance).
     :param locations: when supplied, lines whose location is ``DISABLED`` are
         dropped entirely — quantities *and* values — as the spec requires.
-    :param adjustments: post-count movements; their signed quantities are
-        subtracted from the variance to produce the residual.
+    :param adjustments: post-count movements. Their signed quantities are *added
+        to the count* to give the physical stock, which is what the variance is
+        then measured against: an adjustment is a real movement, so once one is
+        posted the count alone is no longer the current picture.
     :param backflush: the frozen backflush variance, per article. It is carried
         onto the line rather than netted into it — what production explains and
         what the ERP has already been corrected for are two different questions,
@@ -231,7 +233,10 @@ class VarianceSet:
     variance_value: Decimal = ZERO
     abs_variance_qty: Decimal = ZERO
     abs_variance_value: Decimal = ZERO
-    residual_value: Decimal = ZERO
+    #: L'écart que le comptage seul montrait, avant tout ajustement. Conservé
+    #: à côté de l'écart et non à sa place : la différence entre les deux est
+    #: exactement ce que les ajustements ont fait.
+    counted_variance_value: Decimal = ZERO
     backflush_share_value: Decimal = ZERO
     unexplained_value: Decimal = ZERO
     abs_unexplained_value: Decimal = ZERO
@@ -246,7 +251,7 @@ class VarianceSet:
         self.variance_value += line.variance_value
         self.abs_variance_qty += abs(line.variance_qty)
         self.abs_variance_value += abs(line.variance_value)
-        self.residual_value += line.residual_value
+        self.counted_variance_value += line.counted_variance_value
         self.backflush_share_value += line.backflush_share_value
         self.unexplained_value += line.unexplained_value
         self.abs_unexplained_value += abs(line.unexplained_value)
@@ -258,7 +263,7 @@ class VarianceSet:
         self.variance_qty = quantize_qty(self.variance_qty)
         self.abs_variance_qty = quantize_qty(self.abs_variance_qty)
         for attr in ("book_value", "variance_value", "abs_variance_value",
-                     "residual_value", "backflush_share_value",
+                     "counted_variance_value", "backflush_share_value",
                      "unexplained_value", "abs_unexplained_value"):
             setattr(self, attr, quantize_money(getattr(self, attr)))
 
@@ -317,6 +322,11 @@ class KpiBlock:
     book_value: Decimal = ZERO
     counted_qty: Decimal = ZERO
     counted_value: Decimal = ZERO
+    #: The physical stock — counted plus what moved after. This, not the count,
+    #: is what the variance measures, so it is reported next to the ERP total:
+    #: the two figures on screen must be the two the subtraction uses.
+    physical_qty: Decimal = ZERO
+    physical_value: Decimal = ZERO
 
     #: Signed variance — "did we gain or lose value overall?"
     net_variance_qty: Decimal = ZERO
@@ -324,8 +334,12 @@ class KpiBlock:
     #: Absolute variance — "how much did we get wrong?"
     gross_variance_qty: Decimal = ZERO
     gross_variance_value: Decimal = ZERO
-    #: Variance still unexplained after adjustments.
-    residual_value: Decimal = ZERO
+    #: The gap the count alone showed, before the adjustments moved the stock.
+    #: Reported beside the variance so the effect of the adjustments is readable
+    #: as the difference between two figures rather than asserted in a sentence.
+    counted_variance_value: Decimal = ZERO
+    #: Signed total of the movements posted during the analysis phase.
+    adjusted_value: Decimal = ZERO
 
     #: What the backflush accounts for, in the inventory convention, and what is
     #: left once it is taken off. Reported over the articles the backflush was
@@ -368,11 +382,14 @@ class KpiBlock:
             "bookValue": num(self.book_value),
             "countedQty": num(self.counted_qty),
             "countedValue": num(self.counted_value),
+            "physicalQty": num(self.physical_qty),
+            "physicalValue": num(self.physical_value),
             "netVarianceQty": num(self.net_variance_qty),
             "netVarianceValue": num(self.net_variance_value),
             "grossVarianceQty": num(self.gross_variance_qty),
             "grossVarianceValue": num(self.gross_variance_value),
-            "residualValue": num(self.residual_value),
+            "countedVarianceValue": num(self.counted_variance_value),
+            "adjustedValue": num(self.adjusted_value),
             "backflushShareValue": num(self.backflush_share_value),
             "unexplainedValue": num(self.unexplained_value),
             "grossUnexplainedValue": num(self.gross_unexplained_value),
@@ -419,11 +436,14 @@ def compute_kpis(
         kpi.book_value += line.book_value
         kpi.counted_qty += line.counted_qty
         kpi.counted_value += line.counted_qty * line.unit_cost
+        kpi.physical_qty += line.physical_qty
+        kpi.physical_value += line.physical_value
         kpi.net_variance_qty += line.variance_qty
         kpi.net_variance_value += line.variance_value
         kpi.gross_variance_qty += abs(line.variance_qty)
         kpi.gross_variance_value += abs(line.variance_value)
-        kpi.residual_value += line.residual_value
+        kpi.counted_variance_value += line.counted_variance_value
+        kpi.adjusted_value += line.adjusted_value
         if line.backflush_measured:
             kpi.backflush_line_count += 1
             kpi.backflush_share_value += line.backflush_share_value
@@ -440,10 +460,13 @@ def compute_kpis(
 
     kpi.book_qty = quantize_qty(kpi.book_qty)
     kpi.counted_qty = quantize_qty(kpi.counted_qty)
+    kpi.physical_qty = quantize_qty(kpi.physical_qty)
     kpi.net_variance_qty = quantize_qty(kpi.net_variance_qty)
     kpi.gross_variance_qty = quantize_qty(kpi.gross_variance_qty)
-    for attr in ("book_value", "counted_value", "net_variance_value",
-                 "gross_variance_value", "residual_value",
+    for attr in ("book_value", "counted_value", "physical_value",
+                 "net_variance_value",
+                 "gross_variance_value", "counted_variance_value",
+                 "adjusted_value",
                  "backflush_share_value", "unexplained_value",
                  "gross_unexplained_value", "backflush_variance_value"):
         setattr(kpi, attr, quantize_money(getattr(kpi, attr)))

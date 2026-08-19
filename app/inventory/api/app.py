@@ -13,8 +13,10 @@ Cross-cutting behaviour lives here and nowhere else:
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
+import re
 import sys
 import time
 import uuid
@@ -26,7 +28,6 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from ..config import get_settings
 from ..errors import InventoryError
@@ -297,6 +298,13 @@ def create_app() -> FastAPI:
             # False means the deployment shipped without `app/static/`, i.e.
             # the API answers but the browser gets no interface.
             "frontendBuilt": STATIC_DIR.exists(),
+            # *Which* interface it shipped. « J'ai redéployé et rien n'a
+            # changé » has two causes that look identical from a browser — the
+            # upload did not carry the new build, or the browser is serving a
+            # cached shell — and no amount of reloading tells them apart. This
+            # names the bundle the container actually holds, so one `curl`
+            # settles it.
+            "frontend": _frontend_state(),
             "llmEndpoint": settings.llm_endpoint,
             "startupError": getattr(app.state, "startup_error", None),
             # Which schema versions this container actually applied. A failed
@@ -387,6 +395,77 @@ databricks apps deploy -t prod --profile PROD</pre>
 """
 
 
+def _frontend_state() -> dict[str, Any]:
+    """Which built SPA this container is serving.
+
+    The hashed bundle name *is* the build identity: Vite derives it from the
+    content, so two deployments of the same sources produce the same name and
+    any change produces a different one. Comparing it with the local
+    `app/static/assets/` after a build answers « did my deployment land? »
+    without a single guess.
+
+    Never raises: this is part of the payload somebody reads when something is
+    already wrong.
+    """
+    index = STATIC_DIR / "index.html"
+    if not index.is_file():
+        return {"bundle": None, "builtAt": None, "assets": 0}
+    try:
+        html = index.read_text(encoding="utf-8", errors="replace")
+        bundle = next(
+            (m for m in _MAIN_BUNDLE.findall(html) if "index-" in m), None
+        )
+        assets = STATIC_DIR / "assets"
+        return {
+            "bundle": bundle,
+            "builtAt": dt.datetime.fromtimestamp(
+                index.stat().st_mtime, dt.UTC
+            ).isoformat(),
+            "assets": len(list(assets.iterdir())) if assets.is_dir() else 0,
+        }
+    except Exception as exc:  # pragma: no cover — depends on the filesystem
+        return {"bundle": None, "builtAt": None, "assets": 0, "error": str(exc)}
+
+
+#: `<script src="/assets/index-XXXXXXXX.js">`, as Vite writes it.
+_MAIN_BUNDLE = re.compile(r"/assets/([A-Za-z0-9_.-]+\.js)")
+
+
+#: ``index.html`` is the one file that must never be cached.
+#:
+#: Every other asset carries a content hash in its name, so a new build produces
+#: new names and the old files can sit in the browser cache forever. The shell
+#: is the opposite: same URL, new content at every deployment, and it is the
+#: file that *names* the hashed bundles. Served without a directive, a browser
+#: is free to cache it heuristically — and it does, typically for a tenth of the
+#: file's age. That is exactly the « I redeployed and nothing changed » failure:
+#: the shell comes from the cache, points at yesterday's bundle, and the old
+#: interface loads perfectly.
+#:
+#: The cost is one request per navigation for a file of a few hundred bytes —
+#: the shell names the bundles, it does not contain them. Nothing else pays:
+#: everything it points at is hashed and cached below for a year.
+_NEVER_CACHE = {"Cache-Control": "no-cache, must-revalidate"}
+
+#: A year, and immutable: the browser may not even revalidate.
+_CACHE_FOREVER = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+
+def _cache_headers(path: Path) -> dict[str, str]:
+    """How long a static file may be kept, decided by whether its name is a hash.
+
+    Vite writes ``index-D5wpFZpw.js``; anything carrying that shape can be cached
+    without limit. Everything else — the shell, a favicon, a manifest — keeps the
+    conservative answer, because a stale one of those is indistinguishable from a
+    failed deployment.
+    """
+    return _CACHE_FOREVER if _HASHED_NAME.search(path.name) else _NEVER_CACHE
+
+
+#: ``name-<hash>.ext``, the shape Vite gives every file it fingerprints.
+_HASHED_NAME = re.compile(r"-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$")
+
+
 def _mount_spa(app: FastAPI) -> None:
     """Serve the built React app, with client-side routing support."""
     if not STATIC_DIR.exists():
@@ -408,11 +487,11 @@ def _mount_spa(app: FastAPI) -> None:
 
         return
 
-    assets = STATIC_DIR / "assets"
-    if assets.exists():
-        # Hashed filenames: safe to cache for a year.
-        app.mount("/assets", StaticFiles(directory=assets), name="assets")
-
+    # No `StaticFiles` mount for `/assets`: it sets no `Cache-Control` of its
+    # own, so the caching policy would live in two places and only one of them
+    # would be right. The catch-all below already serves any real file under
+    # `static/`, and serving everything through it puts the whole policy in
+    # `_cache_headers`, where it can be read in one go.
     index = STATIC_DIR / "index.html"
 
     @app.get("/{full_path:path}", include_in_schema=False)
@@ -435,5 +514,5 @@ def _mount_spa(app: FastAPI) -> None:
             and candidate.is_file()
             and candidate.is_relative_to(STATIC_DIR.resolve())
         ):
-            return FileResponse(candidate)
-        return FileResponse(index)
+            return FileResponse(candidate, headers=_cache_headers(candidate))
+        return FileResponse(index, headers=_NEVER_CACHE)

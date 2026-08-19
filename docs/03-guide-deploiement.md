@@ -903,6 +903,7 @@ Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur
 | `invalid dependency "${DATABRICKS_APP_PORT}", no such node ""` | `${...}` est aussi la syntaxe d'interpolation du bundle : le résolveur cherche ce nom dans l'arbre du bundle | Ne mettez aucune variable d'exécution dans `config.command`. La commande est `python main.py`, et `main.py` lit le port depuis l'environnement. Non détecté par `validate` |
 | `Error installing packages. Please check /logz for more details` | Conflit de dépendances dans `app/requirements.txt` — le message de l'app ne dit pas lequel | Reproduisez-le localement, où pip nomme le coupable : `pip install --dry-run -r app/requirements.txt` |
 | Page « L'API fonctionne, l'interface n'a pas été construite » (503), ou `{"detail":"Not Found"}` sur les versions antérieures | `app/static/` absent du déploiement | Deux causes distinctes : la SPA n'a pas été construite, **ou** elle l'a été mais le bundle ne la téléverse pas (`.gitignore` s'applique à la synchronisation — d'où le bloc `sync.include` de `databricks.yml`). Contrôlez l'un avec `dir app\static\index.html`, l'autre avec `databricks bundle sync --dry-run --full -o json` (§4.2) |
+| **Le déploiement réussit, l'app démarre, et c'est la version précédente qui s'affiche** | Trois causes possibles, à départager par `curl` (voir §8.3) | Comparez `frontend.bundle` de `/api/health` avec le nom du fichier présent dans `app/static/assets/` après un build local. Identiques → c'est le cache du navigateur (`Ctrl`+`Maj`+`R`). Différents → le téléversement n'a pas emporté la nouvelle interface : construisez **avant** de déployer, et vérifiez que `databricks apps deploy` est bien lancé avec `-t <cible>` (sans cible, la CLI redéploie ce qui se trouve déjà dans le workspace, donc l'ancienne version) |
 | `password authentication failed` après ~1 h | Jeton Lakebase expiré | Normalement géré automatiquement ; si cela persiste, redémarrez l'app et ouvrez un ticket |
 | **404 sur toutes les pages sauf `/api/...`** | SPA non construite | `make build-frontend` puis redéployez ; `app/static/index.html` doit exister |
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |
@@ -929,7 +930,39 @@ databricks apps logs campagnes-inventaire --profile PROD \
   | jq 'select(.request_id=="<identifiant>")'
 ```
 
-### 8.2 Se connecter à Lakebase pour inspecter
+### 8.2 Quelle version est réellement déployée ?
+
+« J'ai redéployé et rien n'a changé » a trois causes qui, depuis un navigateur,
+sont indiscernables. Une seule commande les départage :
+
+```bash
+curl -s https://<app>.databricksapps.com/api/health | jq '.frontend, .migrations'
+```
+
+```json
+{ "bundle": "index-goTc8FJP.js", "builtAt": "2026-08-19T00:05:29Z", "assets": 6 }
+{ "applied": ["001_initial_schema", "…", "009_stock_flow"], "pending": [], "error": null }
+```
+
+`bundle` est le nom du paquet JavaScript que le conteneur sert. Vite le dérive
+du *contenu* : deux constructions des mêmes sources donnent le même nom, et le
+moindre changement en donne un autre. Comparez-le au fichier présent dans
+`app/static/assets/` après un `make build-frontend` local.
+
+| Constat | Cause | Correction |
+|---|---|---|
+| Le nom est le même que localement | Le déploiement est bon ; c'est le navigateur | `Ctrl`+`Maj`+`R`. Ne devrait plus se produire : la coquille est désormais servie en `no-cache` |
+| Le nom diffère | Le téléversement n'a pas emporté la nouvelle interface | Construisez avant de déployer (`make deploy` enchaîne les deux), et déployez avec `-t <cible>` |
+| `bundle: null` | `app/static/` est absent du déploiement | Voir la ligne « Page L'API fonctionne… » du tableau ci-dessus |
+| `migrations.pending` non vide | Le code est à jour, le schéma non | Consultez les journaux de démarrage : le rôle doit avoir `CREATE` sur le schéma |
+
+> **Sans cible, `databricks apps deploy` n'est pas la commande du bundle.**
+> `databricks apps deploy <nom> --source-code-path <chemin workspace>` redéploie
+> ce qui se trouve **déjà** dans le workspace — c'est-à-dire la version
+> précédente. Seul `databricks apps deploy -t <cible>` synchronise d'abord les
+> fichiers locaux. C'est ce que fait `make deploy`.
+
+### 8.3 Se connecter à Lakebase pour inspecter
 
 ```bash
 # Générer un credential temporaire
@@ -954,6 +987,19 @@ git pull
 make build-frontend
 databricks bundle validate -t prod --profile PROD
 databricks apps deploy -t prod --profile PROD
+```
+
+L'ordre compte : `apps deploy` téléverse ce qui est sur le disque au moment où
+il tourne, donc la construction vient **avant**. `make deploy TARGET=prod
+PROFILE=PROD` enchaîne les deux et ne peut pas être fait dans le mauvais ordre.
+
+Une fois l'app redémarrée, vérifiez que c'est bien la nouvelle version qui
+répond — un déploiement réussi qui sert l'ancienne interface est un cas réel, et
+le navigateur ne le dit pas (§8.2) :
+
+```bash
+curl -s https://<app>.databricksapps.com/api/health | jq '.frontend.bundle'
+ls app/static/assets/index-*.js        # le même nom, sinon voir §8.2
 ```
 
 Les nouvelles migrations SQL s'appliquent automatiquement au redémarrage. Elles

@@ -723,14 +723,22 @@ export const api = {
     request<StockFlowErpRead>(
       `/campaigns/${id}/stock-flow/${runId}/erp/${kind}`, { method: 'POST' },
     ),
+  /**
+   * Les cinq mesures, en une lecture.
+   *
+   * Elles sont sur la même ligne de la table : ou bien la lecture aboutit et
+   * les cinq sont écrites ensemble, ou bien elle échoue et `error` dit pourquoi
+   * — les quantités précédentes restant alors intactes.
+   */
   refreshStockFlowAll: (id: string, runId: string) =>
     request<{
-      steps: Array<
-        | ({ ok: true; kind: string; label: string } & Partial<StockFlowErpRead>)
-        | { ok: false; kind: string; label: string; error: string }
-      >
+      steps: Array<{ ok: true; kind: string; label: string; items: number }>
       loaded: number
       failed: number
+      error?: string
+      rowsRead?: number
+      outOfScope?: number
+      source?: string
     }>(`/campaigns/${id}/stock-flow/${runId}/erp-all`, { method: 'POST' }),
   stockFlowInputs: (id: string, runId: string, kind: string) =>
     request<StockFlowInputRow[]>(

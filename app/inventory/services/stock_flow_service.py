@@ -51,10 +51,12 @@ from ..db import new_id
 from ..domain.enums import AuditAction, FlowKind, FlowSource, StockBasis
 from ..domain.models import (
     Campaign,
+    Item,
     StockFlowErp,
     StockFlowInput,
     StockFlowLine,
     StockFlowRun,
+    normalise_key,
 )
 from ..domain.quantities import ZERO, quantize_money, quantize_qty
 from ..errors import InventoryError, NotFoundError, ValidationError
@@ -95,6 +97,13 @@ _STEP_VIEWS = {
     FlowKind.RECEIPT: "receptions",
     FlowKind.SHIPMENT: "expeditions",
     FlowKind.SCRAP: "rebuts",
+}
+
+#: Which field of a movements row feeds each loaded step.
+_FLOW_FIELDS = {
+    FlowKind.RECEIPT: "reception",
+    FlowKind.SHIPMENT: "expedition",
+    FlowKind.SCRAP: "rebut",
 }
 
 
@@ -227,7 +236,7 @@ class StockFlowService:
 
         _, parsed = ImportService(ctx).parse("stock_flow", **kwargs)
         outcome = _base_outcome("stock_flow", parsed)
-        items = ctx.referentials.items_by_number(campaign.id)
+        items = self._in_scope(campaign)
         lines, errors = map_stock_flow_inputs(
             run.id, parsed.rows, kind=kind, items=items
         )
@@ -237,7 +246,9 @@ class StockFlowService:
         with ctx.db.transaction() as conn:
             written = ctx.stock_flow.replace_inputs(run.id, kind, lines, conn=conn)
             if kind is FlowKind.SCRAP:
-                ctx.stock_flow.mark_scrap_loaded(run.id, actor=ctx.actor)
+                ctx.stock_flow.mark_scrap_loaded(
+                    run.id, actor=ctx.actor, conn=conn
+                )
             ctx.record(
                 campaign_id=campaign.id,
                 action=AuditAction.IMPORT,
@@ -279,7 +290,7 @@ class StockFlowService:
         ctx = self.ctx
         ctx.guard(campaign, "stock_flow")
         run = self._run(campaign, run_id)
-        items = ctx.referentials.items_by_number(campaign.id)
+        items = self._in_scope(campaign)
 
         lines: list[StockFlowInput] = []
         unknown: list[str] = []
@@ -303,7 +314,9 @@ class StockFlowService:
         with ctx.db.transaction() as conn:
             written = ctx.stock_flow.replace_inputs(run.id, kind, lines, conn=conn)
             if kind is FlowKind.SCRAP:
-                ctx.stock_flow.mark_scrap_loaded(run.id, actor=ctx.actor)
+                ctx.stock_flow.mark_scrap_loaded(
+                    run.id, actor=ctx.actor, conn=conn
+                )
             ctx.record(
                 campaign_id=campaign.id,
                 action=AuditAction.UPDATE,
@@ -336,7 +349,7 @@ class StockFlowService:
         ctx = self.ctx
         ctx.guard(campaign, "stock_flow")
         run = self._run(campaign, run_id)
-        items = ctx.referentials.items_by_number(campaign.id)
+        items = self._in_scope(campaign)
 
         lines: list[StockFlowErp] = []
         unknown: list[str] = []
@@ -434,7 +447,7 @@ class StockFlowService:
         # la référence — *avant* de la confronter au référentiel. Comparer la
         # chaîne brute de l'ERP à des clés normalisées écartait des lignes
         # parfaitement valides sans rien dire.
-        items = ctx.referentials.items_by_number(campaign.id)
+        items = self._in_scope(campaign)
         read = [
             StockFlowInput(
                 run_id=run.id,
@@ -458,7 +471,9 @@ class StockFlowService:
                 run.id, kind, at=now, actor=ctx.actor, conn=conn
             )
             if kind is FlowKind.SCRAP:
-                ctx.stock_flow.mark_scrap_loaded(run.id, actor=ctx.actor)
+                ctx.stock_flow.mark_scrap_loaded(
+                    run.id, actor=ctx.actor, conn=conn
+                )
             ctx.record(
                 campaign_id=campaign.id,
                 action=AuditAction.IMPORT,
@@ -490,46 +505,138 @@ class StockFlowService:
         }
 
     def refresh_all(self, campaign: Campaign, run_id: str) -> dict[str, Any]:
-        """Read all four ERP measures in one gesture.
+        """Read the five ERP measures in one gesture — and one round trip.
 
-        One step failing does not cancel the others: they come from four
-        different tables, and « les réceptions sont là, les rebuts non » is a
-        usable state that a single rolled-back button would deny. Each outcome
-        is reported on its own line, failure included, so the screen can say
-        which of the four is missing and why.
+        They all sit on the same row of the movements table, so reading it four
+        times and writing four transactions was four times the work for the same
+        answer. One read, one transaction, and the whole thing either lands or
+        leaves the previous figures intact.
         """
+        from ..ingest.erp import ErpReader, reading_from_mirror
+
+        ctx = self.ctx
+        ctx.guard(campaign, "stock_flow")
+        run = self._run(campaign, run_id)
+
+        reader = ErpReader()
+        try:
+            rows = reader.fetch_all_flows(
+                period_start=run.period_start,
+                period_end=run.period_end,
+                limit=ctx.settings.max_import_rows,
+            )
+        except InventoryError as exc:
+            log.warning("Lecture ERP des flux impossible : %s", exc)
+            return {
+                "steps": [],
+                "loaded": 0,
+                "failed": 1,
+                "error": str(exc),
+                "source": reader.movements_source(FlowKind.RECEIPT),
+                "mirror": reading_from_mirror(),
+            }
+
+        items = self._in_scope(campaign)
+        inputs: dict[FlowKind, list[StockFlowInput]] = {
+            kind: [] for kind in _FLOW_FIELDS
+        }
+        erp_lines: list[StockFlowErp] = []
+        for row in rows:
+            number = normalise_key(str(row["item_number"]))
+            item = items.get(number)
+            if item is None:
+                continue
+            for kind, field in _FLOW_FIELDS.items():
+                if row[field]:
+                    inputs[kind].append(StockFlowInput(
+                        run_id=run.id, item_number=number, kind=kind,
+                        qty=row[field], unit=item.unit, source=FlowSource.ERP,
+                    ))
+            if row["production"] or row["conso_theorique"]:
+                erp_lines.append(StockFlowErp(
+                    run_id=run.id, item_number=number,
+                    produced_qty=row["production"],
+                    consumed_qty=row["conso_theorique"],
+                    source=FlowSource.ERP,
+                ))
+
+        now = dt.datetime.now(dt.UTC)
         steps: list[dict[str, Any]] = []
-        for kind in (FlowKind.RECEIPT, FlowKind.SHIPMENT, FlowKind.SCRAP):
-            try:
-                steps.append({"ok": True, **self.refresh_movements(campaign, run_id, kind)})
-            except InventoryError as exc:
-                log.warning("Lecture ERP de %s impossible : %s", kind, exc)
+        with ctx.db.transaction() as conn:
+            for kind, lines in inputs.items():
+                written = ctx.stock_flow.replace_inputs(
+                    run.id, kind, lines, conn=conn
+                )
+                ctx.stock_flow.mark_refreshed(
+                    run.id, kind, at=now, actor=ctx.actor, conn=conn
+                )
                 steps.append({
-                    "ok": False,
+                    "ok": True,
                     "kind": str(kind),
                     "label": FLOW_LABELS[kind].capitalize(),
-                    "error": str(exc),
+                    "items": written,
+                    "totalQty": float(sum(line.qty for line in lines)),
+                    "netQty": float(quantize_qty(
+                        sum((Decimal(str(r[_FLOW_FIELDS[kind]])) for r in rows), ZERO)
+                    )),
                 })
-        try:
+            ctx.stock_flow.mark_scrap_loaded(run.id, actor=ctx.actor, conn=conn)
+            erp_written = ctx.stock_flow.replace_erp(run.id, erp_lines, conn=conn)
+            ctx.stock_flow.mark_erp_refreshed(
+                run.id, at=now, actor=ctx.actor, conn=conn
+            )
             steps.append({
                 "ok": True,
                 "kind": "ERP",
                 "label": "Production et consommation théorique",
-                **self.refresh_erp(campaign, run_id),
+                "items": erp_written,
+                "producedQty": float(sum(e.produced_qty for e in erp_lines)),
+                "consumedQty": float(sum(e.consumed_qty for e in erp_lines)),
             })
-        except InventoryError as exc:
-            log.warning("Lecture ERP de la production impossible : %s", exc)
-            steps.append({
-                "ok": False,
-                "kind": "ERP",
-                "label": "Production et consommation théorique",
-                "error": str(exc),
-            })
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.IMPORT,
+                entity_type="stock_flow_input",
+                entity_id=run.id,
+                summary=(
+                    f"Flux de la période lus dans l'ERP : {len(rows)} référence(s) "
+                    f"lue(s), {len(items)} au périmètre"
+                ),
+                after={"rowsRead": len(rows), "source": "ERP"},
+                conn=conn,
+            )
 
         return {
             "steps": steps,
-            "loaded": sum(1 for step in steps if step["ok"]),
-            "failed": sum(1 for step in steps if not step["ok"]),
+            "loaded": len(steps),
+            "failed": 0,
+            "rowsRead": len(rows),
+            "outOfScope": len(rows) - len({
+                line.item_number
+                for lines in inputs.values() for line in lines
+            } | {e.item_number for e in erp_lines}),
+            "periodStart": run.period_start.isoformat(),
+            "periodEnd": run.period_end.isoformat(),
+            "source": reader.movements_source(FlowKind.RECEIPT),
+            "mirror": reading_from_mirror(),
+        }
+
+    def _in_scope(self, campaign: Campaign) -> dict[str, Item]:
+        """The articles a flow may be loaded for.
+
+        Two conditions, and both matter. **In the referential**, because a
+        quantity attached to a reference the campaign does not hold has nowhere
+        to go — the comparison is keyed on the article. **Not excluded from the
+        perimeter**, because an article deliberately left out of the inventory
+        must not come back through the flows: its expected stock would be
+        computed and shown as a variance nobody put there.
+        """
+        return {
+            number: item
+            for number, item in self.ctx.referentials.items_by_number(
+                campaign.id
+            ).items()
+            if not item.excluded_everywhere
         }
 
     def refresh_erp(self, campaign: Campaign, run_id: str) -> dict[str, Any]:
@@ -573,11 +680,8 @@ class StockFlowService:
 
         with ctx.db.transaction() as conn:
             written = ctx.stock_flow.replace_erp(run.id, lines, conn=conn)
-            ctx.stock_flow.upsert_run(
-                run.model_copy(update={
-                    "erp_refreshed_at": dt.datetime.now(dt.UTC),
-                }),
-                actor=ctx.actor,
+            ctx.stock_flow.mark_erp_refreshed(
+                run.id, at=dt.datetime.now(dt.UTC), actor=ctx.actor, conn=conn
             )
             ctx.record(
                 campaign_id=campaign.id,

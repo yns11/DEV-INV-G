@@ -2105,11 +2105,45 @@ class StockFlowRepository(_Base):
     def delete_run(self, run_id: str) -> None:
         self._execute("DELETE FROM stock_flow_run WHERE id = %s", (run_id,))
 
-    def mark_scrap_loaded(self, run_id: str, *, actor: str) -> None:
+    def mark_erp_refreshed(
+        self,
+        run_id: str,
+        *,
+        at: dt.datetime,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Stamp when production and theoretical consumption were last read.
+
+        A targeted UPDATE rather than :meth:`upsert_run`, whose ``DO UPDATE``
+        clause never carried ``erp_refreshed_at``: on a run that already existed
+        — which is every run by the time it is refreshed — the date was silently
+        dropped and the screen kept saying the figures had never been read.
+        """
+        self._execute(
+            "UPDATE stock_flow_run SET erp_refreshed_at = %s, updated_by = %s, "
+            "updated_at = now() WHERE id = %s",
+            (at, actor, run_id),
+            conn=conn,
+        )
+
+    def mark_scrap_loaded(
+        self, run_id: str, *, actor: str, conn: psycopg.Connection | None = None
+    ) -> None:
+        """Record that the scrap step has been provided.
+
+        Takes the caller's connection. Without it, a call made inside a
+        transaction that has already touched this run borrows a *second*
+        connection and waits on the row lock the first one holds — which it will
+        never release, since it is blocked on this very call. The pool times out
+        fifteen seconds later and reports a connection failure, naming the
+        symptom rather than the deadlock.
+        """
         self._execute(
             "UPDATE stock_flow_run SET scrap_loaded = true, updated_by = %s, "
             "updated_at = now() WHERE id = %s",
             (actor, run_id),
+            conn=conn,
         )
 
     # -- loaded quantities ---------------------------------------------------

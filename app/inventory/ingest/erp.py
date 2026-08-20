@@ -414,6 +414,35 @@ class ErpReader:
         """
         return [_movement_row(row) for row in self._read(statement, source=table)]
 
+    def fetch_all_flows(
+        self, *, period_start: dt.date, period_end: dt.date, limit: int
+    ) -> list[dict[str, Any]]:
+        """Every flow of the period, one row per article, in one round trip.
+
+        « Tout charger de l'ERP » used to run this table four times — once per
+        step — for figures that all sit on the same row. Four scans, four result
+        sets and four write transactions where one of each does.
+        """
+        start, end = _assert_bounds(period_start, period_end)
+        table = self._movements_table()
+        columns = ("reception", "expedition", "production", "conso_theorique",
+                   "rebut")
+        selected = ", ".join(f"SUM({c}) AS {c}" for c in columns)
+        statement = f"""
+            SELECT reference AS item_number, {selected}
+            FROM {table}
+            {self._window(start, end)}
+            GROUP BY reference
+            HAVING {" OR ".join(f"SUM({c}) <> 0" for c in columns)}
+            ORDER BY 1
+            LIMIT {int(limit)}
+        """
+        return [
+            {"item_number": _text(row[0])}
+            | {c: _number(v) for c, v in zip(columns, _pad(row, 6)[1:], strict=True)}
+            for row in self._read(statement, source=table)
+        ]
+
     def _movements_table(self) -> str:
         """Where the stock flows are read from, mirror or catalogue."""
         return (

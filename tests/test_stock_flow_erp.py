@@ -36,6 +36,10 @@ from inventory.errors import ValidationError
 from inventory.ingest.erp import ErpReader
 from inventory.services.stock_flow_service import StockFlowService
 
+#: La connexion que la transaction de test distribue. Objet identifiable, et
+#: non `None` : c'est ce qui permet de vérifier qu'un appel la reçoit vraiment.
+_CONN = object()
+
 MONDAY_START = dt.date(2026, 3, 30)
 MONDAY_END = dt.date(2026, 6, 29)
 
@@ -214,8 +218,11 @@ class Recorder:
 
     def __init__(self) -> None:
         self.written: list[StockFlowInput] = []
+        self.by_kind: dict[FlowKind, list[StockFlowInput]] = {}
         self.refreshed: list[tuple[str, FlowKind]] = []
         self.scrap_marked = False
+        self.scrap_conn_passed = False
+        self.erp_dated = False
         self.erp: list[Any] = []
 
     def get_run(self, run_id: str) -> StockFlowRun:
@@ -223,6 +230,7 @@ class Recorder:
 
     def replace_inputs(self, run_id, kind, lines, *, conn=None) -> int:
         self.written = list(lines)
+        self.by_kind[kind] = list(lines)
         return len(lines)
 
     def replace_erp(self, run_id, lines, *, conn=None) -> int:
@@ -232,14 +240,18 @@ class Recorder:
     def mark_refreshed(self, run_id, kind, *, at, actor, conn=None) -> None:
         self.refreshed.append((run_id, kind))
 
-    def mark_scrap_loaded(self, run_id, *, actor) -> None:
+    def mark_erp_refreshed(self, run_id, *, at, actor, conn=None) -> None:
+        self.erp_dated = True
+
+    def mark_scrap_loaded(self, run_id, *, actor, conn=None) -> None:
         self.scrap_marked = True
+        self.scrap_conn_passed = conn is _CONN
 
 
 def service(repo: Recorder) -> StockFlowService:
     @contextmanager
     def transaction():
-        yield None
+        yield _CONN
 
     ctx = SimpleNamespace(
         actor="testeur",
@@ -332,35 +344,154 @@ class TestReadingOneStepFromTheErp:
         assert repo.refreshed == [("run-1", FlowKind.SHIPMENT)]
 
 
+def all_flows(rows, monkeypatch) -> Recorder:
+    monkeypatch.setattr(ErpReader, "fetch_all_flows", lambda self, **kw: rows)
+    monkeypatch.setattr(ErpReader, "movements_source", lambda self, k: "t")
+    return Recorder()
+
+
+def flow_row(item="ART-1", **quantities) -> dict[str, Any]:
+    base = dict.fromkeys(
+        ("reception", "expedition", "production", "conso_theorique", "rebut"), 0
+    )
+    return {"item_number": item, **base, **quantities}
+
+
 class TestLoadingEverythingAtOnce:
-    def test_one_step_failing_does_not_cancel_the_others(self, monkeypatch):
-        """« Les réceptions sont là, les rebuts non » est un état utilisable."""
-        def fetch(self, kind, **kw):
-            if kind is FlowKind.SCRAP:
-                raise ValidationError("Table indisponible.")
-            return [{"item_number": "ART-1", "qty": 3}]
+    """Une lecture et une transaction, pas quatre de chaque.
 
-        monkeypatch.setattr(ErpReader, "fetch_movements", fetch)
+    Les cinq mesures sont sur la même ligne de la table : les lire une par une
+    coûtait quatre balayages et quatre écritures pour la même réponse. C'était
+    la lenteur observée — et la quatrième étape échouait sur un pool épuisé.
+    """
+
+    def test_the_table_is_read_once(self, monkeypatch):
+        reads: list[int] = []
+
+        def fetch(self, **kw):
+            reads.append(1)
+            return [flow_row(reception=3)]
+
+        monkeypatch.setattr(ErpReader, "fetch_all_flows", fetch)
         monkeypatch.setattr(ErpReader, "movements_source", lambda self, k: "t")
-        svc = service(Recorder())
-        monkeypatch.setattr(svc, "refresh_erp", lambda c, r: {"items": 4})
+        service(Recorder()).refresh_all(campaign(), "run-1")
+        assert len(reads) == 1
 
-        result = svc.refresh_all(campaign(), "run-1")
-        assert result["loaded"] == 3
-        assert result["failed"] == 1
-        failed = next(s for s in result["steps"] if not s["ok"])
-        assert failed["kind"] == "SCRAP"
-        assert "indisponible" in failed["error"]
-
-    def test_the_four_measures_are_reported_one_by_one(self, monkeypatch):
-        monkeypatch.setattr(ErpReader, "fetch_movements", lambda self, k, **kw: [])
-        monkeypatch.setattr(ErpReader, "movements_source", lambda self, k: "t")
-        svc = service(Recorder())
-        monkeypatch.setattr(svc, "refresh_erp", lambda c, r: {"items": 0})
-        result = svc.refresh_all(campaign(), "run-1")
+    def test_the_five_measures_are_reported_one_by_one(self, monkeypatch):
+        repo = all_flows([flow_row(reception=1)], monkeypatch)
+        result = service(repo).refresh_all(campaign(), "run-1")
         assert [s["kind"] for s in result["steps"]] == [
             "RECEIPT", "SHIPMENT", "SCRAP", "ERP"
         ]
+
+    def test_each_column_lands_in_its_own_step(self, monkeypatch):
+        repo = all_flows(
+            [flow_row(reception=10, expedition=20, rebut=-5,
+                      production=7, conso_theorique=3)],
+            monkeypatch,
+        )
+        service(repo).refresh_all(campaign(), "run-1")
+        assert repo.by_kind[FlowKind.RECEIPT][0].qty == 10
+        assert repo.by_kind[FlowKind.SHIPMENT][0].qty == 20
+        # Le rebut est signé négativement par l'ERP ; l'étape le retranche déjà.
+        assert repo.by_kind[FlowKind.SCRAP][0].qty == 5
+        assert repo.erp[0].produced_qty == 7
+        assert repo.erp[0].consumed_qty == 3
+
+    def test_a_reference_only_produced_creates_no_receipt_line(self, monkeypatch):
+        """Une ligne porte les six flux : sans garde, elle en remplirait six."""
+        repo = all_flows([flow_row(production=12)], monkeypatch)
+        service(repo).refresh_all(campaign(), "run-1")
+        assert repo.by_kind[FlowKind.RECEIPT] == []
+        assert repo.erp[0].produced_qty == 12
+
+    def test_the_scrap_step_is_marked_with_the_shared_connection(self, monkeypatch):
+        repo = all_flows([flow_row(rebut=-1)], monkeypatch)
+        service(repo).refresh_all(campaign(), "run-1")
+        assert repo.scrap_marked is True
+        assert repo.scrap_conn_passed is True
+
+    def test_the_erp_read_is_dated(self, monkeypatch):
+        """`upsert_run` ne portait jamais cette date : l'écran disait « jamais lu »."""
+        repo = all_flows([flow_row(production=1)], monkeypatch)
+        service(repo).refresh_all(campaign(), "run-1")
+        assert repo.erp_dated is True
+
+    def test_a_failed_read_leaves_the_previous_figures_alone(self, monkeypatch):
+        def fetch(self, **kw):
+            raise ValidationError("Table indisponible.")
+
+        monkeypatch.setattr(ErpReader, "fetch_all_flows", fetch)
+        monkeypatch.setattr(ErpReader, "movements_source", lambda self, k: "t")
+        repo = Recorder()
+        result = service(repo).refresh_all(campaign(), "run-1")
+        assert result["failed"] == 1
+        assert "indisponible" in result["error"]
+        assert repo.written == []
+
+
+class TestOnlyArticlesInScopeAreLoaded:
+    """Deux conditions, et chacune écarte un cas distinct.
+
+    **Au référentiel** : une quantité attachée à une référence que la campagne
+    ne porte pas n'a nulle part où aller, la comparaison étant indexée par
+    article.
+
+    **Non exclue du périmètre** : un article volontairement laissé hors de
+    l'inventaire ne doit pas y revenir par les flux. Son stock attendu serait
+    calculé et présenté comme un écart que personne n'a demandé.
+    """
+
+    def excluded(self) -> dict[str, Item]:
+        from inventory.domain.enums import ExclusionScope
+
+        catalogue = items()
+        catalogue["ART-2"] = catalogue["ART-2"].model_copy(
+            update={"exclusions": [ExclusionScope.ALL]}
+        )
+        return catalogue
+
+    def service_with(self, repo, catalogue, monkeypatch):
+        svc = service(repo)
+        svc.ctx.referentials = SimpleNamespace(
+            items_by_number=lambda cid: catalogue
+        )
+        return svc
+
+    def test_an_excluded_article_is_not_loaded(self, monkeypatch):
+        repo = all_flows(
+            [flow_row("ART-1", reception=10), flow_row("ART-2", reception=99)],
+            monkeypatch,
+        )
+        svc = self.service_with(repo, self.excluded(), monkeypatch)
+        svc.refresh_all(campaign(), "run-1")
+        assert [line.item_number for line in repo.by_kind[FlowKind.RECEIPT]] == [
+            "ART-1"
+        ]
+
+    def test_it_is_excluded_from_the_erp_snapshot_too(self, monkeypatch):
+        """Les cinq flux suivent la même règle, sans quoi le stock attendu
+        d'un article exclu se calculerait quand même."""
+        repo = all_flows([flow_row("ART-2", production=50)], monkeypatch)
+        svc = self.service_with(repo, self.excluded(), monkeypatch)
+        svc.refresh_all(campaign(), "run-1")
+        assert repo.erp == []
+
+    def test_an_article_outside_the_referential_is_left_out(self, monkeypatch):
+        repo = all_flows([flow_row("INCONNU", reception=7)], monkeypatch)
+        result = service(repo).refresh_all(campaign(), "run-1")
+        assert repo.by_kind[FlowKind.RECEIPT] == []
+        assert result["rowsRead"] == 1
+        assert result["outOfScope"] == 1
+
+    def test_the_per_step_button_applies_the_same_rule(self, monkeypatch):
+        """Sinon « Tout charger » et « Réceptions » ne donneraient pas la même
+        chose, et rien à l'écran ne dirait laquelle croire."""
+        repo = erp_returning([{"item_number": "ART-2", "qty": 99}], monkeypatch)
+        svc = self.service_with(repo, self.excluded(), monkeypatch)
+        result = svc.refresh_movements(campaign(), "run-1", FlowKind.RECEIPT)
+        assert repo.written == []
+        assert result["outOfScope"] == 1
 
 
 class TestSavingAnEditedGrid:

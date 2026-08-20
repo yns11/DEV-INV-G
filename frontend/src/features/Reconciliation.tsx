@@ -490,28 +490,26 @@ function Steps({
     (c) => c.key === 'stock_flow',
   )
 
-  // Les quatre mesures d'un coup. Volontairement pas tout-ou-rien : elles
-  // viennent de quatre tables, et « les réceptions sont là, les rebuts non »
-  // est un état où il vaut mieux atterrir que revenir en arrière.
+  // Les cinq mesures d'un coup, en une lecture : elles sont toutes sur la même
+  // ligne de la table des mouvements.
   const all = useMutation({
     mutationFn: () => api.refreshStockFlowAll(campaignId, runId),
     onSuccess: (result) => {
       void queryClient.invalidateQueries()
-      const failed = result.steps.filter((step) => !step.ok)
-      if (failed.length === 0) {
-        toast.success(
-          `${result.loaded} mesure(s) lue(s) dans l’ERP`,
-          result.steps
-            .map((step) => `${step.label} : ${('items' in step && step.items) || 0}`)
-            .join(' · '),
-        )
+      if (result.error) {
+        toast.warning('Lecture ERP impossible', result.error)
         return
       }
-      toast.warning(
-        `${result.loaded} mesure(s) lue(s), ${failed.length} en échec`,
-        failed
-          .map((step) => `${step.label} : ${'error' in step ? step.error : ''}`)
-          .join(' — '),
+      // « Hors périmètre » n'est pas un détail : ce sont des quantités que
+      // l'ERP a renvoyées et que la comparaison n'utilisera pas, parce que la
+      // référence n'est pas au dossier ou en a été exclue.
+      const skipped = result.outOfScope
+        ? ` · ${result.outOfScope} référence(s) hors périmètre`
+        : ''
+      toast.success(
+        `${result.loaded} mesure(s) lue(s) dans l’ERP`,
+        result.steps.map((step) => `${step.label} : ${step.items}`).join(' · ')
+          + skipped,
       )
     },
     onError: (error) => showError(error, 'Lecture ERP impossible'),

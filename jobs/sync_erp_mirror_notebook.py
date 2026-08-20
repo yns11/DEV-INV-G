@@ -2,58 +2,34 @@
 # MAGIC %md
 # MAGIC # Synchronisation du miroir ERP
 # MAGIC
-# MAGIC Copie `silver_base_article`, `silver_bom`, la table de faits
-# MAGIC `fact_ecart_backflush` et les mouvements de stock d'Unity Catalog vers le
-# MAGIC miroir local de l'application, dans sa base Lakebase.
+# MAGIC Copie vers la base Lakebase de l'application : `silver_base_article`,
+# MAGIC `silver_bom`, `fact_ecart_backflush` et `mouvements`.
 # MAGIC
-# MAGIC **Remplacement, pas ajout.** Chaque exécution vide entièrement les tables
-# MAGIC du miroir puis les réécrit, dans une seule transaction : une référence
-# MAGIC retirée de l'ERP disparaît du miroir, et une exécution interrompue laisse
-# MAGIC la copie précédente intacte. Le compte des lignes supprimées et écrites
-# MAGIC est affiché à chaque table.
+# MAGIC **Pourquoi.** Lire Unity Catalog depuis l'application exige `USE CATALOG`
+# MAGIC pour *son* service principal, que seul un propriétaire de catalogue peut
+# MAGIC accorder. Ce notebook tourne sous **votre** identité, qui a déjà l'accès.
 # MAGIC
-# MAGIC **L'écart backflush est optionnel et borné.** Il alimente l'écran
-# MAGIC *Backflush* et la comparaison entre deux campagnes ; sans lui, les deux
-# MAGIC restent utilisables par fichier ou par collage. Il est à la maille semaine
-# MAGIC et grossit indéfiniment, d'où la borne du widget 13 — la dernière cellule
-# MAGIC affiche les semaines effectivement couvertes, ce qui est la réponse à la
-# MAGIC seule question que pose l'écran quand il n'affiche rien.
+# MAGIC **Remplacement, pas ajout.** Chaque table est vidée puis réécrite dans une
+# MAGIC seule transaction : une référence retirée de l'ERP disparaît du miroir, et
+# MAGIC une exécution interrompue laisse la copie précédente intacte.
 # MAGIC
-# MAGIC **Les mouvements sont une copie comme les autres.** `mouvements` publie
-# MAGIC une ligne par référence et par jour, une colonne par flux — réception,
-# MAGIC expédition, production, consommation théorique et réelle, rebut. Elle
-# MAGIC alimente les cinq étapes de la vue *Comparaison*, bouton « Tout charger de
-# MAGIC l'ERP » compris. Tout ce que le notebook faisait auparavant contre trois
-# MAGIC tables bronze — filtrer l'entité juridique, reconnaître le rebut à son
-# MAGIC emplacement, dédoublonner la production d'un parent sur ses composants —
-# MAGIC est fait en amont. Elle vit de plus dans le schéma du référentiel, donc
-# MAGIC derrière le même grant. La borne du widget 15 garde le volume borné.
+# MAGIC **Les deux tables datées sont bornées** (widgets 13 et 15) : elles
+# MAGIC grossissent indéfiniment. La dernière cellule affiche l'intervalle
+# MAGIC réellement couvert — c'est la réponse quand un écran n'affiche rien.
 # MAGIC
-# MAGIC **Pourquoi ce miroir.** Lire les tables silver depuis l'application exige
-# MAGIC `USE CATALOG` sur le catalogue de l'ERP pour *son* service principal, et ce
-# MAGIC privilège ne s'accorde que par un propriétaire du catalogue. Ce notebook
-# MAGIC renverse la contrainte : il tourne sous **votre** identité, qui a déjà accès
-# MAGIC à l'ERP, et dépose la copie là où l'application est chez elle.
-# MAGIC
-# MAGIC **Mode d'emploi.** Renseignez les widgets en haut, puis « Exécuter tout ».
-# MAGIC Pour le planifier : *Schedule* → tous les jours, avant la journée de
-# MAGIC comptage. Les valeurs des widgets sont conservées par la planification.
+# MAGIC **Mode d'emploi.** Renseignez les widgets, « Exécuter tout », puis
+# MAGIC *Schedule* → tous les jours avant la journée de comptage.
 # MAGIC
 # MAGIC | Widget | Où le trouver |
 # MAGIC |---|---|
-# MAGIC | `pg_host` | Console Lakebase → le projet → l'endpoint en écriture. C'est aussi le `PGHOST` visible dans l'onglet *Environment* de l'App. |
-# MAGIC | `pg_password` | Facultatif : laissez vide, le notebook cherche un jeton lui-même et dit ce qu'il a trouvé. |
-# MAGIC | `pg_user` | Facultatif. Vide, c'est l'identité qui exécute le notebook. |
-# MAGIC | `lakebase_branch` | Déjà rempli. Sert à demander un credential dédié à l'endpoint. |
-# MAGIC | `sync_backflush` | `non` pour ne copier que le référentiel — plus rapide, et suffisant si l'écart backflush est chargé par fichier. |
-# MAGIC | `backflush_since` | Le lundi ISO à partir duquel copier. La période d'une campagne hors de cet intervalle ne renverra rien. |
+# MAGIC | `pg_host` | Console Lakebase → le projet → l'endpoint en écriture, ou le `PGHOST` de l'App (onglet *Environment*). |
+# MAGIC | `pg_password`, `pg_user` | Facultatifs : vides, le notebook prend le jeton et l'identité de la session. |
+# MAGIC | `lakebase_branch` | Déjà rempli. Sert à demander un credential dédié. |
+# MAGIC | `*_since` | La date à partir de laquelle copier. Une période hors de cet intervalle ne renverra rien. |
 # MAGIC
-# MAGIC **Prérequis : l'App doit avoir démarré depuis le dernier déploiement.**
-# MAGIC C'est elle qui crée les tables du miroir et les fait évoluer — droits
-# MAGIC d'écriture, colonnes nouvelles. Ce notebook ne fait que les remplir, et il
-# MAGIC le vérifie avant de lire quoi que ce soit : si l'App est en retard, il
-# MAGIC s'arrête en une seconde en le disant, au lieu de le découvrir à la dernière
-# MAGIC instruction après avoir chargé tout le référentiel.
+# MAGIC **Prérequis : l'App doit avoir démarré depuis le dernier déploiement** —
+# MAGIC c'est elle qui crée les tables du miroir. Le notebook le vérifie avant de
+# MAGIC lire quoi que ce soit, plutôt que de l'apprendre à la dernière instruction.
 
 # COMMAND ----------
 
@@ -79,9 +55,7 @@ dbutils.widgets.text(
     "lakebase_branch", "projects/inventaire/branches/production",
     "9. Branche Lakebase",
 )
-# L'écart backflush est publié par un autre pipeline, dans son propre schéma :
-# le rattacher au schéma silver ferait qu'un renommage de l'un casserait
-# l'autre.
+# Publié par un autre pipeline, donc dans son propre schéma.
 dbutils.widgets.dropdown(
     "sync_backflush", "oui", ["oui", "non"], "10. Copier l'écart backflush",
 )
@@ -89,24 +63,15 @@ dbutils.widgets.text("backflush_schema", "backflush", "11. Schéma backflush")
 dbutils.widgets.text(
     "backflush_table", "fact_ecart_backflush", "12. Table de faits",
 )
-# La table de faits est à la maille semaine et grossit indéfiniment ; le
-# notebook la ramène au pilote pour l'écrire. La borne la garde donc bornée.
-# Par défaut, le début d'historique publié : aujourd'hui c'est tout, et le jour
-# où ce ne le sera plus, la valeur sera là pour être changée plutôt que
-# découverte.
+# Le notebook ramène ces tables au pilote pour les écrire : la borne garde le
+# volume borné. Par défaut, le début d'historique publié.
 dbutils.widgets.text(
     "backflush_since", "2026-03-30", "13. Écart backflush depuis (lundi ISO)",
 )
-# Les mouvements de stock vivent dans le schéma du référentiel : même catalogue,
-# même grant. Deux widgets suffisent — la table est déjà agrégée et filtrée à la
-# source, il n'y a plus ni entité juridique, ni emplacement de rebut, ni
-# déduplication à paramétrer ici.
+# Dans le schéma du référentiel : même catalogue, même grant.
 dbutils.widgets.dropdown(
     "sync_movements", "oui", ["oui", "non"], "14. Copier les mouvements de stock",
 )
-# La table remonte à janvier 2022 et grossit d'un jour par jour. La borne la
-# garde bornée ; la maille article × jour se retaille ensuite sur n'importe
-# quelle période d'inventaire.
 dbutils.widgets.text(
     "movements_since", "2026-03-30", "15. Mouvements depuis (date)",
 )
@@ -116,16 +81,12 @@ dbutils.widgets.text(
 # MAGIC %md
 # MAGIC ## Ce que le notebook copie
 # MAGIC
-# MAGIC Une copie **brute** : les colonnes gardent les noms de l'ERP. La traduction
-# MAGIC en vocabulaire de campagne — groupe fonctionnel → type d'article, prix ramené
-# MAGIC à l'unité, « Commun » → COMMON — reste dans l'application, appliquée à
-# MAGIC l'import comme pour une lecture directe. Deux vocabulaires finiraient par
-# MAGIC diverger ; il n'y en a qu'un.
+# MAGIC Une copie **brute** : les colonnes gardent les noms de l'ERP. La
+# MAGIC traduction en vocabulaire de campagne reste dans l'application.
 # MAGIC
-# MAGIC L'ordre des colonnes ci-dessous est un **contrat** : l'application lit le
-# MAGIC miroir positionnellement. Une colonne ajoutée ici et pas là-bas décalerait
-# MAGIC chaque champ d'un rang, chargeant des prix dans des codes unité, sans que
-# MAGIC rien ne lève. Un test du dépôt compare les deux listes.
+# MAGIC Leur ordre est un **contrat** — le miroir est lu positionnellement. Une
+# MAGIC colonne ajoutée ici et pas là-bas décalerait chaque champ d'un rang sans
+# MAGIC que rien ne lève ; un test du dépôt compare les deux listes.
 
 # COMMAND ----------
 
@@ -135,27 +96,21 @@ ITEM_COLUMNS = (
     "std_cost_price", "std_price_unit", "std_unit",
 )
 
-# `statut` (Actif / Inactif) a remplacé `approved` : la table silver contient
-# maintenant toutes les versions d'une nomenclature, actives comme inactives.
-# Toutes sont copiées — c'est l'application qui n'éclate que celles en vigueur,
-# et qui distingue « recette retirée » de « aucune recette ».
+# Toutes les versions sont copiées, actives ou non : c'est l'application qui
+# n'éclate que celles en vigueur.
 BOM_COLUMNS = (
     "parent_itemid", "child_itemid", "child_qty", "child_unitid", "statut",
 )
 
-# L'écart backflush, à la maille semaine — celle de la source. Un job ne peut
-# pas pré-agréger sur une période qu'il ignore : les bornes sont choisies
-# campagne par campagne, dans l'application. Seules les colonnes qu'elle lit
-# sont copiées ; la table gold en porte une vingtaine d'autres qui coûteraient
-# du stockage ici pour rien.
+# Maille semaine, celle de la source : les bornes se choisissent campagne par
+# campagne, un job ne peut pas pré-agréger sur une période qu'il ignore.
 BACKFLUSH_COLUMNS = (
     "semaine_debut", "parent_itemid", "child_itemid", "child_name", "child_unite",
     "qty_parent_produite", "conso_theorique", "conso_reelle", "ecart_brut",
     "loaded_at",
 )
 
-# Les mouvements : une ligne par référence et par jour, une colonne par flux.
-# Copie brute comme le reste du miroir — les noms sont ceux de la source.
+# Une ligne par référence et par jour, une colonne par flux.
 MOVEMENT_COLUMNS = (
     "reference", "date_mouvement", "reception", "expedition", "production",
     "conso_theorique", "consommation", "rebut",
@@ -189,6 +144,16 @@ movements_fqn = f"{conf['erp_catalog']}.{conf['erp_schema']}.mouvements"
 with_movements = conf["sync_movements"] == "oui"
 movements_since = conf["movements_since"]
 
+# La source porte des lignes sans référence — un mouvement qui ne se rattache à
+# aucun article. Le miroir les refuserait (clé primaire), et l'application n'en
+# ferait rien : tout y est indexé par référence. Elles sont donc écartées, mais
+# comptées et affichées : une quantité qui disparaît en silence est pire que
+# l'anomalie qu'elle signale.
+movements_where = " AND ".join(clause for clause in (
+    "reference IS NOT NULL",
+    f"date_mouvement >= DATE '{movements_since}'" if movements_since else "",
+) if clause)
+
 print(f"ERP    : {items_fqn}\n         {bom_fqn}")
 if with_backflush:
     print(f"         {backflush_fqn}"
@@ -203,15 +168,9 @@ print(f"Miroir : {conf['pg_host']} / {conf['pg_database']} / {conf['pg_schema']}
 # MAGIC %md
 # MAGIC ## Connexion à Lakebase
 # MAGIC
-# MAGIC Lakebase authentifie une identité Databricks sous son propre nom, avec un
-# MAGIC jeton en guise de mot de passe — mais **seulement un JWT**. Un jeton
-# MAGIC personnel (`dapi…`), qui ouvre pourtant toute l'API REST, est refusé :
-# MAGIC « Provided authentication token is not a valid JWT encoding ». C'est là que
-# MAGIC la version précédente s'est arrêtée.
-# MAGIC
-# MAGIC Les fournisseurs possibles sont donc essayés dans l'ordre, et la cellule dit
-# MAGIC ce que chacun a donné. Si aucun ne convient, le message le dit avec le
-# MAGIC détail — plutôt qu'un échec identique au précédent.
+# MAGIC Lakebase accepte un jeton en guise de mot de passe, mais **seulement un
+# MAGIC JWT** : un jeton personnel (`dapi…`) est refusé. Les fournisseurs sont donc
+# MAGIC essayés dans l'ordre, et la cellule dit ce que chacun a donné.
 
 # COMMAND ----------
 
@@ -233,11 +192,8 @@ def looks_like_a_jwt(token):
 def token_sources():
     """Les fournisseurs de jeton, du plus ciblé au plus général.
 
-    Aucun n'est disponible partout : l'API Lakebase du SDK n'existe qu'à partir
-    de la version 0.81, le jeton OAuth dépend du mode d'authentification du
-    runtime, et le jeton de session n'est un JWT que dans certains contextes.
-    Les essayer dans l'ordre, en disant ce que chacun a donné, transforme un
-    échec en information.
+    Aucun n'est disponible partout, et les essayer dans l'ordre en disant ce que
+    chacun a donné transforme un échec en information.
     """
     yield "widget « 2. Jeton »", lambda: conf["pg_password"]
 
@@ -371,25 +327,18 @@ print("Miroir conforme.")
 # MAGIC %md
 # MAGIC ## Lecture de l'ERP
 # MAGIC
-# MAGIC Une colonne absente de la table silver est copiée à NULL plutôt que
-# MAGIC d'arrêter la synchronisation : `statut` n'existait pas avant que la table
-# MAGIC porte toutes les versions, et l'application traite son absence comme
-# MAGIC « en vigueur ».
+# MAGIC Une colonne absente de la source est copiée à NULL plutôt que d'arrêter
+# MAGIC la synchronisation.
 
 # COMMAND ----------
 
 def read(fqn, columns, unique_on="", where=""):
     """Les colonnes demandées, celles qui manquent copiées à NULL.
 
-    `unique_on` déduplique à la source. La table des articles a livré deux
-    lignes pour le même `item_id` — le programme y est calculé en cascade, et
-    une remontée de nomenclature peut faire éventail — ce qui violait la clé
-    primaire du miroir en fin de chargement, après tout le travail utile. Cette
-    clé n'est pas du confort : un article y est une ligne, et l'application lit
-    le miroir en supposant exactement cela. On déduplique donc plutôt que de la
-    lever, de façon déterministe pour que deux exécutions donnent le même
-    miroir, et le nombre de lignes écartées est affiché : c'est une anomalie de
-    la source, pas une routine.
+    `unique_on` déduplique à la source, de façon déterministe : la table des
+    articles a déjà livré deux lignes pour un même `item_id`, ce qui violait la
+    clé primaire du miroir en fin de chargement. Le nombre de lignes écartées
+    est affiché — c'est une anomalie, pas une routine.
     """
     available = {f.name.lower() for f in spark.table(fqn).schema.fields}
     missing = [c for c in columns if c.lower() not in available]
@@ -446,30 +395,32 @@ if with_backflush:
               f"intact : {type(exc).__name__} — {exc}")
         with_backflush = False
 
-# Les mouvements viennent d'un troisième catalogue, donc d'un troisième grant.
-# Même règle que pour le backflush : leur indisponibilité ne prive pas
-# l'application de son référentiel, et le miroir garde sa copie précédente.
+# Même règle que pour le backflush : indisponible, il ne prive pas l'application
+# de son référentiel et le miroir garde sa copie précédente.
 movements = []
 if with_movements:
     try:
-        movements = read(
-            movements_fqn, MOVEMENT_COLUMNS,
-            where=(
-                f"date_mouvement >= DATE '{movements_since}'"
-                if movements_since else ""
-            ),
-        )
+        movements = read(movements_fqn, MOVEMENT_COLUMNS, where=movements_where)
         print(f"{len(movements)} ligne(s) de mouvement de stock")
+        orphelines = spark.sql(
+            f"SELECT count(*), coalesce(sum(reception + expedition + production "
+            f"+ conso_theorique + consommation + rebut), 0) FROM {movements_fqn} "
+            f"WHERE reference IS NULL"
+            + (f" AND date_mouvement >= DATE '{movements_since}'"
+               if movements_since else "")
+        ).collect()[0]
+        if orphelines[0]:
+            print(f"  ⚠ {orphelines[0]} ligne(s) sans référence écartée(s), "
+                  f"{orphelines[1]:,.2f} de quantité au total. Un mouvement sans "
+                  "article ne se rattache à aucun stock : à signaler à la "
+                  "plateforme si le total est significatif.")
     except Exception as exc:
         print(f"\n⚠ {movements_fqn} illisible, miroir des mouvements "
               f"laissé intact : {type(exc).__name__} — {exc}")
         with_movements = False
 
-# Écraser un référentiel valide par un vide fait disparaître la possibilité même
-# de lancer une campagne. Un ERP qui ne renvoie rien est une anomalie, pas une
-# mise à jour — et cela vaut pour les deux tables : le remplacement étant
-# intégral, une lecture vide effacerait tout aussi silencieusement les
-# nomenclatures.
+# Un ERP qui ne renvoie rien est une anomalie, pas une mise à jour : le
+# remplacement étant intégral, une lecture vide effacerait tout.
 for label, fqn, loaded in (("articles", items_fqn, items),
                            ("nomenclatures", bom_fqn, boms)):
     if not loaded:
@@ -482,20 +433,16 @@ for label, fqn, loaded in (("articles", items_fqn, items),
 # MAGIC %md
 # MAGIC ## Remplacement atomique
 # MAGIC
-# MAGIC Chargement dans une table temporaire, puis substitution dans une seule
-# MAGIC transaction : une exécution interrompue laisse le miroir précédent intact
-# MAGIC plutôt qu'un référentiel à moitié écrit, sur lequel une campagne partirait
-# MAGIC sans rien remarquer.
+# MAGIC Table temporaire puis substitution, en une transaction : une exécution
+# MAGIC interrompue laisse le miroir précédent intact plutôt qu'à moitié écrit.
 
 # COMMAND ----------
 
 def swap(conn, table, columns, rows, unique_on=""):
     """`unique_on` filtre une dernière fois à l'insertion.
 
-    La déduplication a déjà eu lieu à la lecture, mais c'est ici que l'échec
-    coûte le plus cher : il survient après le chargement complet, sur la
-    dernière instruction. Deux mots de SQL rendent la violation impossible
-    plutôt que rare.
+    La lecture a déjà dédupliqué, mais c'est ici qu'un échec coûte le plus
+    cher : après le chargement complet, sur la dernière instruction.
     """
     staging = f"{table}_staging"
     names = ", ".join(columns)
@@ -520,9 +467,7 @@ def swap(conn, table, columns, rows, unique_on=""):
         f"SELECT {distinct}{names}, now() FROM {staging}{order}"
     )
     after = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-    # Le remplacement est intégral, pas un ajout : le dire en chiffres évite
-    # d'avoir à le déduire. Une référence retirée de l'ERP doit disparaître du
-    # miroir, et rien ne le montrait.
+    # Le remplacement est intégral : le dire en chiffres évite de le déduire.
     print(f"  {table} : {before} ligne(s) supprimée(s), {after} écrite(s)")
 
 
@@ -531,18 +476,15 @@ with connection as conn:
     try:
         swap(conn, "erp_base_article", ITEM_COLUMNS, items, unique_on="item_id")
         swap(conn, "erp_bom", BOM_COLUMNS, boms)
-        # Même règle que pour les deux autres : une lecture vide est une
-        # anomalie, pas une mise à jour, et on garde la copie précédente. Mais
-        # elle n'interrompt pas le reste — le référentiel, lui, est passé.
+        # Une lecture vide garde la copie précédente, sans interrompre le
+        # reste : le référentiel, lui, est passé.
         if with_backflush and backflush:
             swap(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS, backflush)
         elif with_backflush:
             print(f"  erp_ecart_backflush : {backflush_fqn} n'a renvoyé aucune "
                   "ligne sur la période — miroir laissé intact")
-        # La source garantit une ligne par référence et par jour : c'est son
-        # grain déclaré, et c'est la clé primaire du miroir. `unique_on` serait
-        # un DISTINCT qui masquerait une source non conforme au lieu de la
-        # signaler.
+        # Pas de `unique_on` : le grain déclaré de la source *est* la clé du
+        # miroir, et un DISTINCT masquerait une source non conforme.
         if with_movements and movements:
             swap(conn, "erp_mouvements", MOVEMENT_COLUMNS, movements)
         elif with_movements:
@@ -569,39 +511,31 @@ print(f"\nMiroir synchronisé : {len(items)} articles, {len(boms)} liens"
 # MAGIC %md
 # MAGIC ## Vérification
 # MAGIC
-# MAGIC Ce que l'application lira, et de quand ça date. C'est cette date qui
-# MAGIC s'affiche à côté du bouton « Lire depuis l'ERP », signalée au-delà de sept
-# MAGIC jours : charger un référentiel d'un mois sans le voir est exactement
-# MAGIC l'erreur que l'application existe pour supprimer.
+# MAGIC Ce que l'application lira, et de quand ça date — la date affichée à côté
+# MAGIC du bouton « Lire depuis l'ERP », signalée au-delà de sept jours.
 
 # COMMAND ----------
 
-# La source et le miroir, comptés côte à côte. Un écart ici ne peut avoir que
-# deux causes, et la date de synchronisation les départage : soit le miroir n'a
-# pas été rafraîchi depuis que la source a changé — les exécutions suivantes ont
-# échoué — soit les deux chiffres ne comptent pas la même chose, une vue filtrée
-# d'un côté et toutes les versions de l'autre. Poser la question à la source et
-# au miroir dans la même cellule évite de la poser à quelqu'un.
+# La source et le miroir côte à côte. Un écart a deux causes possibles, que la
+# date de synchronisation départage : une exécution qui a échoué, ou deux
+# chiffres qui ne comptent pas la même chose.
 sources = {
     "erp_base_article": spark.table(items_fqn).count(),
     "erp_bom": spark.table(bom_fqn).count(),
 }
-# La table de faits n'est copiée qu'à partir d'une borne : la comparer à son
-# total ferait apparaître un écart permanent qui n'en est pas un. On compte donc
-# la source sur la même borne que la copie.
+# Même borne que la copie, sans quoi l'historique laissé de côté ressemblerait
+# à un écart permanent.
 if with_backflush:
     sources["erp_ecart_backflush"] = spark.sql(
         f"SELECT count(*) FROM {backflush_fqn}"
         + (f" WHERE semaine_debut >= DATE '{backflush_since}'"
            if backflush_since else "")
     ).collect()[0][0]
-# La copie est fidèle et bornée : on compte donc la source sur la même borne,
-# sans quoi l'historique laissé de côté apparaîtrait comme un écart permanent.
+# Mêmes filtres que la copie — borne et lignes sans référence —, sans quoi ce
+# qui a été volontairement écarté ressemblerait à un écart permanent.
 if with_movements:
     sources["erp_mouvements"] = spark.sql(
-        f"SELECT count(*) FROM {movements_fqn}"
-        + (f" WHERE date_mouvement >= DATE '{movements_since}'"
-           if movements_since else "")
+        f"SELECT count(*) FROM {movements_fqn} WHERE {movements_where}"
     ).collect()[0][0]
 
 with psycopg.connect(conninfo) as conn:
@@ -625,10 +559,8 @@ with psycopg.connect(conninfo) as conn:
               "même statut. Plusieurs versions d'une même recette sont normales ; "
               "plusieurs fois la même version ne l'est pas.")
 
-    # Les semaines effectivement couvertes. C'est la réponse à la seule question
-    # que pose l'écran Backflush quand il n'affiche rien : « ma période est-elle
-    # dans le miroir ? ». Sans elle, un « 0 ligne » ne dit pas s'il faut changer
-    # les bornes, relancer cette synchronisation, ou chercher ailleurs.
+    # « Ma période est-elle dans le miroir ? » — la seule question que pose un
+    # écran vide.
     if with_backflush:
         first, last, weeks = conn.execute(
             "SELECT min(semaine_debut), max(semaine_debut), "
@@ -650,10 +582,8 @@ with psycopg.connect(conninfo) as conn:
     # Le détail par nature parce qu'elles viennent de trois tables : les rebuts
     # peuvent manquer là où les réceptions sont là.
     if with_movements:
-        # Le détail par flux et non le seul total : les six colonnes cohabitent
-        # sur la même ligne, si bien qu'une période peut être couverte tout en
-        # n'ayant aucun rebut. « 0 rebut » est alors une information sur l'usine,
-        # pas sur la copie — et sans ce découpage les deux se confondent.
+        # Le détail par flux : une période couverte peut n'avoir aucun rebut,
+        # et « 0 rebut » est alors une information sur l'usine, pas sur la copie.
         first, last, rows = conn.execute(
             "SELECT min(date_mouvement), max(date_mouvement), count(*) "
             "FROM erp_mouvements"

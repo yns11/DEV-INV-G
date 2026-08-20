@@ -283,6 +283,41 @@ class TestTheColumnsCopied:
         assert {"production", "conso_theorique"} <= copied
 
 
+class TestARowWithoutAReferenceIsDropped:
+    """La source en publie, et le miroir les refuse.
+
+    Vu en production : une ligne à `reference` nulle portant 276 442 de
+    réception a fait échouer le chargement sur la clé primaire, après les trois
+    autres tables. Un mouvement sans article ne se rattache à aucun stock —
+    l'application indexe tout par référence — donc il est écarté. Mais compté et
+    affiché : une quantité de cet ordre qui disparaît en silence serait pire que
+    l'anomalie qu'elle signale.
+    """
+
+    def source(self) -> str:
+        return JOB.with_name("sync_erp_mirror_notebook.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_read_filters_them_out(self):
+        assert "reference IS NOT NULL" in self.source()
+
+    def test_what_was_dropped_is_reported(self):
+        source = self.source()
+        assert "sans référence écartée(s)" in source
+
+    def test_the_source_count_uses_the_same_filter(self):
+        """Sinon l'écartage volontaire ressemblerait à un écart de copie.
+
+        La cellule de vérification compare source et miroir ligne à ligne et
+        signale une différence. Compter la source sans le filtre afficherait un
+        « ⚠ écart » permanent à chaque exécution, jusqu'à ce que plus personne
+        ne le lise.
+        """
+        source = self.source()
+        assert 'FROM {movements_fqn} WHERE {movements_where}' in source
+
+
 class TestWhenTheDiscoveryIsRefused:
     """Le deuxième lancement en production s'est arrêté sur « Impossible de
     lister les endpoints » — un message qui avalait sa propre cause, et couvrait

@@ -241,6 +241,40 @@ class TestTheColumnsCopied:
         assert BACKFLUSH_COLUMNS == sync.BACKFLUSH_COLUMNS
         assert declared_in(notebook, "BACKFLUSH_COLUMNS") == BACKFLUSH_COLUMNS
 
+    def test_the_notebook_and_the_application_agree_on_the_movements(self):
+        """Mêmes colonnes, même ordre : le miroir se lit positionnellement.
+
+        Une inversion de `item_id` et `mouvement_date` chargerait des dates dans
+        des références. La copie serait acceptée — les deux sont du texte — et
+        « Tout charger de l'ERP » ne trouverait plus aucun article.
+        """
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+        from inventory.ingest.erp import MOVEMENT_COLUMNS
+
+        notebook = JOB.with_name("sync_erp_mirror_notebook.py")
+        assert declared_in(notebook, "MOVEMENT_COLUMNS") == MOVEMENT_COLUMNS
+
+    def test_the_movement_kinds_are_the_ones_the_application_stores(self):
+        """Le notebook écrit `kind` en dur ; l'application filtre dessus.
+
+        Les deux listes ne se rencontrent nulle part à l'exécution : un
+        « RECEPTION » d'un côté et un « RECEIPT » de l'autre donnerait un miroir
+        rempli que l'application lirait vide, sans la moindre erreur.
+        """
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+        from inventory.domain.enums import FlowKind
+
+        notebook = JOB.with_name("sync_erp_mirror_notebook.py")
+        source = notebook.read_text(encoding="utf-8")
+        for kind in FlowKind:
+            assert f"'{kind}' AS kind" in source, (
+                f"le notebook n'écrit pas la nature {kind}"
+            )
+
 
 class TestWhenTheDiscoveryIsRefused:
     """Le deuxième lancement en production s'est arrêté sur « Impossible de

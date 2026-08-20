@@ -611,9 +611,12 @@ finissent tous au même endroit.
 Toutes ces lectures empruntent l'entrepôt SQL attaché
 (`DATABRICKS_WAREHOUSE_ID`) et les droits Unity Catalog de l'application : sans
 entrepôt ou sans `SELECT` sur ces tables, l'option apparaît désactivée avec sa
-raison, et le chargement par fichier reste disponible. À noter que le miroir
-local ne couvre que le référentiel et le backflush : les tables de mouvements se
-lisent toujours dans le catalogue.
+raison, et le chargement par fichier reste disponible.
+
+Ces trois tables vivent dans un **troisième catalogue**, celui de la plateforme,
+distinct de celui du référentiel silver et de celui du backflush. Elles exigent
+donc leur propre `USE CATALOG`, accordé par un autre propriétaire — et le miroir
+local les couvre au même titre que les autres (§ 8.3 bis).
 
 ### 8.3 bis — Quand le catalogue de l'ERP n'est pas ouvrable à l'application
 
@@ -636,8 +639,13 @@ déjà accès à l'ERP.
 
 | `INV_ERP_SOURCE` | Lit | Exige |
 |---|---|---|
-| `uc` (défaut) | les tables silver, en direct | `USE CATALOG` + `SELECT` pour le SP de l'App |
-| `mirror` | `erp_base_article`, `erp_bom`, `erp_ecart_backflush` (Lakebase) | que le job de synchronisation ait tourné |
+| `uc` (défaut) | les tables silver, en direct | `USE CATALOG` + `SELECT` pour le SP de l'App, sur **les trois catalogues** |
+| `mirror` | `erp_base_article`, `erp_bom`, `erp_ecart_backflush`, `erp_mouvement_stock` (Lakebase) | que le job de synchronisation ait tourné |
+
+En `uc`, les trois catalogues se demandent séparément : le silver du
+référentiel, celui du backflush, et `emotors_data_platform` pour les mouvements.
+Trois grants, potentiellement trois propriétaires — c'est ce qui rend le mode
+miroir plus souvent la voie praticable qu'il n'y paraît.
 
 **La voie recommandée est le notebook**, `jobs/sync_erp_mirror_notebook.py` :
 importez-le dans le workspace (*Workspace → Import → File*), renseignez les
@@ -655,6 +663,17 @@ et grossit indéfiniment, d'où la borne. La dernière cellule affiche les semai
 effectivement couvertes — c'est la réponse à la seule question que pose l'écran
 *Backflush* quand il n'affiche rien : une période d'inventaire hors de cet
 intervalle ne renverra jamais de ligne.
+
+Les **mouvements de stock** suivent la même logique, sous leurs propres widgets :
+`sync_movements`, `movements_catalog` / `movements_schema` (le catalogue de la
+plateforme, distinct des deux autres), `movements_since`, `legal_entity` et le
+couple `scrap_warehouse` / `scrap_location`. `invent_trans` porte une vingtaine
+de millions de lignes : le notebook n'en copie aucune telle quelle, il écrit un
+**total par article et par jour** — la maille des requêtes du guide ERP, qui se
+retaille sur n'importe quelle période d'inventaire. Un total de période, lui,
+serait faux dès la campagne suivante. La dernière cellule affiche l'intervalle
+couvert **par nature** : les rebuts peuvent manquer là où les réceptions sont
+là, puisqu'ils viennent d'une autre table.
 
 ```bash
 # 1. l'App d'abord : la migration 006 s'applique à son démarrage et ouvre

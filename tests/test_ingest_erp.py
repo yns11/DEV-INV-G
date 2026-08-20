@@ -489,6 +489,110 @@ class TestTheLocalMirror:
             get_settings.cache_clear()
 
 
+class TestTheMovementsFollowTheSameSwitch:
+    """Réceptions, expéditions et rebuts basculent comme le reste.
+
+    Elles ont failli être l'exception : elles vivent dans `bronze_erp`, un
+    *troisième* catalogue, donc derrière un troisième `USE CATALOG`. Une
+    application déjà passée au miroir parce que le premier grant manquait n'a
+    aucune raison d'avoir le troisième — la lecture catalogue y aurait donc
+    échoué à tous les coups, sur un bouton pourtant proposé.
+    """
+
+    def query(self, kind, *, mirror: bool, monkeypatch):
+        from inventory.config import get_settings
+        from inventory.ingest.erp import ErpReader
+
+        if mirror:
+            monkeypatch.setenv("INV_ERP_SOURCE", "mirror")
+        monkeypatch.setenv("DATABRICKS_WAREHOUSE_ID", "wh-1")
+        get_settings.cache_clear()
+        try:
+            reader = ErpReader()
+            table, statement = reader._movement_query(
+                kind, start="2026-03-30", end="2026-06-29", limit=500
+            )
+            return table, " ".join(statement.split()), reader.movements_source(kind)
+        finally:
+            monkeypatch.delenv("INV_ERP_SOURCE", raising=False)
+            monkeypatch.delenv("DATABRICKS_WAREHOUSE_ID", raising=False)
+            get_settings.cache_clear()
+
+    @pytest.mark.parametrize("kind_name", ["RECEIPT", "SHIPMENT", "SCRAP"])
+    def test_the_mirror_is_read_when_the_application_runs_on_it(
+        self, kind_name, monkeypatch
+    ):
+        from inventory.domain.enums import FlowKind
+
+        kind = FlowKind[kind_name]
+        table, statement, source = self.query(kind, mirror=True, monkeypatch=monkeypatch)
+        assert table == "erp_mouvement_stock"
+        assert source == "erp_mouvement_stock"
+        # Aucune trace du catalogue : c'est exactement ce qui échouait.
+        assert "emotors_data_platform" not in statement
+        assert f"kind = '{kind_name}'" in statement
+
+    @pytest.mark.parametrize(
+        "kind_name,expected",
+        [
+            ("RECEIPT", "vend_packing_slip_trans"),
+            ("SHIPMENT", "cust_packing_slip_trans"),
+            ("SCRAP", "invent_trans"),
+        ],
+    )
+    def test_the_catalogue_is_read_otherwise(self, kind_name, expected, monkeypatch):
+        from inventory.domain.enums import FlowKind
+
+        table, statement, source = self.query(
+            FlowKind[kind_name], mirror=False, monkeypatch=monkeypatch
+        )
+        assert expected in table
+        assert expected in source
+        assert "erp_mouvement_stock" not in statement
+
+    def test_both_transports_bound_the_period_the_same_way(self, monkeypatch):
+        """Début inclus, fin exclue — comme la moitié backflush de la période.
+
+        Une borne incluse ici et exclue là compterait le lundi de clôture deux
+        fois dans la même comparaison.
+        """
+        from inventory.domain.enums import FlowKind
+
+        for mirror in (True, False):
+            _, statement, _ = self.query(
+                FlowKind.RECEIPT, mirror=mirror, monkeypatch=monkeypatch
+            )
+            assert ">= DATE '2026-03-30'" in statement
+            assert "< DATE '2026-06-29'" in statement
+
+    def test_the_scrap_bin_is_what_identifies_a_write_off(self, monkeypatch):
+        """Et non le journal : trois chemins y mènent, avec trois journaux."""
+        from inventory.domain.enums import FlowKind
+
+        _, statement, _ = self.query(
+            FlowKind.SCRAP, mirror=False, monkeypatch=monkeypatch
+        )
+        assert "'QUAL VRAC'" in statement
+        assert "'QUA REBUT'" in statement
+        assert "invent_dim" in statement
+
+    def test_every_catalogue_read_is_scoped_to_the_legal_entity(self, monkeypatch):
+        """Sans ce filtre, une autre usine entre dans la comparaison."""
+        from inventory.domain.enums import FlowKind
+
+        for kind in FlowKind:
+            _, statement, _ = self.query(kind, mirror=False, monkeypatch=monkeypatch)
+            assert "`dataareaid` = 'NPEM'" in statement
+
+    def test_a_quote_in_a_configured_value_is_refused(self, monkeypatch):
+        """Ces valeurs sont interpolées : une apostrophe casserait la requête."""
+        from inventory.errors import ValidationError
+        from inventory.ingest.erp import _literal
+
+        with pytest.raises(ValidationError):
+            _literal("N'PEM")
+
+
 class TestTheColumnContract:
     """One declaration of the column order, read by both transports.
 

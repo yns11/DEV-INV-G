@@ -44,6 +44,7 @@ __all__ = [
     "reading_from_mirror", "mirror_state", "validate_period",
     "ITEM_COLUMNS", "BACKFLUSH_COLUMNS",
     "MIRROR_ITEMS_TABLE", "MIRROR_BOM_TABLE", "MIRROR_BACKFLUSH_TABLE",
+    "MIRROR_MOVEMENTS_TABLE", "MOVEMENT_COLUMNS",
 ]
 
 #: ERP functional group → the campaign's article type. Packaging never appears:
@@ -95,6 +96,9 @@ _BOM_SELECT = (
 MIRROR_ITEMS_TABLE = "erp_base_article"
 MIRROR_BOM_TABLE = "erp_bom"
 MIRROR_BACKFLUSH_TABLE = "erp_ecart_backflush"
+#: Receipts, shipments and scrap, at article × day grain (migration 011). One
+#: table for the three, told apart by `kind`.
+MIRROR_MOVEMENTS_TABLE = "erp_mouvement_stock"
 
 #: Columns the backflush mirror carries, in the order the sync job copies them.
 #: Only what the application reads: the gold table holds a score of others that
@@ -104,6 +108,9 @@ BACKFLUSH_COLUMNS = (
     "qty_parent_produite", "conso_theorique", "conso_reelle", "ecart_brut",
     "loaded_at",
 )
+
+#: Columns the movements mirror carries, in the order the sync job copies them.
+MOVEMENT_COLUMNS = ("kind", "item_id", "mouvement_date", "qty")
 
 #: Past this age, the mirror is reported as stale. A referential is not a live
 #: feed — a week-old copy is usually fine — but a campaign counted against a
@@ -164,6 +171,7 @@ def mirror_state() -> dict[str, Any]:
         ("items", MIRROR_ITEMS_TABLE),
         ("boms", MIRROR_BOM_TABLE),
         ("backflush", MIRROR_BACKFLUSH_TABLE),
+        ("movements", MIRROR_MOVEMENTS_TABLE),
     ):
         try:
             from ..db.engine import get_database
@@ -404,16 +412,38 @@ class ErpReader:
         returns negative, scrap negative. The direction belongs to the step, so
         the caller takes the absolute value; the sign is reported separately for
         the rows that carry information in it.
+
+        Reads the local mirror when the application is configured for it, like
+        every other ERP read. That matters more here than elsewhere: these three
+        tables live in a *different catalogue* from the referential, hence behind
+        a second ``USE CATALOG`` grant, and an application already running on the
+        mirror because the first grant was missing is unlikely to have the
+        second.
         """
         start, end = _assert_bounds(period_start, period_end)
         table, statement = self._movement_query(kind, start=start, end=end, limit=limit)
-        return [_movement_row(row) for row in self._query(statement, source=table)]
+        return [_movement_row(row) for row in self._read(statement, source=table)]
 
     def _movement_query(
         self, kind: FlowKind, *, start: str, end: str, limit: int
     ) -> tuple[str, str]:
         """The table read and the statement to run, for one kind of movement."""
         settings = self._settings
+        if self._from_mirror:
+            # Le miroir est déjà agrégé à la maille article × jour : il ne reste
+            # qu'à retailler sur la période. Même forme de résultat que les trois
+            # requêtes du catalogue, donc même traduction en aval.
+            return MIRROR_MOVEMENTS_TABLE, f"""
+                SELECT item_id AS item_number, SUM(qty) AS qty
+                FROM {MIRROR_MOVEMENTS_TABLE}
+                WHERE kind = {_literal(str(kind))}
+                  AND mouvement_date >= DATE '{start}'
+                  AND mouvement_date <  DATE '{end}'
+                GROUP BY item_id
+                ORDER BY 1
+                LIMIT {int(limit)}
+            """
+
         entity = _literal(settings.erp_legal_entity)
         alive = "(t.`IsDelete` = false OR t.`IsDelete` IS NULL)"
 
@@ -456,12 +486,15 @@ class ErpReader:
         """
 
     def movements_source(self, kind: FlowKind) -> str:
-        """Which table a movement was read from.
+        """Which table a movement was read from, mirror or catalogue.
 
-        Always the catalogue: the local mirror carries the referential and the
-        backflush fact table, never these. Reported with every read so « zéro
-        ligne » can be re-checked by running the same query by hand.
+        Reported with every read: « zéro ligne » means a period without receipts
+        in the catalogue and, in the mirror, usually a synchronisation job that
+        has not run yet. The name is also what lets somebody re-run the same
+        query by hand.
         """
+        if self._from_mirror:
+            return MIRROR_MOVEMENTS_TABLE
         settings = self._settings
         return {
             FlowKind.RECEIPT: settings.erp_receipts_fqn,
@@ -599,9 +632,12 @@ def _mirror_statement(statement: str, *, source: str) -> list[Sequence[Any]]:
             cur.execute(statement)
             rows = cur.fetchall()
     except Exception as exc:
-        log.error("Lecture du miroir backflush impossible (%s) : %s", source, exc)
+        log.error("Lecture du miroir impossible (%s) : %s", source, exc)
+        # La table est nommée : le miroir en porte plusieurs, alimentées par le
+        # même job mais pas par la même cellule, et « le miroir est vide » sans
+        # dire lequel envoie chercher au mauvais endroit.
         raise UpstreamError(
-            "Lecture du miroir de l'écart backflush impossible. Le job "
+            f"Lecture du miroir « {source} » impossible. Le job "
             f"« Synchronisation du miroir ERP » a-t-il déjà tourné ? ({exc})",
             cause=str(exc),
         ) from exc

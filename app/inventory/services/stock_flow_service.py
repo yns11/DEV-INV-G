@@ -417,7 +417,7 @@ class StockFlowService:
         back so a period whose returns outweigh its shipments is visible rather
         than silently flipped.
         """
-        from ..ingest.erp import ErpReader
+        from ..ingest.erp import ErpReader, reading_from_mirror
 
         ctx = self.ctx
         ctx.guard(campaign, "stock_flow")
@@ -482,6 +482,11 @@ class StockFlowService:
             "periodStart": run.period_start.isoformat(),
             "periodEnd": run.period_end.isoformat(),
             "source": reader.movements_source(kind),
+            # Comme pour la production : une table vide ne se lit pas pareil
+            # selon d'où elle vient. Dans le catalogue c'est une période sans
+            # mouvement, dans le miroir c'est le plus souvent le job de
+            # synchronisation qui n'a pas encore tourné.
+            "mirror": reading_from_mirror(),
         }
 
     def refresh_all(self, campaign: Campaign, run_id: str) -> dict[str, Any]:

@@ -37,6 +37,7 @@ SHIPPED = {
     "009_stock_flow": "734f4e0f2141",
     "010_stock_flow_source": "98022ebe48d6",
     "011_erp_movements_mirror": "1e7a0f545b8a",
+    "012_erp_movements_table": "1ba205c32173",
 }
 
 

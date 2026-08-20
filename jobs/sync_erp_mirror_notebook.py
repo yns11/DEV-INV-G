@@ -19,15 +19,15 @@
 # MAGIC affiche les semaines effectivement couvertes, ce qui est la réponse à la
 # MAGIC seule question que pose l'écran quand il n'affiche rien.
 # MAGIC
-# MAGIC **Les mouvements sont agrégés, jamais copiés bruts.** Réceptions,
-# MAGIC expéditions et rebuts alimentent le bouton « Tout charger de l'ERP » de la
-# MAGIC vue *Comparaison*. Ils viennent d'un **troisième catalogue**
-# MAGIC (`emotors_data_platform`), donc d'un troisième grant `USE CATALOG` — d'où
-# MAGIC leurs propres widgets. `invent_trans` fait une vingtaine de millions de
-# MAGIC lignes : le notebook n'en copie aucune telle quelle, il écrit un total par
-# MAGIC article et par jour, maille qui se retaille sur n'importe quelle période
-# MAGIC d'inventaire. La borne du widget 17 garde le volume borné, et la dernière
-# MAGIC cellule affiche l'intervalle couvert par nature.
+# MAGIC **Les mouvements sont une copie comme les autres.** `mouvements` publie
+# MAGIC une ligne par référence et par jour, une colonne par flux — réception,
+# MAGIC expédition, production, consommation théorique et réelle, rebut. Elle
+# MAGIC alimente les cinq étapes de la vue *Comparaison*, bouton « Tout charger de
+# MAGIC l'ERP » compris. Tout ce que le notebook faisait auparavant contre trois
+# MAGIC tables bronze — filtrer l'entité juridique, reconnaître le rebut à son
+# MAGIC emplacement, dédoublonner la production d'un parent sur ses composants —
+# MAGIC est fait en amont. Elle vit de plus dans le schéma du référentiel, donc
+# MAGIC derrière le même grant. La borne du widget 15 garde le volume borné.
 # MAGIC
 # MAGIC **Pourquoi ce miroir.** Lire les tables silver depuis l'application exige
 # MAGIC `USE CATALOG` sur le catalogue de l'ERP pour *son* service principal, et ce
@@ -97,32 +97,19 @@ dbutils.widgets.text(
 dbutils.widgets.text(
     "backflush_since", "2026-03-30", "13. Écart backflush depuis (lundi ISO)",
 )
-# Les mouvements de stock — réceptions, expéditions, rebuts — vivent dans un
-# *troisième* catalogue, celui de la plateforme, et donc derrière un troisième
-# grant `USE CATALOG`. D'où leurs propres widgets plutôt qu'une réutilisation de
-# `erp_catalog` : les trois sources n'ont aucune raison de bouger ensemble.
+# Les mouvements de stock vivent dans le schéma du référentiel : même catalogue,
+# même grant. Deux widgets suffisent — la table est déjà agrégée et filtrée à la
+# source, il n'y a plus ni entité juridique, ni emplacement de rebut, ni
+# déduplication à paramétrer ici.
 dbutils.widgets.dropdown(
     "sync_movements", "oui", ["oui", "non"], "14. Copier les mouvements de stock",
 )
+# La table remonte à janvier 2022 et grossit d'un jour par jour. La borne la
+# garde bornée ; la maille article × jour se retaille ensuite sur n'importe
+# quelle période d'inventaire.
 dbutils.widgets.text(
-    "movements_catalog", "emotors_data_platform", "15. Catalogue des mouvements",
+    "movements_since", "2026-03-30", "15. Mouvements depuis (date)",
 )
-dbutils.widgets.text("movements_schema", "bronze_erp", "16. Schéma des mouvements")
-# `invent_trans` porte une vingtaine de millions de lignes. Le notebook n'en
-# copie jamais une seule telle quelle : il agrège à la maille article × jour,
-# qui est celle des requêtes du guide et se retaille sur n'importe quelle
-# période. La borne garde le volume borné.
-dbutils.widgets.text(
-    "movements_since", "2026-03-30", "17. Mouvements depuis (date)",
-)
-# L'entité juridique : chaque table bronze en porte plusieurs, et les lire
-# toutes ajouterait les réceptions d'une autre usine à cet inventaire.
-dbutils.widgets.text("legal_entity", "NPEM", "18. Entité juridique")
-# Le rebut se reconnaît à son emplacement, pas à son journal : production NOK,
-# mise en quarantaine et sortie manuelle passent par trois journaux différents
-# et atterrissent toutes ici.
-dbutils.widgets.text("scrap_warehouse", "QUAL VRAC", "19. Entrepôt rebut")
-dbutils.widgets.text("scrap_location", "QUA REBUT", "20. Emplacement rebut")
 
 # COMMAND ----------
 
@@ -167,10 +154,12 @@ BACKFLUSH_COLUMNS = (
     "loaded_at",
 )
 
-# Les mouvements, agrégés à la maille article × jour. `kind` distingue les trois
-# natures : elles sortent de trois requêtes différentes mais ont la même forme,
-# et trois tables auraient fait diverger trois copies du même code.
-MOVEMENT_COLUMNS = ("kind", "item_id", "mouvement_date", "qty")
+# Les mouvements : une ligne par référence et par jour, une colonne par flux.
+# Copie brute comme le reste du miroir — les noms sont ceux de la source.
+MOVEMENT_COLUMNS = (
+    "reference", "date_mouvement", "reception", "expedition", "production",
+    "conso_theorique", "consommation", "rebut",
+)
 
 BATCH = 5_000
 
@@ -178,8 +167,7 @@ conf = {name: dbutils.widgets.get(name).strip() for name in (
     "pg_host", "pg_password", "pg_user", "pg_database", "pg_schema",
     "erp_catalog", "erp_schema", "limit", "lakebase_branch",
     "sync_backflush", "backflush_schema", "backflush_table", "backflush_since",
-    "sync_movements", "movements_catalog", "movements_schema", "movements_since",
-    "legal_entity", "scrap_warehouse", "scrap_location",
+    "sync_movements", "movements_since",
 )}
 
 if not conf["pg_host"]:
@@ -197,11 +185,7 @@ limit = int(conf["limit"] or 0)
 with_backflush = conf["sync_backflush"] == "oui"
 backflush_since = conf["backflush_since"]
 
-movements_schema_fqn = f"{conf['movements_catalog']}.{conf['movements_schema']}"
-receipts_fqn = f"{movements_schema_fqn}.vend_packing_slip_trans"
-shipments_fqn = f"{movements_schema_fqn}.cust_packing_slip_trans"
-invent_trans_fqn = f"{movements_schema_fqn}.invent_trans"
-invent_dim_fqn = f"{movements_schema_fqn}.invent_dim"
+movements_fqn = f"{conf['erp_catalog']}.{conf['erp_schema']}.mouvements"
 with_movements = conf["sync_movements"] == "oui"
 movements_since = conf["movements_since"]
 
@@ -210,8 +194,7 @@ if with_backflush:
     print(f"         {backflush_fqn}"
           + (f"  (depuis le {backflush_since})" if backflush_since else ""))
 if with_movements:
-    print(f"         {receipts_fqn}\n         {shipments_fqn}\n"
-          f"         {invent_trans_fqn} + invent_dim"
+    print(f"         {movements_fqn}"
           + (f"  (depuis le {movements_since})" if movements_since else ""))
 print(f"Miroir : {conf['pg_host']} / {conf['pg_database']} / {conf['pg_schema']}")
 
@@ -381,7 +364,7 @@ with psycopg.connect(conninfo) as check:
     if with_backflush:
         assert_mirror_shape(check, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
     if with_movements:
-        assert_mirror_shape(check, "erp_mouvement_stock", MOVEMENT_COLUMNS)
+        assert_mirror_shape(check, "erp_mouvements", MOVEMENT_COLUMNS)
 print("Miroir conforme.")
 # COMMAND ----------
 
@@ -439,78 +422,6 @@ def read(fqn, columns, unique_on="", where=""):
     return rows
 
 
-def read_movements():
-    """Réceptions, expéditions et rebuts, agrégés à la maille article × jour.
-
-    Les trois requêtes du guide des tables ERP, à trois détails près qui portent
-    le résultat :
-
-    * **agrégation ici, pas dans l'application.** `invent_trans` fait vingt
-      millions de lignes ; ce qui remonte au pilote est un total par article et
-      par jour, soit quelques centaines de milliers de lignes sur une année. La
-      maille jour est celle du guide et se retaille sur n'importe quelle période
-      — un total de période serait faux dès la campagne suivante.
-    * **le rebut se reconnaît à son emplacement.** Production NOK, quarantaine
-      qualité et sortie manuelle empruntent trois journaux différents et
-      atterrissent toutes dans `QUAL VRAC` / `QUA REBUT` : filtrer par journal
-      manquerait silencieusement deux chemins sur trois.
-    * **les quantités gardent le signe de l'ERP.** Un retour est une expédition
-      négative, un rebut sort du stock. Le sens appartient à l'étape, et c'est
-      la lecture applicative qui prend la valeur absolue ; la copie, elle, ne
-      réinterprète rien.
-    """
-    entity = conf["legal_entity"]
-    window_receipts = (
-        f"AND t.deliverydate >= DATE '{movements_since}'" if movements_since else ""
-    )
-    window_physical = (
-        f"AND t.datephysical >= DATE '{movements_since}'" if movements_since else ""
-    )
-    alive = "(t.IsDelete = false OR t.IsDelete IS NULL)"
-
-    queries = {
-        "RECEIPT": f"""
-            SELECT 'RECEIPT' AS kind, t.itemid AS item_id,
-                   CAST(t.deliverydate AS DATE) AS mouvement_date,
-                   SUM(t.qty) AS qty
-            FROM {receipts_fqn} t
-            WHERE {alive} AND t.dataareaid = '{entity}' {window_receipts}
-            GROUP BY t.itemid, CAST(t.deliverydate AS DATE)
-        """,
-        "SHIPMENT": f"""
-            SELECT 'SHIPMENT' AS kind, t.itemid AS item_id,
-                   CAST(t.deliverydate AS DATE) AS mouvement_date,
-                   SUM(t.qty) AS qty
-            FROM {shipments_fqn} t
-            WHERE {alive} AND t.dataareaid = '{entity}' {window_receipts}
-            GROUP BY t.itemid, CAST(t.deliverydate AS DATE)
-        """,
-        "SCRAP": f"""
-            SELECT 'SCRAP' AS kind, t.itemid AS item_id,
-                   CAST(t.datephysical AS DATE) AS mouvement_date,
-                   SUM(t.qty) AS qty
-            FROM {invent_trans_fqn} t
-            INNER JOIN {invent_dim_fqn} d ON t.inventdimid = d.inventdimid
-            WHERE {alive} AND t.dataareaid = '{entity}' {window_physical}
-              AND (d.IsDelete = false OR d.IsDelete IS NULL)
-              AND UPPER(d.inventlocationid) = '{conf["scrap_warehouse"].upper()}'
-              AND UPPER(d.wmslocationid) = '{conf["scrap_location"].upper()}'
-            GROUP BY t.itemid, CAST(t.datephysical AS DATE)
-        """,
-    }
-
-    collected = []
-    for kind, query in queries.items():
-        statement = query + (f" LIMIT {limit}" if limit else "")
-        rows = [tuple(row) for row in spark.sql(statement).collect()]
-        # Une date nulle ne se rattache à aucune période : la garder mettrait une
-        # quantité hors de toute comparaison tout en la comptant dans le total.
-        rows = [row for row in rows if row[2] is not None]
-        print(f"  {kind} : {len(rows)} ligne(s) article × jour")
-        collected.extend(rows)
-    return collected
-
-
 items = read(items_fqn, ITEM_COLUMNS, unique_on="item_id")
 boms = read(bom_fqn, BOM_COLUMNS)
 print(f"\n{len(items)} articles, {len(boms)} liens de nomenclature")
@@ -541,10 +452,16 @@ if with_backflush:
 movements = []
 if with_movements:
     try:
-        movements = read_movements()
+        movements = read(
+            movements_fqn, MOVEMENT_COLUMNS,
+            where=(
+                f"date_mouvement >= DATE '{movements_since}'"
+                if movements_since else ""
+            ),
+        )
         print(f"{len(movements)} ligne(s) de mouvement de stock")
     except Exception as exc:
-        print(f"\n⚠ {movements_schema_fqn} illisible, miroir des mouvements "
+        print(f"\n⚠ {movements_fqn} illisible, miroir des mouvements "
               f"laissé intact : {type(exc).__name__} — {exc}")
         with_movements = False
 
@@ -622,15 +539,15 @@ with connection as conn:
         elif with_backflush:
             print(f"  erp_ecart_backflush : {backflush_fqn} n'a renvoyé aucune "
                   "ligne sur la période — miroir laissé intact")
-        # `unique_on` est inutile ici : l'agrégation `GROUP BY article, jour` a
-        # déjà produit la clé, une ligne par couple. Une violation signalerait
-        # que deux natures ont été lues dans la même passe, ce qui ne peut pas
-        # arriver — et vaut mieux qu'être masqué par un DISTINCT.
+        # La source garantit une ligne par référence et par jour : c'est son
+        # grain déclaré, et c'est la clé primaire du miroir. `unique_on` serait
+        # un DISTINCT qui masquerait une source non conforme au lieu de la
+        # signaler.
         if with_movements and movements:
-            swap(conn, "erp_mouvement_stock", MOVEMENT_COLUMNS, movements)
+            swap(conn, "erp_mouvements", MOVEMENT_COLUMNS, movements)
         elif with_movements:
-            print(f"  erp_mouvement_stock : {movements_schema_fqn} n'a renvoyé "
-                  "aucune ligne sur la période — miroir laissé intact")
+            print(f"  erp_mouvements : {movements_fqn} n'a renvoyé aucune ligne "
+                  "sur la période — miroir laissé intact")
     except Exception as exc:
         if "permission denied" in str(exc).lower():
             raise RuntimeError(
@@ -678,12 +595,14 @@ if with_backflush:
         + (f" WHERE semaine_debut >= DATE '{backflush_since}'"
            if backflush_since else "")
     ).collect()[0][0]
-# Les mouvements sont *agrégés* à la copie : le miroir a par construction moins
-# de lignes que la source, et comparer les deux totaux afficherait un « écart »
-# permanent qui n'en serait pas un. On compte donc la source à la même maille,
-# article × jour, ce qui est la seule comparaison qui veut dire quelque chose.
+# La copie est fidèle et bornée : on compte donc la source sur la même borne,
+# sans quoi l'historique laissé de côté apparaîtrait comme un écart permanent.
 if with_movements:
-    sources["erp_mouvement_stock"] = len(movements)
+    sources["erp_mouvements"] = spark.sql(
+        f"SELECT count(*) FROM {movements_fqn}"
+        + (f" WHERE date_mouvement >= DATE '{movements_since}'"
+           if movements_since else "")
+    ).collect()[0][0]
 
 with psycopg.connect(conninfo) as conn:
     conn.execute(f"SET search_path TO {conf['pg_schema']}, public")
@@ -731,16 +650,31 @@ with psycopg.connect(conninfo) as conn:
     # Le détail par nature parce qu'elles viennent de trois tables : les rebuts
     # peuvent manquer là où les réceptions sont là.
     if with_movements:
-        couverture = conn.execute(
-            "SELECT kind, count(*), min(mouvement_date), max(mouvement_date) "
-            "FROM erp_mouvement_stock GROUP BY kind ORDER BY kind"
-        ).fetchall()
-        if couverture:
-            print("\nMouvements de stock :")
-            for kind, rows, first, last in couverture:
-                print(f"  {kind:<9} {rows:>8} ligne(s), du {first} au {last}")
-            print("Une période d'inventaire hors de ces intervalles ne renverra "
-                  "rien — c'est la borne du widget 17 qu'il faut alors reculer.")
+        # Le détail par flux et non le seul total : les six colonnes cohabitent
+        # sur la même ligne, si bien qu'une période peut être couverte tout en
+        # n'ayant aucun rebut. « 0 rebut » est alors une information sur l'usine,
+        # pas sur la copie — et sans ce découpage les deux se confondent.
+        first, last, rows = conn.execute(
+            "SELECT min(date_mouvement), max(date_mouvement), count(*) "
+            "FROM erp_mouvements"
+        ).fetchone()
+        if rows:
+            print(f"\nMouvements de stock : {rows} ligne(s) référence × jour, "
+                  f"du {first} au {last} inclus.")
+            totaux = conn.execute(
+                "SELECT sum(reception), sum(expedition), sum(production), "
+                "sum(conso_theorique), sum(consommation), sum(rebut) "
+                "FROM erp_mouvements"
+            ).fetchone()
+            for label, total in zip(
+                ("réception", "expédition", "production", "conso théo.",
+                 "consommation", "rebut"),
+                totaux,
+                strict=True,
+            ):
+                print(f"  {label:<13} {total:>16,.2f}")
+            print("Une période d'inventaire hors de cet intervalle ne renverra "
+                  "rien — c'est la borne du widget 15 qu'il faut alors reculer.")
         else:
             print("\nMouvements de stock : le miroir est vide. « Tout charger de "
                   "l'ERP » ne renverra rien tant que cette cellule n'affiche pas "

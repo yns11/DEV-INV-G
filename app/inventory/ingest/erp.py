@@ -96,9 +96,9 @@ _BOM_SELECT = (
 MIRROR_ITEMS_TABLE = "erp_base_article"
 MIRROR_BOM_TABLE = "erp_bom"
 MIRROR_BACKFLUSH_TABLE = "erp_ecart_backflush"
-#: Receipts, shipments and scrap, at article × day grain (migration 011). One
-#: table for the three, told apart by `kind`.
-MIRROR_MOVEMENTS_TABLE = "erp_mouvement_stock"
+#: Every stock flow at article × day grain (migration 012) — a faithful copy of
+#: the silver table, column names included.
+MIRROR_MOVEMENTS_TABLE = "erp_mouvements"
 
 #: Columns the backflush mirror carries, in the order the sync job copies them.
 #: Only what the application reads: the gold table holds a score of others that
@@ -109,8 +109,21 @@ BACKFLUSH_COLUMNS = (
     "loaded_at",
 )
 
-#: Columns the movements mirror carries, in the order the sync job copies them.
-MOVEMENT_COLUMNS = ("kind", "item_id", "mouvement_date", "qty")
+#: Columns the movements table carries, in the order the sync job copies them.
+#: The mirror is a faithful copy, so this one tuple describes both.
+MOVEMENT_COLUMNS = (
+    "reference", "date_mouvement", "reception", "expedition", "production",
+    "conso_theorique", "consommation", "rebut",
+)
+
+#: Which column of that table each loaded step reads. The whole of what used to
+#: be three bronze queries — a packing-slip aggregation, another one, and a join
+#: against the stock dimensions to recognise the scrap bin — is now this mapping.
+_FLOW_COLUMNS = {
+    FlowKind.RECEIPT: "reception",
+    FlowKind.SHIPMENT: "expedition",
+    FlowKind.SCRAP: "rebut",
+}
 
 #: Past this age, the mirror is reported as stale. A referential is not a live
 #: feed — a week-old copy is usually fine — but a campaign counted against a
@@ -334,48 +347,23 @@ class ErpReader:
     ) -> list[dict[str, Any]]:
         """Production and theoretical consumption per article, over a period.
 
-        Two measures at two different grains, joined on the article: an article
-        is produced *as a parent* and consumed *as a component*, and a
-        sub-assembly is legitimately both.
-
-        The production half collapses to one row per parent and week before
-        summing. ``qty_parent_produite`` is repeated across every component line
-        of the parent, so summing it raw multiplies the output by the size of the
-        bill of materials — the single most expensive mistake available in this
-        table. ``MAX`` rather than ``DISTINCT`` on purpose: if one week ever
-        carried two different values for the same parent, ``DISTINCT`` would keep
-        both and double-count, where ``MAX`` still yields one row per week.
+        Two columns of the movements table, summed over the window. They used to
+        be derived from the backflush fact table, which repeats a parent's output
+        on every one of its component lines: totalling it meant first collapsing
+        to one row per parent and week, and forgetting to multiplied the output
+        by the size of the bill of materials. The silver table publishes both
+        measures already consolidated, so that whole class of mistake is gone.
         """
         start, end = _assert_bounds(period_start, period_end)
-        table = self._table()
-        window = (
-            f"WHERE semaine_debut >= DATE '{start}' AND semaine_debut < DATE '{end}'"
-        )
+        table = self._movements_table()
         statement = f"""
-            WITH production AS (
-                SELECT parent_itemid AS item_number, SUM(qty) AS produced_qty
-                FROM (
-                    SELECT parent_itemid, semaine_debut,
-                           MAX(qty_parent_produite) AS qty
-                    FROM {table}
-                    {window}
-                    GROUP BY parent_itemid, semaine_debut
-                ) AS weekly
-                GROUP BY parent_itemid
-            ),
-            consommation AS (
-                SELECT child_itemid AS item_number,
-                       SUM(conso_theorique) AS consumed_qty
-                FROM {table}
-                {window}
-                GROUP BY child_itemid
-            )
-            SELECT
-                COALESCE(p.item_number, c.item_number) AS item_number,
-                COALESCE(p.produced_qty, 0)            AS produced_qty,
-                COALESCE(c.consumed_qty, 0)            AS consumed_qty
-            FROM production p
-            FULL OUTER JOIN consommation c ON p.item_number = c.item_number
+            SELECT reference            AS item_number,
+                   SUM(production)      AS produced_qty,
+                   SUM(conso_theorique) AS consumed_qty
+            FROM {table}
+            {self._window(start, end)}
+            GROUP BY reference
+            HAVING SUM(production) <> 0 OR SUM(conso_theorique) <> 0
             ORDER BY 1
             LIMIT {int(limit)}
         """
@@ -393,97 +381,54 @@ class ErpReader:
     ) -> list[dict[str, Any]]:
         """Receipts, shipments or scrap per article, over the period.
 
-        The three queries come from the ERP movement guide, and three of their
-        choices carry the result:
+        One column of the movements table per step. The silver layer has already
+        done the work the application used to do itself against three bronze
+        tables: the legal entity is filtered, deleted rows are excluded, scrap is
+        recognised by its bin rather than by the journal that moved it, and the
+        packing-slip lines are the ones tied to a purchase or sales order.
 
-        * **Receipts and shipments come from the packing-slip lines**, not from
-          ``invent_trans``. Those lines are the ones tied to a purchase or sales
-          order, so a quantity that looks wrong can be traced back to a document
-          somebody can open.
-        * **Scrap is identified by its bin**, ``QUAL VRAC`` / ``QUA REBUT``, not
-          by the journal that moved it. Production NOK, quality holds and manual
-          write-offs each use a different journal and all land in that bin;
-          filtering on journals would quietly miss two of the three paths.
-        * **Bounds are start-inclusive, end-exclusive**, matching the backflush
-          half. Mixing an inclusive end here with an exclusive one there would
-          count the closing Monday twice in the same comparison.
+        **Bounds are start-inclusive, end-exclusive**, as everywhere else in the
+        comparison: an inclusive end here would count the closing Monday twice.
 
         Quantities come back **as the ERP signs them** — shipments positive,
         returns negative, scrap negative. The direction belongs to the step, so
-        the caller takes the absolute value; the sign is reported separately for
-        the rows that carry information in it.
-
-        Reads the local mirror when the application is configured for it, like
-        every other ERP read. That matters more here than elsewhere: these three
-        tables live in a *different catalogue* from the referential, hence behind
-        a second ``USE CATALOG`` grant, and an application already running on the
-        mirror because the first grant was missing is unlikely to have the
-        second.
+        the caller takes the absolute value; the signed total is reported
+        separately for the rows that carry information in it.
         """
         start, end = _assert_bounds(period_start, period_end)
-        table, statement = self._movement_query(kind, start=start, end=end, limit=limit)
-        return [_movement_row(row) for row in self._read(statement, source=table)]
-
-    def _movement_query(
-        self, kind: FlowKind, *, start: str, end: str, limit: int
-    ) -> tuple[str, str]:
-        """The table read and the statement to run, for one kind of movement."""
-        settings = self._settings
-        if self._from_mirror:
-            # Le miroir est déjà agrégé à la maille article × jour : il ne reste
-            # qu'à retailler sur la période. Même forme de résultat que les trois
-            # requêtes du catalogue, donc même traduction en aval.
-            return MIRROR_MOVEMENTS_TABLE, f"""
-                SELECT item_id AS item_number, SUM(qty) AS qty
-                FROM {MIRROR_MOVEMENTS_TABLE}
-                WHERE kind = {_literal(str(kind))}
-                  AND mouvement_date >= DATE '{start}'
-                  AND mouvement_date <  DATE '{end}'
-                GROUP BY item_id
-                ORDER BY 1
-                LIMIT {int(limit)}
-            """
-
-        entity = _literal(settings.erp_legal_entity)
-        alive = "(t.`IsDelete` = false OR t.`IsDelete` IS NULL)"
-
-        if kind is FlowKind.SCRAP:
-            table = settings.erp_movements_fqn
-            dims = settings.erp_dimensions_fqn
-            return table, f"""
-                SELECT t.`itemid` AS item_number, SUM(t.`qty`) AS qty
-                FROM {table} t
-                INNER JOIN {dims} d ON t.`inventdimid` = d.`inventdimid`
-                WHERE t.`datephysical` >= DATE '{start}'
-                  AND t.`datephysical` <  DATE '{end}'
-                  AND {alive}
-                  AND t.`dataareaid` = {entity}
-                  AND (d.`IsDelete` = false OR d.`IsDelete` IS NULL)
-                  AND UPPER(d.`inventlocationid`) = {_literal(
-                      settings.erp_scrap_warehouse.upper())}
-                  AND UPPER(d.`wmslocationid`) = {_literal(
-                      settings.erp_scrap_location.upper())}
-                GROUP BY t.`itemid`
-                ORDER BY 1
-                LIMIT {int(limit)}
-            """
-
-        table = (
-            settings.erp_receipts_fqn
-            if kind is FlowKind.RECEIPT
-            else settings.erp_shipments_fqn
-        )
-        return table, f"""
-            SELECT t.`itemid` AS item_number, SUM(t.`qty`) AS qty
-            FROM {table} t
-            WHERE t.`deliverydate` >= DATE '{start}'
-              AND t.`deliverydate` <  DATE '{end}'
-              AND {alive}
-              AND t.`dataareaid` = {entity}
-            GROUP BY t.`itemid`
+        table = self._movements_table()
+        column = _FLOW_COLUMNS[kind]
+        # `HAVING` et non un filtre a posteriori : une ligne de la table porte
+        # les six flux, si bien qu'une référence seulement produite ressort ici
+        # avec zéro réception. La garder gonflerait le compte annoncé — « 3
+        # article(s) lus » pour deux qui en ont — et remplirait la grille de
+        # lignes à zéro qu'il faudrait apprendre à ignorer.
+        statement = f"""
+            SELECT reference AS item_number, SUM({column}) AS qty
+            FROM {table}
+            {self._window(start, end)}
+            GROUP BY reference
+            HAVING SUM({column}) <> 0
             ORDER BY 1
             LIMIT {int(limit)}
         """
+        return [_movement_row(row) for row in self._read(statement, source=table)]
+
+    def _movements_table(self) -> str:
+        """Where the stock flows are read from, mirror or catalogue."""
+        return (
+            MIRROR_MOVEMENTS_TABLE
+            if self._from_mirror
+            else self._settings.erp_movements_fqn
+        )
+
+    @staticmethod
+    def _window(start: str, end: str) -> str:
+        """The period clause both flow reads share, so they cannot disagree."""
+        return (
+            f"WHERE date_mouvement >= DATE '{start}' "
+            f"AND date_mouvement < DATE '{end}'"
+        )
 
     def movements_source(self, kind: FlowKind) -> str:
         """Which table a movement was read from, mirror or catalogue.
@@ -491,16 +436,11 @@ class ErpReader:
         Reported with every read: « zéro ligne » means a period without receipts
         in the catalogue and, in the mirror, usually a synchronisation job that
         has not run yet. The name is also what lets somebody re-run the same
-        query by hand.
+        query by hand. The *kind* no longer changes the answer — one table now
+        carries all of them — but the caller still asks per step, and narrowing
+        the signature would gain nothing.
         """
-        if self._from_mirror:
-            return MIRROR_MOVEMENTS_TABLE
-        settings = self._settings
-        return {
-            FlowKind.RECEIPT: settings.erp_receipts_fqn,
-            FlowKind.SHIPMENT: settings.erp_shipments_fqn,
-            FlowKind.SCRAP: settings.erp_movements_fqn,
-        }[kind]
+        return self._movements_table()
 
     def backflush_loaded_at(
         self, *, period_start: dt.date, period_end: dt.date
@@ -729,22 +669,6 @@ def _stock_flow_row(row: Sequence[Any]) -> dict[str, Any]:
 def _movement_row(row: Sequence[Any]) -> dict[str, Any]:
     item, qty = _pad(row, 2)
     return {"item_number": _text(item), "qty": _number(qty)}
-
-
-def _literal(value: str) -> str:
-    """One string, quoted for SQL, or refused.
-
-    These values come from configuration rather than from a request, but they
-    are interpolated into a statement all the same. A quote in an entity code
-    would be a deployment mistake, not an attack — and it would still produce a
-    broken query whose error message named the wrong thing.
-    """
-    text = str(value).strip()
-    if "'" in text or "\\" in text or "\n" in text:
-        raise ValidationError(
-            f"Valeur de configuration ERP invalide : {value!r}.", value=text
-        )
-    return f"'{text}'"
 
 
 def _timestamp(value: Any) -> dt.datetime | None:

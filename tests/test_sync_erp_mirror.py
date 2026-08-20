@@ -256,24 +256,31 @@ class TestTheColumnsCopied:
         notebook = JOB.with_name("sync_erp_mirror_notebook.py")
         assert declared_in(notebook, "MOVEMENT_COLUMNS") == MOVEMENT_COLUMNS
 
-    def test_the_movement_kinds_are_the_ones_the_application_stores(self):
-        """Le notebook écrit `kind` en dur ; l'application filtre dessus.
+    def test_every_column_a_step_reads_is_one_the_notebook_copies(self):
+        """Chaque étape lit une colonne ; le miroir doit la porter.
 
-        Les deux listes ne se rencontrent nulle part à l'exécution : un
-        « RECEPTION » d'un côté et un « RECEIPT » de l'autre donnerait un miroir
-        rempli que l'application lirait vide, sans la moindre erreur.
+        Les deux déclarations ne se rencontrent nulle part à l'exécution. Une
+        colonne oubliée à la copie donnerait un miroir rempli dans lequel une
+        étape lirait zéro — sans la moindre erreur, et sur un rapport qui reste
+        parfaitement lisible.
         """
         import sys
 
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
-        from inventory.domain.enums import FlowKind
+        from inventory.ingest.erp import _FLOW_COLUMNS
 
         notebook = JOB.with_name("sync_erp_mirror_notebook.py")
-        source = notebook.read_text(encoding="utf-8")
-        for kind in FlowKind:
-            assert f"'{kind}' AS kind" in source, (
-                f"le notebook n'écrit pas la nature {kind}"
+        copied = set(declared_in(notebook, "MOVEMENT_COLUMNS"))
+        for kind, column in _FLOW_COLUMNS.items():
+            assert column in copied, (
+                f"le miroir ne copie pas « {column} », que l'étape {kind} lit"
             )
+
+    def test_production_and_theoretical_consumption_are_copied_too(self):
+        """Les cinq flux d'une comparaison sortent de la même copie."""
+        notebook = JOB.with_name("sync_erp_mirror_notebook.py")
+        copied = set(declared_in(notebook, "MOVEMENT_COLUMNS"))
+        assert {"production", "conso_theorique"} <= copied
 
 
 class TestWhenTheDiscoveryIsRefused:

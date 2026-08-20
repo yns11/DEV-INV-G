@@ -851,9 +851,8 @@ export interface StockFlowRun {
   periodEnd: string
   weeks: number
   scrapLoaded: boolean
-  sourceLoadedAt: string | null
   erpRefreshedAt: string | null
-  /** Quand chaque étape a été lue dans l'ERP — une date par table interrogée. */
+  /** Quand chaque étape a été lue dans l'ERP. */
   receiptsRefreshedAt: string | null
   shipmentsRefreshedAt: string | null
   scrapRefreshedAt: string | null

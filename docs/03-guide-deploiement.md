@@ -577,14 +577,7 @@ Onglet **Environment**, ajoutez :
 | `INV_ERP_SCHEMA` | `emotors_data_champions.silver_erp_ye` |
 | `INV_ERP_ITEMS_TABLE` | `silver_base_article` |
 | `INV_ERP_BOM_TABLE` | `silver_bom` |
-| `INV_ERP_MOVEMENTS_SCHEMA` | `emotors_data_platform.bronze_erp` |
-| `INV_ERP_RECEIPTS_TABLE` | `vend_packing_slip_trans` |
-| `INV_ERP_SHIPMENTS_TABLE` | `cust_packing_slip_trans` |
-| `INV_ERP_MOVEMENTS_TABLE` | `invent_trans` |
-| `INV_ERP_DIMENSIONS_TABLE` | `invent_dim` |
-| `INV_ERP_LEGAL_ENTITY` | `NPEM` |
-| `INV_ERP_SCRAP_WAREHOUSE` | `QUAL VRAC` |
-| `INV_ERP_SCRAP_LOCATION` | `QUA REBUT` |
+| `INV_ERP_MOVEMENTS_TABLE` | `mouvements` |
 
 `INV_ASSISTANT_PROFILE` décide de ce que l'assistant de campagne reçoit et de
 ce qu'on lui demande. Un seul profil est livré — `etendu` : le dossier complet
@@ -595,28 +588,24 @@ plus large par exemple, soit un redémarrage et non une livraison de code.
 `INV_ERP_SCHEMA` et ses deux tables désignent les tables **silver** lues par
 « Lire depuis l'ERP » sur les grilles Articles et Nomenclatures.
 
-Les variables `INV_ERP_MOVEMENTS_*` désignent les tables **bronze** des
-mouvements de stock, lues par « Tout charger de l'ERP » dans la vue Comparaison :
-bons de réception fournisseur, bons de livraison client, et mouvements de stock
-joints à leurs dimensions pour isoler les rebuts. Bronze plutôt que silver parce
-qu'aucune couche curée ne les publie encore — d'où les filtres que les requêtes
-portent elles-mêmes : `IsDelete`, et `dataareaid = INV_ERP_LEGAL_ENTITY`. Sans
-ce dernier, la comparaison d'un site recevrait les flux d'un autre.
+`INV_ERP_MOVEMENTS_TABLE` désigne la table des **mouvements de stock**, lue par
+« Tout charger de l'ERP » dans la vue Comparaison. Une ligne par référence et par
+jour, une colonne par flux : `reception`, `expedition`, `production`,
+`conso_theorique`, `consommation`, `rebut`. Les cinq quantités dont la
+comparaison a besoin en sortent, y compris la production et la consommation
+théorique, qui venaient auparavant de la table de faits du backflush.
 
-Les rebuts sont identifiés par leur **emplacement** (`INV_ERP_SCRAP_WAREHOUSE` /
-`INV_ERP_SCRAP_LOCATION`) et non par le journal qui les a déplacés : production
-NOK, blocage qualité et sortie manuelle passent par trois journaux différents et
-finissent tous au même endroit.
+Elle vit dans `INV_ERP_SCHEMA`, le schéma du référentiel : **même catalogue,
+même grant**. Et tout ce que l'application filtrait elle-même contre les tables
+bronze est appliqué en amont — l'entité juridique, l'exclusion des lignes
+supprimées, la reconnaissance du rebut à son emplacement `QUAL VRAC` /
+`QUA REBUT`, et la déduplication de la production d'un parent sur ses
+composants.
 
-Toutes ces lectures empruntent l'entrepôt SQL attaché
-(`DATABRICKS_WAREHOUSE_ID`) et les droits Unity Catalog de l'application : sans
-entrepôt ou sans `SELECT` sur ces tables, l'option apparaît désactivée avec sa
-raison, et le chargement par fichier reste disponible.
-
-Ces trois tables vivent dans un **troisième catalogue**, celui de la plateforme,
-distinct de celui du référentiel silver et de celui du backflush. Elles exigent
-donc leur propre `USE CATALOG`, accordé par un autre propriétaire — et le miroir
-local les couvre au même titre que les autres (§ 8.3 bis).
+Ces lectures empruntent l'entrepôt SQL attaché (`DATABRICKS_WAREHOUSE_ID`) et
+les droits Unity Catalog de l'application : sans entrepôt ou sans `SELECT` sur
+ces tables, l'option apparaît désactivée avec sa raison, et le chargement par
+fichier reste disponible.
 
 ### 8.3 bis — Quand le catalogue de l'ERP n'est pas ouvrable à l'application
 
@@ -639,13 +628,12 @@ déjà accès à l'ERP.
 
 | `INV_ERP_SOURCE` | Lit | Exige |
 |---|---|---|
-| `uc` (défaut) | les tables silver, en direct | `USE CATALOG` + `SELECT` pour le SP de l'App, sur **les trois catalogues** |
-| `mirror` | `erp_base_article`, `erp_bom`, `erp_ecart_backflush`, `erp_mouvement_stock` (Lakebase) | que le job de synchronisation ait tourné |
+| `uc` (défaut) | les tables silver, en direct | `USE CATALOG` + `SELECT` pour le SP de l'App |
+| `mirror` | `erp_base_article`, `erp_bom`, `erp_ecart_backflush`, `erp_mouvements` (Lakebase) | que le job de synchronisation ait tourné |
 
-En `uc`, les trois catalogues se demandent séparément : le silver du
-référentiel, celui du backflush, et `emotors_data_platform` pour les mouvements.
-Trois grants, potentiellement trois propriétaires — c'est ce qui rend le mode
-miroir plus souvent la voie praticable qu'il n'y paraît.
+En `uc`, deux catalogues se demandent : celui du référentiel — qui porte aussi
+les mouvements — et celui du backflush. Deux grants, potentiellement deux
+propriétaires.
 
 **La voie recommandée est le notebook**, `jobs/sync_erp_mirror_notebook.py` :
 importez-le dans le workspace (*Workspace → Import → File*), renseignez les
@@ -664,16 +652,13 @@ effectivement couvertes — c'est la réponse à la seule question que pose l'é
 *Backflush* quand il n'affiche rien : une période d'inventaire hors de cet
 intervalle ne renverra jamais de ligne.
 
-Les **mouvements de stock** suivent la même logique, sous leurs propres widgets :
-`sync_movements`, `movements_catalog` / `movements_schema` (le catalogue de la
-plateforme, distinct des deux autres), `movements_since`, `legal_entity` et le
-couple `scrap_warehouse` / `scrap_location`. `invent_trans` porte une vingtaine
-de millions de lignes : le notebook n'en copie aucune telle quelle, il écrit un
-**total par article et par jour** — la maille des requêtes du guide ERP, qui se
-retaille sur n'importe quelle période d'inventaire. Un total de période, lui,
-serait faux dès la campagne suivante. La dernière cellule affiche l'intervalle
-couvert **par nature** : les rebuts peuvent manquer là où les réceptions sont
-là, puisqu'ils viennent d'une autre table.
+Les **mouvements de stock** se copient sous deux widgets seulement :
+`sync_movements` et `movements_since`. La table est déjà agrégée et filtrée à la
+source — plus d'entité juridique, plus d'emplacement de rebut, plus de
+déduplication à paramétrer. Elle remonte à janvier 2022 et grossit d'un jour par
+jour, d'où la borne ; la maille référence × jour se retaille ensuite sur
+n'importe quelle période d'inventaire. La dernière cellule affiche l'intervalle
+couvert et le total de chacun des six flux.
 
 ```bash
 # 1. l'App d'abord : la migration 006 s'applique à son démarrage et ouvre

@@ -535,12 +535,11 @@ class StockFlowService:
     def refresh_erp(self, campaign: Campaign, run_id: str) -> dict[str, Any]:
         """Read production and theoretical consumption, and freeze them.
 
-        Both come from the backflush fact table, at two different grains: an
-        article is produced *as a parent* and consumed *as a component*, and a
-        sub-assembly is legitimately both. The production half is collapsed to
-        one row per parent and week before being summed — the fact table repeats
-        that quantity on every component line, so summing it raw multiplies the
-        output by the size of the bill of materials.
+        Two columns of the same movements table the three loaded steps read, so
+        the five flows of one comparison now come from one place. They used to be
+        derived from the backflush fact table, where a parent's output is
+        repeated on every component line and had to be collapsed by week before
+        being summed; the silver table publishes both already consolidated.
         """
         from ..ingest.erp import ErpReader, reading_from_mirror
 
@@ -554,14 +553,11 @@ class StockFlowService:
             period_end=run.period_end,
             limit=ctx.settings.max_import_rows,
         )
-        loaded_at = reader.backflush_loaded_at(
-            period_start=run.period_start, period_end=run.period_end
-        )
-        # Le modèle est construit *avant* le filtre, pas après. La table de faits
-        # écrit ses identifiants comme l'ERP les lui donne, le référentiel les
-        # stocke normalisés (majuscules, espaces réduits) : comparer la chaîne
-        # brute à des clés normalisées écartait des lignes parfaitement valides,
-        # et l'écran n'annonçait qu'un « 0 article » sans dire pourquoi. Tous les
+        # Le modèle est construit *avant* le filtre, pas après. La source écrit
+        # ses identifiants comme l'ERP les lui donne, le référentiel les stocke
+        # normalisés (majuscules, espaces réduits) : comparer la chaîne brute à
+        # des clés normalisées écartait des lignes parfaitement valides, et
+        # l'écran n'annonçait qu'un « 0 article » sans dire pourquoi. Tous les
         # autres imports construisent puis filtrent ; celui-ci faisait l'inverse.
         items = ctx.referentials.items_by_number(campaign.id)
         read = [
@@ -579,7 +575,6 @@ class StockFlowService:
             written = ctx.stock_flow.replace_erp(run.id, lines, conn=conn)
             ctx.stock_flow.upsert_run(
                 run.model_copy(update={
-                    "source_loaded_at": loaded_at,
                     "erp_refreshed_at": dt.datetime.now(dt.UTC),
                 }),
                 actor=ctx.actor,
@@ -611,12 +606,11 @@ class StockFlowService:
             "consumedQty": float(sum(line.consumed_qty for line in lines)),
             "periodStart": run.period_start.isoformat(),
             "periodEnd": run.period_end.isoformat(),
-            "source": reader.backflush_source,
+            "source": reader.movements_source(FlowKind.RECEIPT),
             # Une table vide ne se lit pas pareil selon d'où elle vient : dans le
             # catalogue c'est une période sans production, dans le miroir c'est
             # souvent le job de synchronisation qui n'a pas encore tourné.
             "mirror": reading_from_mirror(),
-            "sourceLoadedAt": loaded_at.isoformat() if loaded_at else None,
         }
 
     # ------------------------------------------------------------ step details
@@ -1001,9 +995,10 @@ def _run_payload(run: StockFlowRun) -> dict[str, Any]:
         "periodEnd": run.period_end.isoformat(),
         "weeks": (run.period_end - run.period_start).days // 7,
         "scrapLoaded": run.scrap_loaded,
-        "sourceLoadedAt": (
-            run.source_loaded_at.isoformat() if run.source_loaded_at else None
-        ),
+        # `source_loaded_at` n'est plus alimenté : il portait la fraîcheur de la
+        # table de faits du backflush, dont la comparaison ne dépend plus. La
+        # colonne reste en base — une migration livrée ne se réécrit pas — mais
+        # un champ toujours nul dans la réponse serait une promesse vide.
         "erpRefreshedAt": (
             run.erp_refreshed_at.isoformat() if run.erp_refreshed_at else None
         ),

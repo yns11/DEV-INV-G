@@ -1,17 +1,23 @@
 """Lire les mouvements de la période dans l'ERP, plutôt que de les retaper.
 
-Trois des quatre étapes de la comparaison se chargeaient à la main : réceptions,
+Trois des cinq étapes de la comparaison se chargeaient à la main : réceptions,
 expéditions, rebuts. L'ERP les connaît toutes les trois, et retaper ce qu'un
 magasin sait déjà est exactement ce qui a produit l'essentiel des erreurs du
 processus Excel. Une erreur de saisie y est en plus invisible : un total de
 réceptions faux décale tous les stocks attendus du même montant, et rien à
 l'écran n'a l'air anormal.
 
-Ce que ces tests fixent, ce sont les décisions du guide ERP qui portent le
-résultat — d'où viennent les chiffres, comment ils sont bornés, et ce que
-devient leur signe — puis la règle des grilles éditables : ce qu'on voit à
-l'écran *est* l'étape, donc l'enregistrer remplace, et ce qu'une main a validé
-ne se présente plus comme une lecture ERP.
+Les cinq quantités viennent maintenant d'**une seule table**,
+`silver_erp_ye.mouvements`, à la maille référence × jour et à raison d'une
+colonne par flux. Ce que l'application faisait elle-même contre trois tables
+bronze — filtrer l'entité juridique, écarter les lignes supprimées, reconnaître
+le rebut à son emplacement, dédoublonner la production d'un parent sur ses
+composants — est fait en amont.
+
+Ce que ces tests fixent : quelle colonne alimente quelle étape, comment la
+période est bornée, ce que devient le signe, et la règle des grilles éditables —
+ce qu'on voit à l'écran *est* l'étape, donc l'enregistrer remplace, et ce qu'une
+main a validé ne se présente plus comme une lecture ERP.
 """
 
 from __future__ import annotations
@@ -39,50 +45,132 @@ def reader() -> ErpReader:
 
 
 def query(kind: FlowKind) -> str:
-    _, statement = reader()._movement_query(
-        kind, start="2026-03-30", end="2026-06-29", limit=1000
+    """La requête d'une étape, capturée sans transport."""
+    captured: dict[str, str] = {}
+    rdr = reader()
+    rdr._read = lambda statement, *, source: (  # type: ignore[method-assign]
+        captured.update(sql=" ".join(statement.split()), source=source) or []
     )
-    return " ".join(statement.split())
+    rdr.fetch_movements(
+        kind, period_start=MONDAY_START, period_end=MONDAY_END, limit=1000
+    )
+    return captured["sql"]
 
 
-class TestWhereEachQuantityIsRead:
-    """Le guide désigne une table par domaine, et ce choix n'est pas neutre."""
+class TestWhichColumnFeedsWhichStep:
+    """Une table, six colonnes, et le bon appariement entre les deux.
 
-    def test_receipts_come_from_the_supplier_packing_slips(self):
-        """Des lignes rattachées à une commande : un chiffre contesté s'ouvre."""
-        assert "vend_packing_slip_trans" in query(FlowKind.RECEIPT)
+    C'est tout ce qui reste de ce qui était trois requêtes bronze. L'erreur
+    possible a changé de nature : elle n'est plus dans la logique de la requête
+    mais dans ce seul appariement — lire `expedition` pour les réceptions
+    donnerait un rapport parfaitement lisible et faux d'un bout à l'autre.
+    """
 
-    def test_shipments_come_from_the_customer_packing_slips(self):
-        assert "cust_packing_slip_trans" in query(FlowKind.SHIPMENT)
+    def test_receipts_read_the_receipt_column(self):
+        assert "SUM(reception)" in query(FlowKind.RECEIPT)
 
-    def test_scrap_is_identified_by_its_bin_not_by_a_journal(self):
-        """Production NOK, blocage qualité et sortie manuelle passent par trois
-        journaux différents et finissent tous au même emplacement. Filtrer sur
-        le journal en manquerait deux sur trois."""
-        sql = query(FlowKind.SCRAP)
-        assert "invent_trans" in sql
-        assert "invent_dim" in sql
-        assert "UPPER(d.`inventlocationid`) = 'QUAL VRAC'" in sql
-        assert "UPPER(d.`wmslocationid`) = 'QUA REBUT'" in sql
+    def test_shipments_read_the_shipment_column(self):
+        assert "SUM(expedition)" in query(FlowKind.SHIPMENT)
 
-    def test_every_query_excludes_deleted_rows(self):
+    def test_scrap_reads_the_scrap_column(self):
+        assert "SUM(rebut)" in query(FlowKind.SCRAP)
+
+    def test_no_step_reads_another_step_s_column(self):
+        """La garde qui rend l'appariement vérifiable plutôt que relu."""
+        columns = {"reception", "expedition", "rebut"}
+        for kind, own in (
+            (FlowKind.RECEIPT, "reception"),
+            (FlowKind.SHIPMENT, "expedition"),
+            (FlowKind.SCRAP, "rebut"),
+        ):
+            sql = query(kind)
+            for other in columns - {own}:
+                assert f"SUM({other})" not in sql
+
+    def test_production_and_theoretical_consumption_come_from_the_same_table(self):
+        """Les cinq flux d'une comparaison sortent désormais d'un seul endroit.
+
+        La production venait de la table de faits du backflush, qui la répète
+        sur chaque ligne composant du parent : la sommer telle quelle la
+        multipliait par la taille de la nomenclature, d'où une déduplication
+        hebdomadaire qu'il ne fallait pas oublier. La table silver la publie
+        déjà consolidée.
+        """
+        captured: dict[str, str] = {}
+        rdr = reader()
+        rdr._read = lambda statement, *, source: (  # type: ignore[method-assign]
+            captured.update(sql=" ".join(statement.split()), source=source) or []
+        )
+        rdr.fetch_stock_flow(
+            period_start=MONDAY_START, period_end=MONDAY_END, limit=1000
+        )
+        assert "SUM(production)" in captured["sql"]
+        assert "SUM(conso_theorique)" in captured["sql"]
+        assert captured["source"].endswith(".mouvements")
+        assert "fact_ecart_backflush" not in captured["sql"]
+
+
+class TestAReferenceOnlyAppearsInTheStepsItTouched:
+    """Le piège que la table unique introduit, et la garde qui l'annule.
+
+    Une ligne porte les six flux : une référence seulement produite y figure
+    donc avec zéro réception. Trois requêtes séparées ne la voyaient jamais ;
+    une seule la ramène. Sans filtre, le compte annoncé gonfle — « 3 article(s)
+    lus » pour deux qui en ont — et la grille éditable se remplit de lignes à
+    zéro qu'il faut apprendre à sauter.
+    """
+
+    def test_a_step_drops_the_references_whose_total_is_nil(self):
         for kind in FlowKind:
-            assert "IsDelete" in query(kind)
+            assert "HAVING" in query(kind)
 
-    def test_every_query_is_scoped_to_one_legal_entity(self):
-        """Sans ce filtre, la comparaison d'un site reçoit les flux d'un autre."""
+    def test_production_and_consumption_are_kept_when_either_is_non_nil(self):
+        """Un parent produit sans consommation reste une ligne du rapport."""
+        captured: dict[str, str] = {}
+        rdr = reader()
+        rdr._read = lambda statement, *, source: (  # type: ignore[method-assign]
+            captured.update(sql=" ".join(statement.split())) or []
+        )
+        rdr.fetch_stock_flow(
+            period_start=MONDAY_START, period_end=MONDAY_END, limit=10
+        )
+        assert (
+            "HAVING SUM(production) <> 0 OR SUM(conso_theorique) <> 0"
+            in captured["sql"]
+        )
+
+
+class TestTheTableIsTheOneTheReferentialLivesIn:
+    """Et non un second catalogue derrière un second grant.
+
+    Les tables bronze exigeaient `USE CATALOG` sur `emotors_data_platform`,
+    accordé par un autre propriétaire que celui du référentiel. Une application
+    déjà passée au miroir parce que le premier grant manquait n'avait aucune
+    raison d'avoir obtenu celui-là : le bouton s'affichait et échouait.
+    """
+
+    def test_it_sits_in_the_referential_s_own_schema(self):
+        from inventory.config import get_settings
+
+        settings = get_settings()
+        assert settings.erp_movements_fqn.startswith(settings.erp_schema + ".")
+
+    def test_no_bronze_table_is_named_anywhere(self):
         for kind in FlowKind:
-            assert "`dataareaid` = 'NPEM'" in query(kind)
+            sql = query(kind)
+            assert "bronze_erp" not in sql
+            assert "packing_slip" not in sql
+            assert "invent_dim" not in sql
 
 
-class TestTheBoundsMatchTheOtherHalfOfTheComparison:
-    def test_the_end_is_exclusive_like_the_backflush_window(self):
+class TestTheBoundsMatchTheRestOfTheComparison:
+    def test_the_end_is_exclusive_on_every_flow(self):
         """Une borne incluse ici et exclue là compterait deux fois le dernier
         lundi, dans une seule et même comparaison."""
         for kind in FlowKind:
             sql = query(kind)
-            assert ">= DATE '2026-03-30'" in sql
-            assert "<  DATE '2026-06-29'".replace("  ", " ") in sql
+            assert "date_mouvement >= DATE '2026-03-30'" in sql
+            assert "date_mouvement < DATE '2026-06-29'" in sql
 
     def test_a_period_that_is_not_two_mondays_is_refused(self):
         with pytest.raises(ValidationError):
@@ -91,20 +179,6 @@ class TestTheBoundsMatchTheOtherHalfOfTheComparison:
                 period_start=dt.date(2026, 4, 1),
                 period_end=MONDAY_END,
                 limit=10,
-            )
-
-
-class TestConfigurationCannotSmuggleSqlIn:
-    def test_a_quote_in_a_configured_value_is_refused(self):
-        """Ces valeurs viennent du déploiement, pas d'une requête — mais elles
-        sont interpolées, et une erreur de configuration doit se dire."""
-        rdr = reader()
-        rdr._settings = rdr._settings.model_copy(
-            update={"erp_legal_entity": "NPEM' OR '1'='1"}
-        )
-        with pytest.raises(ValidationError):
-            rdr._movement_query(
-                FlowKind.RECEIPT, start="2026-03-30", end="2026-06-29", limit=10
             )
 
 

@@ -9,6 +9,7 @@ a hundred times its worth and nothing upstream complains.
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 import pytest
@@ -490,13 +491,13 @@ class TestTheLocalMirror:
 
 
 class TestTheMovementsFollowTheSameSwitch:
-    """Réceptions, expéditions et rebuts basculent comme le reste.
+    """Les mouvements basculent vers le miroir comme le reste du référentiel.
 
-    Elles ont failli être l'exception : elles vivent dans `bronze_erp`, un
-    *troisième* catalogue, donc derrière un troisième `USE CATALOG`. Une
-    application déjà passée au miroir parce que le premier grant manquait n'a
-    aucune raison d'avoir le troisième — la lecture catalogue y aurait donc
-    échoué à tous les coups, sur un bouton pourtant proposé.
+    Ils vivent maintenant dans le schéma du référentiel, donc derrière le même
+    grant : la lecture catalogue n'est plus condamnée d'avance là où le miroir
+    sert. La bascule reste vérifiée ici parce que c'est elle qui décide de quel
+    côté la requête part, et qu'une lecture catalogue en mode miroir échouerait
+    sur un bouton pourtant proposé.
     """
 
     def query(self, kind, *, mirror: bool, monkeypatch):
@@ -507,12 +508,19 @@ class TestTheMovementsFollowTheSameSwitch:
             monkeypatch.setenv("INV_ERP_SOURCE", "mirror")
         monkeypatch.setenv("DATABRICKS_WAREHOUSE_ID", "wh-1")
         get_settings.cache_clear()
+        captured: dict = {}
         try:
             reader = ErpReader()
-            table, statement = reader._movement_query(
-                kind, start="2026-03-30", end="2026-06-29", limit=500
+            reader._read = lambda statement, *, source: (
+                captured.update(sql=" ".join(statement.split()), table=source) or []
             )
-            return table, " ".join(statement.split()), reader.movements_source(kind)
+            reader.fetch_movements(
+                kind,
+                period_start=dt.date(2026, 3, 30),
+                period_end=dt.date(2026, 6, 29),
+                limit=500,
+            )
+            return captured["table"], captured["sql"], reader.movements_source(kind)
         finally:
             monkeypatch.delenv("INV_ERP_SOURCE", raising=False)
             monkeypatch.delenv("DATABRICKS_WAREHOUSE_ID", raising=False)
@@ -524,34 +532,39 @@ class TestTheMovementsFollowTheSameSwitch:
     ):
         from inventory.domain.enums import FlowKind
 
-        kind = FlowKind[kind_name]
-        table, statement, source = self.query(kind, mirror=True, monkeypatch=monkeypatch)
-        assert table == "erp_mouvement_stock"
-        assert source == "erp_mouvement_stock"
-        # Aucune trace du catalogue : c'est exactement ce qui échouait.
-        assert "emotors_data_platform" not in statement
-        assert f"kind = '{kind_name}'" in statement
+        table, statement, source = self.query(
+            FlowKind[kind_name], mirror=True, monkeypatch=monkeypatch
+        )
+        assert table == "erp_mouvements"
+        assert source == "erp_mouvements"
+        assert "emotors_data_champions" not in statement
 
-    @pytest.mark.parametrize(
-        "kind_name,expected",
-        [
-            ("RECEIPT", "vend_packing_slip_trans"),
-            ("SHIPMENT", "cust_packing_slip_trans"),
-            ("SCRAP", "invent_trans"),
-        ],
-    )
-    def test_the_catalogue_is_read_otherwise(self, kind_name, expected, monkeypatch):
+    @pytest.mark.parametrize("kind_name", ["RECEIPT", "SHIPMENT", "SCRAP"])
+    def test_the_catalogue_is_read_otherwise(self, kind_name, monkeypatch):
         from inventory.domain.enums import FlowKind
 
         table, statement, source = self.query(
             FlowKind[kind_name], mirror=False, monkeypatch=monkeypatch
         )
-        assert expected in table
-        assert expected in source
-        assert "erp_mouvement_stock" not in statement
+        assert table.endswith(".mouvements")
+        assert source == table
+        assert "emotors_data_champions" in statement
+
+    def test_both_transports_read_the_same_column_for_a_step(self, monkeypatch):
+        """Le miroir est une copie fidèle : même nom, donc même requête.
+
+        C'est ce qui permet à une seule requête de servir les deux transports.
+        Une copie qui renommerait ses colonnes ferait deux dialectes à tenir.
+        """
+        from inventory.domain.enums import FlowKind
+
+        mirrored = self.query(FlowKind.SHIPMENT, mirror=True, monkeypatch=monkeypatch)[1]
+        direct = self.query(FlowKind.SHIPMENT, mirror=False, monkeypatch=monkeypatch)[1]
+        assert "SUM(expedition)" in mirrored
+        assert "SUM(expedition)" in direct
 
     def test_both_transports_bound_the_period_the_same_way(self, monkeypatch):
-        """Début inclus, fin exclue — comme la moitié backflush de la période.
+        """Début inclus, fin exclue, des deux côtés.
 
         Une borne incluse ici et exclue là compterait le lundi de clôture deux
         fois dans la même comparaison.
@@ -562,35 +575,8 @@ class TestTheMovementsFollowTheSameSwitch:
             _, statement, _ = self.query(
                 FlowKind.RECEIPT, mirror=mirror, monkeypatch=monkeypatch
             )
-            assert ">= DATE '2026-03-30'" in statement
-            assert "< DATE '2026-06-29'" in statement
-
-    def test_the_scrap_bin_is_what_identifies_a_write_off(self, monkeypatch):
-        """Et non le journal : trois chemins y mènent, avec trois journaux."""
-        from inventory.domain.enums import FlowKind
-
-        _, statement, _ = self.query(
-            FlowKind.SCRAP, mirror=False, monkeypatch=monkeypatch
-        )
-        assert "'QUAL VRAC'" in statement
-        assert "'QUA REBUT'" in statement
-        assert "invent_dim" in statement
-
-    def test_every_catalogue_read_is_scoped_to_the_legal_entity(self, monkeypatch):
-        """Sans ce filtre, une autre usine entre dans la comparaison."""
-        from inventory.domain.enums import FlowKind
-
-        for kind in FlowKind:
-            _, statement, _ = self.query(kind, mirror=False, monkeypatch=monkeypatch)
-            assert "`dataareaid` = 'NPEM'" in statement
-
-    def test_a_quote_in_a_configured_value_is_refused(self, monkeypatch):
-        """Ces valeurs sont interpolées : une apostrophe casserait la requête."""
-        from inventory.errors import ValidationError
-        from inventory.ingest.erp import _literal
-
-        with pytest.raises(ValidationError):
-            _literal("N'PEM")
+            assert "date_mouvement >= DATE '2026-03-30'" in statement
+            assert "date_mouvement < DATE '2026-06-29'" in statement
 
 
 class TestTheColumnContract:

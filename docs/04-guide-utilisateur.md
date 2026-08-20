@@ -560,8 +560,36 @@ stock attendu = stock initial + réceptions + production
 ```
 
 Choisissez la **campagne de départ** — la plus ancienne par date d'inventaire —
-puis chargez les réceptions, les expéditions et, si vous les avez, les rebuts.
-La production et la consommation théorique se lisent dans l'ERP.
+puis alimentez les quatre mesures de la période.
+
+**Tout charger de l'ERP** les lit toutes les quatre d'un coup, chacune dans la
+table de son domaine :
+
+| Mesure | Lue dans | Comment |
+|---|---|---|
+| Réceptions | Bons de réception fournisseur | Lignes rattachées à une commande d'achat |
+| Expéditions | Bons de livraison client | Lignes rattachées à une commande de vente |
+| Rebuts | Mouvements de stock | Tout ce qui entre à l'emplacement rebut, quel que soit le journal |
+| Production & conso. théorique | Table de faits backflush | Production dédoublonnée par semaine |
+
+Le bouton n'est pas tout-ou-rien : les quatre viennent de quatre tables, et une
+lecture qui échoue n'annule pas les trois autres — le message dit laquelle et
+pourquoi. Chaque mesure a aussi son propre bouton de lecture, pour la recharger
+seule. Le chargement par fichier ou par collage reste disponible pour les trois
+premières.
+
+**Les sous-sections** — Réceptions, Production & conso., Expéditions, Rebuts —
+montrent chaque mesure ligne par ligne, dans une grille filtrable, exportable et
+**éditable**. Un stock attendu qui dérape se débogue par la ligne, et corriger
+une quantité repérée ne doit pas obliger à reconstruire tout un export.
+
+Deux règles y valent d'être connues :
+
+- **enregistrer remplace l'étape** : une ligne supprimée à l'écran disparaît, ce
+  qui est le seul moyen pour la grille d'exprimer une suppression ;
+- la colonne **Provenance** dit d'où vient chaque quantité — *lu dans l'ERP*,
+  *chargé par fichier* ou *saisi à la main*. Enregistrer une grille marque toute
+  l'étape comme saisie : une main y est passée et l'a validée.
 
 **Quels stocks sont comparés** se choisit ensuite, et se change à tout moment :
 

@@ -76,6 +76,38 @@ class Settings(BaseSettings):
     erp_backflush_table: str = Field(
         default="fact_ecart_backflush", alias="INV_ERP_BACKFLUSH_TABLE"
     )
+    #: Bronze tables holding the raw D365 stock movements — receipts, shipments
+    #: and scrap. Bronze rather than silver because no curated layer publishes
+    #: them yet; the queries carry the guide's filters (`IsDelete`, legal entity)
+    #: that a silver view would normally have applied.
+    erp_movements_schema: str = Field(
+        default="emotors_data_platform.bronze_erp", alias="INV_ERP_MOVEMENTS_SCHEMA"
+    )
+    erp_receipts_table: str = Field(
+        default="vend_packing_slip_trans", alias="INV_ERP_RECEIPTS_TABLE"
+    )
+    erp_shipments_table: str = Field(
+        default="cust_packing_slip_trans", alias="INV_ERP_SHIPMENTS_TABLE"
+    )
+    #: Scrap has no table of its own: it is a movement in `invent_trans` towards
+    #: a dedicated bin, identified by joining the stock dimensions.
+    erp_movements_table: str = Field(
+        default="invent_trans", alias="INV_ERP_MOVEMENTS_TABLE"
+    )
+    erp_dimensions_table: str = Field(
+        default="invent_dim", alias="INV_ERP_DIMENSIONS_TABLE"
+    )
+    #: The legal entity these movements belong to. Every bronze table carries
+    #: several, and reading them all would add another plant's receipts to this
+    #: one's comparison.
+    erp_legal_entity: str = Field(default="NPEM", alias="INV_ERP_LEGAL_ENTITY")
+    #: Where scrapped parts land. Filtering on the bin rather than on the journal
+    #: type is what makes the figure exhaustive: production NOK, quality holds and
+    #: manual write-offs all end up here, and each takes a different journal.
+    erp_scrap_warehouse: str = Field(
+        default="QUAL VRAC", alias="INV_ERP_SCRAP_WAREHOUSE"
+    )
+    erp_scrap_location: str = Field(default="QUA REBUT", alias="INV_ERP_SCRAP_LOCATION")
     #: Where the referential is read from. ``uc`` queries the silver tables
     #: directly and needs USE CATALOG on the ERP's catalog for the application's
     #: service principal — a grant only a catalog owner can make. ``mirror``
@@ -169,6 +201,26 @@ class Settings(BaseSettings):
     @property
     def erp_backflush_fqn(self) -> str:
         return f"{self.erp_backflush_schema}.{self.erp_backflush_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_receipts_fqn(self) -> str:
+        return f"{self.erp_movements_schema}.{self.erp_receipts_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_shipments_fqn(self) -> str:
+        return f"{self.erp_movements_schema}.{self.erp_shipments_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_movements_fqn(self) -> str:
+        return f"{self.erp_movements_schema}.{self.erp_movements_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_dimensions_fqn(self) -> str:
+        return f"{self.erp_movements_schema}.{self.erp_dimensions_table}"
 
 
 @functools.lru_cache(maxsize=1)

@@ -853,12 +853,19 @@ export interface StockFlowRun {
   scrapLoaded: boolean
   sourceLoadedAt: string | null
   erpRefreshedAt: string | null
+  /** Quand chaque étape a été lue dans l'ERP — une date par table interrogée. */
+  receiptsRefreshedAt: string | null
+  shipmentsRefreshedAt: string | null
+  scrapRefreshedAt: string | null
   baselineCode?: string
   baselineLabel?: string
   baselineCountDate?: string
   campaignCode?: string
   campaignCountDate?: string
 }
+
+/** D'où vient une quantité de la comparaison. */
+export type FlowSource = 'ERP' | 'FILE' | 'MANUAL'
 
 /** Où en est chaque étape de chargement. */
 export interface StockFlowStep {
@@ -868,6 +875,58 @@ export interface StockFlowStep {
   totalQty: number
   loaded: boolean
   optional: boolean
+  /**
+   * Les provenances présentes dans l'étape, et la date de sa dernière lecture
+   * ERP. Quatre étapes affichant un nombre se ressemblent ; « lu dans l'ERP il
+   * y a deux minutes » et « corrigé à la main » ne se défendent pas pareil.
+   */
+  sources: FlowSource[]
+  refreshedAt: string | null
+  /** La sous-section qui détaille cette étape. */
+  view: string
+}
+
+/** Une ligne d'étape chargée, telle que la grille éditable la montre. */
+export interface StockFlowInputRow {
+  itemNumber: string
+  name: string
+  unit: string
+  qty: number
+  source: FlowSource
+}
+
+/** Une ligne de l'instantané production / consommation théorique. */
+export interface StockFlowErpRow {
+  itemNumber: string
+  name: string
+  unit: string
+  producedQty: number
+  consumedQty: number
+  source: FlowSource
+}
+
+/** Ce que renvoie une lecture ERP d'une étape. */
+export interface StockFlowErpRead {
+  kind: string
+  label: string
+  /** Retenus : lus *et* présents au référentiel de la campagne. */
+  items: number
+  /** Lus dans l'ERP, avant filtrage. */
+  rowsRead: number
+  outOfScope: number
+  totalQty: number
+  /** Somme signée telle que l'ERP la donne : négative = sortie nette. */
+  netQty: number
+  periodStart: string
+  periodEnd: string
+  source: string
+}
+
+export interface StockFlowSaveResult {
+  rows: number
+  /** Les références absentes du référentiel, nommées plutôt qu'ignorées. */
+  unknown: string[]
+  unknownCount: number
 }
 
 /** Un maillon de la chaîne, du stock initial au stock compté final. */

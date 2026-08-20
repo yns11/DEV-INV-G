@@ -111,6 +111,27 @@ def refresh_erp(
     return service.refresh_erp(campaign, run_id)
 
 
+@router.post("/{run_id}/erp/{kind}", summary="Lire une étape dans l'ERP")
+def refresh_movements(
+    campaign: CampaignDep, run_id: str, kind: str, service: Service
+) -> dict[str, Any]:
+    """Read receipts, shipments or scrap from the ERP rather than from a file."""
+    return service.refresh_movements(campaign, run_id, _kind(kind))
+
+
+@router.post("/{run_id}/erp-all", summary="Tout charger de l'ERP")
+def refresh_all(
+    campaign: CampaignDep, run_id: str, service: Service
+) -> dict[str, Any]:
+    """The four measures in one gesture, each reporting its own outcome.
+
+    Deliberately not all-or-nothing: the four come from four tables, and « les
+    réceptions sont là, les rebuts non » is a state worth landing in rather than
+    rolling back.
+    """
+    return service.refresh_all(campaign, run_id)
+
+
 @router.post("/{run_id}/scrap/skip", summary="Ignorer l'étape des rebuts")
 def skip_scrap(
     campaign: CampaignDep, run_id: str, service: Service
@@ -187,20 +208,42 @@ def list_inputs(
     campaign: CampaignDep,
     run_id: str,
     kind: str,
-    ctx: Ctx,
     service: Service,
     limit: Annotated[int, Query(ge=1, le=50_000)] = 20_000,
 ) -> list[dict[str, Any]]:
-    wanted = _kind(kind)
-    # Resolved through the service so a run belonging to another campaign is a
-    # 404 here as well as everywhere else.
-    run = service.report(campaign, run_id)["run"]
-    return [
-        {
-            "item_number": entry.item_number,
-            "qty": float(entry.qty),
-            "unit": entry.unit,
-        }
-        for entry in ctx.stock_flow.list_inputs(run["id"])
-        if entry.kind is wanted
-    ][:limit]
+    """One step's rows, designation included, for its editable grid."""
+    return service.step_rows(campaign, run_id, _kind(kind))[:limit]
+
+
+@router.put("/{run_id}/inputs/{kind}", summary="Enregistrer une étape corrigée")
+def save_inputs(
+    campaign: CampaignDep,
+    run_id: str,
+    kind: str,
+    payload: RowsRequest,
+    service: Service,
+) -> dict[str, Any]:
+    """Replace one step with the grid as edited on screen.
+
+    A replacement rather than a merge: a row deleted in the grid has to
+    disappear, and merging would make deletion the one edit the grid cannot
+    express.
+    """
+    return service.save_inputs(campaign, run_id, _kind(kind), payload.rows)
+
+
+@router.get("/{run_id}/erp-rows", summary="Production et consommation figées")
+def list_erp_rows(
+    campaign: CampaignDep,
+    run_id: str,
+    service: Service,
+    limit: Annotated[int, Query(ge=1, le=50_000)] = 20_000,
+) -> list[dict[str, Any]]:
+    return service.erp_rows(campaign, run_id)[:limit]
+
+
+@router.put("/{run_id}/erp-rows", summary="Enregistrer production et consommation")
+def save_erp_rows(
+    campaign: CampaignDep, run_id: str, payload: RowsRequest, service: Service
+) -> dict[str, Any]:
+    return service.save_erp(campaign, run_id, payload.rows)

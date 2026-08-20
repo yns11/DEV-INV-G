@@ -21,6 +21,7 @@ from ..domain.enums import (
     DataSource,
     ExclusionScope,
     FlowKind,
+    FlowSource,
     ItemCommonality,
     ItemType,
     JournalKind,
@@ -745,6 +746,7 @@ def map_stock_flow_inputs(
                 kind=kind,
                 qty=row.get("qty") or 0,
                 unit=row.get("unit") or "PCE",
+                source=FlowSource.FILE,
             )
         except (ValueError, KeyError) as exc:
             errors.append(RowError(index, "qty", row.get("qty"), str(exc)))

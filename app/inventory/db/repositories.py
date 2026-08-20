@@ -19,7 +19,7 @@ import json
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 
 import psycopg
 from psycopg.rows import dict_row
@@ -2048,9 +2048,17 @@ class StockFlowRepository(_Base):
 
     _RUN_COLUMNS = (
         "id, campaign_id, baseline_campaign_id, period_start, period_end, "
-        "scrap_loaded, source_loaded_at, erp_refreshed_at, created_by, "
-        "created_at, updated_at"
+        "scrap_loaded, source_loaded_at, erp_refreshed_at, "
+        "receipts_refreshed_at, shipments_refreshed_at, scrap_refreshed_at, "
+        "created_by, created_at, updated_at"
     )
+
+    #: Which run column records the ERP read of each loaded step.
+    _REFRESH_COLUMN: ClassVar[dict[FlowKind, str]] = {
+        FlowKind.RECEIPT: "receipts_refreshed_at",
+        FlowKind.SHIPMENT: "shipments_refreshed_at",
+        FlowKind.SCRAP: "scrap_refreshed_at",
+    }
 
     def list_runs(self, campaign_id: str) -> list[StockFlowRun]:
         rows = self._fetch_all(
@@ -2108,7 +2116,8 @@ class StockFlowRepository(_Base):
 
     def list_inputs(self, run_id: str) -> list[StockFlowInput]:
         rows = self._fetch_all(
-            "SELECT run_id, item_number, kind, qty, unit FROM stock_flow_input "
+            "SELECT run_id, item_number, kind, qty, unit, source "
+            "FROM stock_flow_input "
             "WHERE run_id = %s ORDER BY kind, item_number",
             (run_id,),
         )
@@ -2116,9 +2125,28 @@ class StockFlowRepository(_Base):
             StockFlowInput(
                 run_id=str(r["run_id"]), item_number=r["item_number"],
                 kind=r["kind"], qty=r["qty"], unit=r["unit"],
+                source=r["source"],
             )
             for r in rows
         ]
+
+    def mark_refreshed(
+        self,
+        run_id: str,
+        kind: FlowKind,
+        *,
+        at: dt.datetime,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Stamp when one step was last read from the ERP."""
+        column = self._REFRESH_COLUMN[kind]
+        self._execute(
+            f"UPDATE stock_flow_run SET {column} = %s, updated_by = %s, "
+            "updated_at = now() WHERE id = %s",
+            (at, actor, run_id),
+            conn=conn,
+        )
 
     def replace_inputs(
         self,
@@ -2144,12 +2172,17 @@ class StockFlowRepository(_Base):
             if not lines:
                 return 0
             cur.executemany(
-                "INSERT INTO stock_flow_input (run_id, item_number, kind, qty, unit) "
-                "VALUES (%s,%s,%s,%s,%s) "
+                "INSERT INTO stock_flow_input "
+                "(run_id, item_number, kind, qty, unit, source) "
+                "VALUES (%s,%s,%s,%s,%s,%s) "
                 "ON CONFLICT (run_id, item_number, kind) DO UPDATE SET "
-                "qty = stock_flow_input.qty + EXCLUDED.qty, unit = EXCLUDED.unit",
+                "qty = stock_flow_input.qty + EXCLUDED.qty, unit = EXCLUDED.unit, "
+                "source = EXCLUDED.source",
                 [
-                    (run_id, line.item_number, str(kind), line.qty, line.unit)
+                    (
+                        run_id, line.item_number, str(kind), line.qty, line.unit,
+                        str(line.source),
+                    )
                     for line in lines
                 ],
             )
@@ -2159,7 +2192,7 @@ class StockFlowRepository(_Base):
 
     def list_erp(self, run_id: str) -> list[StockFlowErp]:
         rows = self._fetch_all(
-            "SELECT run_id, item_number, produced_qty, consumed_qty "
+            "SELECT run_id, item_number, produced_qty, consumed_qty, source "
             "FROM stock_flow_erp WHERE run_id = %s ORDER BY item_number",
             (run_id,),
         )
@@ -2167,6 +2200,7 @@ class StockFlowRepository(_Base):
             StockFlowErp(
                 run_id=str(r["run_id"]), item_number=r["item_number"],
                 produced_qty=r["produced_qty"], consumed_qty=r["consumed_qty"],
+                source=r["source"],
             )
             for r in rows
         ]
@@ -2186,9 +2220,15 @@ class StockFlowRepository(_Base):
                 return 0
             cur.executemany(
                 "INSERT INTO stock_flow_erp (run_id, item_number, produced_qty, "
-                "consumed_qty) VALUES (%s,%s,%s,%s)",
+                "consumed_qty, source) VALUES (%s,%s,%s,%s,%s) "
+                "ON CONFLICT (run_id, item_number) DO UPDATE SET "
+                "produced_qty = EXCLUDED.produced_qty, "
+                "consumed_qty = EXCLUDED.consumed_qty, source = EXCLUDED.source",
                 [
-                    (run_id, line.item_number, line.produced_qty, line.consumed_qty)
+                    (
+                        run_id, line.item_number, line.produced_qty,
+                        line.consumed_qty, str(line.source),
+                    )
                     for line in lines
                 ],
             )
@@ -2205,6 +2245,9 @@ class StockFlowRepository(_Base):
             scrap_loaded=row["scrap_loaded"],
             source_loaded_at=row["source_loaded_at"],
             erp_refreshed_at=row["erp_refreshed_at"],
+            receipts_refreshed_at=row["receipts_refreshed_at"],
+            shipments_refreshed_at=row["shipments_refreshed_at"],
+            scrap_refreshed_at=row["scrap_refreshed_at"],
             created_by=row["created_by"] or "",
             created_at=row["created_at"],
             updated_at=row["updated_at"],

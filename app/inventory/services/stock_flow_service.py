@@ -48,15 +48,16 @@ from decimal import Decimal
 from typing import Any
 
 from ..db import new_id
-from ..domain.enums import AuditAction, FlowKind, StockBasis
+from ..domain.enums import AuditAction, FlowKind, FlowSource, StockBasis
 from ..domain.models import (
     Campaign,
     StockFlowErp,
+    StockFlowInput,
     StockFlowLine,
     StockFlowRun,
 )
 from ..domain.quantities import ZERO, quantize_money, quantize_qty
-from ..errors import NotFoundError, ValidationError
+from ..errors import InventoryError, NotFoundError, ValidationError
 from .context import ServiceContext
 from .import_service import ImportOutcome, monday_of
 
@@ -85,6 +86,15 @@ BASIS_LABELS = {
 BASIS_STOCK_LABELS = {
     StockBasis.PHYSICAL: "Stock physique",
     StockBasis.BOOK: "Stock ERP",
+}
+
+#: The sub-section each loaded step opens in. Declared here rather than on the
+#: screen so the button that says « 0 article » and the tab that shows which
+#: ones can never point at two different places.
+_STEP_VIEWS = {
+    FlowKind.RECEIPT: "receptions",
+    FlowKind.SHIPMENT: "expeditions",
+    FlowKind.SCRAP: "rebuts",
 }
 
 
@@ -246,6 +256,125 @@ class StockFlowService:
         })
         return outcome
 
+    def save_inputs(
+        self,
+        campaign: Campaign,
+        run_id: str,
+        kind: FlowKind,
+        rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Write back one step's grid, as edited on screen.
+
+        A full replacement of that step and of nothing else: what the grid shows
+        *is* the step, so a row deleted on screen has to disappear in the
+        database too — merging would make deletion the one edit the grid cannot
+        express. The other two steps are untouched.
+
+        Everything written here is marked ``MANUAL``, including a row that came
+        from the ERP and was left alone: once a human has passed over the grid
+        and saved it, the whole step is their figure, and claiming otherwise for
+        the rows they happened not to touch would be a distinction the screen
+        cannot honestly draw.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "stock_flow")
+        run = self._run(campaign, run_id)
+        items = ctx.referentials.items_by_number(campaign.id)
+
+        lines: list[StockFlowInput] = []
+        unknown: list[str] = []
+        for row in rows:
+            number = str(row.get("item_number") or row.get("itemNumber") or "").strip()
+            if not number:
+                continue
+            line = StockFlowInput(
+                run_id=run.id,
+                item_number=number,
+                kind=kind,
+                qty=row.get("qty") or 0,
+                unit=str(row.get("unit") or "PCE"),
+                source=FlowSource.MANUAL,
+            )
+            if line.item_number not in items:
+                unknown.append(line.item_number)
+                continue
+            lines.append(line)
+
+        with ctx.db.transaction() as conn:
+            written = ctx.stock_flow.replace_inputs(run.id, kind, lines, conn=conn)
+            if kind is FlowKind.SCRAP:
+                ctx.stock_flow.mark_scrap_loaded(run.id, actor=ctx.actor)
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.UPDATE,
+                entity_type="stock_flow_input",
+                entity_id=run.id,
+                summary=f"{written} ligne(s) de {FLOW_LABELS[kind]} corrigée(s)",
+                after={"kind": str(kind), "rows": written},
+                conn=conn,
+            )
+        return {
+            "kind": str(kind),
+            "rows": written,
+            "totalQty": float(sum(line.qty for line in lines)),
+            # Une référence hors référentiel n'est pas rejetée en silence : elle
+            # est nommée, parce que c'est presque toujours une faute de frappe.
+            "unknown": unknown[:20],
+            "unknownCount": len(unknown),
+        }
+
+    def save_erp(
+        self, campaign: Campaign, run_id: str, rows: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Write back the production / theoretical-consumption grid.
+
+        Same rule as the loaded steps: what the grid shows replaces the snapshot
+        wholesale, and the result is marked as a human's figure. The next ERP
+        read overwrites it — which is the intended way out of a correction that
+        turned out to be wrong.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "stock_flow")
+        run = self._run(campaign, run_id)
+        items = ctx.referentials.items_by_number(campaign.id)
+
+        lines: list[StockFlowErp] = []
+        unknown: list[str] = []
+        for row in rows:
+            number = str(row.get("item_number") or row.get("itemNumber") or "").strip()
+            if not number:
+                continue
+            line = StockFlowErp(
+                run_id=run.id,
+                item_number=number,
+                produced_qty=row.get("produced_qty") or row.get("producedQty") or 0,
+                consumed_qty=row.get("consumed_qty") or row.get("consumedQty") or 0,
+                source=FlowSource.MANUAL,
+            )
+            if line.item_number not in items:
+                unknown.append(line.item_number)
+                continue
+            lines.append(line)
+
+        with ctx.db.transaction() as conn:
+            written = ctx.stock_flow.replace_erp(run.id, lines, conn=conn)
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.UPDATE,
+                entity_type="stock_flow_erp",
+                entity_id=run.id,
+                summary=f"{written} ligne(s) de production/consommation corrigée(s)",
+                after={"rows": written},
+                conn=conn,
+            )
+        return {
+            "rows": written,
+            "producedQty": float(sum(line.produced_qty for line in lines)),
+            "consumedQty": float(sum(line.consumed_qty for line in lines)),
+            "unknown": unknown[:20],
+            "unknownCount": len(unknown),
+        }
+
     def skip_scrap(self, campaign: Campaign, run_id: str) -> StockFlowRun:
         """Record that the scrap step was deliberately left out.
 
@@ -269,6 +398,134 @@ class StockFlowService:
         return self._run(campaign, run_id)
 
     # ------------------------------------------------------------- ERP figures
+
+    def refresh_movements(
+        self, campaign: Campaign, run_id: str, kind: FlowKind
+    ) -> dict[str, Any]:
+        """Read one loaded step from the ERP instead of asking for a file.
+
+        The three quantities the comparison used to demand by hand — receipts,
+        shipments, scrap — are all recorded in the ERP already. Retyping what a
+        warehouse already knows is where the legacy process produced most of its
+        errors, and an inventory comparison is precisely where such an error is
+        invisible: a wrong receipt total shifts every expected stock by the same
+        amount and nothing on screen looks odd.
+
+        The ERP signs these movements its own way — a return is a negative
+        shipment, scrap leaves stock so it is negative. The step carries the
+        direction, so the magnitude is what is stored; the net sign is reported
+        back so a period whose returns outweigh its shipments is visible rather
+        than silently flipped.
+        """
+        from ..ingest.erp import ErpReader
+
+        ctx = self.ctx
+        ctx.guard(campaign, "stock_flow")
+        run = self._run(campaign, run_id)
+
+        reader = ErpReader()
+        rows = reader.fetch_movements(
+            kind,
+            period_start=run.period_start,
+            period_end=run.period_end,
+            limit=ctx.settings.max_import_rows,
+        )
+        # Comme pour la production : on construit le modèle — donc on normalise
+        # la référence — *avant* de la confronter au référentiel. Comparer la
+        # chaîne brute de l'ERP à des clés normalisées écartait des lignes
+        # parfaitement valides sans rien dire.
+        items = ctx.referentials.items_by_number(campaign.id)
+        read = [
+            StockFlowInput(
+                run_id=run.id,
+                item_number=row["item_number"],
+                kind=kind,
+                qty=row["qty"],
+                unit=items[row["item_number"]].unit
+                if row["item_number"] in items
+                else "PCE",
+                source=FlowSource.ERP,
+            )
+            for row in rows
+        ]
+        lines = [line for line in read if line.item_number in items]
+        net = sum(Decimal(str(row["qty"])) for row in rows) if rows else ZERO
+
+        now = dt.datetime.now(dt.UTC)
+        with ctx.db.transaction() as conn:
+            written = ctx.stock_flow.replace_inputs(run.id, kind, lines, conn=conn)
+            ctx.stock_flow.mark_refreshed(
+                run.id, kind, at=now, actor=ctx.actor, conn=conn
+            )
+            if kind is FlowKind.SCRAP:
+                ctx.stock_flow.mark_scrap_loaded(run.id, actor=ctx.actor)
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.IMPORT,
+                entity_type="stock_flow_input",
+                entity_id=run.id,
+                summary=(
+                    f"{written} ligne(s) de {FLOW_LABELS[kind]} lue(s) dans l'ERP"
+                ),
+                after={"kind": str(kind), "rows": written, "source": "ERP"},
+                conn=conn,
+            )
+
+        return {
+            "kind": str(kind),
+            "label": FLOW_LABELS[kind].capitalize(),
+            "items": written,
+            "rowsRead": len(rows),
+            "outOfScope": len(rows) - written,
+            "totalQty": float(sum(line.qty for line in lines)),
+            "netQty": float(quantize_qty(net)),
+            "periodStart": run.period_start.isoformat(),
+            "periodEnd": run.period_end.isoformat(),
+            "source": reader.movements_source(kind),
+        }
+
+    def refresh_all(self, campaign: Campaign, run_id: str) -> dict[str, Any]:
+        """Read all four ERP measures in one gesture.
+
+        One step failing does not cancel the others: they come from four
+        different tables, and « les réceptions sont là, les rebuts non » is a
+        usable state that a single rolled-back button would deny. Each outcome
+        is reported on its own line, failure included, so the screen can say
+        which of the four is missing and why.
+        """
+        steps: list[dict[str, Any]] = []
+        for kind in (FlowKind.RECEIPT, FlowKind.SHIPMENT, FlowKind.SCRAP):
+            try:
+                steps.append({"ok": True, **self.refresh_movements(campaign, run_id, kind)})
+            except InventoryError as exc:
+                log.warning("Lecture ERP de %s impossible : %s", kind, exc)
+                steps.append({
+                    "ok": False,
+                    "kind": str(kind),
+                    "label": FLOW_LABELS[kind].capitalize(),
+                    "error": str(exc),
+                })
+        try:
+            steps.append({
+                "ok": True,
+                "kind": "ERP",
+                "label": "Production et consommation théorique",
+                **self.refresh_erp(campaign, run_id),
+            })
+        except InventoryError as exc:
+            log.warning("Lecture ERP de la production impossible : %s", exc)
+            steps.append({
+                "ok": False,
+                "kind": "ERP",
+                "label": "Production et consommation théorique",
+                "error": str(exc),
+            })
+
+        return {
+            "steps": steps,
+            "loaded": sum(1 for step in steps if step["ok"]),
+            "failed": sum(1 for step in steps if not step["ok"]),
+        }
 
     def refresh_erp(self, campaign: Campaign, run_id: str) -> dict[str, Any]:
         """Read production and theoretical consumption, and freeze them.
@@ -357,6 +614,55 @@ class StockFlowService:
             "sourceLoadedAt": loaded_at.isoformat() if loaded_at else None,
         }
 
+    # ------------------------------------------------------------ step details
+
+    def step_rows(
+        self, campaign: Campaign, run_id: str, kind: FlowKind
+    ) -> list[dict[str, Any]]:
+        """One loaded step, article by article, ready for an editable grid.
+
+        The designation is joined in here rather than left to the screen: a grid
+        of bare references is a grid nobody can proof-read, and the referential
+        is already in memory for the scope check.
+        """
+        ctx = self.ctx
+        run = self._run(campaign, run_id)
+        items = ctx.referentials.items_by_number(campaign.id)
+        return [
+            {
+                "itemNumber": entry.item_number,
+                "name": items[entry.item_number].name
+                if entry.item_number in items
+                else "",
+                "unit": entry.unit,
+                "qty": float(entry.qty),
+                "source": str(entry.source),
+            }
+            for entry in ctx.stock_flow.list_inputs(run.id)
+            if entry.kind is kind
+        ]
+
+    def erp_rows(self, campaign: Campaign, run_id: str) -> list[dict[str, Any]]:
+        """The frozen production / theoretical-consumption snapshot, as a grid."""
+        ctx = self.ctx
+        run = self._run(campaign, run_id)
+        items = ctx.referentials.items_by_number(campaign.id)
+        return [
+            {
+                "itemNumber": entry.item_number,
+                "name": items[entry.item_number].name
+                if entry.item_number in items
+                else "",
+                "unit": items[entry.item_number].unit
+                if entry.item_number in items
+                else "PCE",
+                "producedQty": float(entry.produced_qty),
+                "consumedQty": float(entry.consumed_qty),
+                "source": str(entry.source),
+            }
+            for entry in ctx.stock_flow.list_erp(run.id)
+        ]
+
     # ----------------------------------------------------------------- report
 
     def report(
@@ -384,8 +690,10 @@ class StockFlowService:
         closing = _stock_by_item(ctx, campaign.id, closing_basis)
         erp = {row.item_number: row for row in ctx.stock_flow.list_erp(run.id)}
         loaded: dict[FlowKind, dict[str, Decimal]] = {k: {} for k in FlowKind}
+        sources: dict[FlowKind, set[FlowSource]] = {k: set() for k in FlowKind}
         for entry in ctx.stock_flow.list_inputs(run.id):
             loaded[entry.kind][entry.item_number] = entry.qty
+            sources[entry.kind].add(entry.source)
 
         universe = (
             set(opening) | set(closing) | set(erp)
@@ -439,7 +747,7 @@ class StockFlowService:
                     f"{BASIS_LABELS[closing_basis]} {campaign.code}"
                 ),
             },
-            "steps": self._steps(run, loaded, erp),
+            "steps": self._steps(run, loaded, erp, sources),
             "kpis": _kpis(lines),
             "chain": _chain(lines, closing_basis),
             "rows": [_line_payload(line) for line in lines],
@@ -450,13 +758,20 @@ class StockFlowService:
         run: StockFlowRun,
         loaded: dict[FlowKind, dict[str, Decimal]],
         erp: dict[str, StockFlowErp],
+        sources: dict[FlowKind, set[FlowSource]] | None = None,
     ) -> list[dict[str, Any]]:
         """What has been provided so far, step by step.
 
         The screen needs to distinguish three states, not two: not provided,
         provided and empty, provided with content. Only the scrap step can
         legitimately be « deliberately empty », and only because somebody said so.
+
+        Each step also says **where its figures came from** and when the ERP was
+        last read for it. Four steps that all display a number look equally solid;
+        « lu dans l'ERP il y a deux minutes » and « corrigé à la main » are not,
+        and the difference is what somebody defends six months later.
         """
+        sources = sources or {}
         return [
             {
                 "kind": str(kind),
@@ -467,6 +782,13 @@ class StockFlowService:
                     kind is FlowKind.SCRAP and run.scrap_loaded
                 ),
                 "optional": kind is FlowKind.SCRAP,
+                "sources": sorted(str(s) for s in sources.get(kind, set())),
+                "refreshedAt": _iso({
+                    FlowKind.RECEIPT: run.receipts_refreshed_at,
+                    FlowKind.SHIPMENT: run.shipments_refreshed_at,
+                    FlowKind.SCRAP: run.scrap_refreshed_at,
+                }[kind]),
+                "view": _STEP_VIEWS[kind],
             }
             for kind in (FlowKind.RECEIPT, FlowKind.SHIPMENT, FlowKind.SCRAP)
         ] + [
@@ -477,6 +799,9 @@ class StockFlowService:
                 "totalQty": float(sum(e.produced_qty for e in erp.values())),
                 "loaded": bool(erp),
                 "optional": False,
+                "sources": sorted({str(e.source) for e in erp.values()}),
+                "refreshedAt": _iso(run.erp_refreshed_at),
+                "view": "production",
             }
         ]
 
@@ -677,4 +1002,11 @@ def _run_payload(run: StockFlowRun) -> dict[str, Any]:
         "erpRefreshedAt": (
             run.erp_refreshed_at.isoformat() if run.erp_refreshed_at else None
         ),
+        "receiptsRefreshedAt": _iso(run.receipts_refreshed_at),
+        "shipmentsRefreshedAt": _iso(run.shipments_refreshed_at),
+        "scrapRefreshedAt": _iso(run.scrap_refreshed_at),
     }
+
+
+def _iso(value: dt.datetime | None) -> str | None:
+    return value.isoformat() if value else None

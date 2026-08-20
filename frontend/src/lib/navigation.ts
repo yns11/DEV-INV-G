@@ -293,6 +293,16 @@ export const SECTIONS: Section[] = [
     lede: 'Deux inventaires, et tout ce qui s’est passé entre les deux.',
     enabled: (o) => ready(o, 'stock_flow'),
     locked: (o) => blocked(o, 'stock_flow') ?? '',
+    // Le rapport, puis une grille par flux. Les quantités qui le nourrissent
+    // n'étaient visibles que par leur total : un stock attendu faux ne se
+    // déboguait pas, faute de pouvoir regarder la ligne fautive.
+    subs: [
+      { id: 'rapport', label: 'Rapport' },
+      { id: 'receptions', label: 'Réceptions' },
+      { id: 'production', label: 'Production & conso.' },
+      { id: 'expeditions', label: 'Expéditions' },
+      { id: 'rebuts', label: 'Rebuts' },
+    ],
   },
 ]
 

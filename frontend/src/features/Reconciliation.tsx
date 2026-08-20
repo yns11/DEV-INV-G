@@ -34,10 +34,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api } from '../lib/api'
 import type {
+  FlowSource,
   GridContract,
   Overview,
   StockBasis,
   StockFlowBasis,
+  StockFlowErpRow,
+  StockFlowInputRow,
   StockFlowReport,
   StockFlowRow,
   StockFlowStep,
@@ -53,9 +56,11 @@ import {
   signedMoney,
   signedNum,
 } from '../lib/format'
+import { useSubSection } from '../lib/subsection'
 import { Waterfall } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { ImportPanel } from '../components/ImportPanel'
+import { SubSectionTabs } from '../components/SubSectionTabs'
 import {
   Alert,
   AsyncBoundary,
@@ -71,23 +76,60 @@ import {
 } from '../components/ui'
 
 /** Les trois chargements, dans l'ordre où la chaîne les consomme. */
-const STEPS = [
+const STEPS: Array<{
+  kind: string
+  label: string
+  hint: string
+  view: FlowView
+}> = [
   {
     kind: 'RECEIPT',
     label: 'Réceptions',
     hint: 'Ce qui est entré en stock sur la période. S’ajoute au stock initial.',
+    view: 'receptions',
   },
   {
     kind: 'SHIPMENT',
     label: 'Expéditions',
     hint: 'Ce qui est sorti vers le client. Se retranche.',
+    view: 'expeditions',
   },
   {
     kind: 'SCRAP',
     label: 'Rebuts',
     hint: 'Étape facultative. Se retranche si elle est renseignée.',
+    view: 'rebuts',
   },
-] as const
+]
+
+/** Comment chaque provenance se nomme et se lit à l'écran. */
+const SOURCE_LABELS: Record<FlowSource, string> = {
+  ERP: 'Lu dans l’ERP',
+  FILE: 'Chargé par fichier',
+  MANUAL: 'Saisi à la main',
+}
+
+/**
+ * D'où vient l'étape, et quand elle a été lue.
+ *
+ * Quatre étapes affichant chacune un nombre se ressemblent. « Lu dans l'ERP il
+ * y a deux minutes » et « corrigé à la main » ne se défendent pas de la même
+ * façon devant un chiffre contesté, et c'est la seule chose que le total ne dit
+ * pas.
+ */
+function stateHint(state: StockFlowStep | undefined): string {
+  if (!state || !state.loaded) return ''
+  const sources = state.sources.map((s) => SOURCE_LABELS[s] ?? s).join(', ')
+  const when = state.refreshedAt ? ` (ERP ${relativeTime(state.refreshedAt)})` : ''
+  return sources ? `${sources}${when}.` : ''
+}
+
+/** Le rapport, puis une grille par flux. Même liste que la barre latérale. */
+type FlowView = 'rapport' | 'receptions' | 'production' | 'expeditions' | 'rebuts'
+
+const FLOW_VIEWS: FlowView[] = [
+  'rapport', 'receptions', 'production', 'expeditions', 'rebuts',
+]
 
 export function Reconciliation() {
   const overview = useOutletContext<Overview>()
@@ -96,6 +138,7 @@ export function Reconciliation() {
   const toast = useToast()
   const showError = useErrorToast()
   const [runId, setRunId] = useState<string | null>(null)
+  const [view, setView] = useSubSection<FlowView>('rapport', FLOW_VIEWS)
 
   const candidates = useQuery({
     queryKey: ['stock-flow-candidates', campaignId],
@@ -216,12 +259,32 @@ export function Reconciliation() {
         }
       </AsyncBoundary>
 
+      {/* Les onglets n'apparaissent qu'une fois la comparaison ouverte : sans
+          série, ils mèneraient tous à la même page vide. */}
       {current && (
+        <SubSectionTabs
+          section="reconciliation"
+          overview={overview}
+          value={view}
+          onChange={setView}
+        />
+      )}
+
+      {current && view === 'rapport' && (
         <RunReport
           campaignId={campaignId}
           runId={current}
           editable={editable}
           overview={overview}
+          onOpenView={setView}
+        />
+      )}
+      {current && view !== 'rapport' && (
+        <FlowGrid
+          campaignId={campaignId}
+          runId={current}
+          view={view}
+          editable={editable}
         />
       )}
     </div>
@@ -233,11 +296,13 @@ function RunReport({
   runId,
   editable,
   overview,
+  onOpenView,
 }: {
   campaignId: string
   runId: string
   editable: boolean
   overview: Overview
+  onOpenView: (view: FlowView) => void
 }) {
   // Le couple de stocks comparés. Paramètre de lecture et non d'exécution : il
   // entre dans la clé de cache, si bien que basculer d'une paire à l'autre
@@ -262,6 +327,7 @@ function RunReport({
             steps={data.steps}
             editable={editable}
             overview={overview}
+            onOpenView={onOpenView}
           />
           {data.rows.length > 0 && (
             <>
@@ -405,12 +471,14 @@ function Steps({
   steps,
   editable,
   overview,
+  onOpenView,
 }: {
   campaignId: string
   runId: string
   steps: StockFlowStep[]
   editable: boolean
   overview: Overview
+  onOpenView: (view: FlowView) => void
 }) {
   const queryClient = useQueryClient()
   const toast = useToast()
@@ -421,6 +489,66 @@ function Steps({
   const contract: GridContract | undefined = contracts.data?.find(
     (c) => c.key === 'stock_flow',
   )
+
+  // Les quatre mesures d'un coup. Volontairement pas tout-ou-rien : elles
+  // viennent de quatre tables, et « les réceptions sont là, les rebuts non »
+  // est un état où il vaut mieux atterrir que revenir en arrière.
+  const all = useMutation({
+    mutationFn: () => api.refreshStockFlowAll(campaignId, runId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries()
+      const failed = result.steps.filter((step) => !step.ok)
+      if (failed.length === 0) {
+        toast.success(
+          `${result.loaded} mesure(s) lue(s) dans l’ERP`,
+          result.steps
+            .map((step) => `${step.label} : ${('items' in step && step.items) || 0}`)
+            .join(' · '),
+        )
+        return
+      }
+      toast.warning(
+        `${result.loaded} mesure(s) lue(s), ${failed.length} en échec`,
+        failed
+          .map((step) => `${step.label} : ${'error' in step ? step.error : ''}`)
+          .join(' — '),
+      )
+    },
+    onError: (error) => showError(error, 'Lecture ERP impossible'),
+  })
+
+  // Une étape à la fois : recharger les réceptions ne doit pas rejouer les
+  // trois autres lectures, dont l'une peut être lente.
+  const step = useMutation({
+    mutationFn: (kind: string) =>
+      api.refreshStockFlowStep(campaignId, runId, kind),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries()
+      const period = `du ${formatDate(result.periodStart)} au ${formatDate(result.periodEnd)} (exclu)`
+      if (result.rowsRead === 0) {
+        toast.warning(
+          `Aucune ligne de ${result.label.toLowerCase()} sur cette période`,
+          `${result.source} ne renvoie rien ${period}. Vérifiez les dates d’inventaire des deux campagnes.`,
+        )
+        return
+      }
+      if (result.items === 0) {
+        toast.warning(
+          `${result.rowsRead} ligne(s) lues, aucune retenue`,
+          `Aucun des articles renvoyés par ${result.source} ${period} n’est au référentiel de cette campagne.`,
+        )
+        return
+      }
+      toast.success(
+        `${result.label} : ${result.items} article(s) sur ${result.rowsRead} lus`,
+        `Total ${qty(result.totalQty)}.` +
+          (result.outOfScope
+            ? ` ${result.outOfScope} ligne(s) hors référentiel, ignorées.`
+            : ''),
+      )
+    },
+    onError: (error) => showError(error, 'Lecture ERP impossible'),
+  })
 
   const erp = useMutation({
     mutationFn: () => api.refreshStockFlowErp(campaignId, runId),
@@ -478,50 +606,101 @@ function Steps({
   )
   const erpStep = byKind.ERP
 
+  const pending = all.isPending || step.isPending || erp.isPending
+
   return (
     <Card
       title="Quantités de la période"
-      message="Les réceptions, expéditions et rebuts se chargent ; la production et la consommation théorique se lisent dans l’ERP."
+      message="Les quatre mesures se lisent dans l’ERP. Elles restent chargeables par fichier, et corrigeables dans leur grille."
+      actions={
+        editable ? (
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Icons.database size={14} />}
+            disabled={pending}
+            title="Réceptions, expéditions, rebuts, production et consommation théorique, lus sur la période de la comparaison."
+            onClick={() => all.mutate()}
+          >
+            {all.isPending ? 'Lecture…' : 'Tout charger de l’ERP'}
+          </Button>
+        ) : undefined
+      }
     >
       <div className="stack">
         <div className="row-wrap">
-          {STEPS.map((step) => {
-            const state = byKind[step.kind]
+          {STEPS.map((entry) => {
+            const state = byKind[entry.kind]
             return (
-              <button
-                key={step.kind}
-                className={`chip${active === step.kind ? ' chip--active' : ''}`}
-                title={step.hint}
-                disabled={!editable}
-                onClick={() =>
-                  setActive((current) => (current === step.kind ? null : step.kind))
-                }
-              >
-                {state?.loaded ? (
-                  <Icons.check size={12} />
-                ) : (
-                  <Icons.upload size={12} />
-                )}
-                {step.label}
+              <span key={entry.kind} className="row" style={{ gap: 0 }}>
+                <button
+                  className={`chip${active === entry.kind ? ' chip--active' : ''}`}
+                  title={`${entry.hint} ${stateHint(state)}`}
+                  disabled={!editable}
+                  onClick={() =>
+                    setActive((current) =>
+                      current === entry.kind ? null : entry.kind,
+                    )
+                  }
+                >
+                  {state?.loaded ? (
+                    <Icons.check size={12} />
+                  ) : (
+                    <Icons.upload size={12} />
+                  )}
+                  {entry.label}
+                  {state && state.items > 0 && (
+                    <span className="subtle"> · {state.items}</span>
+                  )}
+                </button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={<Icons.database size={13} />}
+                  disabled={!editable || pending}
+                  title={`Lire ${entry.label.toLowerCase()} dans l’ERP sur cette période.`}
+                  onClick={() => step.mutate(entry.kind)}
+                />
                 {state && state.items > 0 && (
-                  <span className="subtle"> · {state.items}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon={<Icons.grid size={13} />}
+                    title={`Voir et corriger les ${entry.label.toLowerCase()} ligne par ligne.`}
+                    onClick={() => onOpenView(entry.view)}
+                  />
                 )}
-              </button>
+              </span>
             )
           })}
 
-          <button
-            className="chip"
-            disabled={!editable || erp.isPending}
-            title="Production du parent et consommation théorique, lues dans la table de faits sur la période."
-            onClick={() => erp.mutate()}
-          >
-            {erpStep?.loaded ? <Icons.check size={12} /> : <Icons.database size={12} />}
-            {erp.isPending ? 'Lecture…' : 'Production & conso. théorique'}
+          <span className="row" style={{ gap: 0 }}>
+            <button
+              className="chip"
+              disabled={!editable || pending}
+              title={`Production du parent et consommation théorique, lues dans la table de faits sur la période. ${stateHint(erpStep)}`}
+              onClick={() => erp.mutate()}
+            >
+              {erpStep?.loaded ? (
+                <Icons.check size={12} />
+              ) : (
+                <Icons.database size={12} />
+              )}
+              {erp.isPending ? 'Lecture…' : 'Production & conso. théorique'}
+              {erpStep && erpStep.items > 0 && (
+                <span className="subtle"> · {erpStep.items}</span>
+              )}
+            </button>
             {erpStep && erpStep.items > 0 && (
-              <span className="subtle"> · {erpStep.items}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Icons.grid size={13} />}
+                title="Voir et corriger la production et la consommation ligne par ligne."
+                onClick={() => onOpenView('production')}
+              />
             )}
-          </button>
+          </span>
         </div>
 
         {active === 'SCRAP' && !byKind.SCRAP?.loaded && editable && (
@@ -796,3 +975,369 @@ function columnsFor(basis: StockFlowBasis): Column<StockFlowRow>[] {
   },
   ]
 }
+
+// --------------------------------------------------------------------------- //
+// Les flux, un par sous-section
+// --------------------------------------------------------------------------- //
+//
+// Le rapport ne montrait que des totaux : « 12 400 réceptions », et rien pour
+// savoir laquelle des huit cents lignes était fausse. Un stock attendu qui
+// dérape se débogue par la ligne, et la ligne n'était nulle part.
+//
+// Chaque flux a donc sa grille, filtrable et éditable comme toutes les autres
+// de l'application. Éditable, parce que corriger une quantité est le geste
+// naturel une fois qu'on l'a repérée : la faire passer par un rechargement de
+// fichier complet serait demander de reconstruire l'export pour un chiffre.
+
+/** Ce que chaque sous-section montre, et comment elle le nomme. */
+const FLOW_GRIDS: Record<
+  Exclude<FlowView, 'rapport'>,
+  { kind: string; label: string; lede: string; sign: string }
+> = {
+  receptions: {
+    kind: 'RECEIPT',
+    label: 'Réceptions',
+    lede: 'Entrées en stock sur la période, lues dans les bons de réception fournisseur.',
+    sign: 'S’ajoutent au stock initial.',
+  },
+  expeditions: {
+    kind: 'SHIPMENT',
+    label: 'Expéditions',
+    lede: 'Sorties vers le client, lues dans les bons de livraison.',
+    sign: 'Se retranchent.',
+  },
+  rebuts: {
+    kind: 'SCRAP',
+    label: 'Rebuts',
+    lede: 'Mouvements vers l’emplacement rebut, tous chemins confondus.',
+    sign: 'Se retranchent. Étape facultative.',
+  },
+  production: {
+    kind: 'ERP',
+    label: 'Production & consommation théorique',
+    lede: 'Les deux mesures du backflush, figées avec la comparaison.',
+    sign: 'La production s’ajoute, la consommation théorique se retranche.',
+  },
+}
+
+function FlowGrid({
+  campaignId,
+  runId,
+  view,
+  editable,
+}: {
+  campaignId: string
+  runId: string
+  view: Exclude<FlowView, 'rapport'>
+  editable: boolean
+}) {
+  const spec = FLOW_GRIDS[view]
+  return spec.kind === 'ERP' ? (
+    <ProductionGrid campaignId={campaignId} runId={runId} editable={editable} />
+  ) : (
+    <InputGrid
+      campaignId={campaignId}
+      runId={runId}
+      kind={spec.kind}
+      spec={spec}
+      editable={editable}
+    />
+  )
+}
+
+/**
+ * Une grille de quantités chargées, éditable.
+ *
+ * Les lignes rendues *sont* l'étape : enregistrer remplace, si bien qu'une
+ * ligne supprimée à l'écran disparaît en base. Fusionner ferait de la
+ * suppression la seule correction que la grille ne saurait pas exprimer.
+ */
+function InputGrid({
+  campaignId,
+  runId,
+  kind,
+  spec,
+  editable,
+}: {
+  campaignId: string
+  runId: string
+  kind: string
+  spec: { label: string; lede: string; sign: string }
+  editable: boolean
+}) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+  const query = useQuery({
+    queryKey: ['stock-flow-inputs', campaignId, runId, kind],
+    queryFn: () => api.stockFlowInputs(campaignId, runId, kind),
+  })
+  const [draft, setDraft] = useState<StockFlowInputRow[] | null>(null)
+
+  const save = useMutation({
+    mutationFn: (rows: StockFlowInputRow[]) =>
+      api.saveStockFlowInputs(campaignId, runId, kind, rows),
+    onSuccess: (result) => {
+      setDraft(null)
+      void queryClient.invalidateQueries()
+      toast.success(
+        `${result.rows} ligne(s) enregistrée(s)`,
+        result.unknownCount
+          ? `${result.unknownCount} référence(s) hors référentiel, ignorée(s) : ${result.unknown.join(', ')}`
+          : undefined,
+      )
+    },
+    onError: (error) => showError(error, 'Enregistrement impossible'),
+  })
+
+  const rows = draft ?? query.data ?? []
+  const dirty = draft !== null
+
+  return (
+    <AsyncBoundary query={query} skeleton={<Skeleton height={360} />}>
+      {() => (
+        <Card title={spec.label} message={`${spec.lede} ${spec.sign}`} flush>
+          <DataGrid<StockFlowInputRow>
+            columns={INPUT_COLUMNS}
+            rows={rows}
+            getRowId={(row, index) => row.itemNumber || `n-${index}`}
+            editable={editable}
+            onRowsChange={setDraft}
+            searchPlaceholder="Filtrer par article, désignation…"
+            exportTitle={spec.label}
+            campaignId={campaignId}
+            maxHeight={620}
+            initialSort={{ key: 'qty', direction: 'desc' }}
+            toolbar={
+              dirty ? (
+                <span className="row" style={{ gap: 'var(--space-2)' }}>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={save.isPending}
+                    onClick={() => save.mutate(rows)}
+                  >
+                    {save.isPending ? 'Enregistrement…' : 'Enregistrer'}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setDraft(null)}>
+                    Annuler
+                  </Button>
+                </span>
+              ) : undefined
+            }
+            footer={
+              <span>
+                {rows.length.toLocaleString('fr-FR')} article(s) — total{' '}
+                <strong className="num">
+                  {qty(rows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0))}
+                </strong>
+                {dirty && ' · modifications non enregistrées'}
+              </span>
+            }
+          />
+        </Card>
+      )}
+    </AsyncBoundary>
+  )
+}
+
+const SOURCE_TONES: Record<FlowSource, string> = {
+  ERP: 'accent',
+  FILE: 'neutral',
+  MANUAL: 'warning',
+}
+
+function SourceBadge({ source }: { source: FlowSource }) {
+  return (
+    <Badge tone={SOURCE_TONES[source] ?? 'neutral'}>
+      {SOURCE_LABELS[source] ?? source}
+    </Badge>
+  )
+}
+
+const INPUT_COLUMNS: Column<StockFlowInputRow>[] = [
+  {
+    key: 'itemNumber',
+    label: 'Article',
+    width: 180,
+    sortable: true,
+    editable: true,
+    render: (row) => <span className="mono">{row.itemNumber || DASH}</span>,
+    value: (row) => row.itemNumber,
+  },
+  {
+    key: 'name',
+    label: 'Désignation',
+    width: 260,
+    sortable: true,
+    render: (row) => (
+      <span className="truncate" style={{ maxWidth: 250 }}>
+        {row.name || DASH}
+      </span>
+    ),
+    value: (row) => row.name,
+  },
+  {
+    key: 'qty',
+    label: 'Quantité',
+    numeric: true,
+    width: 140,
+    sortable: true,
+    editable: true,
+    render: (row) => <strong className="num">{qty(Number(row.qty) || 0)}</strong>,
+    value: (row) => Number(row.qty) || 0,
+  },
+  { key: 'unit', label: 'Unité', width: 90 },
+  {
+    key: 'source',
+    label: 'Provenance',
+    width: 150,
+    sortable: true,
+    render: (row) => <SourceBadge source={row.source} />,
+    value: (row) => row.source,
+  },
+]
+
+/** La production et la consommation théorique, figées puis corrigeables. */
+function ProductionGrid({
+  campaignId,
+  runId,
+  editable,
+}: {
+  campaignId: string
+  runId: string
+  editable: boolean
+}) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+  const query = useQuery({
+    queryKey: ['stock-flow-erp-rows', campaignId, runId],
+    queryFn: () => api.stockFlowErpRows(campaignId, runId),
+  })
+  const [draft, setDraft] = useState<StockFlowErpRow[] | null>(null)
+
+  const save = useMutation({
+    mutationFn: (rows: StockFlowErpRow[]) =>
+      api.saveStockFlowErpRows(campaignId, runId, rows),
+    onSuccess: (result) => {
+      setDraft(null)
+      void queryClient.invalidateQueries()
+      toast.success(
+        `${result.rows} ligne(s) enregistrée(s)`,
+        result.unknownCount
+          ? `${result.unknownCount} référence(s) hors référentiel, ignorée(s) : ${result.unknown.join(', ')}`
+          : undefined,
+      )
+    },
+    onError: (error) => showError(error, 'Enregistrement impossible'),
+  })
+
+  const rows = draft ?? query.data ?? []
+  const dirty = draft !== null
+  const spec = FLOW_GRIDS.production
+
+  return (
+    <AsyncBoundary query={query} skeleton={<Skeleton height={360} />}>
+      {() => (
+        <Card title={spec.label} message={`${spec.lede} ${spec.sign}`} flush>
+          <DataGrid<StockFlowErpRow>
+            columns={ERP_COLUMNS}
+            rows={rows}
+            getRowId={(row, index) => row.itemNumber || `n-${index}`}
+            editable={editable}
+            onRowsChange={setDraft}
+            searchPlaceholder="Filtrer par article, désignation…"
+            exportTitle="Production et consommation théorique"
+            campaignId={campaignId}
+            maxHeight={620}
+            initialSort={{ key: 'producedQty', direction: 'desc' }}
+            toolbar={
+              dirty ? (
+                <span className="row" style={{ gap: 'var(--space-2)' }}>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={save.isPending}
+                    onClick={() => save.mutate(rows)}
+                  >
+                    {save.isPending ? 'Enregistrement…' : 'Enregistrer'}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setDraft(null)}>
+                    Annuler
+                  </Button>
+                </span>
+              ) : undefined
+            }
+            footer={
+              <span>
+                {rows.length.toLocaleString('fr-FR')} article(s) — production{' '}
+                <strong className="num">
+                  {qty(rows.reduce((s, r) => s + (Number(r.producedQty) || 0), 0))}
+                </strong>{' '}
+                · consommation{' '}
+                <strong className="num">
+                  {qty(rows.reduce((s, r) => s + (Number(r.consumedQty) || 0), 0))}
+                </strong>
+                {dirty && ' · modifications non enregistrées'}
+              </span>
+            }
+          />
+        </Card>
+      )}
+    </AsyncBoundary>
+  )
+}
+
+const ERP_COLUMNS: Column<StockFlowErpRow>[] = [
+  {
+    key: 'itemNumber',
+    label: 'Article',
+    width: 180,
+    sortable: true,
+    editable: true,
+    render: (row) => <span className="mono">{row.itemNumber || DASH}</span>,
+    value: (row) => row.itemNumber,
+  },
+  {
+    key: 'name',
+    label: 'Désignation',
+    width: 260,
+    sortable: true,
+    render: (row) => (
+      <span className="truncate" style={{ maxWidth: 250 }}>
+        {row.name || DASH}
+      </span>
+    ),
+    value: (row) => row.name,
+  },
+  {
+    key: 'producedQty',
+    label: '+ Production',
+    numeric: true,
+    width: 150,
+    sortable: true,
+    editable: true,
+    render: (row) => <span className="num">{qty(Number(row.producedQty) || 0)}</span>,
+    value: (row) => Number(row.producedQty) || 0,
+  },
+  {
+    key: 'consumedQty',
+    label: '− Conso. théorique',
+    numeric: true,
+    width: 170,
+    sortable: true,
+    editable: true,
+    render: (row) => <span className="num">{qty(Number(row.consumedQty) || 0)}</span>,
+    value: (row) => Number(row.consumedQty) || 0,
+  },
+  { key: 'unit', label: 'Unité', width: 90 },
+  {
+    key: 'source',
+    label: 'Provenance',
+    width: 150,
+    sortable: true,
+    render: (row) => <SourceBadge source={row.source} />,
+    value: (row) => row.source,
+  },
+]

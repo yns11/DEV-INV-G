@@ -34,6 +34,7 @@ from enum import StrEnum
 from typing import Any
 
 from ..config import get_settings
+from ..domain.enums import FlowKind
 from ..errors import UpstreamError, ValidationError
 
 log = logging.getLogger(__name__)
@@ -372,6 +373,102 @@ class ErpReader:
         """
         return [_stock_flow_row(row) for row in self._read(statement, source=table)]
 
+    # ------------------------------------------------------------- mouvements
+
+    def fetch_movements(
+        self,
+        kind: FlowKind,
+        *,
+        period_start: dt.date,
+        period_end: dt.date,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Receipts, shipments or scrap per article, over the period.
+
+        The three queries come from the ERP movement guide, and three of their
+        choices carry the result:
+
+        * **Receipts and shipments come from the packing-slip lines**, not from
+          ``invent_trans``. Those lines are the ones tied to a purchase or sales
+          order, so a quantity that looks wrong can be traced back to a document
+          somebody can open.
+        * **Scrap is identified by its bin**, ``QUAL VRAC`` / ``QUA REBUT``, not
+          by the journal that moved it. Production NOK, quality holds and manual
+          write-offs each use a different journal and all land in that bin;
+          filtering on journals would quietly miss two of the three paths.
+        * **Bounds are start-inclusive, end-exclusive**, matching the backflush
+          half. Mixing an inclusive end here with an exclusive one there would
+          count the closing Monday twice in the same comparison.
+
+        Quantities come back **as the ERP signs them** — shipments positive,
+        returns negative, scrap negative. The direction belongs to the step, so
+        the caller takes the absolute value; the sign is reported separately for
+        the rows that carry information in it.
+        """
+        start, end = _assert_bounds(period_start, period_end)
+        table, statement = self._movement_query(kind, start=start, end=end, limit=limit)
+        return [_movement_row(row) for row in self._query(statement, source=table)]
+
+    def _movement_query(
+        self, kind: FlowKind, *, start: str, end: str, limit: int
+    ) -> tuple[str, str]:
+        """The table read and the statement to run, for one kind of movement."""
+        settings = self._settings
+        entity = _literal(settings.erp_legal_entity)
+        alive = "(t.`IsDelete` = false OR t.`IsDelete` IS NULL)"
+
+        if kind is FlowKind.SCRAP:
+            table = settings.erp_movements_fqn
+            dims = settings.erp_dimensions_fqn
+            return table, f"""
+                SELECT t.`itemid` AS item_number, SUM(t.`qty`) AS qty
+                FROM {table} t
+                INNER JOIN {dims} d ON t.`inventdimid` = d.`inventdimid`
+                WHERE t.`datephysical` >= DATE '{start}'
+                  AND t.`datephysical` <  DATE '{end}'
+                  AND {alive}
+                  AND t.`dataareaid` = {entity}
+                  AND (d.`IsDelete` = false OR d.`IsDelete` IS NULL)
+                  AND UPPER(d.`inventlocationid`) = {_literal(
+                      settings.erp_scrap_warehouse.upper())}
+                  AND UPPER(d.`wmslocationid`) = {_literal(
+                      settings.erp_scrap_location.upper())}
+                GROUP BY t.`itemid`
+                ORDER BY 1
+                LIMIT {int(limit)}
+            """
+
+        table = (
+            settings.erp_receipts_fqn
+            if kind is FlowKind.RECEIPT
+            else settings.erp_shipments_fqn
+        )
+        return table, f"""
+            SELECT t.`itemid` AS item_number, SUM(t.`qty`) AS qty
+            FROM {table} t
+            WHERE t.`deliverydate` >= DATE '{start}'
+              AND t.`deliverydate` <  DATE '{end}'
+              AND {alive}
+              AND t.`dataareaid` = {entity}
+            GROUP BY t.`itemid`
+            ORDER BY 1
+            LIMIT {int(limit)}
+        """
+
+    def movements_source(self, kind: FlowKind) -> str:
+        """Which table a movement was read from.
+
+        Always the catalogue: the local mirror carries the referential and the
+        backflush fact table, never these. Reported with every read so « zéro
+        ligne » can be re-checked by running the same query by hand.
+        """
+        settings = self._settings
+        return {
+            FlowKind.RECEIPT: settings.erp_receipts_fqn,
+            FlowKind.SHIPMENT: settings.erp_shipments_fqn,
+            FlowKind.SCRAP: settings.erp_movements_fqn,
+        }[kind]
+
     def backflush_loaded_at(
         self, *, period_start: dt.date, period_end: dt.date
     ) -> dt.datetime | None:
@@ -591,6 +688,27 @@ def _stock_flow_row(row: Sequence[Any]) -> dict[str, Any]:
         "produced_qty": _number(produced),
         "consumed_qty": _number(consumed),
     }
+
+
+def _movement_row(row: Sequence[Any]) -> dict[str, Any]:
+    item, qty = _pad(row, 2)
+    return {"item_number": _text(item), "qty": _number(qty)}
+
+
+def _literal(value: str) -> str:
+    """One string, quoted for SQL, or refused.
+
+    These values come from configuration rather than from a request, but they
+    are interpolated into a statement all the same. A quote in an entity code
+    would be a deployment mistake, not an attack — and it would still produce a
+    broken query whose error message named the wrong thing.
+    """
+    text = str(value).strip()
+    if "'" in text or "\\" in text or "\n" in text:
+        raise ValidationError(
+            f"Valeur de configuration ERP invalide : {value!r}.", value=text
+        )
+    return f"'{text}'"
 
 
 def _timestamp(value: Any) -> dt.datetime | None:

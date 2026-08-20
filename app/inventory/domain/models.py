@@ -27,6 +27,7 @@ from .enums import (
     DataSource,
     ExclusionScope,
     FlowKind,
+    FlowSource,
     ItemCommonality,
     ItemType,
     JournalKind,
@@ -937,6 +938,12 @@ class StockFlowRun(DomainModel):
     scrap_loaded: bool = False
     source_loaded_at: dt.datetime | None = None
     erp_refreshed_at: dt.datetime | None = None
+    #: When each loaded step was last read from the ERP. Per step and not per
+    #: run: the four reads hit four different tables, and one of them failing
+    #: must not make the other three look stale.
+    receipts_refreshed_at: dt.datetime | None = None
+    shipments_refreshed_at: dt.datetime | None = None
+    scrap_refreshed_at: dt.datetime | None = None
     created_by: str = ""
     created_at: dt.datetime | None = None
     updated_at: dt.datetime | None = None
@@ -951,6 +958,8 @@ class StockFlowInput(DomainModel):
     #: Always positive; the direction is carried by :attr:`kind`.
     qty: Decimal = ZERO
     unit: str = "PCE"
+    #: Read from the ERP, loaded from a file, or typed into the grid.
+    source: FlowSource = FlowSource.MANUAL
 
     @field_validator("item_number", "unit", mode="before")
     @classmethod
@@ -972,6 +981,8 @@ class StockFlowErp(DomainModel):
     produced_qty: Decimal = ZERO
     #: Theoretical consumption of this article *as a component*.
     consumed_qty: Decimal = ZERO
+    #: Read from the backflush table, or corrected by hand in the grid.
+    source: FlowSource = FlowSource.ERP
 
     @field_validator("item_number", mode="before")
     @classmethod

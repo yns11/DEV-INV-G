@@ -35,6 +35,7 @@ SHIPPED = {
     "007_bom_status": "8fa704d7ae3d",
     "008_backflush": "e265ddaa359f",
     "009_stock_flow": "734f4e0f2141",
+    "010_stock_flow_source": "98022ebe48d6",
 }
 
 

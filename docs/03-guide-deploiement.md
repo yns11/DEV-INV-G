@@ -577,6 +577,14 @@ Onglet **Environment**, ajoutez :
 | `INV_ERP_SCHEMA` | `emotors_data_champions.silver_erp_ye` |
 | `INV_ERP_ITEMS_TABLE` | `silver_base_article` |
 | `INV_ERP_BOM_TABLE` | `silver_bom` |
+| `INV_ERP_MOVEMENTS_SCHEMA` | `emotors_data_platform.bronze_erp` |
+| `INV_ERP_RECEIPTS_TABLE` | `vend_packing_slip_trans` |
+| `INV_ERP_SHIPMENTS_TABLE` | `cust_packing_slip_trans` |
+| `INV_ERP_MOVEMENTS_TABLE` | `invent_trans` |
+| `INV_ERP_DIMENSIONS_TABLE` | `invent_dim` |
+| `INV_ERP_LEGAL_ENTITY` | `NPEM` |
+| `INV_ERP_SCRAP_WAREHOUSE` | `QUAL VRAC` |
+| `INV_ERP_SCRAP_LOCATION` | `QUA REBUT` |
 
 `INV_ASSISTANT_PROFILE` décide de ce que l'assistant de campagne reçoit et de
 ce qu'on lui demande. Un seul profil est livré — `etendu` : le dossier complet
@@ -584,12 +592,28 @@ de la campagne, un raisonnement libre, des chiffres qui restent ceux du dossier.
 La variable existe pour qu'en ajouter un autre, plus restreint pour un public
 plus large par exemple, soit un redémarrage et non une livraison de code.
 
-Les trois variables `INV_ERP_*` désignent les tables silver lues par
-« Lire depuis l'ERP » sur les grilles Articles et Nomenclatures. La lecture
-emprunte l'entrepôt SQL attaché (`DATABRICKS_WAREHOUSE_ID`) et les droits Unity
-Catalog de l'application : sans entrepôt ou sans `SELECT` sur ces tables,
-l'option apparaît désactivée avec sa raison, et le chargement par fichier reste
-disponible.
+`INV_ERP_SCHEMA` et ses deux tables désignent les tables **silver** lues par
+« Lire depuis l'ERP » sur les grilles Articles et Nomenclatures.
+
+Les variables `INV_ERP_MOVEMENTS_*` désignent les tables **bronze** des
+mouvements de stock, lues par « Tout charger de l'ERP » dans la vue Comparaison :
+bons de réception fournisseur, bons de livraison client, et mouvements de stock
+joints à leurs dimensions pour isoler les rebuts. Bronze plutôt que silver parce
+qu'aucune couche curée ne les publie encore — d'où les filtres que les requêtes
+portent elles-mêmes : `IsDelete`, et `dataareaid = INV_ERP_LEGAL_ENTITY`. Sans
+ce dernier, la comparaison d'un site recevrait les flux d'un autre.
+
+Les rebuts sont identifiés par leur **emplacement** (`INV_ERP_SCRAP_WAREHOUSE` /
+`INV_ERP_SCRAP_LOCATION`) et non par le journal qui les a déplacés : production
+NOK, blocage qualité et sortie manuelle passent par trois journaux différents et
+finissent tous au même endroit.
+
+Toutes ces lectures empruntent l'entrepôt SQL attaché
+(`DATABRICKS_WAREHOUSE_ID`) et les droits Unity Catalog de l'application : sans
+entrepôt ou sans `SELECT` sur ces tables, l'option apparaît désactivée avec sa
+raison, et le chargement par fichier reste disponible. À noter que le miroir
+local ne couvre que le référentiel et le backflush : les tables de mouvements se
+lisent toujours dans le catalogue.
 
 ### 8.3 bis — Quand le catalogue de l'ERP n'est pas ouvrable à l'application
 

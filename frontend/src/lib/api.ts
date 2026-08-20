@@ -39,7 +39,11 @@ import type {
   SheetStatus,
   StockBasis,
   StockFlowCandidate,
+  StockFlowErpRead,
+  StockFlowErpRow,
+  StockFlowInputRow,
   StockFlowReport,
+  StockFlowSaveResult,
   StockFlowRun,
   Threshold,
   TransferAnalysis,
@@ -714,10 +718,40 @@ export const api = {
     request<{ scrapLoaded: boolean }>(
       `/campaigns/${id}/stock-flow/${runId}/scrap/skip`, { method: 'POST' },
     ),
+  /** Les trois étapes chargées, lues dans l'ERP au lieu d'être retapées. */
+  refreshStockFlowStep: (id: string, runId: string, kind: string) =>
+    request<StockFlowErpRead>(
+      `/campaigns/${id}/stock-flow/${runId}/erp/${kind}`, { method: 'POST' },
+    ),
+  refreshStockFlowAll: (id: string, runId: string) =>
+    request<{
+      steps: Array<
+        | ({ ok: true; kind: string; label: string } & Partial<StockFlowErpRead>)
+        | { ok: false; kind: string; label: string; error: string }
+      >
+      loaded: number
+      failed: number
+    }>(`/campaigns/${id}/stock-flow/${runId}/erp-all`, { method: 'POST' }),
   stockFlowInputs: (id: string, runId: string, kind: string) =>
-    request<Array<Record<string, unknown>>>(
+    request<StockFlowInputRow[]>(
       `/campaigns/${id}/stock-flow/${runId}/inputs/${kind}`,
     ),
+  saveStockFlowInputs: (
+    id: string, runId: string, kind: string, rows: readonly object[],
+  ) =>
+    request<StockFlowSaveResult>(
+      `/campaigns/${id}/stock-flow/${runId}/inputs/${kind}`,
+      { method: 'PUT', body: JSON.stringify({ rows }) },
+    ),
+  stockFlowErpRows: (id: string, runId: string) =>
+    request<StockFlowErpRow[]>(`/campaigns/${id}/stock-flow/${runId}/erp-rows`),
+  saveStockFlowErpRows: (
+    id: string, runId: string, rows: readonly object[],
+  ) =>
+    request<StockFlowSaveResult>(`/campaigns/${id}/stock-flow/${runId}/erp-rows`, {
+      method: 'PUT',
+      body: JSON.stringify({ rows }),
+    }),
   // Les trois chargements passent par la même boucle « voir avant d'écrire »
   // que toutes les autres grilles : c'est elle qui empêche un fichier de
   // devenir la vérité de la campagne sans que personne l'ait regardé.

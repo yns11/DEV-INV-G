@@ -32,6 +32,7 @@ __all__ = [
     "DataSource",
     "AdjustmentKind",
     "FlowKind",
+    "FlowSource",
     "StockBasis",
     "ControlSeverity",
     "AuditAction",
@@ -227,6 +228,20 @@ class FlowKind(StrEnum):
     RECEIPT = "RECEIPT"      # réceptions : entrées en stock sur la période
     SHIPMENT = "SHIPMENT"    # expéditions : sorties vers le client
     SCRAP = "SCRAP"          # rebuts : étape facultative
+
+
+class FlowSource(StrEnum):
+    """Where one quantity of a comparison came from.
+
+    Not decoration: a figure read from the ERP is rejouable by re-running its
+    query, a figure typed into the grid is somebody's judgement, and a
+    contested number is defended differently in each case. Without this, the
+    two are indistinguishable the moment the screen is refreshed.
+    """
+
+    ERP = "ERP"
+    FILE = "FILE"
+    MANUAL = "MANUAL"
 
 
 class StockBasis(StrEnum):

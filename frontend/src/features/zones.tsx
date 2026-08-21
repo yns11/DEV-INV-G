@@ -166,12 +166,22 @@ export function CreateZoneModal({
 export function ZonesAdminGrid({
   campaignId,
   editable,
+  deletable = false,
   managers = [],
   onPrint,
   onOpen,
 }: {
   campaignId: string
   editable: boolean
+  /**
+   * Si la suppression est offerte — c'est-à-dire en préparation.
+   *
+   * Plus étroit que `editable`, qui reste vrai au comptage : une zone y porte
+   * des quantités relevées sur le terrain, et le serveur refuse de la
+   * supprimer. Le bouton suit la règle plutôt que de la faire découvrir par un
+   * refus.
+   */
+  deletable?: boolean
   managers?: Manager[]
   /** Print the selected zones. Absent on screens where printing has no place. */
   onPrint?: (zones: Zone[]) => void
@@ -223,6 +233,41 @@ export function ZonesAdminGrid({
     },
     onError: (error) => showError(error, 'Changement impossible'),
   })
+
+  // Un seul chemin pour la ligne et pour la sélection : deux mutations, ce
+  // serait deux endroits où la confirmation peut diverger de la règle.
+  const remove = useMutation({
+    mutationFn: (zoneIds: string[]) => api.deleteZones(campaignId, zoneIds),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries()
+      setSelected(new Set())
+      toast.success(
+        `${result.zones} zone(s) supprimée(s)`,
+        result.sheets
+          ? `${result.sheets} feuille(s) de comptage retirée(s) avec elles.`
+          : 'Elles n’avaient aucune feuille.',
+      )
+    },
+    onError: (error) => showError(error, 'Suppression impossible'),
+  })
+
+  const confirmRemove = (zones: Zone[]) => {
+    const lines = zones.reduce((n, z) => n + (z.sheets[0]?.lineCount ?? 0), 0)
+    const what =
+      zones.length === 1
+        ? `la zone ${zones[0]!.code}`
+        : `${zones.length} zones`
+    if (
+      window.confirm(
+        `Supprimer ${what} ?\n\n` +
+          (lines
+            ? `${lines} ligne(s) pré-imprimée(s) partiront avec les feuilles.`
+            : 'Aucune ligne pré-imprimée ne sera perdue.'),
+      )
+    ) {
+      remove.mutate(zones.map((z) => z.id))
+    }
+  }
 
   const assign = useMutation({
     mutationFn: (managerCode: string) =>
@@ -301,6 +346,27 @@ export function ZonesAdminGrid({
               <Button size="sm" onClick={() => onOpen(row)}>
                 Ouvrir
               </Button>
+            ),
+          } satisfies Column<Zone>,
+        ]
+      : []),
+    ...(deletable
+      ? [
+          {
+            key: 'remove',
+            label: '',
+            width: 52,
+            sortable: false,
+            filter: false as const,
+            render: (row: Zone) => (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Icons.trash size={13} />}
+                disabled={remove.isPending}
+                title={`Supprimer la zone ${row.code} et ses feuilles`}
+                onClick={() => confirmRemove([row])}
+              />
             ),
           } satisfies Column<Zone>,
         ]
@@ -386,6 +452,19 @@ export function ZonesAdminGrid({
                         }
                       >
                         Imprimer la sélection
+                      </Button>
+                    )}
+                    {deletable && (
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        icon={<Icons.trash size={13} />}
+                        disabled={remove.isPending}
+                        onClick={() =>
+                          confirmRemove(zones.filter((z) => selected.has(z.id)))
+                        }
+                      >
+                        Supprimer ({selected.size})
                       </Button>
                     )}
                     {editable && (

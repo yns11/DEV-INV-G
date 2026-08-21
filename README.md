@@ -42,10 +42,16 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   articles comptés par une seule équipe. Le nombre de comptages appartient à la
   zone : le double comptage est la règle, le comptage unique l'exception qu'on
   assume, zone par zone.
+- **Lecture pour tous, écriture pour ceux qui la portent.** Une campagne se
+  consulte et s'exporte par tout le monde ; elle ne se modifie que par son
+  créateur et les neuf gestionnaires qu'il a déclarés. Le contrôle est posé au
+  même endroit que le gel des phases, en une seule règle : les deux barrières
+  ne peuvent pas diverger.
 - **Chacun voit son périmètre, personne n'est cloisonné.** Entrepôts et zones
-  s'affectent à cinq gestionnaires ; l'interrupteur « Mon périmètre » filtre
-  côté serveur — ce qu'il exclut n'est jamais envoyé au poste. C'est un filtre,
-  jamais une habilitation : les actions restent identiques dans les deux modes.
+  s'affectent aux gestionnaires ; l'interrupteur « Mon périmètre » filtre côté
+  serveur — ce qu'il exclut n'est jamais envoyé au poste. C'est un filtre, pas
+  une habilitation : un gestionnaire garde le droit d'agir hors du sien, ce
+  qu'exige la couverture d'un collègue à six heures du matin.
 - **Un transfert entre bacs n'est pas une perte.** L'analyse s'ouvre sur l'écart
   par référence et chiffre explicitement la part qui n'est qu'un déplacement.
 - **Le WIP est explorable.** Chaque quantité éclatée est traçable jusqu'à
@@ -120,7 +126,7 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      845 tests, ~4 s, sans base de données
+tests/                      868 tests, ~5 s, sans base de données
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -145,7 +151,7 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 845 tests, ~4 s, aucune base requise
+make test            # 868 tests, ~5 s, aucune base requise
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000

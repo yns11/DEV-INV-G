@@ -144,7 +144,7 @@ def import_paste(
 #: The grids the ERP is authoritative for. Book stock deliberately stays a file:
 #: it is a snapshot taken at a precise instant, and reading it live would give a
 #: picture of "now" rather than of the moment the count began.
-ERP_TARGETS = ("items", "boms", "backflush")
+ERP_TARGETS = ("items", "boms", "book_stock", "backflush")
 
 #: Grids read from a *fact* table, which therefore need a period. A referential
 #: has a state; a fact table has a history, and one cannot be read without

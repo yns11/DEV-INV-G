@@ -85,6 +85,14 @@ MOVEMENT_COLUMNS = (
     "conso_theorique", "consommation", "rebut",
 )
 
+#: Le snapshot quotidien du stock physique : une ligne par article × entrepôt ×
+#: emplacement, pour un jour donné. Seule la photo la plus récente est copiée —
+#: c'est un état, pas un historique, et l'application n'en lit qu'un jour.
+STOCK_COLUMNS = (
+    "item_id", "entrepot", "emplacement", "stock_physique", "unite",
+    "snapshot_date",
+)
+
 #: Nombre de lignes envoyées par ordre d'insertion. Assez grand pour que le
 #: référentiel entier passe en quelques dizaines d'allers-retours, assez petit
 #: pour ne pas construire une requête de plusieurs mégaoctets.
@@ -119,6 +127,11 @@ def main() -> int:
     parser.add_argument(
         "--skip-backflush", action="store_true",
         help="Ne synchronise que les articles et les nomenclatures.",
+    )
+    parser.add_argument("--stock-table", default="stock_snapshot")
+    parser.add_argument(
+        "--skip-stock", action="store_true",
+        help="Ne synchronise pas le snapshot de stock.",
     )
     parser.add_argument("--movements-table", default="mouvements")
     parser.add_argument(
@@ -178,6 +191,7 @@ def main() -> int:
         f"{args.catalog}.{args.backflush_schema}.{args.backflush_table}"
     )
     movements_fqn = f"{args.catalog}.{args.schema}.{args.movements_table}"
+    stock_fqn = f"{args.catalog}.{args.schema}.{args.stock_table}"
 
     # La source porte des lignes sans référence — un mouvement rattaché à aucun
     # article. Le miroir les refuserait, sa clé primaire étant la référence, et
@@ -212,6 +226,8 @@ def main() -> int:
             _assert_mirror_shape(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
         if not args.skip_movements:
             _assert_mirror_shape(conn, "erp_mouvements", MOVEMENT_COLUMNS)
+        if not args.skip_stock:
+            _assert_mirror_shape(conn, "erp_stock_snapshot", STOCK_COLUMNS)
 
         items = _read(spark, items_fqn, ITEM_COLUMNS, limit=args.limit,
                       unique_on="item_id")
@@ -274,6 +290,27 @@ def main() -> int:
                 )
                 args.skip_movements = True
 
+        # Même règle encore. La photo la plus récente seulement : la source est
+        # partitionnée par jour et en garde l'historique, dont l'application n'a
+        # que faire — elle compare un comptage à *un* état du système.
+        stock: list[tuple] = []
+        if not args.skip_stock:
+            try:
+                stock = _read(
+                    spark, stock_fqn, STOCK_COLUMNS, limit=args.limit,
+                    where=(
+                        f"snapshot_date = (SELECT max(snapshot_date) "
+                        f"FROM {stock_fqn})"
+                    ),
+                )
+                log.info("Lu %d ligne(s) de stock physique", len(stock))
+            except Exception as exc:
+                log.error(
+                    "Snapshot de stock (%s) illisible, miroir laissé intact : %s",
+                    stock_fqn, exc,
+                )
+                args.skip_stock = True
+
         try:
             _swap(conn, "erp_base_article", ITEM_COLUMNS, items,
                   unique_on="item_id")
@@ -294,14 +331,21 @@ def main() -> int:
                     "La table %s n'a renvoyé aucune ligne — miroir des "
                     "mouvements laissé intact", movements_fqn,
                 )
+            if stock:
+                _swap(conn, "erp_stock_snapshot", STOCK_COLUMNS, stock)
+            elif not args.skip_stock:
+                log.error(
+                    "La table %s n'a renvoyé aucune ligne — miroir du stock "
+                    "laissé intact", stock_fqn,
+                )
         except Exception as exc:
             raise RuntimeError(_write_advice(exc, args.pg_schema)) from exc
         conn.commit()
 
     log.info(
         "Miroir ERP synchronisé (%d articles, %d liens, %d lignes d'écart, "
-        "%d mouvements)",
-        len(items), len(boms), len(backflush), len(movements),
+        "%d mouvements, %d lignes de stock)",
+        len(items), len(boms), len(backflush), len(movements), len(stock),
     )
     return 0
 

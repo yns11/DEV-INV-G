@@ -72,8 +72,8 @@ assignable_cause                          (référentiel de site, hors campagne)
 schema_migration                          (bookkeeping des migrations)
 
 erp_base_article, erp_bom,                (miroirs Lakebase des tables Unity
-erp_ecart_backflush, erp_mouvements        Catalog, alimentés par un job — voir
-                                           le guide de déploiement)
+erp_ecart_backflush, erp_mouvements,       Catalog, alimentés par un job — voir
+erp_stock_snapshot                         le guide de déploiement)
 ```
 
 ### 3.1 Pourquoi `qty_imported` et `qty_manual` sont deux colonnes

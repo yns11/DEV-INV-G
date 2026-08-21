@@ -64,6 +64,12 @@ class Settings(BaseSettings):
         default="silver_base_article", alias="INV_ERP_ITEMS_TABLE"
     )
     erp_bom_table: str = Field(default="silver_bom", alias="INV_ERP_BOM_TABLE")
+    #: Snapshot quotidien du stock physique du site, une ligne par article ×
+    #: entrepôt × emplacement, partitionné par date. La campagne en lit la
+    #: photo la plus récente : c'est un état, pas un historique.
+    erp_stock_table: str = Field(
+        default="stock_snapshot", alias="INV_ERP_STOCK_TABLE"
+    )
     #: Gold table holding the backflush variance, at parent × child × week grain.
     #: Its own schema: it is published by a different pipeline than the silver
     #: referential, and pinning both to one setting would make a rename of either
@@ -171,6 +177,11 @@ class Settings(BaseSettings):
     @property
     def erp_bom_fqn(self) -> str:
         return f"{self.erp_schema}.{self.erp_bom_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_stock_fqn(self) -> str:
+        return f"{self.erp_schema}.{self.erp_stock_table}"
 
     @computed_field  # type: ignore[prop-decorator]
     @property

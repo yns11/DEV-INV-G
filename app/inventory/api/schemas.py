@@ -55,6 +55,7 @@ __all__ = [
     "WarehouseAssignmentRequest",
     "SheetTransitionRequest",
     "SheetLinesRequest",
+    "ZoneDeleteRequest",
     "SheetLineDeleteRequest",
     "ArbitrationDecisionRequest",
     "ReclassifyRequest",
@@ -360,6 +361,12 @@ class SheetLineDeleteRequest(ApiModel):
     """A selection of counting-sheet lines to remove."""
 
     line_ids: list[str] = Field(min_length=1, max_length=20_000, alias="lineIds")
+
+
+class ZoneDeleteRequest(ApiModel):
+    """Les zones à retirer, avec leurs feuilles — une ou tout un lot."""
+
+    zone_ids: list[str] = Field(min_length=1, max_length=5_000, alias="zoneIds")
 
 
 class ArbitrationDecisionRequest(ApiModel):

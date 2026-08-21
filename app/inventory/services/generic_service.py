@@ -22,6 +22,7 @@ from ..domain.consolidation import (
 )
 from ..domain.enums import (
     AuditAction,
+    CampaignStatus,
     CountSection,
     DataSource,
     JournalStatus,
@@ -359,18 +360,69 @@ class GenericService:
             )
         return updated
 
-    def delete_zone(self, campaign: Campaign, zone_id: str) -> None:
+    def delete_zones(
+        self, campaign: Campaign, zone_ids: Sequence[str]
+    ) -> dict[str, int]:
+        """Retire des zones et leurs feuilles de comptage, une ou tout un lot.
+
+        **Réservé à la préparation**, et c'est plus strict que la matrice de gel
+        ne l'exige : les zones restent modifiables en phase de comptage, mais
+        leurs feuilles y portent alors des quantités relevées sur le terrain, et
+        une feuille supprimée emporte ses lignes — donc un comptage que personne
+        ne refera. Préparer du papier est une activité de préparation ; en jeter
+        le jour J n'en est pas une.
+
+        **Les feuilles partent avec la zone.** La zone est retirée
+        logiquement — son histoire reste au dossier — mais ses feuilles sont
+        supprimées pour de bon. Les laisser produirait des feuilles orphelines :
+        les listes par zone ne les montreraient plus, la liste à plat de toutes
+        les lignes si, et la campagne compterait des articles rattachés à une
+        zone qui n'existe plus.
+        """
         ctx = self.ctx
         ctx.guard(campaign, "zones")
-        ctx.sheets.delete_zone(zone_id, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.DELETE,
-            entity_type="zone",
-            entity_id=zone_id,
-            summary="Suppression logique d'une zone",
-        )
+        if campaign.status is not CampaignStatus.PREPARATION:
+            raise ValidationError(
+                "Les zones ne se suppriment qu'en préparation. Depuis le passage "
+                "en comptage, leurs feuilles portent des quantités relevées.",
+                status=str(campaign.status),
+            )
+
+        unique = list(dict.fromkeys(i for i in zone_ids if i))
+        if not unique:
+            raise ValidationError("Aucune zone transmise.")
+
+        known = {zone.id: zone for zone in ctx.sheets.list_zones(campaign.id)}
+        missing = [i for i in unique if i not in known]
+        if missing:
+            raise ValidationError(
+                f"{len(missing)} zone(s) introuvables dans cette campagne, dont "
+                f"{missing[0]}.",
+                missing=missing[:20],
+            )
+
+        doomed = [
+            sheet.id
+            for sheet in ctx.sheets.list_sheets(campaign.id)
+            if sheet.zone_id in known and sheet.zone_id in set(unique)
+        ]
+        with ctx.db.transaction() as conn:
+            sheets = ctx.sheets.delete_sheets(campaign.id, doomed, conn=conn)
+            for zone_id in unique:
+                ctx.sheets.delete_zone(zone_id, actor=ctx.actor, conn=conn)
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.DELETE,
+                entity_type="zone",
+                summary=(
+                    f"Suppression de {len(unique)} zone(s) et de leurs "
+                    f"{sheets} feuille(s) de comptage"
+                ),
+                before={"codes": [known[i].code for i in unique][:50]},
+                conn=conn,
+            )
         ctx.forget_progress(campaign.id)
+        return {"zones": len(unique), "sheets": sheets}
 
     # ---------------------------------------------------------------- sheets
 

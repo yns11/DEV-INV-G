@@ -28,6 +28,7 @@ import {
 import type { FieldSpec, GridContract } from '../lib/types'
 import { DASH, SOURCE_LABELS } from '../lib/format'
 import { download, downloads } from '../lib/api'
+import { useHiddenColumns } from '../lib/columns'
 import { Badge, Button, EmptyState, Icons, SearchInput, useErrorToast } from './ui'
 
 /**
@@ -53,6 +54,26 @@ export interface Column<T extends Row = Record<string, unknown>> {
   /** Value used for sorting and searching when `render` returns a node. */
   value?: (row: T) => string | number | null
   help?: string
+  /**
+   * Filtre propre à cette colonne, en plus de la recherche libre.
+   *
+   * La recherche cherche partout à la fois : pratique pour retrouver une
+   * référence, inutilisable pour « les composants en kilos dont le prix
+   * dépasse cent euros ». Trois formes, déduites de la colonne quand elles ne
+   * sont pas déclarées : une liste de valeurs, un intervalle sur une colonne
+   * numérique, une recherche de texte.
+   */
+  filter?: 'choice' | 'range' | 'text' | false
+  /**
+   * Ce que la colonne totalise en pied de tableau.
+   *
+   * Somme par défaut sur les colonnes numériques. `false` pour celles dont la
+   * somme ne veut rien dire — un pourcentage, un ratio, un identifiant qui se
+   * trouve être un nombre.
+   */
+  total?: 'sum' | false
+  /** Rendu du total, quand un nombre nu ne suffit pas (euros, unités). */
+  totalFormat?: (total: number) => ReactNode
 }
 
 /** Build grid columns straight from a backend column contract. */
@@ -72,6 +93,44 @@ export function columnsFromContract(contract: GridContract): Column[] {
 }
 
 type SortState = { key: string; direction: 'asc' | 'desc' } | null
+
+/** Ce qu'un filtre de colonne retient. Vide = colonne non filtrée. */
+type ColumnFilter =
+  | { kind: 'choice'; values: string[] }
+  | { kind: 'range'; min: number | null; max: number | null }
+  | { kind: 'text'; needle: string }
+
+type Filters = Record<string, ColumnFilter>
+
+/** Au-delà, une liste de valeurs cesse d'être un choix et devient un annuaire. */
+const CHOICE_CEILING = 40
+
+/**
+ * Quelle forme de filtre convient à une colonne.
+ *
+ * Déduite quand elle n'est pas déclarée : une colonne numérique se borne, une
+ * colonne **qui se répète** se choisit dans une liste, le reste se cherche au
+ * texte.
+ *
+ * La répétition est ce qui distingue une catégorie d'un identifiant, et le seul
+ * plafond de cardinalité ne suffit pas à les séparer : sur six articles, six
+ * références distinctes passaient sous les quarante valeurs et « Article »
+ * s'affichait en liste déroulante — c'est-à-dire l'annuaire qu'on voulait
+ * éviter. Exiger que chaque valeur revienne au moins deux fois en moyenne
+ * range « Type » et « Unité » dans les listes, et les références dans le texte.
+ */
+function filterKind<T extends Row>(
+  column: Column<T>, distinct: number, rowCount: number,
+): 'choice' | 'range' | 'text' {
+  if (column.filter) return column.filter
+  if (column.numeric) return 'range'
+  if (column.choices?.length) return 'choice'
+  if (distinct > 0 && distinct <= CHOICE_CEILING && distinct * 2 <= rowCount) {
+    return 'choice'
+  }
+  return 'text'
+}
+
 
 /** Untyped read of one cell, used by sorting, filtering and default rendering. */
 function cellOf(row: Row, key: string): unknown {
@@ -154,17 +213,94 @@ export function DataGrid<T extends Row>({
   const [dragOver, setDragOver] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // ---- colonnes visibles ---------------------------------------------------
+  //
+  // Le nom de l'export sert d'identité à la grille : c'est le seul libellé
+  // stable qu'elle porte déjà, et il est unique par écran. Sans lui le choix
+  // vaut pour la session, ce qui reste mieux que rien.
+  const { hidden, toggle: toggleColumn, reset: showAllColumns } =
+    useHiddenColumns(exportTitle ?? null)
+  const visible = useMemo(
+    () => columns.filter((column) => !hidden.has(column.key)),
+    [columns, hidden],
+  )
+
+  // ---- filtres par colonne -------------------------------------------------
+  const [filters, setFilters] = useState<Filters>({})
+
+  /** Les valeurs distinctes d'une colonne, pour alimenter une liste de choix. */
+  const distinct = useMemo(() => {
+    const out: Record<string, string[]> = {}
+    for (const column of columns) {
+      if (column.filter === false) continue
+      const seen = new Set<string>()
+      for (const row of rows) {
+        const value = defaultValue(row, column)
+        if (value === null || value === '') continue
+        seen.add(String(value))
+        if (seen.size > CHOICE_CEILING) break
+      }
+      out[column.key] = [...seen].sort((a, b) =>
+        a.localeCompare(b, 'fr', { numeric: true }),
+      )
+    }
+    return out
+  }, [rows, columns])
+
+  const filterable = useMemo(
+    () =>
+      visible
+        .filter((column) => column.filter !== false && column.label)
+        .map((column) => ({
+          column,
+          kind: filterKind(column, distinct[column.key]?.length ?? 0, rows.length),
+        })),
+    [visible, distinct, rows.length],
+  )
+
+  const setFilter = (key: string, filter: ColumnFilter | null) => {
+    setFilters((current) => {
+      const next = { ...current }
+      if (filter === null) delete next[key]
+      else next[key] = filter
+      return next
+    })
+  }
+
   // ---- filtering -----------------------------------------------------------
   const filtered = useMemo(() => {
-    if (!search.trim()) return rows
     const needle = search.trim().toLowerCase()
-    return rows.filter((row) =>
-      columns.some((column) => {
+    const active = Object.entries(filters)
+    if (!needle && active.length === 0) return rows
+    const byKey = new Map(columns.map((column) => [column.key, column]))
+    return rows.filter((row) => {
+      if (
+        needle &&
+        !columns.some((column) => {
+          const value = defaultValue(row, column)
+          return value !== null && String(value).toLowerCase().includes(needle)
+        })
+      ) {
+        return false
+      }
+      return active.every(([key, filter]) => {
+        const column = byKey.get(key)
+        if (!column) return true
         const value = defaultValue(row, column)
-        return value !== null && String(value).toLowerCase().includes(needle)
-      }),
-    )
-  }, [rows, search, columns])
+        if (filter.kind === 'choice') {
+          return filter.values.includes(value === null ? '' : String(value))
+        }
+        if (filter.kind === 'range') {
+          const numeric = typeof value === 'number' ? value : Number(value)
+          if (!Number.isFinite(numeric)) return false
+          if (filter.min !== null && numeric < filter.min) return false
+          if (filter.max !== null && numeric > filter.max) return false
+          return true
+        }
+        return String(value ?? '').toLowerCase().includes(filter.needle.toLowerCase())
+      })
+    })
+  }, [rows, search, columns, filters])
 
   // ---- sorting -------------------------------------------------------------
   const sorted = useMemo(() => {
@@ -186,6 +322,31 @@ export function DataGrid<T extends Row>({
       return String(left).localeCompare(String(right), 'fr', { numeric: true }) * factor
     })
   }, [filtered, sort, columns])
+
+  // ---- totaux --------------------------------------------------------------
+  //
+  // Sur les lignes **affichées**, pas sur toutes : un total qui ne bougerait
+  // pas quand on filtre ne répondrait à aucune question qu'on se pose en
+  // filtrant. Les colonnes numériques totalisent par défaut ; celles dont la
+  // somme n'a pas de sens — un taux, un ratio — se retirent par `total: false`.
+  const totals = useMemo(() => {
+    const out: Array<{ key: string; sum: number }> = []
+    for (const column of visible) {
+      const wanted = column.total ?? (column.numeric ? 'sum' : false)
+      if (wanted !== 'sum') continue
+      let sum = 0
+      let seen = false
+      for (const row of sorted) {
+        const value = defaultValue(row, column)
+        const numeric = typeof value === 'number' ? value : Number(value)
+        if (!Number.isFinite(numeric)) continue
+        sum += numeric
+        seen = true
+      }
+      if (seen) out.push({ key: column.key, sum })
+    }
+    return out
+  }, [sorted, visible])
 
   const toggleSort = (key: string) => {
     setSort((current) => {
@@ -293,7 +454,10 @@ export function DataGrid<T extends Row>({
     }
   }, [onDropFile])
 
-  const showToolbar = searchable || toolbar || editable
+  const [showFilters, setShowFilters] = useState(false)
+  const activeFilters = Object.keys(filters).length
+  const showToolbar =
+    searchable || toolbar || editable || columns.length > 1 || filterable.length > 0
   const selectedCount = selected?.size ?? 0
 
   // ---- export --------------------------------------------------------------
@@ -316,12 +480,12 @@ export function DataGrid<T extends Row>({
     try {
       await download(downloads.table(campaignId), {
         title: exportTitle,
-        columns: columns
+        columns: visible
           .filter((c) => c.label)
           .map((c) => ({ key: c.key, label: c.label })),
         rows: chosen.map((row) =>
           Object.fromEntries(
-            columns
+            visible
               .filter((c) => c.label)
               // La valeur, pas ce qui est peint : une cellule rendue en badge ou
               // en deux lignes a derrière elle un nombre, et c'est lui qu'un
@@ -400,7 +564,51 @@ export function DataGrid<T extends Row>({
               Ajouter une ligne
             </Button>
           )}
+          {filterable.length > 0 && (
+            <Button
+              size="sm"
+              variant={activeFilters > 0 ? 'primary' : 'ghost'}
+              icon={<Icons.filter size={13} />}
+              onClick={() => setShowFilters((open) => !open)}
+              title="Filtrer colonne par colonne"
+            >
+              {activeFilters > 0 ? `Filtres (${activeFilters})` : 'Filtres'}
+            </Button>
+          )}
+          {columns.length > 1 && (
+            <ColumnPicker
+              columns={columns.filter((column) => column.label)}
+              hidden={hidden}
+              onToggle={toggleColumn}
+              onReset={showAllColumns}
+            />
+          )}
           {toolbar}
+        </div>
+      )}
+
+      {showFilters && filterable.length > 0 && (
+        <div className="filter-bar">
+          {filterable.map(({ column, kind }) => (
+            <ColumnFilterField
+              key={column.key}
+              column={column}
+              kind={kind}
+              choices={distinct[column.key] ?? []}
+              value={filters[column.key] ?? null}
+              onChange={(filter) => setFilter(column.key, filter)}
+            />
+          ))}
+          {activeFilters > 0 && (
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Icons.x size={13} />}
+              onClick={() => setFilters({})}
+            >
+              Tout effacer
+            </Button>
+          )}
         </div>
       )}
 
@@ -428,7 +636,7 @@ export function DataGrid<T extends Row>({
                     />
                   </th>
                 )}
-                {columns.map((column) => (
+                {visible.map((column) => (
                   <th
                     key={column.key}
                     className={[
@@ -475,7 +683,7 @@ export function DataGrid<T extends Row>({
                         />
                       </td>
                     )}
-                    {columns.map((column) => {
+                    {visible.map((column) => {
                       if (column.render) {
                         return (
                           <td key={column.key} className={column.numeric ? 'num' : undefined}>
@@ -534,6 +742,38 @@ export function DataGrid<T extends Row>({
                 )
               })}
             </tbody>
+            {totals.length > 0 && (
+              <tfoot>
+                <tr>
+                  {selectable && <td />}
+                  {visible.map((column, index) => {
+                    const total = totals.find((t) => t.key === column.key)
+                    // Le premier libellé libre porte le mot : une ligne de
+                    // chiffres en gras sous le tableau ne dit pas d'elle-même
+                    // ce qu'elle additionne.
+                    if (!total && index === 0) {
+                      return (
+                        <td key={column.key} className="subtle">
+                          Total
+                        </td>
+                      )
+                    }
+                    return (
+                      <td key={column.key} className={column.numeric ? 'num' : ''}>
+                        {total
+                          ? column.totalFormat
+                            ? column.totalFormat(total.sum)
+                            : total.sum.toLocaleString('fr-FR', {
+                                maximumFractionDigits: 2,
+                              })
+                          : null}
+                      </td>
+                    )
+                  })}
+                  {editable && <td />}
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}
@@ -552,6 +792,161 @@ export function DataGrid<T extends Row>({
         {footer}
       </div>
     </div>
+  )
+}
+
+/**
+ * Le petit bouton qui décide des colonnes affichées.
+ *
+ * Une grille de douze colonnes sert douze usages ; aucune session n'en a besoin
+ * de douze à la fois. Masquer n'est pas supprimer : la colonne reste dans
+ * l'export tant qu'elle est affichée, et se rappelle d'une visite à l'autre.
+ *
+ * La dernière colonne visible ne se masque pas — une grille sans colonne est un
+ * écran vide dont on ne devine plus comment sortir.
+ */
+function ColumnPicker<T extends Row>({
+  columns,
+  hidden,
+  onToggle,
+  onReset,
+}: {
+  columns: Column<T>[]
+  hidden: ReadonlySet<string>
+  onToggle: (key: string, value: boolean) => void
+  onReset: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const shownCount = columns.filter((c) => !hidden.has(c.key)).length
+  return (
+    <span className="colpicker">
+      <Button
+        size="sm"
+        variant={hidden.size > 0 ? 'primary' : 'ghost'}
+        icon={<Icons.sliders size={13} />}
+        onClick={() => setOpen((value) => !value)}
+        title="Choisir les colonnes affichées"
+      >
+        {hidden.size > 0 ? `${shownCount}/${columns.length}` : ''}
+      </Button>
+      {open && (
+        <>
+          <button
+            className="colpicker__scrim"
+            aria-label="Fermer"
+            onClick={() => setOpen(false)}
+          />
+          <div className="colpicker__menu" role="group" aria-label="Colonnes affichées">
+            {columns.map((column) => {
+              const shown = !hidden.has(column.key)
+              return (
+                <label key={column.key} className="colpicker__row">
+                  <input
+                    type="checkbox"
+                    checked={shown}
+                    disabled={shown && shownCount === 1}
+                    onChange={(event) => onToggle(column.key, !event.target.checked)}
+                  />
+                  {column.label || column.key}
+                </label>
+              )
+            })}
+            {hidden.size > 0 && (
+              <button className="colpicker__reset" onClick={onReset}>
+                Tout afficher
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </span>
+  )
+}
+
+/** Un filtre de colonne, dans la forme que sa nature appelle. */
+function ColumnFilterField<T extends Row>({
+  column,
+  kind,
+  choices,
+  value,
+  onChange,
+}: {
+  column: Column<T>
+  kind: 'choice' | 'range' | 'text'
+  choices: string[]
+  value: ColumnFilter | null
+  onChange: (filter: ColumnFilter | null) => void
+}) {
+  if (kind === 'range') {
+    const range = value?.kind === 'range' ? value : { min: null, max: null }
+    const update = (part: 'min' | 'max', raw: string) => {
+      const next = {
+        kind: 'range' as const,
+        min: range.min,
+        max: range.max,
+        [part]: raw === '' ? null : Number(raw),
+      }
+      onChange(next.min === null && next.max === null ? null : next)
+    }
+    return (
+      <span className="filter-field">
+        <span className="filter-field__label">{column.label}</span>
+        <input
+          className="input input--mini num"
+          type="number"
+          placeholder="min"
+          value={range.min ?? ''}
+          onChange={(event) => update('min', event.target.value)}
+        />
+        <input
+          className="input input--mini num"
+          type="number"
+          placeholder="max"
+          value={range.max ?? ''}
+          onChange={(event) => update('max', event.target.value)}
+        />
+      </span>
+    )
+  }
+
+  if (kind === 'choice') {
+    const picked = value?.kind === 'choice' ? value.values : []
+    return (
+      <span className="filter-field">
+        <span className="filter-field__label">{column.label}</span>
+        <select
+          className="input input--mini"
+          multiple
+          size={Math.min(choices.length, 3)}
+          value={picked}
+          onChange={(event) => {
+            const values = [...event.target.selectedOptions].map((o) => o.value)
+            onChange(values.length ? { kind: 'choice', values } : null)
+          }}
+        >
+          {choices.map((choice) => (
+            <option key={choice} value={choice}>
+              {choice}
+            </option>
+          ))}
+        </select>
+      </span>
+    )
+  }
+
+  const needle = value?.kind === 'text' ? value.needle : ''
+  return (
+    <span className="filter-field">
+      <span className="filter-field__label">{column.label}</span>
+      <input
+        className="input input--mini"
+        value={needle}
+        placeholder="contient…"
+        onChange={(event) =>
+          onChange(event.target.value ? { kind: 'text', needle: event.target.value } : null)
+        }
+      />
+    </span>
   )
 }
 

@@ -16,6 +16,7 @@ from ..schemas import (
     SheetLineDeleteRequest,
     SheetLinesRequest,
     SheetTransitionRequest,
+    ZoneDeleteRequest,
     ZoneNegativeRequest,
     ZonePassesRequest,
     ZoneRequest,
@@ -108,12 +109,19 @@ def set_zone_negative(
     }
 
 
-@router.delete("/zones/{zone_id}", summary="Supprimer une zone")
-def delete_zone(
-    campaign: CampaignDep, zone_id: str, service: Service
-) -> dict[str, bool]:
-    service.delete_zone(campaign, zone_id)
-    return {"deleted": True}
+@router.post("/zones/delete", summary="Supprimer des zones et leurs feuilles")
+def delete_zones(
+    campaign: CampaignDep, payload: ZoneDeleteRequest, service: Service
+) -> dict[str, int]:
+    """Retirer une zone, ou toute une sélection, pendant la préparation.
+
+    Une zone créée en double, un secteur qui ne sera finalement pas compté : il
+    fallait jusqu'ici vivre avec, la suppression n'étant offerte nulle part.
+
+    La zone est retirée logiquement et ses feuilles supprimées : les laisser
+    donnerait des feuilles rattachées à une zone qui n'existe plus.
+    """
+    return service.delete_zones(campaign, payload.zone_ids)
 
 
 @router.get("/lines", summary="Toutes les lignes de feuilles de la campagne")

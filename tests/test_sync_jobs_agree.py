@@ -31,7 +31,10 @@ NOTEBOOK = JOBS / "sync_erp_mirror_notebook.py"
 
 #: Les tuples de colonnes définissent le contrat avec le miroir : même ordre,
 #: mêmes noms, sinon l'insertion écrit une colonne dans une autre.
-COLUMN_TUPLES = ("ITEM_COLUMNS", "BOM_COLUMNS", "BACKFLUSH_COLUMNS", "MOVEMENT_COLUMNS")
+COLUMN_TUPLES = (
+    "ITEM_COLUMNS", "BOM_COLUMNS", "BACKFLUSH_COLUMNS", "MOVEMENT_COLUMNS",
+    "STOCK_COLUMNS",
+)
 
 
 def constants(path: Path) -> dict[str, tuple[str, ...]]:
@@ -66,7 +69,8 @@ def test_both_jobs_copy_the_same_columns(name: str) -> None:
 
 @pytest.mark.parametrize("path", [CLI, NOTEBOOK], ids=lambda p: p.name)
 @pytest.mark.parametrize("table", ["erp_base_article", "erp_bom",
-                                   "erp_ecart_backflush", "erp_mouvements"])
+                                   "erp_ecart_backflush", "erp_mouvements",
+                                   "erp_stock_snapshot"])
 def test_every_mirror_table_is_written_by_both(path: Path, table: str) -> None:
     """Une table oubliée d'un côté reste vide, sans que rien ne le signale."""
     source = path.read_text(encoding="utf-8")

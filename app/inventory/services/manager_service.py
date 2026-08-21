@@ -48,16 +48,17 @@ __all__ = [
     "Perimeter",
 ]
 
-#: The five manager slots the specification asks for. They are *slots*, not
-#: people: the label and the identity behind each one are edited per campaign,
-#: which is what lets a campaign be duplicated without carrying last quarter's
-#: staffing along with it.
-DEFAULT_MANAGERS: tuple[tuple[str, str], ...] = (
-    ("GESTIONNAIRE_1", "Gestionnaire 1"),
-    ("GESTIONNAIRE_2", "Gestionnaire 2"),
-    ("GESTIONNAIRE_3", "Gestionnaire 3"),
-    ("GESTIONNAIRE_4", "Gestionnaire 4"),
-    ("GESTIONNAIRE_5", "Gestionnaire 5"),
+#: The manager slots offered on every campaign. They are *slots*, not people:
+#: the label and the identity behind each one are edited per campaign, which is
+#: what lets a campaign be duplicated without carrying last quarter's staffing
+#: along with it.
+#:
+#: Neuf depuis que le site en compte neuf. Rien à migrer : les cases sont
+#: fusionnées à la lecture plutôt que semées à la création, donc une campagne
+#: ouverte quand il y en avait cinq en montre neuf à sa prochaine visite, les
+#: cinq premières gardant ce qui y était saisi.
+DEFAULT_MANAGERS: tuple[tuple[str, str], ...] = tuple(
+    (f"GESTIONNAIRE_{n}", f"Gestionnaire {n}") for n in range(1, 10)
 )
 
 #: Reserved warehouse key meaning "every warehouse without an explicit owner".
@@ -124,11 +125,11 @@ class ManagerService:
     # ------------------------------------------------------------------ read
 
     def list_managers(self, campaign: Campaign) -> list[Manager]:
-        """The five slots, merged with whatever has been saved for them.
+        """The slots of :data:`DEFAULT_MANAGERS`, merged with what was saved.
 
         Merged rather than seeded on first read: a GET must not write. It also
-        means a campaign created before this feature existed shows the five
-        slots immediately, with nothing to migrate.
+        means a campaign created before this feature existed — or before the
+        list grew — shows every slot immediately, with nothing to migrate.
         """
         stored = {m.code: m for m in self.ctx.referentials.list_managers(campaign.id)}
         out: list[Manager] = []

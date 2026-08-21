@@ -783,6 +783,120 @@ table.data td.editable input.num {
   background: var(--bg-raised);
 }
 
+/* ---- Sélecteur de colonnes ------------------------------------------------
+   Un menu ancré au bouton, fermé par un voile transparent qui couvre l'écran :
+   sans lui, le menu resterait ouvert au premier clic ailleurs, ce qui est la
+   façon la plus sûre de le faire prendre pour un panneau figé. */
+.colpicker {
+  position: relative;
+  display: inline-flex;
+}
+
+.colpicker__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-header) + 1);
+  background: none;
+  cursor: default;
+}
+
+.colpicker__menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  z-index: calc(var(--z-header) + 2);
+  min-width: 210px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg, 0 10px 30px rgb(0 0 0 / 18%));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.colpicker__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm, var(--text-base));
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.colpicker__row:hover {
+  background: var(--bg-hover);
+}
+
+.colpicker__row:has(input:disabled) {
+  cursor: default;
+  color: var(--fg-subtle);
+}
+
+.colpicker__reset {
+  margin-top: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+  text-align: left;
+  font-size: var(--text-xs);
+}
+
+/* ---- Barre de filtres par colonne ---------------------------------------- */
+.filter-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.filter-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.filter-field__label {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.input--mini {
+  width: auto;
+  min-width: 84px;
+  max-width: 180px;
+  padding: 3px var(--space-2);
+  font-size: var(--text-xs);
+}
+
+/* Une liste à choix multiple reste basse : déployée sur quatre lignes, elle
+   doublait la hauteur de la barre et venait recouvrir le tableau. */
+select.input--mini[multiple] {
+  max-height: 66px;
+  padding: 2px;
+}
+
+/* ---- Pied de tableau : les totaux ----------------------------------------
+   Collé au bas de la zone défilante, comme l'en-tête l'est au haut : sur deux
+   mille lignes, un total qu'il faut aller chercher tout en bas ne sert pas. */
+.data tfoot td {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg-raised);
+  border-top: 2px solid var(--border-strong);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
 .table-foot {
   display: flex;
   align-items: center;

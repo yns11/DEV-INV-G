@@ -326,7 +326,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 845 tests, ~4 s, aucune base requise
+make test      # 868 tests, ~5 s, aucune base requise
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -577,6 +577,7 @@ Onglet **Environment**, ajoutez :
 | `INV_ERP_SCHEMA` | `emotors_data_champions.silver_erp_ye` |
 | `INV_ERP_ITEMS_TABLE` | `silver_base_article` |
 | `INV_ERP_BOM_TABLE` | `silver_bom` |
+| `INV_ERP_STOCK_TABLE` | `stock_snapshot` |
 | `INV_ERP_MOVEMENTS_TABLE` | `mouvements` |
 
 `INV_ASSISTANT_PROFILE` décide de ce que l'assistant de campagne reçoit et de
@@ -585,8 +586,16 @@ de la campagne, un raisonnement libre, des chiffres qui restent ceux du dossier.
 La variable existe pour qu'en ajouter un autre, plus restreint pour un public
 plus large par exemple, soit un redémarrage et non une livraison de code.
 
-`INV_ERP_SCHEMA` et ses deux tables désignent les tables **silver** lues par
-« Lire depuis l'ERP » sur les grilles Articles et Nomenclatures.
+`INV_ERP_SCHEMA` et ses tables désignent les tables **silver** lues par « Lire
+depuis l'ERP » sur les grilles Articles, Nomenclatures et Stock ERP.
+
+`INV_ERP_STOCK_TABLE` désigne le **snapshot de stock physique** : une ligne par
+article × entrepôt × emplacement, partitionnée par `snapshot_date`. L'application
+résout d'abord la date maximale puis lit ce seul jour — une campagne se compare à
+un état du système, pas à un stock cumulé. Les colonnes attendues sont
+`item_id`, `entrepot`, `emplacement`, `stock_physique`, `unite` et
+`snapshot_date` ; l'entité juridique et les lignes supprimées sont filtrées en
+amont.
 
 `INV_ERP_MOVEMENTS_TABLE` désigne la table des **mouvements de stock**, lue par
 « Tout charger de l'ERP » dans la vue Comparaison. Une ligne par référence et par
@@ -618,6 +627,8 @@ GRANT USE CATALOG ON CATALOG emotors_data_champions              TO `<sp-de-l-ap
 GRANT USE SCHEMA  ON SCHEMA  emotors_data_champions.silver_erp_ye TO `<sp-de-l-app>`;
 GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.silver_base_article TO `<sp-de-l-app>`;
 GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.silver_bom          TO `<sp-de-l-app>`;
+GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.stock_snapshot      TO `<sp-de-l-app>`;
+GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.mouvements          TO `<sp-de-l-app>`;
 ```
 
 Seul un propriétaire du catalogue peut les passer. Quand aucun n'est joignable
@@ -629,7 +640,7 @@ déjà accès à l'ERP.
 | `INV_ERP_SOURCE` | Lit | Exige |
 |---|---|---|
 | `uc` (défaut) | les tables silver, en direct | `USE CATALOG` + `SELECT` pour le SP de l'App |
-| `mirror` | `erp_base_article`, `erp_bom`, `erp_ecart_backflush`, `erp_mouvements` (Lakebase) | que le job de synchronisation ait tourné |
+| `mirror` | `erp_base_article`, `erp_bom`, `erp_ecart_backflush`, `erp_mouvements`, `erp_stock_snapshot` (Lakebase) | que le job de synchronisation ait tourné |
 
 En `uc`, deux catalogues se demandent : celui du référentiel — qui porte aussi
 les mouvements — et celui du backflush. Deux grants, potentiellement deux
@@ -659,6 +670,12 @@ déduplication à paramétrer. Elle remonte à janvier 2022 et grossit d'un jour
 jour, d'où la borne ; la maille référence × jour se retaille ensuite sur
 n'importe quelle période d'inventaire. La dernière cellule affiche l'intervalle
 couvert et le total de chacun des six flux.
+
+Le **snapshot de stock physique** n'a besoin que d'un interrupteur,
+`sync_stock` : la source est partitionnée par jour et le job n'en copie que la
+tranche la plus récente — il n'y a pas d'historique à borner. La dernière cellule
+affiche la date copiée et le nombre de lignes, ce qui répond à la seule question
+que pose l'écran *Stock ERP* : de quel jour vient ce stock.
 
 ```bash
 # 1. l'App d'abord : la migration 006 s'applique à son démarrage et ouvre

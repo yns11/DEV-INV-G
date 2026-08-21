@@ -1241,10 +1241,13 @@ class SheetRepository(_Base):
         )
         return zone
 
-    def delete_zone(self, zone_id: str, *, actor: str) -> None:
+    def delete_zone(
+        self, zone_id: str, *, actor: str, conn: psycopg.Connection | None = None
+    ) -> None:
         self._execute(
             "UPDATE zone SET deleted_at = now(), updated_by = %s WHERE id = %s",
             (actor, zone_id),
+            conn=conn,
         )
 
     def update_zones(
@@ -1345,6 +1348,27 @@ class SheetRepository(_Base):
             "DELETE FROM count_sheet WHERE campaign_id = %s AND pass_no = %s "
             "AND zone_id = ANY(%s::uuid[])",
             (campaign_id, str(pass_no), list(zone_ids)),
+            conn=conn,
+        )
+
+    def delete_sheets(
+        self,
+        campaign_id: str,
+        sheet_ids: Sequence[str],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Supprime des feuilles nommément. ``ON DELETE CASCADE`` emporte leurs lignes.
+
+        Filtré sur la campagne autant que sur les identifiants : ceux-ci
+        viennent d'une requête, et rien d'autre n'empêcherait de supprimer la
+        feuille d'une campagne à laquelle on n'a pas affaire.
+        """
+        if not sheet_ids:
+            return 0
+        return self._execute(
+            "DELETE FROM count_sheet WHERE campaign_id = %s AND id = ANY(%s::uuid[])",
+            (campaign_id, list(sheet_ids)),
             conn=conn,
         )
 

@@ -75,6 +75,10 @@ dbutils.widgets.dropdown(
 dbutils.widgets.text(
     "movements_since", "2026-03-30", "15. Mouvements depuis (date)",
 )
+# Le stock physique : une photo par jour, dont seule la dernière est copiée.
+dbutils.widgets.dropdown(
+    "sync_stock", "oui", ["oui", "non"], "16. Copier le stock physique",
+)
 
 # COMMAND ----------
 
@@ -116,13 +120,19 @@ MOVEMENT_COLUMNS = (
     "conso_theorique", "consommation", "rebut",
 )
 
+# Une ligne par article × entrepôt × emplacement, pour un jour donné.
+STOCK_COLUMNS = (
+    "item_id", "entrepot", "emplacement", "stock_physique", "unite",
+    "snapshot_date",
+)
+
 BATCH = 5_000
 
 conf = {name: dbutils.widgets.get(name).strip() for name in (
     "pg_host", "pg_password", "pg_user", "pg_database", "pg_schema",
     "erp_catalog", "erp_schema", "limit", "lakebase_branch",
     "sync_backflush", "backflush_schema", "backflush_table", "backflush_since",
-    "sync_movements", "movements_since",
+    "sync_movements", "movements_since", "sync_stock",
 )}
 
 if not conf["pg_host"]:
@@ -141,6 +151,8 @@ with_backflush = conf["sync_backflush"] == "oui"
 backflush_since = conf["backflush_since"]
 
 movements_fqn = f"{conf['erp_catalog']}.{conf['erp_schema']}.mouvements"
+stock_fqn = f"{conf['erp_catalog']}.{conf['erp_schema']}.stock_snapshot"
+with_stock = conf["sync_stock"] == "oui"
 with_movements = conf["sync_movements"] == "oui"
 movements_since = conf["movements_since"]
 
@@ -321,6 +333,8 @@ with psycopg.connect(conninfo) as check:
         assert_mirror_shape(check, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
     if with_movements:
         assert_mirror_shape(check, "erp_mouvements", MOVEMENT_COLUMNS)
+    if with_stock:
+        assert_mirror_shape(check, "erp_stock_snapshot", STOCK_COLUMNS)
 print("Miroir conforme.")
 # COMMAND ----------
 
@@ -419,6 +433,25 @@ if with_movements:
               f"laissé intact : {type(exc).__name__} — {exc}")
         with_movements = False
 
+# Même règle encore. La photo la plus récente seulement : la source est
+# partitionnée par jour et en garde l'historique, dont l'application n'a que
+# faire — elle compare un comptage à *un* état du système.
+stock = []
+if with_stock:
+    try:
+        stock = read(
+            stock_fqn, STOCK_COLUMNS,
+            where=(
+                f"snapshot_date = (SELECT max(snapshot_date) FROM {stock_fqn})"
+            ),
+        )
+        jour = stock[0][5] if stock else "—"
+        print(f"{len(stock)} ligne(s) de stock physique, au {jour}")
+    except Exception as exc:
+        print(f"\n⚠ {stock_fqn} illisible, miroir du stock laissé "
+              f"intact : {type(exc).__name__} — {exc}")
+        with_stock = False
+
 # Un ERP qui ne renvoie rien est une anomalie, pas une mise à jour : le
 # remplacement étant intégral, une lecture vide effacerait tout.
 for label, fqn, loaded in (("articles", items_fqn, items),
@@ -490,6 +523,11 @@ with connection as conn:
         elif with_movements:
             print(f"  erp_mouvements : {movements_fqn} n'a renvoyé aucune ligne "
                   "sur la période — miroir laissé intact")
+        if with_stock and stock:
+            swap(conn, "erp_stock_snapshot", STOCK_COLUMNS, stock)
+        elif with_stock:
+            print(f"  erp_stock_snapshot : {stock_fqn} n'a renvoyé aucune ligne "
+                  "— miroir du stock laissé intact")
     except Exception as exc:
         if "permission denied" in str(exc).lower():
             raise RuntimeError(
@@ -504,6 +542,8 @@ with connection as conn:
 print(f"\nMiroir synchronisé : {len(items)} articles, {len(boms)} liens"
       + (f", {len(backflush)} ligne(s) d'écart backflush" if backflush else "")
       + (f", {len(movements)} ligne(s) de mouvement" if movements else "")
+      + (f", {len(stock)} ligne(s) de stock physique au {stock[0][5]}"
+         if stock else "")
       + ".")
 
 # COMMAND ----------

@@ -481,10 +481,17 @@ export const api = {
       `/campaigns/${id}/generic/zones/passes`,
       { method: 'POST', body: JSON.stringify({ zoneIds, passes }) },
     ),
-  deleteZone: (id: string, zoneId: string) =>
-    request<{ deleted: boolean }>(`/campaigns/${id}/generic/zones/${zoneId}`, {
-      method: 'DELETE',
-    }),
+  /**
+   * Retire des zones et leurs feuilles, pendant la préparation seulement.
+   *
+   * Une liste même pour une seule zone : le bouton de ligne et l'action
+   * groupée passent par le même chemin, donc par la même règle.
+   */
+  deleteZones: (id: string, zoneIds: string[]) =>
+    request<{ zones: number; sheets: number }>(
+      `/campaigns/${id}/generic/zones/delete`,
+      { method: 'POST', body: JSON.stringify({ zoneIds }) },
+    ),
   sheet: (id: string, sheetId: string) =>
     request<{ sheet: Record<string, unknown>; lines: Array<Record<string, unknown>> }>(
       `/campaigns/${id}/generic/sheets/${sheetId}`,

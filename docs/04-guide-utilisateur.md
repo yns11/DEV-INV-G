@@ -24,6 +24,42 @@ remonte en haut de l'écran.
 
 ---
 
+## Les grilles
+
+Toutes les tables de l'application — articles, nomenclatures, zones, écarts,
+ajustements — se manœuvrent de la même façon. Trois commandes, à droite au-dessus
+de chaque grille.
+
+**Choisir les colonnes** (l'icône à curseurs). Décochez ce dont vous n'avez pas
+besoin ; *Tout afficher* revient au réglage d'origine. Le choix est mémorisé par
+grille et par navigateur, et il vaut aussi pour l'**export Excel** : ce que vous
+avez masqué à l'écran ne part pas dans le fichier. Seules les colonnes masquées
+sont retenues, jamais la liste complète — une colonne ajoutée par une mise à
+jour apparaît donc d'elle-même, au lieu de rester invisible parce qu'un réglage
+d'il y a six mois ne la connaissait pas.
+
+**Filtrer** (l'entonnoir). Chaque colonne reçoit le filtre qui correspond à ce
+qu'elle contient :
+
+| Contenu de la colonne | Filtre |
+|---|---|
+| Un nombre, une quantité, un prix | **De … à …** — l'une des deux bornes suffit |
+| Un petit nombre de valeurs qui se répètent (type, unité, statut, programme) | **Liste à cocher**, chaque valeur avec son nombre de lignes |
+| Une référence, une désignation, un commentaire | **Texte contenu**, insensible à la casse et aux accents |
+
+Le classement est automatique et se fait sur les données affichées : une colonne
+dont presque chaque ligne a une valeur différente — une référence article — reste
+une recherche texte plutôt qu'une liste à cocher de mille entrées. Les filtres se
+cumulent, la barre de recherche s'y ajoute, et le pied de grille rappelle combien
+de lignes restent.
+
+**Les totaux** s'affichent en pied de grille, sur les colonnes qui s'additionnent
+— quantités, valeurs, écarts. Ils portent sur les **lignes affichées** : filtrez
+sur un entrepôt et le total devient celui de cet entrepôt. C'est le chiffre qu'on
+recopie dans un compte rendu, et il correspond à ce qu'on a sous les yeux.
+
+---
+
 ## Retrouver une campagne
 
 **Toutes les campagnes.**
@@ -87,7 +123,7 @@ de transition liste précisément ce qui sera gelé et ce qui bloque encore.
   nombre de comptages** : une salle réglée sur un comptage unique ne redevient
   pas une zone à double comptage parce que le défaut de campagne le dit ;
 - les gestionnaires, leurs identités et leurs périmètres — le personnel est
-  stable d'une campagne à l'autre, et retaper cinq noms et quarante affectations
+  stable d'une campagne à l'autre, et retaper neuf noms et quarante affectations
   chaque trimestre est exactement le travail que cette application supprime.
 
 **Rien de mesuré n'est copié** : ni stock ERP, ni comptage, ni journal, ni
@@ -124,6 +160,12 @@ Ce que la lecture ERP traduit pour vous :
 | `std_cost_price` ÷ `std_price_unit` | Prix standard | Ramené au prix d'**une** unité |
 | `item_name` / `name_alias` / `item_description` | Désignation | La première renseignée |
 
+La grille se filtre colonne par colonne — **type**, **programme**, **unité** et
+**exclusion** par liste à cocher, **prix standard** par fourchette — ce qui rend
+praticable le travail par lot sur un référentiel de plusieurs milliers de lignes :
+isoler les semi-finis d'un programme, ou les articles au-dessus de mille euros,
+puis agir sur la sélection.
+
 Un groupe non stockable (`SSTRA` sous-traitance, `PRESTA` prestation) reste en
 type *inconnu* plutôt que d'être rangé au jugé : valoriser une prestation comme
 un composant fausserait l'écart. L'**exclusion** n'est jamais déduite de l'ERP —
@@ -135,6 +177,10 @@ c'est une décision de campagne, prise ici.
 la table `emotors_data_champions.silver_erp_ye.silver_bom` fournit chaque lien
 parent → composant avec sa quantité, la désignation de l'assemblage étant jointe
 au passage.
+
+Les mêmes filtres qu'en Articles : **assemblage** et **composant** par recherche
+texte, **quantité par assemblage** par fourchette, **unité** et **version** par
+liste à cocher.
 
 L'onglet **Santé des nomenclatures** signale immédiatement :
 
@@ -156,9 +202,7 @@ Un écart est *matériel* — c'est-à-dire digne d'attention — lorsqu'il fran
 | Barrière | Signification |
 |---|---|
 | Valeur absolue (€) | Impact financier minimal |
-| Écart relatif | \|Δqté\| / qté livre minimal |
-| Plancher quantité | En deçà, jamais d'exception |
-| Tolérance IRA | Tolérance de l'indicateur d'exactitude des enregistrements |
+| Écart relatif | \|Δqté\| / quantité ERP minimal |
 
 Exiger la **conjonction** (et non l'une ou l'autre) garde la liste d'exceptions
 à une taille qu'une équipe peut réellement traiter le jour J.
@@ -212,12 +256,24 @@ vide : le compteur écrit ce qu'il trouve. Elle est marquée comme telle, ce qui
 évite que les contrôles ne la signalent comme une préparation oubliée. Charger
 une liste d'articles lève automatiquement la mention.
 
+**Supprimer une zone.** La corbeille en bout de ligne retire une zone ; cochez
+plusieurs lignes et *Supprimer* les retire d'un coup. Les feuilles de comptage de
+la zone partent avec elle, et le message de confirmation dit combien : une zone
+préparée par erreur ne laisse pas derrière elle des feuilles orphelines qu'on
+retrouverait le jour J. La suppression est **logique** — la zone quitte les
+listes, son historique reste en base.
+
+Cette opération n'existe **qu'en Préparation**. Passé en comptage, une zone porte
+des quantités saisies, et la faire disparaître effacerait un travail de terrain :
+elle se ramène alors à un seul comptage, ou ses emplacements se désactivent (2.3),
+mais elle ne s'efface plus.
+
 ### 1.7 Répartir le travail entre gestionnaires
 
 **Référentiels & seuils → Gestionnaires**, puis **Affectation journaux** et
 **Affectation zones**.
 
-Cinq postes par campagne. Renseignez pour chacun son libellé et **son adresse
+Neuf postes par campagne. Renseignez pour chacun son libellé et **son adresse
 e-mail**. Cette adresse fait deux choses, à ne pas confondre.
 
 **Elle donne le droit de modifier la campagne.** Une campagne se consulte par
@@ -292,15 +348,29 @@ articles, nomenclatures, seuils. Les zones GENERIQUE, elles, restent créables.
 
 ### 2.1 Charger le stock ERP
 
-**Référentiels & seuils → Stock ERP.**
+**Référentiels & seuils → Stock ERP.** Trois sources, comme pour les articles et
+les nomenclatures, dans cet ordre :
 
-Chargez l'export ERP « Stock physique par emplacement ». Ce chargement fait
-**trois choses en une transaction** :
+1. **Lire depuis l'ERP** — la table
+   `emotors_data_champions.silver_erp_ye.stock_snapshot` publie une photographie
+   quotidienne du stock physique du site, une ligne par article × entrepôt ×
+   emplacement. L'application en lit **la date la plus récente**, et elle seule :
+   une campagne se compare à *un* état du système à *un* instant, jamais à un
+   stock additionné sur trois mois.
+2. **Charger un fichier** — l'export « Stock physique par emplacement », quand
+   l'ERP n'est pas joignable.
+3. **Copier / Coller**.
+
+Quelle que soit la source, le chargement fait **trois choses en une
+transaction** :
 
 1. il remplace intégralement le snapshot (une photographie ne se fusionne pas) ;
 2. il construit le **référentiel entrepôts/emplacements** à partir des données,
    en conservant les décisions d'activation déjà prises ;
 3. il crée **un journal de comptage par emplacement actif**.
+
+L'historique des imports nomme la source retenue : une reprise se relit sans
+avoir à deviner si les quantités viennent de l'ERP ou d'un fichier.
 
 Puis **Geler le stock ERP**. À partir de là, tout écart est reproductible.
 
@@ -316,8 +386,8 @@ autrement :
 - périmètre garni — les listes sont filtrées ;
 - **périmètre vide** — « aucun objet ne vous est affecté », et non une liste
   vide qu'on prendrait pour une campagne sans données ;
-- **identité non déclarée** — vous n'êtes rattaché à aucun des cinq
-  gestionnaires ; le filtre ne laisse alors rien passer.
+- **identité non déclarée** — vous n'êtes rattaché à aucun gestionnaire ; le
+  filtre ne laisse alors rien passer.
 
 Le filtrage se fait côté serveur : ce que le périmètre exclut n'est jamais
 envoyé au poste. Et il reste un filtre : coupez l'interrupteur et vous revoyez —

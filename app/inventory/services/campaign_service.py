@@ -275,8 +275,8 @@ class CampaignService:
             location.campaign_id = target.id
 
         # Managers and their perimeters are staffing, and staffing is stable
-        # between two campaigns of the same site: re-typing the five names and
-        # forty zone assignments every quarter is exactly the kind of work this
+        # between two campaigns of the same site: re-typing nine names and forty
+        # zone assignments every quarter is exactly the kind of work this
         # application exists to remove.
         managers = [
             m.model_copy(update={"campaign_id": target.id})

@@ -231,6 +231,11 @@ function ItemsTab({
       key: 'item_type',
       label: 'Type',
       width: 130,
+      // Une liste plutôt qu'un texte : quatre valeurs possibles, dont personne
+      // ne retient l'orthographe exacte. La déduction automatique n'y suffit
+      // pas sur un petit référentiel, où quatre types sur sept lignes ne se
+      // distinguent pas d'un identifiant.
+      filter: 'choice',
       render: (row) => (
         <Badge tone="neutral">
           {ITEM_TYPE_LABELS[String(row.item_type)] ?? String(row.item_type)}
@@ -238,9 +243,9 @@ function ItemsTab({
       ),
       value: (row) => String(row.item_type),
     },
-    { key: 'category', label: 'Catégorie', width: 130 },
-    { key: 'program', label: 'Programme', width: 120 },
-    { key: 'unit', label: 'Unité', width: 80 },
+    { key: 'category', label: 'Catégorie', width: 130, filter: 'choice' },
+    { key: 'program', label: 'Programme', width: 120, filter: 'choice' },
+    { key: 'unit', label: 'Unité', width: 80, filter: 'choice' },
     {
       key: 'stdPrice',
       label: 'Prix standard',
@@ -248,11 +253,13 @@ function ItemsTab({
       width: 140,
       render: (row) => moneyShort(Number(row.stdPrice ?? 0)),
       value: (row) => Number(row.stdPrice ?? 0),
+      totalFormat: (total) => moneyShort(total),
     },
     {
       key: 'exclusions',
       label: 'Exclusion',
       width: 160,
+      filter: 'choice',
       render: (row) => {
         const values = (row.exclusions as string[] | undefined) ?? []
         if (values.length === 0) return <span className="subtle">—</span>
@@ -745,11 +752,14 @@ function BomsTab({
       render: (row) => <span className="num">{qty(Number(row.qtyPer ?? 0))}</span>,
       value: (row) => Number(row.qtyPer ?? 0),
     },
-    { key: 'unit', label: 'Unité', width: 90 },
+    { key: 'unit', label: 'Unité', width: 90, filter: 'choice' },
     {
       key: 'active',
       label: 'Version',
       width: 110,
+      // Deux valeurs, donc une liste — et la somme d'une version ne veut rien
+      // dire, mais la colonne n'étant pas numérique elle ne totalise déjà pas.
+      filter: 'choice',
       render: (row) =>
         row.active === false ? (
           <Badge tone="warning">Inactive</Badge>
@@ -1307,6 +1317,12 @@ function CountSheetsTab({
         <ZonesAdminGrid
           campaignId={campaignId}
           editable={overview.permissions.zones}
+          // La suppression s'arrête au passage en comptage, où les feuilles
+          // portent des quantités relevées. Le serveur applique la même règle.
+          deletable={
+            overview.permissions.zones &&
+            overview.campaign.status === 'PREPARATION'
+          }
           managers={managers.data?.managers ?? []}
           onPrint={(selection) => setPrintZones(selection.map((z) => z.id))}
           onOpen={(zone) => {
@@ -1745,7 +1761,7 @@ function ThresholdsTab({
 // --------------------------------------------------------------------------- //
 
 /**
- * The five manager slots.
+ * Les postes de gestionnaire, tels que le serveur les énumère.
  *
  * The identity column is the load-bearing one: it is what lets the server
  * answer "who is asking?" when a screen requests `focus=true`, so the browser

@@ -200,6 +200,10 @@ class ImportService:
                 return reader.fetch_items(limit=limit)
             case "boms":
                 return reader.fetch_bom_links(limit=limit)
+            case "book_stock":
+                # Sans bornes : le snapshot est un état, pas un historique. Le
+                # lecteur résout lui-même la date la plus récente.
+                return reader.fetch_book_stock(limit=limit)
             case "backflush":
                 start, end = _require_period(period_start, period_end)
                 return reader.fetch_backflush(
@@ -585,7 +589,11 @@ class ImportService:
             ctx.imports.create(
                 campaign_id=campaign.id,
                 target="book_stock",
-                filename=kwargs.get("filename", ""),
+                # `_origin_of` plutôt que le nom du fichier : une lecture ERP
+                # n'en a pas, et la colonne restait vide — c'est-à-dire que
+                # l'historique ne disait pas d'où venait le stock, ce qui est
+                # précisément le seul travail de cet historique.
+                filename=self._origin_of("book_stock", kwargs),
                 content_hash=_hash_of(kwargs),
                 storage_path=outcome.storage_path,
                 rows_received=outcome.rows_received,
@@ -1055,7 +1063,10 @@ class ImportService:
         if kwargs.get("mode") != "erp":
             return kwargs.get("filename", "")
         settings = self.ctx.settings
-        table = settings.erp_items_fqn if target == "items" else settings.erp_bom_fqn
+        table = {
+            "items": settings.erp_items_fqn,
+            "book_stock": settings.erp_stock_fqn,
+        }.get(target, settings.erp_bom_fqn)
         if settings.erp_source != "mirror":
             return table
         # Naming the ERP table alone would claim a live read that did not

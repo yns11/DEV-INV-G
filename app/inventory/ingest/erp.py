@@ -99,6 +99,15 @@ MIRROR_BACKFLUSH_TABLE = "erp_ecart_backflush"
 #: Every stock flow at article × day grain (migration 012) — a faithful copy of
 #: the silver table, column names included.
 MIRROR_MOVEMENTS_TABLE = "erp_mouvements"
+#: Le snapshot de stock (migration 013), copie fidèle de la table silver.
+MIRROR_STOCK_TABLE = "erp_stock_snapshot"
+
+#: Le snapshot quotidien du stock physique, dans l'ordre où le job le copie.
+#: Une ligne par article × entrepôt × emplacement, pour un jour donné.
+STOCK_COLUMNS = (
+    "item_id", "entrepot", "emplacement", "stock_physique", "unite",
+    "snapshot_date",
+)
 
 #: Columns the backflush mirror carries, in the order the sync job copies them.
 #: Only what the application reads: the gold table holds a score of others that
@@ -183,6 +192,7 @@ def mirror_state() -> dict[str, Any]:
     for key, table in (
         ("items", MIRROR_ITEMS_TABLE),
         ("boms", MIRROR_BOM_TABLE),
+        ("book_stock", MIRROR_STOCK_TABLE),
         ("backflush", MIRROR_BACKFLUSH_TABLE),
         ("movements", MIRROR_MOVEMENTS_TABLE),
     ):
@@ -289,6 +299,45 @@ class ErpReader:
             source=bom,
         )
         return [_bom_row(r) for r in rows]
+
+    # ------------------------------------------------------------ stock ERP
+
+    def fetch_book_stock(self, *, limit: int) -> list[dict[str, Any]]:
+        """Le stock physique du site, en lignes de la grille ``book_stock``.
+
+        **La photo la plus récente, pas l'historique.** La table est un snapshot
+        quotidien partitionné par date : la lire entière donnerait autant de
+        lignes que de jours conservés, et un stock additionné sur trois mois.
+        La date maximale est donc résolue d'abord, puis les lignes de ce seul
+        jour sont lues.
+
+        Deux jours différents ne se mélangent jamais : une campagne compare son
+        comptage à *un* état du système à *un* instant, et un stock composite
+        ne se défendrait devant personne.
+        """
+        if self._from_mirror:
+            return [_stock_row(r) for r in _mirror_rows(
+                MIRROR_STOCK_TABLE,
+                STOCK_COLUMNS,
+                order_by="item_id, entrepot, emplacement",
+                limit=limit,
+                where=(
+                    f"WHERE snapshot_date = (SELECT max(snapshot_date) "
+                    f"FROM {MIRROR_STOCK_TABLE})"
+                ),
+            )]
+        table = self._settings.erp_stock_fqn
+        rows = self._query(
+            f"""
+            SELECT {", ".join(STOCK_COLUMNS)}
+            FROM {table}
+            WHERE snapshot_date = (SELECT max(snapshot_date) FROM {table})
+            ORDER BY item_id, entrepot, emplacement
+            LIMIT {int(limit)}
+            """,
+            source=table,
+        )
+        return [_stock_row(r) for r in rows]
 
     # -------------------------------------------------------------- backflush
 
@@ -527,6 +576,7 @@ def _mirror_rows(
     *,
     order_by: str,
     limit: int,
+    #: Clause complète, mot-clé compris — elle est concaténée telle quelle.
     where: str = "",
 ) -> list[Sequence[Any]]:
     """Rows of the local mirror, in the same shape a warehouse read returns.
@@ -795,6 +845,28 @@ def _rows_of(response: Any, client: Any) -> Iterator[Sequence[Any]]:
 # --------------------------------------------------------------------------- #
 # ERP vocabulary → campaign vocabulary
 # --------------------------------------------------------------------------- #
+
+def _stock_row(row: Sequence[Any]) -> dict[str, Any]:
+    """Une ligne du snapshot ERP, traduite en ligne de la grille ``book_stock``.
+
+    Rien à calculer : la table silver publie déjà l'entrepôt, l'emplacement et
+    la quantité physique, entité juridique et lignes supprimées filtrées en
+    amont. Seule l'unité a un repli, la jointure qui la fournit étant volontaire
+    ouverte pour ne pas perdre une ligne de stock faute d'unité déclarée.
+
+    Le coût unitaire n'y est pas : le prix standard vient du référentiel
+    articles, et le lire deux fois de deux endroits produirait deux
+    valorisations du même stock.
+    """
+    item_id, entrepot, emplacement, quantite, unite, _date = _pad(row, 6)
+    return {
+        "item_number": _text(item_id),
+        "warehouse_id": _text(entrepot),
+        "location_id": _text(emplacement),
+        "qty": _number(quantite),
+        "unit": _text(unite) or "PCE",
+    }
+
 
 def _item_row(row: Sequence[Any]) -> dict[str, Any]:
     (item_id, item_name, item_description, search_name, name_alias, categorie,

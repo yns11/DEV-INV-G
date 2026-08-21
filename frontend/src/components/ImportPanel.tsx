@@ -31,7 +31,7 @@ import {
 import { DataGrid, columnsFromContract } from './DataGrid'
 
 /** Grids the ERP is authoritative for — mirrors `ERP_TARGETS` on the API. */
-const ERP_TARGETS = ['items', 'boms', 'backflush']
+const ERP_TARGETS = ['items', 'boms', 'book_stock', 'backflush']
 
 type Stage =
   | { kind: 'idle' }

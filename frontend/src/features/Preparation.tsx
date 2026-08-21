@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { GRID_ROW_CEILING, api } from '../lib/api'
+import { compositeKey, splitCompositeKey } from '../lib/rowKey'
 import type {
   GridContract, Manager, Overview, PrintMode, Threshold, Zone,
 } from '../lib/types'
@@ -684,7 +685,7 @@ function BomsTab({
       api.setBomActivation(
         campaignId,
         [...selectedLinks].map((key) => {
-          const [parentItem, childItem] = key.split(' ')
+          const [parentItem, childItem] = splitCompositeKey(key)
           return { parentItem: parentItem!, childItem: childItem! }
         }),
         active,
@@ -887,7 +888,7 @@ function BomsTab({
               selectable={editable}
               selected={selectedLinks}
               onSelectedChange={setSelectedLinks}
-              getRowId={(row) => `${row.parent_item} ${row.child_item}`}
+              getRowId={(row) => compositeKey(row.parent_item, row.child_item)}
               searchPlaceholder="Filtrer par assemblage ou composant…"
               maxHeight={520}
               toolbar={
@@ -1144,7 +1145,7 @@ function BookStockTab({
       />
 
       <Card
-        title="Stock ERP (snapshot ERP)"
+        title="Stock ERP"
         message={
           top && query.data?.topShare != null
             ? `Ces ${query.data.total} ligne(s) portent ${percent(query.data.topShare)} de la valeur du stock ERP (${moneyShort(query.data.totalValue)}).`
@@ -1652,7 +1653,7 @@ function ThresholdsTab({
   return (
     <Card
       title="Seuils de matérialité"
-      message="Un écart est « matériel » lorsqu’il franchit toutes les barrières configurées de son type. Exiger la conjonction — et non l’une ou l’autre — garde la liste d’exceptions à une taille exploitable le jour J."
+      message="Un écart est « matériel » lorsqu’il franchit toutes les barrières de son type, jamais une seule."
       actions={
         editable && draft ? (
           <>

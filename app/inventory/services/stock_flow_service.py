@@ -622,22 +622,13 @@ class StockFlowService:
         }
 
     def _in_scope(self, campaign: Campaign) -> dict[str, Item]:
-        """The articles a flow may be loaded for.
+        """Les articles pour lesquels un flux peut être chargé.
 
-        Two conditions, and both matter. **In the referential**, because a
-        quantity attached to a reference the campaign does not hold has nowhere
-        to go — the comparison is keyed on the article. **Not excluded from the
-        perimeter**, because an article deliberately left out of the inventory
-        must not come back through the flows: its expected stock would be
-        computed and shown as a variance nobody put there.
+        Un article laissé hors du périmètre ne doit pas revenir par ses flux :
+        son stock attendu serait calculé et affiché comme un écart que personne
+        n'a demandé.
         """
-        return {
-            number: item
-            for number, item in self.ctx.referentials.items_by_number(
-                campaign.id
-            ).items()
-            if not item.excluded_everywhere
-        }
+        return self.ctx.referentials.items_in_scope(campaign.id)
 
     def refresh_erp(self, campaign: Campaign, run_id: str) -> dict[str, Any]:
         """Read production and theoretical consumption, and freeze them.

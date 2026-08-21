@@ -8,16 +8,19 @@ Ce qui est vérifié ici n'est pas le câblage HTTP mais les décisions — ce q
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
+import inventory
 from inventory.api.routers import data
 from inventory.api.schemas import ItemExclusionsRequest
 from inventory.domain.enums import ExclusionScope
-from inventory.domain.models import BomLink, Item
+from inventory.domain.models import BomLink, Item, in_perimeter
 from inventory.errors import ValidationError
 
 CAMPAIGN = cast(Any, SimpleNamespace(id="camp-1"))
@@ -239,3 +242,65 @@ class TestTheStockedFilterOnBills:
         )
         kept = data.list_boms(CAMPAIGN, ctx, parent="A", counted=True)
         assert [l["parent_item"] for l in kept] == ["A"]
+
+
+class TestWhatTheErpMayWriteOn:
+    """Une exclusion tient aussi devant les tables ERP.
+
+    Ces tables couvrent toute l'usine. Être au référentiel de la campagne ne
+    suffit donc pas : sans le second filtre, un article volontairement laissé
+    hors inventaire revient par les quantités lues sur lui, et son stock attendu
+    s'affiche comme un écart que personne n'a demandé.
+
+    La règle a d'abord été écrite sur les cinq flux de la comparaison et oubliée
+    sur l'écart backflush, qui se lit pourtant de la même façon. Elle vit
+    maintenant en un seul endroit, et ce contrôle vérifie que les lecteurs y
+    passent tous.
+    """
+
+    def catalogue(self):
+        return {
+            "ART-1": item("ART-1"),
+            "ART-2": item("ART-2", exclusions=[ExclusionScope.ALL]),
+            "ART-3": item("ART-3", exclusions=[ExclusionScope.GENERIC]),
+        }
+
+    def test_an_article_excluded_from_everything_is_out(self):
+        assert "ART-2" not in in_perimeter(self.catalogue())
+
+    def test_a_partial_exclusion_leaves_the_article_in(self):
+        """« Hors GENERIQUE » ne dit rien des réceptions de cet article."""
+        assert "ART-3" in in_perimeter(self.catalogue())
+
+    def test_the_others_are_untouched(self):
+        assert "ART-1" in in_perimeter(self.catalogue())
+
+    @pytest.mark.parametrize(
+        "service, method",
+        [
+            ("stock_flow_service", "_in_scope"),
+            ("import_service", "import_backflush"),
+        ],
+    )
+    def test_every_erp_reader_asks_for_the_perimeter(self, service, method):
+        """Le filtre se rétablit en remettant `items_by_number`, sans rien casser.
+
+        Rien n'échouerait : la lecture marcherait, avec des articles en trop.
+        C'est pourquoi le contrôle porte sur l'appel et non sur le résultat.
+        """
+        source = (
+            Path(inventory.__file__).parent / "services" / f"{service}.py"
+        ).read_text(encoding="utf-8")
+        body = _method_source(source, method)
+        assert "items_in_scope" in body, (
+            f"{service}.{method} lit le référentiel entier : utilisez "
+            "`items_in_scope`, qui écarte aussi les articles hors périmètre."
+        )
+
+
+def _method_source(source: str, name: str) -> str:
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(source, node) or ""
+    raise AssertionError(f"méthode {name} introuvable")

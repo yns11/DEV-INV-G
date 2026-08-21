@@ -352,7 +352,9 @@ class ImportService:
         outcome.rows_accepted = len(links)
         with ctx.db.transaction() as conn:
             if replace:
-                removed = ctx.referentials.clear_bom(campaign.id, actor=ctx.actor)
+                removed = ctx.referentials.clear_bom(
+                    campaign.id, actor=ctx.actor, conn=conn
+                )
                 outcome.details["replacedLinks"] = removed
             ctx.referentials.upsert_bom_links(links, actor=ctx.actor, conn=conn)
             outcome.batch_id = self._record_batch(
@@ -676,7 +678,9 @@ class ImportService:
         )
         outcome = _base_outcome("backflush", parsed)
 
-        items = ctx.referentials.items_by_number(campaign.id)
+        # Même règle que les flux de la comparaison : la table couvre toute
+        # l'usine, et un article exclu du périmètre n'a pas d'écart à porter.
+        items = ctx.referentials.items_in_scope(campaign.id)
         lines, errors = map_backflush(
             campaign.id, parsed.rows,
             period_start=start, period_end=end, items=items,

@@ -102,6 +102,17 @@ const STEPS: Array<{
   },
 ]
 
+/** Ce que toute lecture ERP renvoie, quelle que soit la mesure demandée. */
+type ErpReadOutcome = {
+  /** Lignes renvoyées par l'ERP, avant filtrage sur le périmètre. */
+  rowsRead: number
+  /** Références retenues : lues *et* au périmètre de la campagne. */
+  items: number
+  outOfScope: number
+  periodStart: string
+  periodEnd: string
+}
+
 /** Comment chaque provenance se nomme et se lit à l'écran. */
 const SOURCE_LABELS: Record<FlowSource, string> = {
   ERP: 'Lu dans l’ERP',
@@ -515,35 +526,46 @@ function Steps({
     onError: (error) => showError(error, 'Lecture ERP impossible'),
   })
 
+  /**
+   * Le même récit pour toutes les lectures ERP.
+   *
+   * Une lecture a trois issues, et « 0 article » ne dit pas laquelle : l'ERP
+   * n'a rien sur la période, il a répondu mais aucune de ses références n'est
+   * au périmètre de la campagne, ou tout s'est bien passé. Chacune appelle un
+   * geste différent, donc chacune a son message.
+   */
+  const erpToast = (label: string, result: ErpReadOutcome, detail: string) => {
+    if (result.rowsRead === 0) {
+      toast.warning(
+        `Aucune ligne de ${label.toLowerCase()} sur la période`,
+        `Du ${formatDate(result.periodStart)} au ${formatDate(result.periodEnd)} (exclu), `
+          + 'l’ERP ne renvoie rien. Vérifiez les dates d’inventaire des deux campagnes.',
+      )
+      return
+    }
+    if (result.items === 0) {
+      toast.warning(
+        `${result.rowsRead} ligne(s) lues, aucune retenue`,
+        'Aucune des références lues n’est au périmètre de cette campagne. '
+          + 'Chargez le référentiel articles, ou vérifiez les exclusions.',
+      )
+      return
+    }
+    toast.success(
+      `${label} : ${result.items} référence(s) sur ${result.rowsRead}`,
+      detail
+        + (result.outOfScope ? ` · ${result.outOfScope} hors périmètre` : ''),
+    )
+  }
+
   // Une étape à la fois : recharger les réceptions ne doit pas rejouer les
-  // trois autres lectures, dont l'une peut être lente.
+  // autres lectures.
   const step = useMutation({
     mutationFn: (kind: string) =>
       api.refreshStockFlowStep(campaignId, runId, kind),
     onSuccess: (result) => {
       void queryClient.invalidateQueries()
-      const period = `du ${formatDate(result.periodStart)} au ${formatDate(result.periodEnd)} (exclu)`
-      if (result.rowsRead === 0) {
-        toast.warning(
-          `Aucune ligne de ${result.label.toLowerCase()} sur cette période`,
-          `${result.source} ne renvoie rien ${period}. Vérifiez les dates d’inventaire des deux campagnes.`,
-        )
-        return
-      }
-      if (result.items === 0) {
-        toast.warning(
-          `${result.rowsRead} ligne(s) lues, aucune retenue`,
-          `Aucun des articles renvoyés par ${result.source} ${period} n’est au référentiel de cette campagne.`,
-        )
-        return
-      }
-      toast.success(
-        `${result.label} : ${result.items} article(s) sur ${result.rowsRead} lus`,
-        `Total ${qty(result.totalQty)}.` +
-          (result.outOfScope
-            ? ` ${result.outOfScope} ligne(s) hors référentiel, ignorées.`
-            : ''),
-      )
+      erpToast(result.label, result, `Total ${qty(result.totalQty)}`)
     },
     onError: (error) => showError(error, 'Lecture ERP impossible'),
   })
@@ -552,35 +574,10 @@ function Steps({
     mutationFn: () => api.refreshStockFlowErp(campaignId, runId),
     onSuccess: (result) => {
       void queryClient.invalidateQueries()
-      // « 0 article » recouvrait trois situations sans les distinguer : la
-      // table de faits n'a rien sur la période, elle a répondu mais aucun de
-      // ses articles n'est au référentiel de la campagne, ou la lecture s'est
-      // bien passée. Un compteur seul ne dit pas laquelle, et sans la période
-      // ni le nom de la table on ne peut même pas rejouer la requête.
-      const period = `du ${formatDate(result.periodStart)} au ${formatDate(result.periodEnd)} (exclu)`
-      if (result.rowsRead === 0) {
-        toast.warning(
-          'Aucune production sur cette période',
-          `${result.source} ne renvoie aucune ligne ${period}. ` +
-            (result.mirror
-              ? 'La lecture passe par le miroir local : le job « Synchronisation du miroir ERP » a-t-il déjà copié la table de faits ?'
-              : 'Vérifiez les dates d’inventaire des deux campagnes, et que la table de faits couvre bien cette période.'),
-        )
-        return
-      }
-      if (result.items === 0) {
-        toast.warning(
-          `${result.rowsRead} ligne(s) lues, aucune retenue`,
-          `Aucun des articles renvoyés par ${result.source} ${period} n’est au référentiel de cette campagne. Chargez le référentiel articles, ou vérifiez que les deux sources parlent des mêmes références.`,
-        )
-        return
-      }
-      toast.success(
-        `${result.items} article(s) retenus sur ${result.rowsRead} lus`,
-        `Production ${qty(result.producedQty)} · consommation théorique ${qty(result.consumedQty)}.` +
-          (result.outOfScope
-            ? ` ${result.outOfScope} ligne(s) hors référentiel, ignorées.`
-            : ''),
+      erpToast(
+        'Production et consommation théorique',
+        result,
+        `Production ${qty(result.producedQty)} · consommation théorique ${qty(result.consumedQty)}`,
       )
     },
     onError: (error) => showError(error, 'Lecture ERP impossible'),
@@ -609,7 +606,7 @@ function Steps({
   return (
     <Card
       title="Quantités de la période"
-      message="Les quatre mesures se lisent dans l’ERP. Elles restent chargeables par fichier, et corrigeables dans leur grille."
+      message="Les cinq mesures se lisent dans l’ERP, se chargent par fichier, et se corrigent dans leur grille."
       actions={
         editable ? (
           <Button
@@ -676,7 +673,7 @@ function Steps({
             <button
               className="chip"
               disabled={!editable || pending}
-              title={`Production du parent et consommation théorique, lues dans la table de faits sur la période. ${stateHint(erpStep)}`}
+              title={`Production du parent et consommation théorique, lues dans l’ERP sur la période. ${stateHint(erpStep)}`}
               onClick={() => erp.mutate()}
             >
               {erpStep?.loaded ? (

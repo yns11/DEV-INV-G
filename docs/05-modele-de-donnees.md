@@ -57,11 +57,23 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           │
           ├─ adjustment_line              (mouvements post-comptage)
           ├─ variance_analysis            (cause humaine + proposition IA, séparées)
+          │
+          ├─ campaign_backflush           (écart backflush figé sur une période)
+          │
+          ├─ stock_flow_run ─┬─ stock_flow_input   (1 par flux chargé : provenance
+          │  comparaison     │                      ERP / fichier / saisie)
+          │  avec une        └─ stock_flow_erp     (production et conso. théorique)
+          │  campagne antérieure
+          │
           ├─ import_batch                 (provenance de chaque chargement)
           └─ audit_event                  (append-only, UPDATE/DELETE neutralisés)
 
 assignable_cause                          (référentiel de site, hors campagne)
 schema_migration                          (bookkeeping des migrations)
+
+erp_base_article, erp_bom,                (miroirs Lakebase des tables Unity
+erp_ecart_backflush, erp_mouvements        Catalog, alimentés par un job — voir
+                                           le guide de déploiement)
 ```
 
 ### 3.1 Pourquoi `qty_imported` et `qty_manual` sont deux colonnes

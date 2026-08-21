@@ -9,6 +9,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api, download, downloads } from '../lib/api'
+import { compositeKey, splitCompositeKey } from '../lib/rowKey'
 import type { GridContract, Journal, JournalStatus, Overview } from '../lib/types'
 import {
   JOURNAL_STATUS_LABELS,
@@ -269,7 +270,7 @@ function JournalsTab({
               onClick={() =>
                 setStatus.mutate({ ids: [...selected], status: 'BOOK_ENFORCED' })
               }
-              title="Pour les emplacements inventoriés avant le snapshot du stock ERP"
+              title="Pour les emplacements inventoriés avant la date du stock ERP"
             >
               Forcer au stock ERP
             </Button>
@@ -282,7 +283,7 @@ function JournalsTab({
 
       <Card
         title="Journaux de comptage"
-        message="Un journal par emplacement actif. Un emplacement inventorié avant le snapshot peut être forcé au stock ERP : son écart est alors nul par construction, et non par accident."
+        message="Un journal par emplacement actif. Un emplacement déjà inventorié peut être aligné sur le stock ERP, son écart devenant nul."
         flush
       >
         <AsyncBoundary
@@ -589,7 +590,7 @@ function LocationsTab({
             onClick={() =>
               setStatus.mutate({
                 keys: [...selected].map((key) => {
-                  const [warehouseId = '', locationId = ''] = key.split(' ')
+                  const [warehouseId, locationId] = splitCompositeKey(key)
                   return { warehouseId, locationId }
                 }),
                 status: 'DISABLED',
@@ -604,7 +605,7 @@ function LocationsTab({
             onClick={() =>
               setStatus.mutate({
                 keys: [...selected].map((key) => {
-                  const [warehouseId = '', locationId = ''] = key.split(' ')
+                  const [warehouseId, locationId] = splitCompositeKey(key)
                   return { warehouseId, locationId }
                 }),
                 status: 'ACTIVE',
@@ -625,7 +626,7 @@ function LocationsTab({
             <DataGrid
               columns={columns}
               rows={data.locations}
-              getRowId={(row) => `${row.warehouse_id} ${row.location_id}`}
+              getRowId={(row) => compositeKey(row.warehouse_id, row.location_id)}
               selectable={editable}
               selected={selected}
               onSelectedChange={setSelected}

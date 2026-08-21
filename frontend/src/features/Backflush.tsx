@@ -11,11 +11,7 @@
  *
  *     écart inexpliqué = écart d'inventaire − part expliquée par le backflush
  *
- * Trois choix d'affichage en découlent.
- *
- * **« Inexpliqué », pas « résiduel ».** L'application dépense déjà ce mot pour
- * l'écart qui reste après ajustements. Deux soustractions différentes sous un
- * seul mot sur le même écran, c'est une erreur de lecture programmée.
+ * Deux choix d'affichage en découlent.
  *
  * **Le tri se fait sur l'inexpliqué.** Un gros backflush que le comptage
  * confirme est une bonne nouvelle : il a été mesuré et il tombe juste. Ce qui
@@ -140,7 +136,7 @@ export function Backflush() {
           data.rows.length === 0 ? (
             <Card>
               <EmptyState title="Aucun écart backflush chargé" icon={<Icons.layers size={20} />}>
-                Lisez la table de faits sur la période, ou chargez un export.
+                Lisez la période dans l’ERP, ou chargez un export.
                 L’absence de donnée vaut écart nul : un composant que la
                 production n’a pas touché n’a pas d’écart à expliquer.
               </EmptyState>
@@ -209,7 +205,7 @@ function PeriodHeader({
   return (
     <Card
       title="Période de lecture"
-      message="Des lundis ISO, début inclus et fin exclue : l’écart est calculé à la semaine, et une borne en milieu de semaine compterait une production entière contre quelques jours."
+      message="Du lundi au lundi, fin exclue : l’écart se calcule sur des semaines entières."
     >
       <div className="row-wrap" style={{ gap: 'var(--space-4)', alignItems: 'flex-end' }}>
         <Field
@@ -260,10 +256,9 @@ function PeriodHeader({
       )}
       {!loaded && (
         <Alert tone="info" title="Rien n’est encore figé">
-          La table de faits est reconstruite chaque nuit : l’écart d’une semaine
-          passée peut changer. Il est donc lu une fois et enregistré, pour qu’une
-          même campagne consultée à quinze jours d’intervalle donne le même
-          chiffre.
+          Les données ERP sont recalculées chaque nuit : l’écart d’une semaine
+          passée peut changer. Il est donc lu une fois puis enregistré, pour que
+          la même campagne donne toujours le même chiffre.
         </Alert>
       )}
     </Card>

@@ -65,6 +65,7 @@ from ..domain.models import (
     Warehouse,
     WipBreakdown,
     Zone,
+    in_perimeter,
 )
 from ..errors import ConflictError, NotFoundError
 from .engine import Database
@@ -268,15 +269,6 @@ class CampaignRepository(_Base):
             conn=conn,
         )
 
-    def update_config(
-        self, campaign_id: str, config: CampaignConfig, *, actor: str
-    ) -> None:
-        self._execute(
-            "UPDATE campaign SET config = %s, updated_by = %s, updated_at = now(), "
-            "row_version = row_version + 1 WHERE id = %s",
-            (Jsonb(config.model_dump(mode="json")), actor, campaign_id),
-        )
-
     # -- thresholds ----------------------------------------------------------
 
     def list_thresholds(self, campaign_id: str) -> list[Thresholds]:
@@ -381,6 +373,10 @@ class ReferentialRepository(_Base):
         cannot go stale mid-run.
         """
         return {i.item_number: i for i in self.list_items(campaign_id)}
+
+    def items_in_scope(self, campaign_id: str) -> dict[str, Item]:
+        """:func:`~inventory.domain.models.in_perimeter` applied to the campaign."""
+        return in_perimeter(self.items_by_number(campaign_id))
 
     def count_items(self, campaign_id: str) -> int:
         row = self._fetch_one(
@@ -524,11 +520,21 @@ class ReferentialRepository(_Base):
             (actor, campaign_id, parent_item, child_item),
         )
 
-    def clear_bom(self, campaign_id: str, *, actor: str) -> int:
+    def clear_bom(
+        self, campaign_id: str, *, actor: str, conn: psycopg.Connection | None = None
+    ) -> int:
+        """Retire every bill-of-materials link of a campaign.
+
+        Takes the caller's connection. Without it the deletion commits on its
+        own while the replacement rows are still inside an open transaction: a
+        failure there rolls the insert back and leaves the campaign with no
+        nomenclature at all, which is worse than the state it started from.
+        """
         return self._execute(
             "UPDATE bom_link SET deleted_at = now(), updated_by = %s "
             "WHERE campaign_id = %s AND deleted_at IS NULL",
             (actor, campaign_id),
+            conn=conn,
         )
 
     # -- warehouses & locations ---------------------------------------------
@@ -856,9 +862,13 @@ class JournalRepository(_Base):
         )
         return [self._journal(r) for r in rows]
 
-    def get(self, journal_id: str) -> CountJournal:
+    def get(
+        self, journal_id: str, *, conn: psycopg.Connection | None = None
+    ) -> CountJournal:
         row = self._fetch_one(
-            f"SELECT {self._COLUMNS} FROM count_journal WHERE id = %s", (journal_id,)
+            f"SELECT {self._COLUMNS} FROM count_journal WHERE id = %s",
+            (journal_id,),
+            conn=conn,
         )
         if row is None:
             raise NotFoundError("Journal introuvable.", journalId=journal_id)

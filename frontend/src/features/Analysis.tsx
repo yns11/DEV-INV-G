@@ -60,8 +60,8 @@ export function Analysis({ view }: { view: AnalysisView }) {
     return (
       <Card>
         <EmptyState title="Analyse indisponible" icon={<Icons.lock size={20} />}>
-          Les écarts se calculent à partir du stock ERP gelé. Chargez puis gelez le
-          snapshot ERP dans l’onglet Référentiels.
+          Les écarts se calculent à partir du stock ERP gelé. Chargez puis gelez-le
+          dans l’onglet Référentiels.
         </EmptyState>
       </Card>
     )
@@ -860,7 +860,7 @@ function AnalyticsTab({ campaignId }: { campaignId: string }) {
             {data.recountPriority && data.recountPriority.length > 0 && (
               <Card
                 title="Priorité de recomptage"
-                message="Classement par valeur attendue = |écart €| × probabilité que ce soit une erreur de comptage. Trier par montant seul envoie les équipes recompter des écarts structurels qui ne bougeront pas."
+                message="Classement par écart × probabilité d’une erreur de comptage : le montant seul enverrait recompter des écarts structurels."
                 flush
               >
                 <DataGrid
@@ -1425,7 +1425,7 @@ function AdjustmentsTab({
 
       <Card
         title="Mouvements et ajustements"
-        message="Quantité et valeur signées : négatif = diminution de stock. Chaque mouvement s’ajoute au comptage pour former le stock physique — cliquez une référence pour voir ce qu’il en résulte."
+        message="Négatif = diminution de stock. Chaque mouvement s’ajoute au comptage pour former le stock physique."
         flush
       >
         <AsyncBoundary

@@ -659,9 +659,9 @@ def map_backflush(
     figure. The exception is a row that carries a *count* of parents or weeks:
     that one says « measured, and it came out at zero », which is worth keeping.
 
-    ``items`` filters to the campaign's own referential when it is supplied. The
-    fact table covers the whole plant; an article the campaign does not hold has
-    no variance to attribute to it.
+    ``items`` is the campaign's perimeter when it is supplied: in the referential
+    and not excluded from it. The fact table covers the whole plant, and an
+    article the campaign does not inventory has no variance to attribute to it.
     """
     aggregated: dict[str, BackflushLine] = {}
     errors: list[RowError] = []

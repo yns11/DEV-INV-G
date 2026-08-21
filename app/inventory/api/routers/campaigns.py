@@ -11,7 +11,6 @@ from ...domain.models import CampaignConfig, Thresholds
 from ...services import CampaignService
 from ..deps import CampaignDep, Ctx, campaign_service
 from ..schemas import (
-    CampaignConfigPayload,
     CloneCampaignRequest,
     CreateCampaignRequest,
     TransitionRequest,
@@ -122,14 +121,6 @@ def update_thresholds(
         campaign.id, [Thresholds(**t.model_dump()) for t in payload.thresholds]
     )
     return [t.model_dump(mode="json") for t in updated]
-
-
-@router.put("/{campaign_id}/config", summary="Mettre à jour la configuration")
-def update_config(
-    campaign: CampaignDep, payload: CampaignConfigPayload, service: Service
-) -> dict[str, Any]:
-    updated = service.update_config(campaign.id, CampaignConfig(**payload.model_dump()))
-    return updated.model_dump(mode="json")
 
 
 @router.get("/{campaign_id}/audit", summary="Journal d'audit")

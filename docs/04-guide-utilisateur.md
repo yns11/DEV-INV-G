@@ -560,23 +560,28 @@ stock attendu = stock initial + réceptions + production
 ```
 
 Choisissez la **campagne de départ** — la plus ancienne par date d'inventaire —
-puis alimentez les quatre mesures de la période.
+puis alimentez les cinq mesures de la période.
 
-**Tout charger de l'ERP** les lit toutes les quatre d'un coup, chacune dans la
-table de son domaine :
+**Tout charger de l'ERP** les lit toutes d'un coup. Elles viennent désormais
+d'une seule table de mouvements, à raison d'une colonne par flux :
 
-| Mesure | Lue dans | Comment |
-|---|---|---|
-| Réceptions | Bons de réception fournisseur | Lignes rattachées à une commande d'achat |
-| Expéditions | Bons de livraison client | Lignes rattachées à une commande de vente |
-| Rebuts | Mouvements de stock | Tout ce qui entre à l'emplacement rebut, quel que soit le journal |
-| Production & conso. théorique | Table de faits backflush | Production dédoublonnée par semaine |
+| Mesure | Ce qu'elle compte |
+|---|---|
+| Réceptions | Ce qui est entré en stock sur la période |
+| Expéditions | Ce qui est sorti vers le client |
+| Rebuts | Ce qui a été mis au rebut |
+| Production | Ce que l'usine a déclaré produire |
+| Conso. théorique | Ce que les nomenclatures disent avoir été consommé |
 
-Le bouton n'est pas tout-ou-rien : les quatre viennent de quatre tables, et une
-lecture qui échoue n'annule pas les trois autres — le message dit laquelle et
-pourquoi. Chaque mesure a aussi son propre bouton de lecture, pour la recharger
-seule. Le chargement par fichier ou par collage reste disponible pour les trois
-premières.
+Elles étant sur la même ligne, la lecture est **tout ou rien** : ou bien les
+cinq sont écrites ensemble, ou bien elle échoue et le message dit pourquoi, les
+quantités précédentes restant alors intactes. Chaque mesure garde son propre
+bouton pour la recharger seule, et le chargement par fichier ou par collage
+reste disponible pour les réceptions, les expéditions et les rebuts.
+
+Seules les références **du référentiel de la campagne et non exclues du
+périmètre** sont retenues ; le message de lecture indique combien de lignes ont
+été écartées à ce titre.
 
 **Les sous-sections** — Réceptions, Production & conso., Expéditions, Rebuts —
 montrent chaque mesure ligne par ligne, dans une grille filtrable, exportable et

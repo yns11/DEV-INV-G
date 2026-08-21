@@ -283,6 +283,17 @@ class CampaignService:
             source_campaign_id
         )
 
+        # Tout ce qui vient de la source est lu avant d'ouvrir la transaction :
+        # celle-ci n'écrit que sur la nouvelle campagne, et une lecture faite
+        # dedans mobiliserait une seconde connexion du pool sans rien y gagner.
+        source_zones = ctx.sheets.list_zones(source_campaign_id) if include_zones else []
+        sheets_by_zone: dict[str, list] = {}
+        source_lines: dict[str, list] = {}
+        if source_zones and include_sheet_lines:
+            for sheet in ctx.sheets.list_sheets(source_campaign_id):
+                sheets_by_zone.setdefault(sheet.zone_id, []).append(sheet)
+            source_lines = ctx.sheets.lines_by_sheet(source_campaign_id)
+
         copied_zones = 0
         copied_lines = 0
         with ctx.db.transaction() as conn:
@@ -297,53 +308,48 @@ class CampaignService:
                     target.id, warehouse_assignments, actor=ctx.actor, conn=conn
                 )
 
-            if include_zones:
-                source_lines = ctx.sheets.lines_by_sheet(source_campaign_id)
-                source_sheets = ctx.sheets.list_sheets(source_campaign_id)
-                sheets_by_zone: dict[str, list] = {}
-                for sheet in source_sheets:
-                    sheets_by_zone.setdefault(sheet.zone_id, []).append(sheet)
+            for zone in source_zones:
+                new_zone = zone.model_copy(
+                    update={"id": new_id(), "campaign_id": target.id}
+                )
+                ctx.sheets.create_zone(new_zone, actor=ctx.actor, conn=conn)
+                # The zone's own count requirement travels with it: a
+                # single-pass metrology room does not become a double-count
+                # zone because the campaign default says so.
+                ctx.sheets.ensure_sheets(
+                    target.id, new_zone.id, passes_for(new_zone.passes),
+                    actor=ctx.actor, conn=conn,
+                )
+                copied_zones += 1
 
-                for zone in ctx.sheets.list_zones(source_campaign_id):
-                    new_zone = zone.model_copy(
-                        update={"id": new_id(), "campaign_id": target.id}
-                    )
-                    ctx.sheets.create_zone(new_zone, actor=ctx.actor)
-                    # The zone's own count requirement travels with it: a
-                    # single-pass metrology room does not become a double-count
-                    # zone because the campaign default says so.
-                    ctx.sheets.ensure_sheets(
-                        target.id, new_zone.id, passes_for(new_zone.passes),
-                        actor=ctx.actor,
-                    )
-                    copied_zones += 1
-
-                    if not include_sheet_lines:
-                        continue
-                    # The article list of a zone is its real value: it took years
-                    # to build. Copy it from pass 1, blank of any quantity.
-                    template = _pick_template_sheet(sheets_by_zone.get(zone.id, ()))
-                    if template is None:
-                        continue
-                    new_sheets = ctx.sheets.list_sheets(target.id, zone_id=new_zone.id)
-                    for new_sheet in new_sheets:
-                        blanks = [
-                            line.model_copy(update={
-                                "id": new_id(),
-                                "sheet_id": new_sheet.id,
-                                "campaign_id": target.id,
-                                "qty_imported": None,
-                                "qty_manual": None,
-                                "confidence": None,
-                                "comment": "",
-                            })
-                            for line in source_lines.get(template.id, ())
-                        ]
-                        if blanks:
-                            ctx.sheets.upsert_sheet_lines(
-                                blanks, actor=ctx.actor, conn=conn
-                            )
-                            copied_lines += len(blanks)
+                if not include_sheet_lines:
+                    continue
+                # The article list of a zone is its real value: it took years
+                # to build. Copy it from pass 1, blank of any quantity.
+                template = _pick_template_sheet(sheets_by_zone.get(zone.id, ()))
+                if template is None:
+                    continue
+                new_sheets = ctx.sheets.list_sheets(
+                    target.id, zone_id=new_zone.id, conn=conn
+                )
+                for new_sheet in new_sheets:
+                    blanks = [
+                        line.model_copy(update={
+                            "id": new_id(),
+                            "sheet_id": new_sheet.id,
+                            "campaign_id": target.id,
+                            "qty_imported": None,
+                            "qty_manual": None,
+                            "confidence": None,
+                            "comment": "",
+                        })
+                        for line in source_lines.get(template.id, ())
+                    ]
+                    if blanks:
+                        ctx.sheets.upsert_sheet_lines(
+                            blanks, actor=ctx.actor, conn=conn
+                        )
+                        copied_lines += len(blanks)
 
             # Persist the lineage: "which campaign was this built from?" is the
             # first question asked when a referential looks wrong.
@@ -469,22 +475,6 @@ class CampaignService:
                 conn=conn,
             )
         return ctx.campaigns.list_thresholds(campaign_id)
-
-    def update_config(self, campaign_id: str, config: CampaignConfig) -> Campaign:
-        ctx = self.ctx
-        campaign = ctx.campaigns.get(campaign_id)
-        ctx.guard(campaign, "thresholds")  # configuration follows the same gate
-        ctx.campaigns.update_config(campaign_id, config, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign_id,
-            action=AuditAction.UPDATE,
-            entity_type="campaign",
-            entity_id=campaign_id,
-            summary="Mise à jour de la configuration de campagne",
-            before=campaign.config.model_dump(mode="json"),
-            after=config.model_dump(mode="json"),
-        )
-        return ctx.campaigns.get(campaign_id)
 
     # --------------------------------------------------------------- helpers
 

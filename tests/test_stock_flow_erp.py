@@ -31,7 +31,12 @@ from typing import Any, cast
 import pytest
 
 from inventory.domain.enums import FlowKind, FlowSource, ItemType
-from inventory.domain.models import Item, StockFlowInput, StockFlowRun
+from inventory.domain.models import (
+    Item,
+    StockFlowInput,
+    StockFlowRun,
+    in_perimeter,
+)
 from inventory.errors import ValidationError
 from inventory.ingest.erp import ErpReader
 from inventory.services.stock_flow_service import StockFlowService
@@ -258,7 +263,10 @@ def service(repo: Recorder) -> StockFlowService:
         guard=lambda campaign, aspect: None,
         db=SimpleNamespace(transaction=transaction),
         settings=SimpleNamespace(max_import_rows=200_000),
-        referentials=SimpleNamespace(items_by_number=lambda cid: items()),
+        referentials=SimpleNamespace(
+            items_by_number=lambda cid: items(),
+            items_in_scope=lambda cid: in_perimeter(items()),
+        ),
         stock_flow=repo,
         record=lambda **kw: "evt",
     )
@@ -454,7 +462,8 @@ class TestOnlyArticlesInScopeAreLoaded:
     def service_with(self, repo, catalogue, monkeypatch):
         svc = service(repo)
         svc.ctx.referentials = SimpleNamespace(
-            items_by_number=lambda cid: catalogue
+            items_by_number=lambda cid: catalogue,
+            items_in_scope=lambda cid: in_perimeter(catalogue),
         )
         return svc
 

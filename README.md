@@ -120,7 +120,7 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      204 tests, ~1 s, sans base de données
+tests/                      735 tests, ~4 s, sans base de données
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -137,7 +137,6 @@ Makefile                    Points d'entrée développeur
 | [`03-guide-deploiement.md`](docs/03-guide-deploiement.md) | Déploiement pas à pas : local, CLI, interface graphique, CI/CD, dépannage |
 | [`04-guide-utilisateur.md`](docs/04-guide-utilisateur.md) | Le processus vu par l'utilisateur, de la préparation à la clôture |
 | [`05-modele-de-donnees.md`](docs/05-modele-de-donnees.md) | Schémas, types, index, définition exacte des indicateurs |
-| [`05chantierv2.md`](docs/05chantierv2.md) | Conception du chantier V2 : feuilles préparées, périmètres, impressions |
 | [`06-top20-ameliorations.md`](docs/06-top20-ameliorations.md) | Revue critique : 20 améliorations priorisées, séquencées |
 
 ---
@@ -146,7 +145,7 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 204 tests, ~1 s, aucune base requise
+make test            # 735 tests, ~4 s, aucune base requise
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000

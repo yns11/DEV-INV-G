@@ -200,10 +200,10 @@ export function ImportPanel({
             application exists to remove — it cannot be left to a log line. */}
         {hasErp && erp.data?.available && mirror && (
           <span className={mirror.stale ? 'badge badge--warning' : 'muted'}>
-            Miroir ERP
+            Données ERP
             {mirror.syncedAt
               ? ` · ${new Date(mirror.syncedAt).toLocaleDateString('fr-FR')}`
-              : ' · jamais synchronisé'}
+              : ' · jamais copiées'}
           </span>
         )}
         <Button

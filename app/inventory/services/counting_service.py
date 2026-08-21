@@ -272,7 +272,7 @@ class CountingService:
         touched = 0
         with ctx.db.transaction() as conn:
             for journal_id in journal_ids:
-                journal = ctx.journals.get(journal_id)
+                journal = ctx.journals.get(journal_id, conn=conn)
                 if journal.campaign_id != campaign.id:
                     raise NotFoundError(
                         "Journal introuvable dans cette campagne.",

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from collections.abc import Mapping
 from decimal import Decimal
 from typing import Annotated, Any, Self
 
@@ -50,6 +51,7 @@ __all__ = [
     "CampaignConfig",
     "Campaign",
     "Item",
+    "in_perimeter",
     "BomLink",
     "Warehouse",
     "Location",
@@ -338,6 +340,18 @@ class Item(DomainModel):
     def value_of(self, qty: Decimal) -> Decimal:
         """Valuation of *qty* at the frozen standard price."""
         return quantize_money(qty * self.std_price)
+
+
+def in_perimeter(items: Mapping[str, Item]) -> dict[str, Item]:
+    """The articles the campaign actually inventories.
+
+    The rule of every ERP read, in one place. Those tables cover the whole
+    plant, so being in the campaign's referential is necessary but not enough:
+    an article deliberately left out of the perimeter must not come back
+    through the quantities read on it, or its expected stock would be computed
+    and shown as a variance nobody asked for.
+    """
+    return {number: item for number, item in items.items() if not item.excluded_everywhere}
 
 
 class BomLink(DomainModel):

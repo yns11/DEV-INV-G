@@ -617,7 +617,6 @@ class GenericService:
         payload: bytes,
         filename: str,
         content_type: str,
-        storage_path: str | None = None,
     ) -> dict[str, Any]:
         """Read a scanned sheet with the vision model.
 
@@ -654,6 +653,13 @@ class GenericService:
 
         items = ctx.referentials.items_by_number(campaign.id)
         extractor = SheetExtractor()
+
+        # Le scan est archivé avant d'être lu. C'est la pièce qui justifie les
+        # quantités : sans elle, une valeur contestée six mois plus tard n'a
+        # plus rien derrière elle, le conteneur qui l'a reçue ayant disparu.
+        storage_path = ctx.evidence.put(
+            payload, campaign_code=campaign.code, kind="scans", filename=filename
+        )
 
         if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
             # Rasterised, not split: the endpoint accepts images only.
@@ -734,6 +740,13 @@ class GenericService:
 
         ctx = self.ctx
         ctx.guard(campaign, "count_entries")
+
+        # Une seule pièce pour toute la pile, et chaque feuille pointe dessus :
+        # c'est bien un seul document qui les justifie toutes, et le découper
+        # inventerait des originaux qui n'ont jamais existé.
+        storage_path = ctx.evidence.put(
+            payload, campaign_code=campaign.code, kind="scans", filename=filename
+        )
 
         if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
             images = render_pdf_pages(payload, max_pages=_MAX_SCAN_PAGES)
@@ -820,6 +833,7 @@ class GenericService:
                 sheet_id,
                 status=SheetStatus.ENCODING,
                 counter_name=result.counter_name or None,
+                evidence_path=storage_path,
                 extraction_confidence=result.mean_confidence,
                 actor=ctx.actor,
             )

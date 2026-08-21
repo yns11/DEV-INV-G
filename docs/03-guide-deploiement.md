@@ -326,7 +326,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 785 tests, ~4 s, aucune base requise
+make test      # 819 tests, ~5 s, aucune base requise
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -916,6 +916,50 @@ réseau du workspace.
 7. Passer en **Comptage** — les référentiels sont alors gelés.
 
 Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur.md).
+
+### 7.4 Le volume des pièces justificatives
+
+Chaque fichier chargé et chaque feuille scannée est déposé dans un volume Unity
+Catalog, et son chemin enregistré à côté de ce qu'il a produit. C'est ce qui
+permet, six mois plus tard, de rouvrir la feuille manuscrite derrière un écart
+signé — le conteneur de l'application étant éphémère, le fichier n'y survit pas
+à la requête qui l'a reçu.
+
+Le volume se crée une fois, dans le schéma de l'application :
+
+```sql
+CREATE VOLUME IF NOT EXISTS emotors_data_champions.inventory.inventory_evidence;
+GRANT READ VOLUME, WRITE VOLUME
+  ON VOLUME emotors_data_champions.inventory.inventory_evidence
+  TO `<sp-de-l-app>`;
+```
+
+Il s'organise par campagne, puis par nature de pièce :
+
+```
+/Volumes/<catalogue>/<schéma>/<volume>/
+  INV-2026-T3/
+    items/       20260901T063015-articles.xlsx
+    book_stock/  20260901T071140-stock-erp.csv
+    scans/       20260902T081205-releve-atelier.pdf
+```
+
+L'horodatage précède le nom pour que l'ordre alphabétique du dossier soit
+l'ordre chronologique, qui est celui dans lequel on cherche.
+
+**L'archivage ne fait jamais échouer un chargement.** Volume absent, droit
+manquant, API indisponible : la pièce n'est pas déposée, le chargement aboutit,
+et l'avertissement part dans les journaux. L'écran affiche alors le nom du
+fichier en texte simple au lieu d'un lien — « pas de pièce » se voit, ce qui
+vaut mieux qu'un import de deux cent mille lignes refusé.
+
+`<url-de-lapp>/api/health` répond `"evidenceConfigured": true` quand les trois
+noms qui composent le chemin sont renseignés. Les droits, eux, ne se vérifient
+qu'au premier dépôt.
+
+Ni les collages ni les lectures ERP ne produisent de pièce : le texte collé est
+déjà dans les lignes chargées, et une lecture ERP se rejoue par sa requête, que
+l'historique des imports nomme.
 
 ---
 

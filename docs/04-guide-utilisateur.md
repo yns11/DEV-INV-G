@@ -666,6 +666,22 @@ montre est, par construction, ce qui s'est passé.
 L'onglet **Historique des imports** conserve la provenance de chaque chargement :
 fichier, empreinte, volumes acceptés et rejetés.
 
+### Retrouver le fichier d'origine
+
+Le nom du fichier y est **cliquable** quand l'original a été conservé : il se
+retélécharge tel qu'il a été reçu, avant toute interprétation. C'est ce qui
+permet de rejouer un chargement contesté — les lignes en base sont le résultat
+d'une lecture, le fichier en est la source.
+
+Un nom affiché en texte simple signifie qu'il n'y a pas de pièce. Trois cas :
+un collage, dont le texte est déjà dans les lignes chargées ; une lecture ERP,
+qui se rejoue par sa requête ; ou une campagne antérieure à la mise en service
+de l'archive.
+
+De la même façon, une feuille lue par l'IA garde **son scan**. Une quantité
+extraite d'une image se défend en montrant l'image, et c'est la pile entière
+qui est conservée quand plusieurs feuilles ont été scannées d'un coup.
+
 ---
 
 ## 7. Questions fréquentes

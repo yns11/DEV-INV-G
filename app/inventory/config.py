@@ -141,6 +141,24 @@ class Settings(BaseSettings):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def uc_volume_path(self) -> str:
+        """Racine du volume où sont archivées les pièces justificatives."""
+        return f"/Volumes/{self.uc_catalog}/{self.uc_schema}/{self.uc_volume}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def evidence_configured(self) -> bool:
+        """Les trois noms qui composent le chemin du volume sont renseignés.
+
+        Vide, l'archivage se tait au lieu d'échouer : une pièce justificative
+        n'est pas une condition du chargement, et refuser un import de deux
+        cent mille lignes parce que le volume n'est pas configuré coûterait
+        infiniment plus que de ne pas archiver le fichier.
+        """
+        return bool(self.uc_catalog and self.uc_schema and self.uc_volume)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def lakebase_configured(self) -> bool:
         return bool(self.pg_host and self.pg_database and self.pg_user)
 

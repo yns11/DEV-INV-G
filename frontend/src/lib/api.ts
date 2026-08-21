@@ -880,4 +880,15 @@ export const downloads = {
   //ostensiblement générique : chaque grille poste ses propres colonnes et ses
   // propres lignes, donc un tableau ajouté demain a le bouton sans rien coder.
   table: (id: string) => `/campaigns/${id}/reports/table.xlsx`,
+  /**
+   * Les pièces justificatives : le fichier tel qu'il a été reçu.
+   *
+   * L'adresse ne porte que l'identifiant du lot ou de la feuille. Le serveur
+   * sait où la pièce est rangée ; un chemin de volume dans une URL serait à la
+   * fois du jargon exposé et une adresse que rien n'oblige à rester juste.
+   */
+  importEvidence: (id: string, batchId: string) =>
+    `/campaigns/${id}/imports/${batchId}/evidence`,
+  sheetEvidence: (id: string, sheetId: string) =>
+    `/campaigns/${id}/sheets/${sheetId}/evidence`,
 }

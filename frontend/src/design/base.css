@@ -1557,6 +1557,19 @@ table.data td.editable input.num {
   border-bottom-color: var(--accent);
 }
 
+/* Nom de fichier cliquable dans une grille : le même texte que `.drill`, plus
+   la place de l'icône qui annonce le téléchargement. Le nom tronque au lieu de
+   déborder — une colonne de 260 px et des noms de scanner à rallonge. */
+.filelink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .segmented {
   display: inline-flex;
   background: var(--bg-sunken);

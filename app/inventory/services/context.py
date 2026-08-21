@@ -37,6 +37,7 @@ from ..domain.models import Campaign
 from ..domain.sequence import Progress, blocking_reason
 from ..domain.workflow import Editable, mutability_of
 from ..errors import FrozenError
+from ..evidence import EvidenceStore
 
 __all__ = ["ServiceContext", "utcnow"]
 
@@ -111,6 +112,11 @@ class ServiceContext:
     @functools.cached_property
     def imports(self) -> ImportBatchRepository:
         return ImportBatchRepository(self.db)
+
+    @functools.cached_property
+    def evidence(self) -> EvidenceStore:
+        """L'archive des pièces justificatives. Pas un dépôt : un volume UC."""
+        return EvidenceStore(self.settings)
 
     # -- cross-cutting concerns ----------------------------------------------
 

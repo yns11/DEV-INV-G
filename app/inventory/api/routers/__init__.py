@@ -6,6 +6,7 @@ from . import (
     campaigns,
     counting,
     data,
+    evidence,
     generic,
     managers,
     reports,
@@ -13,6 +14,6 @@ from . import (
 )
 
 __all__ = [
-    "analysis", "assistant", "campaigns", "counting", "data", "generic",
+    "analysis", "assistant", "campaigns", "counting", "data", "evidence", "generic",
     "managers", "reports", "stock_flow",
 ]

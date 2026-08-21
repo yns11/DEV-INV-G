@@ -9,10 +9,24 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { api } from '../lib/api'
+import { api, download, downloads } from '../lib/api'
 import type { Overview } from '../lib/types'
-import { AUDIT_ACTION_LABELS, dateTime, label as toLabel, relativeTime } from '../lib/format'
-import { AsyncBoundary, Badge, Card, EmptyState, Skeleton, ViewTabs } from '../components/ui'
+import {
+  AUDIT_ACTION_LABELS,
+  DASH,
+  dateTime,
+  label as toLabel,
+  relativeTime,
+} from '../lib/format'
+import {
+  AsyncBoundary,
+  Badge,
+  Card,
+  EmptyState,
+  Icons,
+  Skeleton,
+  ViewTabs,
+} from '../components/ui'
 import { DataGrid, type Column } from '../components/DataGrid'
 
 type Tab = 'events' | 'imports'
@@ -132,7 +146,30 @@ function Imports({ campaignId }: { campaignId: string }) {
       value: (row) => String(row.imported_at),
     },
     { key: 'target', label: 'Cible', width: 200 },
-    { key: 'filename', label: 'Fichier', width: 260 },
+    {
+      key: 'filename',
+      label: 'Fichier',
+      width: 260,
+      // Le nom devient le lien quand l'original a été conservé. Un chargement
+      // par collage ou une lecture ERP n'a pas de fichier d'origine : son nom
+      // reste du texte, ce qui dit la différence sans avoir à l'écrire.
+      render: (row) =>
+        row.archived ? (
+          <button
+            className="drill filelink"
+            title="Télécharger le fichier tel qu'il a été reçu"
+            onClick={() =>
+              void download(downloads.importEvidence(campaignId, String(row.id)))
+            }
+          >
+            <Icons.download size={12} />
+            {String(row.filename || 'pièce jointe')}
+          </button>
+        ) : (
+          <span>{String(row.filename || DASH)}</span>
+        ),
+      value: (row) => String(row.filename ?? ''),
+    },
     {
       key: 'rows_received',
       label: 'Reçues',

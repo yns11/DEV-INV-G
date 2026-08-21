@@ -144,7 +144,14 @@ def import_history(
     ctx: Ctx,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[dict[str, Any]]:
+    # Le chemin du volume ne sort pas : l'écran a seulement besoin de savoir
+    # s'il y a une pièce à proposer, et la route de téléchargement le résout
+    # elle-même à partir de l'identifiant du lot.
     return [
-        {**row, "id": str(row["id"])}
+        {
+            **{k: v for k, v in row.items() if k != "storage_path"},
+            "id": str(row["id"]),
+            "archived": row["storage_path"] is not None,
+        }
         for row in ctx.imports.list(campaign.id, limit=limit)
     ]

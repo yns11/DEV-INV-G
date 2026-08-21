@@ -2394,6 +2394,19 @@ class ImportBatchRepository(_Base):
             (campaign_id, target, content_hash),
         )
 
+    def evidence_of(self, campaign_id: str, batch_id: str) -> dict[str, Any] | None:
+        """Le fichier archivé d'un lot, s'il en a un.
+
+        Filtré sur la campagne autant que sur le lot : l'identifiant vient de
+        l'URL, et rien d'autre n'empêcherait de télécharger la pièce d'une
+        campagne à laquelle on n'a pas affaire.
+        """
+        return self._fetch_one(
+            "SELECT filename, storage_path FROM import_batch "
+            "WHERE id = %s AND campaign_id = %s AND storage_path IS NOT NULL",
+            (batch_id, campaign_id),
+        )
+
     def list(self, campaign_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
         return self._fetch_all(
             "SELECT id, target, filename, storage_path, rows_received, rows_accepted, "

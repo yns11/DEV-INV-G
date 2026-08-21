@@ -37,6 +37,7 @@ from .routers import (
     campaigns,
     counting,
     data,
+    evidence,
     generic,
     managers,
     reports,
@@ -295,6 +296,12 @@ def create_app() -> FastAPI:
             "env": settings.env,
             "lakebaseConfigured": settings.lakebase_configured,
             "warehouseConfigured": bool(settings.warehouse_id),
+            # Faux, l'application marche entièrement : les chargements
+            # aboutissent, ils n'ont simplement aucune pièce jointe à proposer.
+            # C'est exactement ce que ce diagnostic doit permettre de constater
+            # avant qu'on le découvre en cherchant une feuille six mois plus
+            # tard.
+            "evidenceConfigured": settings.evidence_configured,
             # False means the deployment shipped without `app/static/`, i.e.
             # the API answers but the browser gets no interface.
             "frontendBuilt": STATIC_DIR.exists(),
@@ -349,6 +356,7 @@ def create_app() -> FastAPI:
         managers.router,
         analysis.router,
         reports.router,
+        evidence.router,
         assistant.router,
         stock_flow.router,
     )

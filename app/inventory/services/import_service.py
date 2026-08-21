@@ -82,6 +82,9 @@ class ImportOutcome:
     unknown_columns: list[str] = field(default_factory=list)
     duplicate_keys: list[str] = field(default_factory=list)
     batch_id: str | None = None
+    #: Chemin du fichier archivé dans le volume, quand il a pu l'être. ``None``
+    #: dit « pas de pièce » : collage, lecture ERP, ou archivage indisponible.
+    storage_path: str | None = None
     #: Free-form facts the specific import wants to surface (journals created,
     #: locations discovered, …).
     details: dict[str, Any] = field(default_factory=dict)
@@ -104,6 +107,7 @@ class ImportOutcome:
             "unknownColumns": self.unknown_columns,
             "duplicateKeys": self.duplicate_keys[:50],
             "batchId": self.batch_id,
+            "archived": self.storage_path is not None,
             "details": self.details,
         }
 
@@ -311,6 +315,7 @@ class ImportService:
         ctx.guard(campaign, "items")
         _, parsed = self.parse("items", **kwargs)
         outcome = _base_outcome("items", parsed)
+        outcome.storage_path = self._archive(campaign, "items", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -342,6 +347,7 @@ class ImportService:
         ctx.guard(campaign, "boms")
         _, parsed = self.parse("boms", **kwargs)
         outcome = _base_outcome("boms", parsed)
+        outcome.storage_path = self._archive(campaign, "boms", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -388,6 +394,7 @@ class ImportService:
         ctx.guard(campaign, "adjustments")
         _, parsed = self.parse("adjustments", **kwargs)
         outcome = _base_outcome("adjustments", parsed)
+        outcome.storage_path = self._archive(campaign, "adjustments", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -419,6 +426,7 @@ class ImportService:
         ctx.guard(campaign, "locations")
         _, parsed = self.parse("locations", **kwargs)
         outcome = _base_outcome("locations", parsed)
+        outcome.storage_path = self._archive(campaign, "locations", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -474,6 +482,7 @@ class ImportService:
 
         _, parsed = self.parse("book_stock", **kwargs)
         outcome = _base_outcome("book_stock", parsed)
+        outcome.storage_path = self._archive(campaign, "book_stock", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -578,7 +587,7 @@ class ImportService:
                 target="book_stock",
                 filename=kwargs.get("filename", ""),
                 content_hash=_hash_of(kwargs),
-                storage_path=None,
+                storage_path=outcome.storage_path,
                 rows_received=outcome.rows_received,
                 rows_accepted=len(lines),
                 rows_rejected=outcome.rows_rejected,
@@ -677,6 +686,7 @@ class ImportService:
             "backflush", period_start=start, period_end=end, **kwargs
         )
         outcome = _base_outcome("backflush", parsed)
+        outcome.storage_path = self._archive(campaign, "backflush", kwargs)
 
         # Même règle que les flux de la comparaison : la table couvre toute
         # l'usine, et un article exclu du périmètre n'a pas d'écart à porter.
@@ -742,6 +752,7 @@ class ImportService:
         ctx.guard(campaign, "count_journals")
         _, parsed = self.parse("count_journal_lines", **kwargs)
         outcome = _base_outcome("count_journal_lines", parsed)
+        outcome.storage_path = self._archive(campaign, "count_journal_lines", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -916,6 +927,7 @@ class ImportService:
         ctx.guard(campaign, "count_sheets")
         _, parsed = self.parse("count_sheets", **kwargs)
         outcome = _base_outcome("count_sheets", parsed)
+        outcome.storage_path = self._archive(campaign, "count_sheets", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -1054,6 +1066,30 @@ class ImportService:
         synced = (mirror_state().get(target) or {}).get("syncedAt")
         return f"{table} (miroir du {synced[:10]})" if synced else f"{table} (miroir)"
 
+    def _archive(
+        self, campaign: Campaign, target: str, kwargs: dict[str, Any]
+    ) -> str | None:
+        """Dépose le fichier chargé dans le volume, et renvoie son chemin.
+
+        Appelée **avant** d'ouvrir la transaction : le dépôt part sur le réseau,
+        et tenir une transaction ouverte pendant un aller-retour vers le volume
+        garderait une connexion du pool immobilisée pour une écriture qui ne la
+        concerne pas.
+
+        Seuls les fichiers sont archivés. Un collage n'a pas d'original à
+        conserver — le texte collé est déjà dans les lignes chargées — et une
+        lecture ERP se rejoue par sa requête, que l'historique nomme déjà.
+        """
+        payload = kwargs.get("payload")
+        if not isinstance(payload, bytes):
+            return None
+        return self.ctx.evidence.put(
+            payload,
+            campaign_code=campaign.code,
+            kind=target,
+            filename=kwargs.get("filename") or f"{target}.bin",
+        )
+
     def _record_batch(
         self,
         campaign_id: str,
@@ -1074,7 +1110,7 @@ class ImportService:
             target=target,
             filename=self._origin_of(target, kwargs),
             content_hash=_hash_of(kwargs),
-            storage_path=None,
+            storage_path=outcome.storage_path,
             rows_received=outcome.rows_received,
             rows_accepted=outcome.rows_accepted,
             rows_rejected=outcome.rows_rejected,

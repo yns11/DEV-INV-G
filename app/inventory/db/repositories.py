@@ -792,20 +792,6 @@ class BookStockRepository(_Base):
                     ))
         return len(lines)
 
-    def distinct_locations(self, campaign_id: str) -> list[tuple[str, str]]:
-        """Warehouse/location pairs present in the snapshot.
-
-        This is what seeds the location referential, per the specification: the
-        book stock *is* the authoritative list of places that hold stock.
-        """
-        rows = self._fetch_all(
-            "SELECT DISTINCT warehouse_id, location_id FROM book_stock "
-            "WHERE campaign_id = %s ORDER BY warehouse_id, location_id",
-            (campaign_id,),
-        )
-        return [(r["warehouse_id"], r["location_id"]) for r in rows]
-
-
 class _NullContext:
     """Adapt an existing connection to the ``with`` protocol."""
 

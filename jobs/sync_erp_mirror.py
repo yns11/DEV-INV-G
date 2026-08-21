@@ -77,6 +77,14 @@ BACKFLUSH_COLUMNS = (
     "loaded_at",
 )
 
+#: Les mouvements de stock : une ligne par référence et par jour, une colonne
+#: par flux. Les cinq mesures de la vue Comparaison en sortent, ce qui remplace
+#: les trois tables par domaine qu'elle interrogeait auparavant.
+MOVEMENT_COLUMNS = (
+    "reference", "date_mouvement", "reception", "expedition", "production",
+    "conso_theorique", "consommation", "rebut",
+)
+
 #: Nombre de lignes envoyées par ordre d'insertion. Assez grand pour que le
 #: référentiel entier passe en quelques dizaines d'allers-retours, assez petit
 #: pour ne pas construire une requête de plusieurs mégaoctets.
@@ -111,6 +119,18 @@ def main() -> int:
     parser.add_argument(
         "--skip-backflush", action="store_true",
         help="Ne synchronise que les articles et les nomenclatures.",
+    )
+    parser.add_argument("--movements-table", default="mouvements")
+    parser.add_argument(
+        "--movements-since", default=os.environ.get("INV_MOVEMENTS_SINCE", ""),
+        help=(
+            "Date à partir de laquelle copier les mouvements (AAAA-MM-JJ). "
+            "Vide = tout l'historique. La table grandit indéfiniment."
+        ),
+    )
+    parser.add_argument(
+        "--skip-movements", action="store_true",
+        help="Ne synchronise pas les mouvements de stock.",
     )
     parser.add_argument(
         "--pg-schema", default=os.environ.get("INV_PG_SCHEMA", "inventory")
@@ -157,6 +177,20 @@ def main() -> int:
     backflush_fqn = (
         f"{args.catalog}.{args.backflush_schema}.{args.backflush_table}"
     )
+    movements_fqn = f"{args.catalog}.{args.schema}.{args.movements_table}"
+
+    # La source porte des lignes sans référence — un mouvement rattaché à aucun
+    # article. Le miroir les refuserait, sa clé primaire étant la référence, et
+    # l'application n'en ferait rien : tout y est indexé par article. Elles sont
+    # donc écartées ici, mais comptées et journalisées : une quantité qui
+    # disparaît en silence est pire qu'une quantité manquante annoncée.
+    movements_where = " AND ".join(
+        clause for clause in (
+            "reference IS NOT NULL",
+            f"date_mouvement >= DATE '{args.movements_since}'"
+            if args.movements_since else "",
+        ) if clause
+    )
 
     import psycopg
 
@@ -176,6 +210,8 @@ def main() -> int:
         _assert_mirror_shape(conn, "erp_bom", BOM_COLUMNS)
         if not args.skip_backflush:
             _assert_mirror_shape(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
+        if not args.skip_movements:
+            _assert_mirror_shape(conn, "erp_mouvements", MOVEMENT_COLUMNS)
 
         items = _read(spark, items_fqn, ITEM_COLUMNS, limit=args.limit,
                       unique_on="item_id")
@@ -220,6 +256,24 @@ def main() -> int:
                 )
                 args.skip_backflush = True
 
+        # Même règle : les mouvements indisponibles ne privent pas
+        # l'application de son référentiel, et le miroir garde sa copie.
+        movements: list[tuple] = []
+        if not args.skip_movements:
+            try:
+                movements = _read(
+                    spark, movements_fqn, MOVEMENT_COLUMNS, limit=args.limit,
+                    where=movements_where,
+                )
+                log.info("Lu %d ligne(s) de mouvement de stock", len(movements))
+                _report_orphans(spark, movements_fqn, args.movements_since)
+            except Exception as exc:
+                log.error(
+                    "Mouvements (%s) illisibles, miroir laissé intact : %s",
+                    movements_fqn, exc,
+                )
+                args.skip_movements = True
+
         try:
             _swap(conn, "erp_base_article", ITEM_COLUMNS, items,
                   unique_on="item_id")
@@ -233,13 +287,21 @@ def main() -> int:
                     "La table %s n'a renvoyé aucune ligne — miroir de l'écart "
                     "backflush laissé intact", backflush_fqn,
                 )
+            if movements:
+                _swap(conn, "erp_mouvements", MOVEMENT_COLUMNS, movements)
+            elif not args.skip_movements:
+                log.error(
+                    "La table %s n'a renvoyé aucune ligne — miroir des "
+                    "mouvements laissé intact", movements_fqn,
+                )
         except Exception as exc:
             raise RuntimeError(_write_advice(exc, args.pg_schema)) from exc
         conn.commit()
 
     log.info(
-        "Miroir ERP synchronisé (%d articles, %d liens, %d lignes d'écart)",
-        len(items), len(boms), len(backflush),
+        "Miroir ERP synchronisé (%d articles, %d liens, %d lignes d'écart, "
+        "%d mouvements)",
+        len(items), len(boms), len(backflush), len(movements),
     )
     return 0
 
@@ -300,6 +362,27 @@ def _read(
                 fqn, total - len(rows), unique_on,
             )
     return rows
+
+
+def _report_orphans(spark: Any, fqn: str, since: str) -> None:
+    """Journalise les mouvements sans référence, et ce qu'ils pesaient.
+
+    Ils sont écartés à la lecture. Les taire ferait disparaître de la
+    comparaison une quantité que l'ERP a bel et bien publiée ; les compter
+    permet de juger si le total mérite d'être signalé à la plateforme.
+    """
+    window = f" AND date_mouvement >= DATE '{since}'" if since else ""
+    row = spark.sql(
+        "SELECT count(*), coalesce(sum(reception + expedition + production "
+        f"+ conso_theorique + consommation + rebut), 0) FROM {fqn} "
+        f"WHERE reference IS NULL{window}"
+    ).collect()[0]
+    if row[0]:
+        log.warning(
+            "%d ligne(s) sans référence écartée(s), %.2f de quantité au total. "
+            "Un mouvement sans article ne se rattache à aucun stock.",
+            row[0], row[1],
+        )
 
 
 def _swap(

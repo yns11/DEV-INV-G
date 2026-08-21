@@ -35,11 +35,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ runtime
     env: Literal["local", "dev", "prod"] = Field(default="local", alias="INV_ENV")
     log_level: str = Field(default="INFO", alias="INV_LOG_LEVEL")
-    app_port: int = Field(default=8000, alias="DATABRICKS_APP_PORT")
     app_name: str = Field(default="campagnes-inventaire", alias="DATABRICKS_APP_NAME")
 
     # ------------------------------------------------------------- databricks
-    databricks_host: str | None = Field(default=None, alias="DATABRICKS_HOST")
     warehouse_id: str | None = Field(default=None, alias="DATABRICKS_WAREHOUSE_ID")
     #: The application's own service principal, injected by Databricks Apps.
     #: Unity Catalog grants are made to *it*, not to the signed-in user, so a
@@ -134,10 +132,6 @@ class Settings(BaseSettings):
     max_import_rows: int = Field(default=200_000, alias="INV_MAX_IMPORT_ROWS")
     max_upload_bytes: int = Field(default=64 * 1024 * 1024, alias="INV_MAX_UPLOAD_BYTES")
 
-    #: The Databricks Apps reverse proxy hard-caps a request at 120 s. Anything
-    #: heavier must run as a background task, so we budget below that.
-    request_budget_seconds: float = Field(default=100.0, alias="INV_REQUEST_BUDGET_S")
-
     # ------------------------------------------------------------------ helpers
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -147,25 +141,8 @@ class Settings(BaseSettings):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def uc_volume_path(self) -> str:
-        """POSIX path of the UC volume used for evidence and exports."""
-        return f"/Volumes/{self.uc_catalog}/{self.uc_schema}/{self.uc_volume}"
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
     def lakebase_configured(self) -> bool:
         return bool(self.pg_host and self.pg_database and self.pg_user)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def warehouse_http_path(self) -> str | None:
-        if not self.warehouse_id:
-            return None
-        return f"/sql/1.0/warehouses/{self.warehouse_id}"
-
-    def uc_table(self, name: str) -> str:
-        """Fully-qualified name of a Delta table owned by this application."""
-        return f"{self.uc_schema_fqn}.{name}"
 
     @computed_field  # type: ignore[prop-decorator]
     @property

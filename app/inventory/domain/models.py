@@ -337,11 +337,6 @@ class Item(DomainModel):
     def is_assembly(self) -> bool:
         return self.item_type in (ItemType.SEMI_FINISHED, ItemType.FINISHED)
 
-    def value_of(self, qty: Decimal) -> Decimal:
-        """Valuation of *qty* at the frozen standard price."""
-        return quantize_money(qty * self.std_price)
-
-
 def in_perimeter(items: Mapping[str, Item]) -> dict[str, Item]:
     """The articles the campaign actually inventories.
 

@@ -135,15 +135,6 @@ class ConsolidationResult:
     def blocking(self) -> list[ControlFinding]:
         return [f for f in self.findings if f.severity is ControlSeverity.BLOCKER]
 
-    def as_journal_rows(self) -> list[dict[str, object]]:
-        """Rows shaped for the ERP INVV counting journal."""
-        return [
-            {"ItemNumber": line.item_number, "CountedQuantity": line.qty,
-             "Unit": line.unit}
-            for line in self.lines
-        ]
-
-
 # --------------------------------------------------------------------------- #
 # Step 1 — reconcile the two passes
 # --------------------------------------------------------------------------- #

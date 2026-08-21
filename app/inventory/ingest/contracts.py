@@ -105,12 +105,6 @@ class GridContract:
     def headers(self) -> list[str]:
         return [f.name for f in self.fields]
 
-    def field_by_name(self, name: str) -> FieldSpec | None:
-        for f in self.fields:
-            if f.name == name:
-                return f
-        return None
-
     def as_dict(self) -> dict[str, Any]:
         return {
             "key": self.key,

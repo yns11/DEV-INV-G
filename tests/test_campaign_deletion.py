@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from conftest import with_access
 
 from inventory.domain.enums import CampaignStatus
 from inventory.domain.models import Campaign
@@ -57,6 +58,7 @@ def service(
         ),
         record=lambda **kw: events.append(kw) or "evt",
     )
+    with_access(ctx)
     return CampaignService(cast(Any, ctx)), deleted, events
 
 

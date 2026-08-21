@@ -18,6 +18,12 @@ counts one zone.
 outside their perimeter — somebody has to cover for a colleague at 6 a.m. on
 inventory day. What focus removes is noise, not authority. The interface says so
 in as many words, because otherwise it reads as an entitlement.
+
+Being *declared* here is a permission, though, and the distinction matters. The
+identity attached to a slot is what makes somebody a manager of the campaign
+rather than a reader of it — see :mod:`inventory.domain.access`. Which is why
+this screen is the one place a manager may not touch: only the campaign's owner
+edits the list, or a manager would be granting the right to grant.
 """
 
 from __future__ import annotations
@@ -215,6 +221,10 @@ class ManagerService:
     ) -> list[Manager]:
         """Rename the slots and attach the identity behind each one."""
         ctx = self.ctx
+        # Le propriétaire seul : un gestionnaire qui pourrait en déclarer
+        # d'autres s'accorderait le droit d'en accorder, et rien ne
+        # l'empêcherait d'en retirer le propriétaire.
+        ctx.require_owner(campaign, "déclarer les gestionnaires")
         ctx.guard(campaign, "thresholds")  # configuration follows the same gate
         known = {m.code for m in self.list_managers(campaign)}
         managers: list[Manager] = []

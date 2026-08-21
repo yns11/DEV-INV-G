@@ -117,7 +117,10 @@ function CampaignHeader({ overview }: { overview: Overview }) {
           >
             Exporter
           </Button>
-          {next && (
+          {/* Le changement de phase gèle des données : proposer le bouton à
+              quelqu'un qui n'a pas le droit de le presser reviendrait à faire
+              découvrir la règle par un refus. */}
+          {next && overview.access.canWrite && (
             <Button
               variant="primary"
               icon={<Icons.chevronRight size={14} />}
@@ -128,6 +131,8 @@ function CampaignHeader({ overview }: { overview: Overview }) {
           )}
         </div>
       </div>
+
+      {!overview.access.canWrite && <ReadOnlyNote overview={overview} />}
 
       <KpiCarousel overview={overview} />
 
@@ -142,6 +147,25 @@ function CampaignHeader({ overview }: { overview: Overview }) {
         />
       )}
     </header>
+  )
+}
+
+/**
+ * Pourquoi tout est grisé.
+ *
+ * Les boutons se désactivent seuls : ils lisent `permissions`, où tout est
+ * faux pour un lecteur. Mais un écran entièrement gris ressemble exactement à
+ * une campagne clôturée, et rien ne distinguerait « c'est fini » de « ce n'est
+ * pas à vous ». D'où cette bande, qui dit laquelle des deux et à qui demander.
+ */
+function ReadOnlyNote({ overview }: { overview: Overview }) {
+  const { owner } = overview.access
+  return (
+    <Alert tone="info" title="Lecture seule">
+      Cette campagne se consulte et s'exporte, mais ne se modifie pas depuis
+      votre compte. Demandez à {owner || 'son créateur'} de vous déclarer comme
+      gestionnaire.
+    </Alert>
   )
 }
 

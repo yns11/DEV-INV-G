@@ -863,6 +863,7 @@ class AnalysisService:
         from ..ai import InsightEngine
 
         ctx = self.ctx
+        ctx.guard(campaign, "analysis")
         frame = self.frame(campaign, granularity="item")
         features: dict[str, dict[str, Any]] = {}
         if not frame.empty:

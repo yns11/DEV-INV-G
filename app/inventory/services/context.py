@@ -32,11 +32,12 @@ from ..db import (
     StockFlowRepository,
     get_database,
 )
+from ..domain.access import Role, restrict, role_of
 from ..domain.enums import AuditAction, CampaignStatus
 from ..domain.models import Campaign
 from ..domain.sequence import Progress, blocking_reason
 from ..domain.workflow import Editable, mutability_of
-from ..errors import FrozenError
+from ..errors import FrozenError, PermissionDeniedError
 from ..evidence import EvidenceStore
 
 __all__ = ["ServiceContext", "utcnow"]
@@ -62,6 +63,8 @@ class ServiceContext:
     request_id: str | None = None
     #: Memoised by :meth:`progress`, keyed by campaign; see there.
     _progress: dict[str, Progress] = field(default_factory=dict, repr=False)
+    #: Memoised by :meth:`role`, keyed by campaign, pour la même raison.
+    _roles: dict[str, Role] = field(default_factory=dict, repr=False)
 
     # -- repositories (lazily built, cached per context) ----------------------
 
@@ -120,11 +123,78 @@ class ServiceContext:
 
     # -- cross-cutting concerns ----------------------------------------------
 
+    def role(self, campaign: Campaign) -> Role:
+        """Ce que l'utilisateur courant est vis-à-vis de cette campagne.
+
+        Mémoïsé par campagne, et pour la même raison que :meth:`progress` : la
+        garde s'exécute avant chaque écriture, et un import de deux cent mille
+        lignes ne doit pas relire la liste des gestionnaires à chaque ligne.
+
+        Clé par campagne, jamais partagée : le clonage en lit deux, et une
+        entrée commune répondrait à la seconde avec le rôle de la première —
+        c'est-à-dire ouvrirait une campagne sur les droits d'une autre.
+        """
+        cached = self._roles.get(campaign.id)
+        if cached is None:
+            cached = role_of(
+                self.actor, campaign, self.referentials.list_managers(campaign.id)
+            )
+            self._roles[campaign.id] = cached
+        return cached
+
+    def permissions(self, campaign: Campaign) -> Editable:
+        """Ce que l'utilisateur courant peut réellement modifier.
+
+        L'intersection des deux barrières — la phase et l'identité. C'est cet
+        objet que l'API renvoie et que l'interface lit pour désactiver ses
+        boutons, ce qui fait qu'aucun écran n'a besoin de connaître la notion
+        de rôle pour se comporter correctement.
+        """
+        return restrict(mutability_of(campaign.status), self.role(campaign))
+
+    def require_write(self, campaign: Campaign) -> None:
+        """Refuse toute écriture à qui n'est ni propriétaire ni gestionnaire."""
+        if self.role(campaign).may_write:
+            return
+        owner = campaign.created_by or "son créateur"
+        raise PermissionDeniedError(
+            f"Vous consultez la campagne {campaign.code} en lecture seule. "
+            f"Demandez à {owner} de vous déclarer comme gestionnaire pour "
+            "pouvoir la modifier.",
+            campaignId=campaign.id,
+            role=str(self.role(campaign)),
+            createdBy=campaign.created_by,
+        )
+
+    def require_owner(self, campaign: Campaign, action: str) -> None:
+        """Refuse à un gestionnaire une action réservée au propriétaire.
+
+        Deux seulement, et elles portent sur la campagne plutôt que sur ses
+        données : déclarer les gestionnaires, et supprimer la campagne. Un
+        gestionnaire qui pourrait déclarer les autres s'accorderait le droit
+        d'en accorder.
+        """
+        if self.role(campaign).is_owner:
+            return
+        owner = campaign.created_by or "son créateur"
+        raise PermissionDeniedError(
+            f"{action.capitalize()} est réservé à {owner}, qui a créé la "
+            f"campagne {campaign.code}.",
+            campaignId=campaign.id,
+            role=str(self.role(campaign)),
+            createdBy=campaign.created_by,
+        )
+
     def guard(self, campaign: Campaign, aspect: str) -> None:
         """Refuse a write that this phase freezes, or that comes too early.
 
-        Two different questions, checked at one place because a caller must not
-        be able to satisfy one and forget the other.
+        Trois questions, vérifiées au même endroit parce qu'un appelant ne doit
+        pas pouvoir en satisfaire une et oublier les autres.
+
+        *Qui écrit ?* — propriétaire ou gestionnaire déclaré. Posée en premier
+        parce que c'est le refus le plus utile à lire : « vous êtes en lecture
+        seule » se corrige en demandant un droit, « c'est gelé » ne se corrige
+        pas du tout.
 
         *Is it frozen?* — ``aspect`` is an attribute of
         :class:`~inventory.domain.workflow.Editable` (``items``, ``book_stock``,
@@ -136,6 +206,8 @@ class ServiceContext:
         pseudo-aspect: nothing is frozen by it, but it must not happen before
         the ERP stock has stopped moving.
         """
+        self.require_write(campaign)
+
         editable: Editable = mutability_of(campaign.status)
         if aspect != "post_journal":
             if not hasattr(editable, aspect):

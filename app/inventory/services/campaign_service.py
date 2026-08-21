@@ -15,10 +15,9 @@ from ..domain.workflow import (
     assert_campaign_transition,
     campaign_transition_blockers,
     derive_zone_status,
-    mutability_of,
     passes_for,
 )
-from ..errors import ConflictError, PermissionDeniedError, ValidationError
+from ..errors import ConflictError, ValidationError
 from .context import ENGINE_VERSION, ServiceContext, utcnow
 
 log = logging.getLogger(__name__)
@@ -58,7 +57,8 @@ class CampaignService:
         return self.ctx.campaigns.get(campaign_id)
 
     def permissions(self, campaign: Campaign) -> Editable:
-        return mutability_of(campaign.status)
+        """La phase **et** l'identité. Voir :meth:`ServiceContext.permissions`."""
+        return self.ctx.permissions(campaign)
 
     def overview(self, campaign_id: str) -> dict[str, Any]:
         """Everything the campaign header needs, in one round trip.
@@ -112,9 +112,19 @@ class CampaignService:
                 1 for z in zones if perimeter.covers_zone(z.id)
             )
 
+        # Le rôle voyage à côté des permissions : sans lui, un écran entièrement
+        # grisé ne se distingue pas d'une campagne clôturée, et la seule chose
+        # utile à savoir — qui demander pour obtenir le droit — manquerait.
+        role = ctx.role(campaign)
         return {
             "campaign": campaign,
-            "permissions": mutability_of(campaign.status).as_dict(),
+            "permissions": ctx.permissions(campaign).as_dict(),
+            "access": {
+                "role": str(role),
+                "canWrite": role.may_write,
+                "isOwner": role.is_owner,
+                "owner": campaign.created_by,
+            },
             "journalProgress": {
                 "total": journal_progress.get("total", 0),
                 "complete": journal_progress.get("complete", 0),
@@ -207,14 +217,7 @@ class CampaignService:
         """
         ctx = self.ctx
         campaign = ctx.campaigns.get(campaign_id)
-        if campaign.created_by != ctx.actor:
-            raise PermissionDeniedError(
-                f"La campagne {campaign.code} a été créée par "
-                f"{campaign.created_by or 'un autre utilisateur'} : "
-                "seul son auteur peut la supprimer.",
-                campaignId=campaign_id,
-                createdBy=campaign.created_by,
-            )
+        ctx.require_owner(campaign, "supprimer une campagne")
         with ctx.db.transaction() as conn:
             ctx.record(
                 campaign_id=campaign_id,
@@ -416,6 +419,11 @@ class CampaignService:
         """Move the campaign forward, freezing what the new phase freezes."""
         ctx = self.ctx
         campaign = ctx.campaigns.get(campaign_id)
+        # Le changement de phase gèle des données de façon irréversible : c'est
+        # l'action la plus lourde de l'écran, et elle ne passe par aucune garde
+        # d'aspect — celles-ci portent sur ce que la phase autorise, pas sur la
+        # phase elle-même.
+        ctx.require_write(campaign)
         assert_campaign_transition(campaign.status, target)
 
         readiness = self.transition_readiness(campaign_id, target)

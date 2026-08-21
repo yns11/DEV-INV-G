@@ -880,6 +880,7 @@ class GenericService:
         never erase an arbitration somebody already made.
         """
         ctx = self.ctx
+        ctx.guard(campaign, "count_entries")
         zone_counts = self._zone_counts(campaign, zone_id)
         # A single-pass zone has nothing to compare: there is no second opinion,
         # so producing arbitration lines would manufacture a decision nobody can

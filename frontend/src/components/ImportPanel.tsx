@@ -22,8 +22,9 @@
 
 import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useOutletContext } from 'react-router-dom'
 import { api, downloads } from '../lib/api'
-import type { GridContract, ImportResult } from '../lib/types'
+import type { GridContract, ImportResult, Overview } from '../lib/types'
 import {
   Alert, Badge, Button, Card, Icons, useDownload, useErrorToast, useToast,
 } from './ui'
@@ -85,6 +86,10 @@ export function ImportPanel({
   onImported?: (result: ImportResult) => void
   extraActions?: React.ReactNode
 }) {
+  // Le rôle vient du contexte de la campagne : le panneau est toujours rendu
+  // sous elle, et le faire descendre par les sept appelants n'ajouterait que
+  // sept occasions de l'oublier.
+  const { access } = useOutletContext<Overview>()
   const [stage, setStage] = useState<Stage>({ kind: 'idle' })
   const [pasteText, setPasteText] = useState('')
   const [pasting, setPasting] = useState(false)
@@ -162,6 +167,20 @@ export function ImportPanel({
 
   // A locked panel is dead weight: every button in it would refuse. The reason
   // alone says everything it would have, in one line.
+  //
+  // Qui ne peut pas écrire du tout l'emporte sur la raison passée par l'écran.
+  // Celles-ci nomment toutes la phase — « gelé depuis le passage en comptage »
+  // — et cette phrase devient un mensonge pour un lecteur devant une campagne
+  // en préparation : rien n'est gelé, c'est lui qui n'a pas le droit. Décidé
+  // ici, à l'unique endroit qui rend le verrou, plutôt qu'aux sept appels.
+  if (!access.canWrite) {
+    return (
+      <Alert tone="info" title={`${contract.title} — lecture seule`}>
+        Cette campagne ne se modifie pas depuis votre compte. Demandez à{' '}
+        {access.owner || 'son créateur'} de vous déclarer comme gestionnaire.
+      </Alert>
+    )
+  }
   if (disabled) {
     return disabledReason ? (
       <Alert tone="info" title={`${contract.title} — import verrouillé`}>

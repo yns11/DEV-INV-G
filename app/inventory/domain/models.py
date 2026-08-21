@@ -449,13 +449,17 @@ class Location(DomainModel):
 class Manager(DomainModel):
     """One of the campaign's managers (« gestionnaire ») and their identity.
 
-    A manager is a *perimeter*, not a permission: warehouses and zones are
-    assigned to one so that each person can filter the screens down to their own
-    work. Everybody keeps the right to act everywhere — see the focus mode.
-
     ``actor`` is the signed-in identity forwarded by the platform (an email).
-    It is what lets the server resolve "my perimeter" without the client ever
-    naming a manager, which is what makes the filtering trustworthy.
+    It carries two things that must not be confused.
+
+    **The right to write.** Being declared here — and active — is what makes
+    somebody a manager of the campaign rather than a reader of it. See
+    :mod:`inventory.domain.access`.
+
+    **A perimeter.** Warehouses and zones are assigned to a manager so each
+    person can filter the screens down to their own work. Within the campaign
+    that perimeter stays a *filter*: a manager may act outside it, because
+    somebody has to cover for a colleague at 6 a.m. on inventory day.
     """
 
     campaign_id: str

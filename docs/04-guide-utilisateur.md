@@ -218,8 +218,22 @@ une liste d'articles lève automatiquement la mention.
 **Affectation zones**.
 
 Cinq postes par campagne. Renseignez pour chacun son libellé et **son adresse
-e-mail** : c'est elle qui permet à l'interrupteur « Mon périmètre » de savoir
-qui demande, sans que le navigateur n'ait jamais à nommer un gestionnaire.
+e-mail**. Cette adresse fait deux choses, à ne pas confondre.
+
+**Elle donne le droit de modifier la campagne.** Une campagne se consulte par
+tout le monde et ne se modifie que par son créateur et les gestionnaires qu'il a
+déclarés ici. Pour les autres, les écrans restent lisibles et exportables, mais
+tous les boutons d'écriture sont désactivés et une bande le dit. Décocher
+**Actif** retire le droit sans effacer la trace du passage de la personne.
+
+**Elle résout « Mon périmètre »** sans que le navigateur n'ait jamais à nommer
+un gestionnaire.
+
+Deux choses restent au seul créateur de la campagne : cette page — un
+gestionnaire qui pourrait en déclarer d'autres s'accorderait le droit d'en
+accorder — et la suppression de la campagne. Tout le reste, y compris le passage
+d'une phase à la suivante, appartient aux gestionnaires autant qu'à lui : le jour
+J commence à six heures, et le créateur n'est pas toujours devant son écran.
 
 - *Affectation journaux* rattache les entrepôts. Un journal de comptage suit son
   entrepôt. La ligne **AUTRES** n'est pas un entrepôt : elle rattache d'un coup
@@ -227,11 +241,12 @@ qui demande, sans que le navigateur n'ait jamais à nommer un gestionnaire.
   nouvel import de stock ERP ne tombe pas hors de tout périmètre.
 - *Affectation zones* rattache les feuilles GENERIQUE, sur une sélection.
 
-> **Un périmètre n'est pas une habilitation.** L'interrupteur « Mon périmètre »
-> de l'en-tête réduit le bruit ; il ne cloisonne rien. Chacun garde le
-> droit d'agir hors de son périmètre — indispensable quand il faut couvrir un
-> collègue à 6 h du matin. Le filtrage se fait côté serveur : ce que le
-> périmètre exclut n'est jamais envoyé au poste.
+> **Un périmètre n'est pas un cloisonnement.** L'interrupteur « Mon périmètre »
+> de l'en-tête réduit le bruit ; un gestionnaire garde le droit d'agir hors du
+> sien — indispensable quand il faut couvrir un collègue à 6 h du matin. Ce qui
+> décide du droit d'écrire, c'est d'être déclaré sur cette page, pas l'étendue
+> du périmètre. Le filtrage se fait côté serveur : ce que le périmètre exclut
+> n'est jamais envoyé au poste.
 
 ### 1.8 Imprimer les feuilles
 

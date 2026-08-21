@@ -81,9 +81,26 @@ export interface PerimeterSummary {
   zoneCount: number
 }
 
+/**
+ * Ce que l'utilisateur est vis-à-vis de cette campagne.
+ *
+ * Pas un rôle global : la même personne pilote sa campagne et ne fait que lire
+ * celle du trimestre précédent. `permissions` porte déjà le résultat — tout y
+ * est faux pour un lecteur —, mais un écran entièrement grisé ne se distingue
+ * pas d'une campagne clôturée. C'est ce bloc qui permet de dire laquelle des
+ * deux, et à qui s'adresser.
+ */
+export interface Access {
+  role: 'OWNER' | 'MANAGER' | 'READER'
+  canWrite: boolean
+  isOwner: boolean
+  owner: string
+}
+
 export interface Overview {
   campaign: Campaign
   permissions: Permissions
+  access: Access
   perimeter: PerimeterSummary
   journalProgress: {
     total: number

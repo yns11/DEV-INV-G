@@ -348,18 +348,40 @@ articles, nomenclatures, seuils. Les zones GENERIQUE, elles, restent créables.
 
 ### 2.1 Charger le stock ERP
 
-**Référentiels & seuils → Stock ERP.** Trois sources, comme pour les articles et
-les nomenclatures, dans cet ordre :
+**Référentiels & seuils → Stock ERP.** Le référentiel articles doit être chargé
+avant — l'écran le refuse et le dit, parce que chaque ligne de stock est vérifiée
+contre lui (voir plus bas).
+
+Trois sources, comme pour les articles et les nomenclatures, dans cet ordre :
 
 1. **Lire depuis l'ERP** — la table
    `emotors_data_champions.silver_erp_ye.stock_snapshot` publie une photographie
    quotidienne du stock physique du site, une ligne par article × entrepôt ×
-   emplacement. L'application en lit **la date la plus récente**, et elle seule :
-   une campagne se compare à *un* état du système à *un* instant, jamais à un
-   stock additionné sur trois mois.
+   emplacement.
 2. **Charger un fichier** — l'export « Stock physique par emplacement », quand
    l'ERP n'est pas joignable.
 3. **Copier / Coller**.
+
+**Choisissez la photo.** La liste « Photo du », à côté du bouton, propose les
+journées effectivement publiées, la plus récente en tête et sélectionnée par
+défaut. Une seule est chargée, jamais deux : une campagne se compare à *un* état
+du système à *un* instant, pas à un stock additionné sur trois mois.
+
+> Le défaut n'est pas la règle. La journée de comptage a commencé samedi matin,
+> la reprise se fait le lundi : c'est la photo de **samedi** qui fait foi, et
+> c'est elle qu'il faut désigner. Charger celle du lundi compterait comme écarts
+> deux jours de mouvements normaux.
+
+**Le référentiel articles fait foi**, comme pour les feuilles de comptage, et
+**quel que soit le mode d'import**. Deux refus, chacun avec son geste :
+
+| La ligne porte | Elle est rejetée parce que | À faire |
+|---|---|---|
+| une référence inconnue | sans article, elle n'a ni désignation, ni prix, ni type — son écart s'afficherait en quantité nue, hors de toute règle de matérialité | compléter la grille **Articles** ; un import de stock ne crée jamais d'article |
+| un article **exclu** du périmètre | l'exclusion est une décision de campagne ; charger son stock la reprendrait par la fenêtre, et l'écart vaudrait la totalité du stock | lever l'exclusion sur la grille **Articles**, si elle n'a plus lieu d'être |
+
+Les lignes refusées sont listées avec leur numéro et leur raison, comme pour tout
+import — le reste du fichier passe.
 
 Quelle que soit la source, le chargement fait **trois choses en une
 transaction** :
@@ -369,8 +391,9 @@ transaction** :
    en conservant les décisions d'activation déjà prises ;
 3. il crée **un journal de comptage par emplacement actif**.
 
-L'historique des imports nomme la source retenue : une reprise se relit sans
-avoir à deviner si les quantités viennent de l'ERP ou d'un fichier.
+L'historique des imports nomme la source **et la photo** : « … stock_snapshot au
+2026-08-29 ». Six mois plus tard, savoir à quel jour la campagne s'est comparée
+n'est plus une question qu'on pose à quelqu'un.
 
 Puis **Geler le stock ERP**. À partir de là, tout écart est reproductible.
 

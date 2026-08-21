@@ -103,6 +103,25 @@ export function ImportPanel({
     staleTime: Infinity,
   })
   const mirror = erp.data?.mirror?.[target] ?? null
+  // Le stock est une suite de photos ; les autres grilles sont un état. Il est
+  // donc la seule à demander « laquelle ».
+  const datedSource = target === 'book_stock'
+  const stockDates = useQuery({
+    queryKey: ['erp-stock-dates'],
+    queryFn: api.erpStockDates,
+    enabled: datedSource && erp.data?.available === true,
+    staleTime: 5 * 60 * 1000,
+  })
+  const dates = stockDates.data?.dates ?? []
+  const [chosenDate, setChosenDate] = useState('')
+  // La plus récente par défaut, sans la figer : `chosenDate` reste vide tant
+  // que personne n'a choisi, si bien qu'une liste rafraîchie propose la
+  // nouvelle photo au lieu de rester sur celle d'hier.
+  const snapshotDate = chosenDate || dates[0] || ''
+  const erpParams = {
+    ...params,
+    ...(datedSource && snapshotDate ? { dateSnapshot: snapshotDate } : {}),
+  }
   const fileInput = useRef<HTMLInputElement>(null)
   const toast = useToast()
   const showError = useErrorToast()
@@ -112,7 +131,7 @@ export function ImportPanel({
     setStage({ kind: 'validating' })
     try {
       const result = source.erp
-        ? await api.importErp(campaignId, target, { dryRun: true, replace, params })
+        ? await api.importErp(campaignId, target, { dryRun: true, replace, params: erpParams })
         : source.file
           ? transport
             ? await transport.file(source.file, { dryRun: true })
@@ -137,7 +156,7 @@ export function ImportPanel({
     setStage({ kind: 'importing' })
     try {
       const result = source.erp
-        ? await api.importErp(campaignId, target, { replace, params })
+        ? await api.importErp(campaignId, target, { replace, params: erpParams })
         : source.file
           ? transport
             ? await transport.file(source.file, {})
@@ -213,6 +232,29 @@ export function ImportPanel({
           >
             Lire depuis l’ERP
           </Button>
+        )}
+        {/* Quelle photo. Le stock ERP est publié une fois par jour, et la
+            journée de comptage n'est pas toujours celle du chargement : le
+            comptage a commencé samedi matin, la reprise se fait le lundi, et
+            c'est la photo de samedi qui fait foi. Prendre la plus récente
+            d'office rendait ce cas inatteignable, sans le dire. */}
+        {datedSource && erp.data?.available && dates.length > 0 && (
+          <label className="row" style={{ gap: 'var(--space-2)' }}>
+            <span className="muted">Photo du</span>
+            <select
+              className="input input--mini"
+              value={snapshotDate}
+              disabled={busy}
+              onChange={(event) => setChosenDate(event.target.value)}
+            >
+              {dates.map((date, index) => (
+                <option key={date} value={date}>
+                  {new Date(`${date}T00:00:00`).toLocaleDateString('fr-FR')}
+                  {index === 0 ? ' (la plus récente)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
         )}
         {/* The age of the copy, next to the button that loads it. Reading a
             month-old referential without noticing is exactly the error this

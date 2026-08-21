@@ -109,6 +109,16 @@ STOCK_COLUMNS = (
     "snapshot_date",
 )
 
+#: Combien de dates de snapshot l'écran propose au choix. La source garde son
+#: historique ; une liste de trois cents dates rendrait introuvables les cinq
+#: qui intéressent quelqu'un le jour d'un inventaire.
+STOCK_DATES_SHOWN = 30
+
+_MIRROR_EMPTY = (
+    "Le miroir ERP est vide : le job « Synchronisation du miroir ERP » n'a pas "
+    "encore alimenté la copie locale. Lancez-le, ou chargez un fichier."
+)
+
 #: Columns the backflush mirror carries, in the order the sync job copies them.
 #: Only what the application reads: the gold table holds a score of others that
 #: would cost storage here for nothing.
@@ -302,18 +312,59 @@ class ErpReader:
 
     # ------------------------------------------------------------ stock ERP
 
-    def fetch_book_stock(self, *, limit: int) -> list[dict[str, Any]]:
+    def stock_dates(self, *, limit: int = STOCK_DATES_SHOWN) -> list[dt.date]:
+        """Les dates de snapshot disponibles, la plus récente d'abord.
+
+        Ce que l'écran propose au choix. La liste est bornée parce que la source
+        garde son historique : offrir trois cents dates ne servirait qu'à rendre
+        introuvables les cinq qui intéressent quelqu'un le jour d'un inventaire.
+
+        Ne lève jamais : la date se choisit *avant* de savoir si la lecture
+        marchera, et un écran incapable d'afficher sa liste vaut moins qu'un
+        écran qui propose la date du jour par défaut.
+        """
+        try:
+            if self._from_mirror:
+                rows = _mirror_rows(
+                    MIRROR_STOCK_TABLE,
+                    ("snapshot_date",),
+                    order_by="snapshot_date DESC",
+                    limit=limit,
+                    distinct=True,
+                )
+            else:
+                table = self._settings.erp_stock_fqn
+                rows = self._query(
+                    f"""
+                    SELECT DISTINCT snapshot_date FROM {table}
+                    ORDER BY snapshot_date DESC
+                    LIMIT {int(limit)}
+                    """,
+                    source=table,
+                )
+        except Exception as exc:
+            log.warning("Dates de snapshot illisibles : %s", exc)
+            return []
+        return [d for d in (_as_date(r[0]) for r in rows) if d is not None]
+
+    def fetch_book_stock(
+        self, *, limit: int, snapshot_date: dt.date | None = None
+    ) -> list[dict[str, Any]]:
         """Le stock physique du site, en lignes de la grille ``book_stock``.
 
-        **La photo la plus récente, pas l'historique.** La table est un snapshot
-        quotidien partitionné par date : la lire entière donnerait autant de
-        lignes que de jours conservés, et un stock additionné sur trois mois.
-        La date maximale est donc résolue d'abord, puis les lignes de ce seul
-        jour sont lues.
+        **Un seul jour, jamais l'historique.** La table est un snapshot quotidien
+        partitionné par date : la lire entière donnerait autant de lignes que de
+        jours conservés, et un stock additionné sur trois mois. Deux jours ne se
+        mélangent donc jamais — une campagne compare son comptage à *un* état du
+        système à *un* instant, et un stock composite ne se défendrait devant
+        personne.
 
-        Deux jours différents ne se mélangent jamais : une campagne compare son
-        comptage à *un* état du système à *un* instant, et un stock composite
-        ne se défendrait devant personne.
+        **Quel jour, c'est l'utilisateur qui le dit.** ``snapshot_date`` nomme la
+        photo à charger ; sans elle, la plus récente. Un inventaire ne tombe pas
+        toujours le jour où on le charge : la journée de comptage a commencé
+        samedi matin, la reprise se fait le lundi, et c'est la photo de samedi
+        qui fait foi. Prendre la plus récente d'office rendait ce cas
+        inatteignable, sans le dire.
         """
         if self._from_mirror:
             return [_stock_row(r) for r in _mirror_rows(
@@ -324,14 +375,31 @@ class ErpReader:
                 where=(
                     f"WHERE snapshot_date = (SELECT max(snapshot_date) "
                     f"FROM {MIRROR_STOCK_TABLE})"
+                    if snapshot_date is None
+                    else "WHERE snapshot_date = %s"
+                ),
+                params=() if snapshot_date is None else (snapshot_date,),
+                empty_message=(
+                    ""
+                    if snapshot_date is None
+                    else f"Aucun stock au {snapshot_date.isoformat()} dans la "
+                         "source ERP. Choisissez une autre date : la liste ne "
+                         "propose que des jours effectivement publiés."
                 ),
             )]
         table = self._settings.erp_stock_fqn
+        # Une `dt.date` ne peut pas porter de guillemet : son interpolation est
+        # sûre par construction, là où l'entrepôt SQL ne prend pas de paramètre.
+        chosen = (
+            f"(SELECT max(snapshot_date) FROM {table})"
+            if snapshot_date is None
+            else f"DATE '{snapshot_date.isoformat()}'"
+        )
         rows = self._query(
             f"""
             SELECT {", ".join(STOCK_COLUMNS)}
             FROM {table}
-            WHERE snapshot_date = (SELECT max(snapshot_date) FROM {table})
+            WHERE snapshot_date = {chosen}
             ORDER BY item_id, entrepot, emplacement
             LIMIT {int(limit)}
             """,
@@ -576,8 +644,15 @@ def _mirror_rows(
     *,
     order_by: str,
     limit: int,
-    #: Clause complète, mot-clé compris — elle est concaténée telle quelle.
+    #: Clause complète, mot-clé compris — elle est concaténée telle quelle. Les
+    #: valeurs qu'elle compare passent par ``params``, jamais par la chaîne.
     where: str = "",
+    params: Sequence[Any] = (),
+    distinct: bool = False,
+    #: Ce qui est dit quand la lecture ne ramène rien. Le défaut accuse le job
+    #: de synchronisation, ce qui est juste pour une table vide et faux dès
+    #: qu'un filtre est en jeu : c'est alors le filtre qui ne trouve rien.
+    empty_message: str = "",
 ) -> list[Sequence[Any]]:
     """Rows of the local mirror, in the same shape a warehouse read returns.
 
@@ -591,9 +666,9 @@ def _mirror_rows(
     try:
         with get_database().cursor() as cur:
             cur.execute(
-                f"SELECT {', '.join(columns)} FROM {source} {where} "
-                f"ORDER BY {order_by} LIMIT %s",
-                (int(limit),),
+                f"SELECT {'DISTINCT ' if distinct else ''}{', '.join(columns)} "
+                f"FROM {source} {where} ORDER BY {order_by} LIMIT %s",
+                (*params, int(limit)),
             )
             rows = cur.fetchall()
     except Exception as exc:
@@ -605,11 +680,7 @@ def _mirror_rows(
         ) from exc
 
     if not rows:
-        raise ValidationError(
-            "Le miroir ERP est vide : le job « Synchronisation du miroir ERP » "
-            "n'a pas encore alimenté la copie locale. Lancez-le, ou chargez un "
-            "fichier."
-        )
+        raise ValidationError(empty_message or _MIRROR_EMPTY)
     return [[row[name] for name in names] for row in rows]
 
 
@@ -951,3 +1022,20 @@ def _number(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _as_date(value: Any) -> dt.date | None:
+    """Une date, quel que soit le transport qui l'a apportée.
+
+    Le miroir rend un ``datetime.date``, l'entrepôt SQL une chaîne ISO. Une
+    valeur qui n'est ni l'un ni l'autre est écartée : mieux vaut une date de
+    moins dans la liste qu'une entrée que personne ne peut choisir.
+    """
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    try:
+        return dt.date.fromisoformat(_text(value)[:10])
+    except ValueError:
+        return None

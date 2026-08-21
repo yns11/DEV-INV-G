@@ -92,6 +92,10 @@ PREREQUISITES: dict[str, tuple[_Requirement, ...]] = {
     # people to zones and money to article types, so both must already exist.
     "thresholds": (_ITEMS, _ZONES),
     # --- Comptage ---------------------------------------------------------
+    # Le snapshot est validé ligne à ligne contre le référentiel articles : sans
+    # lui, l'import ne rejetterait pas une ligne ou deux, il les rejetterait
+    # toutes, en reprochant à chacune une absence dont la cause est ailleurs.
+    "book_stock": (_ITEMS,),
     "count_journals": (_BOOK_STOCK,),
     "count_entries": (_BOOK_STOCK,),
     # L'écart backflush est rattaché aux articles de la campagne : sans

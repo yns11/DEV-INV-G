@@ -132,6 +132,7 @@ class ImportService:
         rows: Sequence[dict[str, Any]] | None = None,
         period_start: dt.date | None = None,
         period_end: dt.date | None = None,
+        snapshot_date: dt.date | None = None,
     ) -> tuple[GridContract, ParseResult]:
         """Parse input in any of the supported modes.
 
@@ -151,6 +152,7 @@ class ImportService:
                     self._read_erp(
                         contract_key, limit=limit,
                         period_start=period_start, period_end=period_end,
+                        snapshot_date=snapshot_date,
                     ),
                     max_rows=limit,
                 )
@@ -184,6 +186,7 @@ class ImportService:
         limit: int,
         period_start: dt.date | None = None,
         period_end: dt.date | None = None,
+        snapshot_date: dt.date | None = None,
     ) -> list[dict[str, Any]]:
         """Rows from the ERP tables, in the grid's shape.
 
@@ -191,6 +194,10 @@ class ImportService:
         *fact* table rather than a referential: a referential has a state, a fact
         table has a history, and reading the second without bounds would answer
         a question nobody asked.
+
+        ``snapshot_date`` est de la troisième espèce : le stock n'est ni un état
+        courant ni un historique à parcourir, mais une suite de photos dont on en
+        charge **une**, nommée.
         """
         from ..ingest.erp import ErpReader
 
@@ -201,9 +208,11 @@ class ImportService:
             case "boms":
                 return reader.fetch_bom_links(limit=limit)
             case "book_stock":
-                # Sans bornes : le snapshot est un état, pas un historique. Le
-                # lecteur résout lui-même la date la plus récente.
-                return reader.fetch_book_stock(limit=limit)
+                # Une photo, celle que l'écran a nommée. Sans date, la plus
+                # récente — c'est le défaut, pas la seule possibilité.
+                return reader.fetch_book_stock(
+                    limit=limit, snapshot_date=snapshot_date
+                )
             case "backflush":
                 start, end = _require_period(period_start, period_end)
                 return reader.fetch_backflush(
@@ -1067,6 +1076,12 @@ class ImportService:
             "items": settings.erp_items_fqn,
             "book_stock": settings.erp_stock_fqn,
         }.get(target, settings.erp_bom_fqn)
+        # Pour le stock, la photo chargée compte plus que la table : deux
+        # campagnes lisant la même table à deux jours d'écart ne comparent pas
+        # leur comptage au même état du système.
+        day = kwargs.get("snapshot_date")
+        if target == "book_stock" and day is not None:
+            table = f"{table} au {day.isoformat()}"
         if settings.erp_source != "mirror":
             return table
         # Naming the ERP table alone would claim a live read that did not

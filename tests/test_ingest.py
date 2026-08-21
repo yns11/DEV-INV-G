@@ -33,6 +33,18 @@ from inventory.ingest import (
 next_id = lambda: "id"
 
 
+def _referential(*numbers: str, excluded: tuple[str, ...] = ()) -> dict[str, Item]:
+    """Un référentiel articles minimal, pour les mappeurs qui s'y adossent."""
+    return {
+        number: Item(
+            campaign_id="c",
+            item_number=number,
+            exclusions={ExclusionScope.ALL} if number in excluded else set(),
+        )
+        for number in numbers
+    }
+
+
 class TestHeaderMatching:
     @pytest.mark.parametrize(
         ("raw", "expected"),
@@ -190,6 +202,7 @@ class TestBookStockMapping:
                 {"item_number": "P-1", "warehouse_id": "B", "location_id": "L",
                  "qty": "5"},
             ],
+            items=_referential("P-1"),
         )
         assert len(lines) == 1
         assert lines[0].qty == Decimal("15.000000")
@@ -206,6 +219,69 @@ class TestBookStockMapping:
         )
         assert lines[0].unit_cost == Decimal("42.00")
         assert lines[0].value == Decimal("84.00")
+
+    def test_an_unknown_reference_is_a_row_error(self):
+        """Sans article, la ligne n'a ni désignation, ni prix, ni matérialité."""
+        lines, errors = map_book_stock(
+            "c",
+            [{"item_number": "INCONNU", "warehouse_id": "B", "location_id": "L",
+              "qty": "3"}],
+            items=_referential("P-1"),
+        )
+        assert lines == []
+        assert len(errors) == 1
+        assert errors[0].column == "item_number"
+        assert "absent du référentiel" in errors[0].message
+
+    def test_an_excluded_article_is_a_row_error(self):
+        """Charger son stock reprendrait par la fenêtre la décision d'exclusion."""
+        lines, errors = map_book_stock(
+            "c",
+            [{"item_number": "P-2", "warehouse_id": "B", "location_id": "L",
+              "qty": "3"}],
+            items=_referential("P-1", "P-2", excluded=("P-2",)),
+        )
+        assert lines == []
+        assert len(errors) == 1
+        assert "exclu du périmètre" in errors[0].message
+
+    def test_the_refusal_says_where_to_go(self):
+        """Deux causes, deux gestes : compléter le référentiel, ou lever
+        l'exclusion."""
+        _, absent = map_book_stock(
+            "c",
+            [{"item_number": "X", "warehouse_id": "B", "qty": "1"}],
+            items=_referential("P-1"),
+        )
+        _, excluded = map_book_stock(
+            "c",
+            [{"item_number": "P-2", "warehouse_id": "B", "qty": "1"}],
+            items=_referential("P-2", excluded=("P-2",)),
+        )
+        assert "référentiel articles" in absent[0].message
+        assert "grille Articles" in excluded[0].message
+
+    def test_a_refused_row_does_not_drag_the_others_down(self):
+        lines, errors = map_book_stock(
+            "c",
+            [
+                {"item_number": "P-1", "warehouse_id": "B", "qty": "4"},
+                {"item_number": "INCONNU", "warehouse_id": "B", "qty": "9"},
+                {"item_number": "P-2", "warehouse_id": "B", "qty": "6"},
+            ],
+            items=_referential("P-1", "P-2"),
+        )
+        assert sorted(line.item_number for line in lines) == ["P-1", "P-2"]
+        assert len(errors) == 1
+
+    def test_the_rule_holds_whatever_the_input_looked_like(self):
+        """Le mappeur est le point de passage des trois modes : fichier,
+        collage et lecture ERP y arrivent sous la même forme, donc la règle ne
+        peut pas ne valoir que pour l'un d'eux."""
+        rows = [{"item_number": "INCONNU", "warehouse_id": "B", "qty": "1"}]
+        for _ in range(2):
+            lines, errors = map_book_stock("c", rows, items=_referential("P-1"))
+            assert lines == [] and len(errors) == 1
 
 
 class TestJournalMapping:

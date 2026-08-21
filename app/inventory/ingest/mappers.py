@@ -270,7 +270,7 @@ def map_book_stock(
     campaign_id: str,
     rows: Iterable[Mapping[str, Any]],
     *,
-    items: Mapping[str, Item] | None = None,
+    items: Mapping[str, Item],
 ) -> tuple[list[BookStockLine], list[RowError]]:
     """Build the frozen snapshot.
 
@@ -278,6 +278,18 @@ def map_book_stock(
     overwritten: the ERP export legitimately splits one location's stock across
     several rows when batch or status dimensions differ, and dropping all but
     the last would understate the book.
+
+    **Le référentiel articles fait foi**, comme pour les feuilles de comptage, et
+    quel que soit le mode d'import. Une ligne dont la référence lui est inconnue
+    est une erreur de ligne : le snapshot sert de base à tous les écarts de la
+    campagne, et une référence qu'aucun article ne décrit n'a ni désignation, ni
+    prix, ni type — son écart serait affiché en quantité nue, non valorisé, et
+    hors de toute règle de matérialité.
+
+    Un article **exclu du périmètre** est refusé pour la raison symétrique :
+    l'exclusion est une décision de campagne, et laisser entrer son stock la
+    reprendrait par la fenêtre — l'inventaire ne compte pas cet article, donc son
+    stock ERP produirait un écart égal à la totalité du stock.
 
     When the export carries no unit cost, the referential's standard price is
     used so that every line is valued.
@@ -300,10 +312,26 @@ def map_book_stock(
             errors.append(RowError(index, "qty", row.get("qty"), str(exc)))
             continue
 
-        if line.unit_cost == 0 and items:
-            item = items.get(line.item_number)
-            if item is not None:
-                line.unit_cost = item.std_price
+        item = items.get(line.item_number)
+        if item is None:
+            errors.append(
+                RowError(index, "item_number", row.get("item_number"),
+                         f"L'article {line.item_number} est absent du référentiel "
+                         "de la campagne. Complétez le référentiel articles : un "
+                         "import de stock ne crée jamais d'article.")
+            )
+            continue
+        if item.excluded_everywhere:
+            errors.append(
+                RowError(index, "item_number", row.get("item_number"),
+                         f"L'article {line.item_number} est exclu du périmètre de "
+                         "la campagne. Levez l'exclusion sur la grille Articles "
+                         "pour que son stock soit chargé.")
+            )
+            continue
+
+        if line.unit_cost == 0:
+            line.unit_cost = item.std_price
 
         key = (line.item_number, line.warehouse_id, line.location_id)
         existing = aggregated.get(key)

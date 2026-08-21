@@ -326,7 +326,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 868 tests, ~5 s, aucune base requise
+make test      # 881 tests, ~5 s, aucune base requise
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -590,12 +590,17 @@ plus large par exemple, soit un redémarrage et non une livraison de code.
 depuis l'ERP » sur les grilles Articles, Nomenclatures et Stock ERP.
 
 `INV_ERP_STOCK_TABLE` désigne le **snapshot de stock physique** : une ligne par
-article × entrepôt × emplacement, partitionnée par `snapshot_date`. L'application
-résout d'abord la date maximale puis lit ce seul jour — une campagne se compare à
-un état du système, pas à un stock cumulé. Les colonnes attendues sont
-`item_id`, `entrepot`, `emplacement`, `stock_physique`, `unite` et
+article × entrepôt × emplacement, partitionnée par `snapshot_date`. Les colonnes
+attendues sont `item_id`, `entrepot`, `emplacement`, `stock_physique`, `unite` et
 `snapshot_date` ; l'entité juridique et les lignes supprimées sont filtrées en
 amont.
+
+L'écran propose les journées publiées et **n'en charge qu'une**, celle que
+l'utilisateur désigne — la plus récente par défaut. Deux conséquences pour la
+plateforme : la table doit garder quelques jours d'historique pour que le choix
+ait un sens, et `GET /api/erp/stock-dates` fait un `SELECT DISTINCT
+snapshot_date … LIMIT 30` sur cette table, borné pour la même raison que la liste
+affichée.
 
 `INV_ERP_MOVEMENTS_TABLE` désigne la table des **mouvements de stock**, lue par
 « Tout charger de l'ERP » dans la vue Comparaison. Une ligne par référence et par
@@ -1105,6 +1110,19 @@ qu'annuler un schéma dans un système dont la promesse est un journal d'audit
 immuable n'est pas une garantie qu'on peut offrir. Pour revenir en arrière,
 redéployez la version précédente du code — le schéma reste compatible tant
 qu'aucune colonne n'a été supprimée.
+
+> **La migration 014 écrit des données, pas seulement du schéma.** Elle affecte
+> `younes.elhachi1@emotors.com` aux campagnes dont `created_by` est vide. Depuis
+> que l'écriture suppose d'être propriétaire ou gestionnaire déclaré, une
+> campagne sans propriétaire n'est modifiable par personne — pas même par celui
+> qui l'a créée. Elle ne touche aucune campagne qui a déjà un auteur, et une
+> seconde exécution ne trouve plus rien à corriger. Pour vérifier avant ou après
+> le déploiement :
+>
+> ```sql
+> SELECT code, created_by FROM inventory.campaign
+>  WHERE coalesce(btrim(created_by), '') = '';
+> ```
 
 ### 9.1 Sauvegarde avant une mise à jour majeure
 

@@ -609,3 +609,67 @@ class TestTheColumnContract:
         from inventory.ingest.erp import ITEM_COLUMNS
 
         assert ITEM_COLUMNS == ITEM_COLUMNS_FIXTURE
+
+
+class TestWhichSnapshotIsRead:
+    """Le stock est une suite de photos, et on en charge **une**, nommée.
+
+    La date était résolue par la source — toujours la plus récente. Ce n'est pas
+    le cas courant : la journée de comptage commence samedi matin, la reprise se
+    fait le lundi, et c'est la photo de samedi qui fait foi. Ce cas-là était
+    inatteignable, sans que rien ne le dise.
+    """
+
+    def stock(self, rows, **kwargs):
+        client = _FakeClient(rows, **{k: v for k, v in kwargs.items()
+                                      if k in ("state", "error", "chunks")})
+        reader = ErpReader(client=client, warehouse_id="wh-1")
+        return reader.fetch_book_stock(
+            limit=1000, snapshot_date=kwargs.get("snapshot_date")
+        ), client
+
+    def test_without_a_date_the_most_recent_is_read(self):
+        _, client = self.stock([["P-1", "B06", "L1", "10", "PCE", "2026-08-31"]])
+        assert "max(snapshot_date)" in client.statements[0]
+
+    def test_a_named_date_is_read_instead(self):
+        _, client = self.stock(
+            [["P-1", "B06", "L1", "10", "PCE", "2026-08-29"]],
+            snapshot_date=dt.date(2026, 8, 29),
+        )
+        assert "DATE '2026-08-29'" in client.statements[0]
+        assert "max(snapshot_date)" not in client.statements[0]
+
+    def test_one_day_only_never_a_range(self):
+        """Un stock additionné sur trois mois ne se défendrait devant personne."""
+        _, client = self.stock(
+            [["P-1", "B06", "L1", "10", "PCE", "2026-08-29"]],
+            snapshot_date=dt.date(2026, 8, 29),
+        )
+        assert client.statements[0].count("snapshot_date") == 2  # SELECT + WHERE
+        assert ">=" not in client.statements[0]
+
+    def test_the_offered_dates_come_back_most_recent_first(self):
+        client = _FakeClient([["2026-08-31"], ["2026-08-30"], ["2026-08-29"]])
+        dates = ErpReader(client=client, warehouse_id="wh-1").stock_dates()
+        assert dates == [dt.date(2026, 8, 31), dt.date(2026, 8, 30),
+                         dt.date(2026, 8, 29)]
+        assert "ORDER BY snapshot_date DESC" in client.statements[0]
+
+    def test_the_list_is_bounded(self):
+        """La source garde son historique ; trois cents dates n'aident personne."""
+        from inventory.ingest.erp import STOCK_DATES_SHOWN
+
+        client = _FakeClient([["2026-08-31"]])
+        ErpReader(client=client, warehouse_id="wh-1").stock_dates()
+        assert f"LIMIT {STOCK_DATES_SHOWN}" in client.statements[0]
+
+    def test_an_unreadable_source_gives_an_empty_list_not_an_error(self):
+        """La date se choisit avant de savoir si la lecture marchera."""
+        client = _FakeClient([], state="FAILED", error="TABLE_OR_VIEW_NOT_FOUND")
+        assert ErpReader(client=client, warehouse_id="wh-1").stock_dates() == []
+
+    def test_a_date_that_does_not_parse_is_dropped_not_offered(self):
+        client = _FakeClient([["2026-08-31"], ["pas une date"]])
+        dates = ErpReader(client=client, warehouse_id="wh-1").stock_dates()
+        assert dates == [dt.date(2026, 8, 31)]

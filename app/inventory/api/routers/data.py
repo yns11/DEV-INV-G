@@ -201,6 +201,21 @@ def erp_source() -> dict[str, Any]:
     }
 
 
+@router.get("/erp/stock-dates", summary="Dates de snapshot de stock disponibles")
+def erp_stock_dates() -> dict[str, Any]:
+    """Les photos de stock que la source propose, la plus récente d'abord.
+
+    Séparé de ``/erp/source`` parce que celui-ci est lu au chargement de chaque
+    écran d'import, alors que cette liste n'intéresse que le Stock ERP — et
+    qu'elle coûte une requête à la source.
+    """
+    from ...ingest.erp import ErpReader, erp_available
+
+    if not erp_available():
+        return {"dates": []}
+    return {"dates": [d.isoformat() for d in ErpReader().stock_dates()]}
+
+
 @router.post(
     "/campaigns/{campaign_id}/import/{target}/erp",
     summary="Importer depuis les tables ERP",
@@ -213,6 +228,7 @@ def import_erp(
     replace: Annotated[bool, Query()] = False,
     borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
     borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
+    snapshot_date: Annotated[dt.date | None, Query(alias="dateSnapshot")] = None,
 ) -> dict[str, Any]:
     """Read the referential straight from the ERP silver tables.
 
@@ -228,7 +244,9 @@ def import_erp(
         )
     method = _resolve(target)
     kwargs: dict[str, Any] = {
-        "mode": "erp", **_period(target, borne_debut, borne_fin),
+        "mode": "erp",
+        **_period(target, borne_debut, borne_fin),
+        **({"snapshot_date": snapshot_date} if target == "book_stock" else {}),
     }
     if dry_run:
         return importer.preview(target, **kwargs)

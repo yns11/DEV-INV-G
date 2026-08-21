@@ -6,7 +6,7 @@ comptage, analyse & ajustements, clôture.
 
 ```
 PRÉPARATION ──────► COMPTAGE ──────► ANALYSE & AJUSTEMENTS ──────► CLÔTURE
- référentiels      stock livre gelé      journaux gelés            tout gelé
+ référentiels      stock ERP gelé        journaux gelés            tout gelé
  seuils            journaux + feuilles   ajustements
  zones             consolidation         causes
 ```
@@ -37,7 +37,11 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
 - **Les feuilles se préparent, elles ne s'improvisent pas.** Un fichier
   `[feuille, article, section]` crée les zones et pré-imprime leur liste, sur les
   deux passages. Un article absent du référentiel est une erreur de ligne, jamais
-  un article créé par effet de bord.
+  un article créé par effet de bord — et la règle vaut pour le stock ERP comme
+  pour les feuilles, dans les trois modes d'import.
+- **La photo du stock se désigne.** Le snapshot ERP est publié chaque jour ;
+  c'est celui de la journée de comptage qui fait foi, pas celui du jour où on le
+  charge. La campagne dit lequel elle a chargé, et l'historique le garde.
 - **Deux comptages, un arbitrage outillé.** Valorisé en euros, couvrant aussi les
   articles comptés par une seule équipe. Le nombre de comptages appartient à la
   zone : le double comptage est la règle, le comptage unique l'exception qu'on
@@ -126,7 +130,7 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      868 tests, ~5 s, sans base de données
+tests/                      881 tests, ~5 s, sans base de données
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -151,7 +155,7 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 868 tests, ~5 s, aucune base requise
+make test            # 881 tests, ~5 s, aucune base requise
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000

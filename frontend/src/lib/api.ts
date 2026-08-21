@@ -375,6 +375,13 @@ export const api = {
   /** Whether an ERP read is possible, and from which tables. */
   erpSource: () => request<ErpSource>('/erp/source'),
   /**
+   * Les photos de stock que la source propose, la plus récente d'abord.
+   *
+   * Séparé de `erpSource`, lu par tous les écrans d'import : cette liste
+   * n'intéresse que le Stock ERP, et elle coûte une requête à la source.
+   */
+  erpStockDates: () => request<{ dates: string[] }>('/erp/stock-dates'),
+  /**
    * Load a grid straight from the ERP silver tables.
    *
    * Same dry-run-then-confirm loop as a file: `dryRun` returns what *would* be

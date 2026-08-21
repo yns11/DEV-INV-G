@@ -1136,8 +1136,9 @@ function BookStockTab({
             </Button>
           }
         >
-          Chargez l’export ERP puis gelez-le. Le chargement crée aussi le référentiel
-          entrepôts/emplacements et un journal de comptage par emplacement actif.
+          Chargez la photo du stock puis gelez-la. Le chargement crée aussi le
+          référentiel entrepôts/emplacements et un journal de comptage par
+          emplacement actif.
         </Alert>
       )}
 

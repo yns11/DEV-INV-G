@@ -48,6 +48,33 @@ class Settings(BaseSettings):
     llm_endpoint: str = Field(
         default="databricks-claude-opus-4-8", alias="INV_LLM_ENDPOINT"
     )
+    #: Endpoint vision dédié à la lecture des scans. Vide, c'est
+    #: :attr:`llm_endpoint` qui sert — le comportement d'avant, sans surprise.
+    #:
+    #: Séparé parce que les deux tâches n'ont rien en commun : l'assistant
+    #: raisonne sur un dossier de campagne, la lecture d'un scan transcrit des
+    #: chiffres manuscrits en JSON. Payer un modèle de raisonnement pour
+    #: recopier des nombres coûte du temps sur chacune des cent feuilles d'une
+    #: pile, et c'est le temps qui fait renoncer à scanner.
+    scan_llm_endpoint: str = Field(default="", alias="INV_SCAN_LLM_ENDPOINT")
+    #: Combien de feuilles sont lues en même temps. Le gain est réel mais borné
+    #: par le débit de l'endpoint : au-delà, les appels font la queue côté
+    #: serving et les 429 apparaissent. Quatre est un point de départ à mesurer,
+    #: pas une valeur optimale — c'est pourquoi elle est en configuration.
+    scan_max_workers: int = Field(default=4, ge=1, le=16, alias="INV_SCAN_MAX_WORKERS")
+    #: Plafond de pages d'une pile scannée. Cent feuilles recto-verso en font
+    #: deux cents. Au-delà, le chargement est **refusé en le disant** : tronquer
+    #: en silence, ce que faisait la version précédente, perd des comptages sans
+    #: que personne ne l'apprenne.
+    scan_max_pages: int = Field(default=250, ge=1, alias="INV_SCAN_MAX_PAGES")
+    #: Combien de pieds de page partent dans un même appel de routage. Un seul
+    #: appel pour deux cents pages dépasse la charge utile acceptée ; un appel
+    #: par page multiplie les allers-retours.
+    scan_routing_batch: int = Field(
+        default=12, ge=1, le=50, alias="INV_SCAN_ROUTING_BATCH"
+    )
+    #: Résolution de rastérisation des pages scannées.
+    scan_dpi: int = Field(default=150, ge=72, le=400, alias="INV_SCAN_DPI")
     #: How the campaign assistant is framed (see :mod:`inventory.ai.assistant`).
     #: A runtime setting rather than a code decision, so tightening or loosening
     #: it costs no deployment.
@@ -162,6 +189,12 @@ class Settings(BaseSettings):
         infiniment plus que de ne pas archiver le fichier.
         """
         return bool(self.uc_catalog and self.uc_schema and self.uc_volume)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def scan_endpoint(self) -> str:
+        """L'endpoint qui lit les scans : le dédié s'il existe, sinon l'autre."""
+        return self.scan_llm_endpoint or self.llm_endpoint
 
     @computed_field  # type: ignore[prop-decorator]
     @property

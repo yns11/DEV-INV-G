@@ -68,6 +68,9 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           ├─ import_batch                 (provenance de chaque chargement)
           └─ audit_event                  (append-only, UPDATE/DELETE neutralisés)
 
+          └─ scan_job                    (lecture d'une pile scannée : statut,
+                                            avancement, rapport, chronomètres)
+
 assignable_cause                          (référentiel de site, hors campagne)
 schema_migration                          (bookkeeping des migrations)
 

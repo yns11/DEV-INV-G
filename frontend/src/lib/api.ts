@@ -33,7 +33,7 @@ import type {
   LocationStatus,
   ManagerOverview,
   Me,
-  MultiScanReport,
+  ScanJob,
   Overview,
   PrintMode,
   SheetStatus,
@@ -522,16 +522,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ zoneIds, allowed }),
     }),
-  /** A scan holding several sheets, routed by the footer the app printed. */
+  /**
+   * Dépose une pile scannée. Rend un **travail**, pas un rapport.
+   *
+   * Cent feuilles font deux cents pages et se lisent en plusieurs minutes :
+   * attendre le rapport dans cette requête faisait couper la passerelle avant
+   * la fin. Le rapport arrive par `scanJob`, quand le travail est terminé.
+   */
   scanMultipleSheets: (id: string, file: File, overwriteReviewed = false) => {
     const form = new FormData()
     form.append('file', file)
     form.append('overwriteReviewed', String(overwriteReviewed))
-    return request<MultiScanReport>(`/campaigns/${id}/generic/scan`, {
+    return request<ScanJob>(`/campaigns/${id}/generic/scan`, {
       method: 'POST',
       body: form,
     })
   },
+  /** Où en est la lecture d'une pile déposée. */
+  scanJob: (id: string, jobId: string) =>
+    request<ScanJob>(`/campaigns/${id}/generic/scan/jobs/${jobId}`),
+  scanJobs: (id: string) =>
+    request<ScanJob[]>(`/campaigns/${id}/generic/scan/jobs`),
   scanSheet: (id: string, sheetId: string, file: File) => {
     const form = new FormData()
     form.append('file', file)

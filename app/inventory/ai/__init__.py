@@ -5,7 +5,7 @@ column, posted to a journal, or used to close a line without a human step.
 """
 
 from .assistant import AssistantAnswer, Attachment, CampaignAssistant
-from .client import LlmClient, LlmResponse, get_llm_client
+from .client import LlmClient, LlmResponse, get_llm_client, get_scan_client
 from .insights import CauseSuggestion, InsightEngine
 from .sheet_extraction import (
     LOW_CONFIDENCE,
@@ -14,13 +14,17 @@ from .sheet_extraction import (
     PageRouting,
     SheetCandidate,
     SheetExtractor,
+    footer_strips,
+    in_parallel,
+    page_count,
     render_pdf_pages,
 )
 
 __all__ = [
-    "LlmClient", "LlmResponse", "get_llm_client",
+    "LlmClient", "LlmResponse", "get_llm_client", "get_scan_client",
     "AssistantAnswer", "Attachment", "CampaignAssistant",
     "CauseSuggestion", "InsightEngine",
     "LOW_CONFIDENCE", "ExpectedLine", "ExtractionResult", "PageRouting",
-    "SheetCandidate", "SheetExtractor", "render_pdf_pages",
+    "SheetCandidate", "SheetExtractor", "footer_strips", "in_parallel",
+    "page_count", "render_pdf_pages",
 ]

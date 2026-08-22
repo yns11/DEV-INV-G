@@ -8,8 +8,14 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from ...domain.controls import group_findings
 from ...errors import ValidationError
-from ...services import GenericService
-from ..deps import CampaignDep, Ctx, generic_service, resolve_perimeter
+from ...services import GenericService, ScanJobService
+from ..deps import (
+    CampaignDep,
+    Ctx,
+    generic_service,
+    resolve_perimeter,
+    scan_job_service,
+)
 from ..schemas import (
     ArbitrationDecisionRequest,
     ReclassifyRequest,
@@ -25,6 +31,7 @@ from ..schemas import (
 router = APIRouter(prefix="/campaigns/{campaign_id}/generic", tags=["GENERIQUE"])
 
 Service = Annotated[GenericService, Depends(generic_service)]
+ScanJobs = Annotated[ScanJobService, Depends(scan_job_service)]
 
 #: Scans are read by a vision model; anything else would be silently misread.
 _ACCEPTED_SCAN_TYPES = {
@@ -244,24 +251,29 @@ async def extract_scan(
     )
 
 
-@router.post("/scan", summary="Extraire un scan de plusieurs feuilles par IA")
+@router.post("/scan", summary="Déposer un scan de plusieurs feuilles")
 async def extract_multi_scan(
     campaign: CampaignDep,
-    service: Service,
+    jobs: ScanJobs,
     file: Annotated[UploadFile, File()],
     overwrite_reviewed: Annotated[bool, Form(alias="overwriteReviewed")] = False,
 ) -> dict[str, Any]:
-    """Read a scan holding several counting sheets at once.
+    """Dépose une pile scannée et rend de quoi en suivre la lecture.
 
-    The whole stack goes on the scanner. Each page is routed to its sheet by the
-    identifier the application itself printed in the footer; a page whose footer
-    cannot be read is **reported, never attributed**.
+    **La réponse est immédiate.** Une pile de cent feuilles fait deux cents
+    pages, et sa lecture dure des minutes : la tenir dans cette requête faisait
+    couper la passerelle avant la fin, en emportant ce qui avait déjà été lu.
+    Le travail est donc enregistré, la lecture continue derrière, et l'écran
+    interroge ``GET /scan/jobs/{jobId}``.
 
-    A sheet whose AI-read values a human has already corrected is **skipped**:
-    that review is the most expensive step in the chain, and a second scan
-    silently overwriting it would be the one unrecoverable mistake here. Pass
-    ``overwriteReviewed=true`` to do it anyway — the report then says how many
-    corrections it cost.
+    Ce que la lecture fait n'a pas changé. Chaque page est attribuée à sa feuille
+    par l'identifiant que l'application a elle-même imprimé en pied de page ; une
+    page dont le pied est illisible est **signalée, jamais attribuée**. Et une
+    feuille dont un humain a déjà corrigé les valeurs lues par l'IA est
+    **préservée** : cette relecture est l'étape la plus coûteuse de toute la
+    chaîne, et l'écraser en silence serait la seule erreur irrattrapable ici.
+    ``overwriteReviewed=true`` le fait quand même, et le rapport dit ce que cela
+    a coûté.
     """
     content_type = (file.content_type or "").lower()
     if content_type and content_type not in _ACCEPTED_SCAN_TYPES:
@@ -273,13 +285,31 @@ async def extract_multi_scan(
     payload = await file.read()
     if not payload:
         raise ValidationError("Le fichier reçu est vide.")
-    return service.extract_from_multi_scan(
+    return jobs.queue(
         campaign,
         payload=payload,
         filename=file.filename or "scan",
         content_type=content_type,
         overwrite_reviewed=overwrite_reviewed,
     )
+
+
+@router.get("/scan/jobs", summary="Les scans déposés sur cette campagne")
+def list_scan_jobs(campaign: CampaignDep, jobs: ScanJobs) -> list[dict[str, Any]]:
+    return jobs.list(campaign)
+
+
+@router.get("/scan/jobs/{job_id}", summary="Où en est la lecture d'un scan")
+def get_scan_job(
+    campaign: CampaignDep, job_id: str, jobs: ScanJobs
+) -> dict[str, Any]:
+    """L'avancement, puis le rapport une fois la lecture terminée.
+
+    C'est ce que l'écran interroge pendant le traitement. ``isDone`` dit quand
+    arrêter : sans lui, chaque écran devrait connaître la liste des statuts
+    terminaux et l'un d'eux finirait par en oublier un.
+    """
+    return jobs.get(campaign, job_id)
 
 
 # --------------------------------------------------------------------------- #

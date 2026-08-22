@@ -7,7 +7,9 @@ This is the module that replaces ``Compil GENERIQUE.xlsx`` end to end — the
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any
 
@@ -46,12 +48,45 @@ from .manager_service import Perimeter
 
 log = logging.getLogger(__name__)
 
-__all__ = ["GenericService"]
+__all__ = ["GenericService", "ProgressReporter"]
 
-#: A stack of counting sheets fits in one scan; two hundred pages is somebody
-#: feeding the whole campaign at once, which would blow the token budget long
-#: before it finished.
-_MAX_SCAN_PAGES = 40
+#: Combien de pages une *seule* feuille peut porter. Une feuille de comptage
+#: tient sur une à trois pages ; au-delà, c'est une pile déposée sur le mauvais
+#: écran, et c'est le scan multi-feuilles qu'il faut.
+_SINGLE_SHEET_PAGES = 8
+
+#: Ce que la lecture d'une pile signale de son avancement. Un protocole, pas une
+#: dépendance : le pipeline ne connaît ni la table `scan_job` ni l'écran, il dit
+#: simplement où il en est à qui veut l'entendre.
+ProgressReporter = Callable[..., None]
+
+
+class _Stopwatch:
+    """Le temps passé par étape, en millisecondes.
+
+    « Le scan est lent » ne dit pas où : le dépôt de la pièce, le rendu PDF, la
+    file d'attente de l'endpoint, la génération, ou l'écriture en base. Chacune
+    de ces cinq causes appelle une correction différente, et trois d'entre elles
+    ne sont pas dans ce code. Les mesurer séparément est ce qui permet de savoir
+    laquelle traiter — et, après une optimisation, si elle a servi.
+    """
+
+    __slots__ = ("_steps",)
+
+    def __init__(self) -> None:
+        self._steps: dict[str, int] = {}
+
+    @contextmanager
+    def step(self, name: str) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            self._steps[name] = self._steps.get(name, 0) + elapsed
+
+    def as_dict(self) -> dict[str, int]:
+        return {**self._steps, "totalMs": sum(self._steps.values())}
 
 
 class GenericService:
@@ -715,7 +750,13 @@ class GenericService:
 
         if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
             # Rasterised, not split: the endpoint accepts images only.
-            images = render_pdf_pages(payload)
+            #
+            # Une feuille seule tient en quelques pages ; le plafond sert ici de
+            # garde-fou contre une pile déposée par erreur sur l'écran d'une
+            # feuille — auquel cas c'est l'écran multi-feuilles qu'il faut.
+            images = render_pdf_pages(
+                payload, max_pages=_SINGLE_SHEET_PAGES, dpi=ctx.settings.scan_dpi
+            )
             mime = "image/png"
         else:
             images = [payload]
@@ -772,6 +813,7 @@ class GenericService:
         filename: str,
         content_type: str,
         overwrite_reviewed: bool = False,
+        on_progress: ProgressReporter | None = None,
     ) -> dict[str, Any]:
         """Read a scan holding **several** counting sheets in one pass.
 
@@ -787,21 +829,57 @@ class GenericService:
         down with the paper and fixing what the model misread; a second scan
         that silently overwrote it would destroy exactly that. Overwriting stays
         possible — it is an explicit choice, and the report names what it cost.
+
+        :param on_progress: appelé à chaque étape franchie. C'est par là que le
+            travail asynchrone alimente sa barre de progression : sur une pile de
+            cent feuilles, six minutes de silence sont indistinguables d'une
+            panne. Ignoré — et le traitement identique — quand personne n'écoute.
         """
-        from ..ai import SheetCandidate, SheetExtractor, render_pdf_pages
+        from ..ai import (
+            SheetCandidate,
+            SheetExtractor,
+            footer_strips,
+            in_parallel,
+            page_count,
+            render_pdf_pages,
+        )
 
         ctx = self.ctx
         ctx.guard(campaign, "count_entries")
+        settings = ctx.settings
+        clock = _Stopwatch()
+        say = on_progress or (lambda **_: None)
+        say(step="Archivage du scan")
 
         # Une seule pièce pour toute la pile, et chaque feuille pointe dessus :
         # c'est bien un seul document qui les justifie toutes, et le découper
         # inventerait des originaux qui n'ont jamais existé.
-        storage_path = ctx.evidence.put(
-            payload, campaign_code=campaign.code, kind="scans", filename=filename
-        )
+        with clock.step("evidence_upload_ms"):
+            storage_path = ctx.evidence.put(
+                payload, campaign_code=campaign.code, kind="scans", filename=filename
+            )
 
-        if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
-            images = render_pdf_pages(payload, max_pages=_MAX_SCAN_PAGES)
+        is_pdf = content_type == "application/pdf" or filename.lower().endswith(".pdf")
+        if is_pdf:
+            # Compté avant d'être rendu : une pile trop épaisse se refuse en la
+            # nommant. La version précédente en rendait le début et laissait
+            # tomber le reste avec une ligne de journal — des comptages perdus
+            # sans que personne ne l'apprenne, ce qui est pire que lent.
+            total_pages = page_count(payload)
+            if total_pages > settings.scan_max_pages:
+                raise ValidationError(
+                    f"Ce scan porte {total_pages} pages, au-delà des "
+                    f"{settings.scan_max_pages} traitées en une fois. Scannez la "
+                    "pile en deux fois : chaque page porte son identité, l'ordre "
+                    "des piles n'a aucune importance.",
+                    pages=total_pages,
+                    maxPages=settings.scan_max_pages,
+                )
+            say(step="Préparation des pages", total_pages=total_pages)
+            with clock.step("pdf_render_ms"):
+                images = render_pdf_pages(
+                    payload, max_pages=settings.scan_max_pages, dpi=settings.scan_dpi
+                )
             mime = "image/png"
         else:
             images = [payload]
@@ -834,14 +912,27 @@ class GenericService:
             )
 
         extractor = SheetExtractor()
-        routing = extractor.route_pages(
-            images=images, candidates=candidates, image_mime=mime
-        )
+        # Le routage ne lit qu'une ligne, imprimée en pied de page : lui envoyer
+        # les pages entières, c'est transmettre neuf dixièmes de surface inutile.
+        say(step="Identification des feuilles", total_pages=len(images))
+        with clock.step("routing_ms"):
+            routing = extractor.route_pages(
+                footers=footer_strips(images),
+                candidates=candidates,
+                image_mime="image/png",
+                batch_size=settings.scan_routing_batch,
+                max_workers=settings.scan_max_workers,
+            )
 
         by_id = {s.id: s for s in sheets}
         processed: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
 
+        # Ce qui est à lire, et ce qui est préservé. Séparé de la lecture pour
+        # que la boucle qui suit ne fasse qu'une chose — sans quoi le
+        # parallélisme aurait à porter aussi la règle de préservation.
+        to_read: list[tuple[str, list[int]]] = []
         for sheet_id, pages in routing.pages_by_sheet.items():
             sheet = by_id[sheet_id]
             zone = zones[sheet.zone_id]
@@ -861,7 +952,12 @@ class GenericService:
                     ),
                 })
                 continue
+            to_read.append((sheet_id, pages))
 
+        def read(job: tuple[str, list[int]]):
+            sheet_id, pages = job
+            sheet = by_id[sheet_id]
+            zone = zones[sheet.zone_id]
             expected_lines = lines_by_sheet.get(sheet_id, [])
             common = {
                 "campaign_id": campaign.id,
@@ -872,7 +968,7 @@ class GenericService:
                 "image_mime": mime,
                 "id_factory": new_id,
             }
-            result = (
+            return (
                 extractor.extract_free_entry(known_items=items, **common)
                 if not expected_lines
                 else extractor.extract(
@@ -880,33 +976,95 @@ class GenericService:
                     **common,
                 )
             )
-            ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
-            ctx.sheets.update_sheet(
-                sheet_id,
-                status=SheetStatus.ENCODING,
-                counter_name=result.counter_name or None,
-                evidence_path=storage_path,
-                extraction_confidence=result.mean_confidence,
-                actor=ctx.actor,
+
+        # **Les appels au modèle en parallèle, les écritures en série.** Cent
+        # feuilles lues l'une après l'autre, c'est cent latences additionnées ;
+        # c'est là qu'était l'essentiel du temps. Les écritures, elles, restent
+        # sur ce fil-ci : elles passent par le pool de connexions et par la
+        # discipline de transaction du service, qui ne se partagent pas.
+        say(
+            step="Lecture des feuilles",
+            pages_routed=len(images) - len(routing.unrouted),
+            sheets_total=len(to_read),
+            sheets_done=0,
+        )
+        with clock.step("model_inference_ms"):
+            outcomes = in_parallel(
+                read,
+                to_read,
+                settings.scan_max_workers,
+                on_done=lambda n: say(step="Lecture des feuilles", sheets_done=n),
             )
-            # The per-sheet report is spread *first*: it carries its own
-            # ``pages`` key holding a count, and the page list is what the
-            # screen renders. Spreading it last silently replaced the list with
-            # an integer and crashed the report on ``pages.join``.
-            processed.append({
-                **result.as_report(),
-                "sheetId": sheet_id,
-                "zoneCode": zone.code,
-                "passNo": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
-                "pages": [p + 1 for p in pages],
-                "overwroteCorrections": len(corrected),
-            })
+
+        say(step="Enregistrement", sheets_done=len(to_read))
+        with clock.step("db_write_ms"):
+            for (sheet_id, pages), result in zip(
+                to_read, outcomes, strict=True
+            ):
+                sheet = by_id[sheet_id]
+                zone = zones[sheet.zone_id]
+                pass_no = 1 if sheet.pass_no is SheetPass.PASS_1 else 2
+                if isinstance(result, BaseException):
+                    # Une feuille perdue ne perd pas la pile : elle est nommée,
+                    # avec ses pages, et se rejoue seule.
+                    log.warning("Lecture de la feuille %s échouée : %s",
+                                sheet_id, result)
+                    failed.append({
+                        "sheetId": sheet_id,
+                        "zoneCode": zone.code,
+                        "passNo": pass_no,
+                        "pages": [p + 1 for p in pages],
+                        "reason": str(result),
+                    })
+                    continue
+
+                corrected = [
+                    l for l in lines_by_sheet.get(sheet_id, ()) if l.was_ai_corrected
+                ]
+                ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
+                ctx.sheets.update_sheet(
+                    sheet_id,
+                    status=SheetStatus.ENCODING,
+                    counter_name=result.counter_name or None,
+                    evidence_path=storage_path,
+                    extraction_confidence=result.mean_confidence,
+                    actor=ctx.actor,
+                )
+                # The per-sheet report is spread *first*: it carries its own
+                # ``pages`` key holding a count, and the page list is what the
+                # screen renders. Spreading it last silently replaced the list
+                # with an integer and crashed the report on ``pages.join``.
+                processed.append({
+                    **result.as_report(),
+                    "sheetId": sheet_id,
+                    "zoneCode": zone.code,
+                    "passNo": pass_no,
+                    "pages": [p + 1 for p in pages],
+                    "overwroteCorrections": len(corrected),
+                })
 
         report = {
             "pages": len(images),
             "sheetsProcessed": processed,
             "sheetsSkipped": skipped,
+            "sheetsFailed": failed,
             "unroutedPages": routing.unrouted,
+            # Sans chronomètres, « c'est lent » ne dit pas où : le rendu PDF, la
+            # file d'attente de l'endpoint, la génération ou l'écriture. Chaque
+            # étape se mesure donc, et le rapport les porte.
+            "timings": {
+                **clock.as_dict(),
+                "pages": len(images),
+                "sheets": len(processed),
+                "imageBytes": sum(len(blob) for blob in images),
+                "routingTokens": routing.tokens_used,
+                "extractionTokens": sum(
+                    r.tokens_used for r in outcomes
+                    if not isinstance(r, BaseException)
+                ),
+                "maxWorkers": settings.scan_max_workers,
+                "endpoint": settings.scan_endpoint,
+            },
         }
         ctx.record(
             campaign_id=campaign.id,
@@ -915,6 +1073,7 @@ class GenericService:
             summary=(
                 f"Scan multi-feuilles « {filename} » : {len(images)} page(s), "
                 f"{len(processed)} feuille(s) lue(s), {len(skipped)} préservée(s), "
+                f"{len(failed)} en échec, "
                 f"{len(routing.unrouted)} page(s) non attribuée(s)."
             ),
             after=report,

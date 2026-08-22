@@ -508,6 +508,32 @@ Une référence qu'il ne connaît pas est signalée, jamais créée.
 Tout atterrit dans une grille modifiable, avec le badge *Extraction IA*.
 **Rien n'est posté automatiquement.**
 
+**Toute la pile d'un coup.** *Compil B06VRAC → Importer un scan multi-feuilles*
+accepte le PDF sorti du scanner avec l'ensemble des feuilles dedans — jusqu'à
+deux cent cinquante pages, soit environ cent vingt feuilles recto-verso. Chaque
+page est rattachée à sa feuille par l'identifiant que l'application a imprimé en
+pied de page ; une page dont le pied est illisible est **signalée, jamais
+devinée** : une page classée dans la mauvaise zone verse un comptage sur du
+stock qui n'y a jamais été.
+
+Le dépôt répond **tout de suite**, et la lecture continue derrière. Vous pouvez
+fermer la fenêtre : les feuilles se remplissent au fur et à mesure, et l'écran
+affiche l'étape en cours et le nombre de feuilles lues. Ce qui se passe ensuite
+n'a pas changé — les quantités arrivent en *Extraction IA*, dans des grilles
+modifiables, et rien n'est posté.
+
+Trois refus explicites, plutôt qu'un silence :
+
+| Cas | Ce qui se passe |
+|---|---|
+| Une feuille dont vous avez **déjà corrigé** les valeurs lues par l'IA | Elle est **préservée**. Cette relecture est l'étape la plus coûteuse de la chaîne. « Lire et écraser » la relit quand même, et le rapport dit combien de corrections cela a coûté |
+| Une feuille que le modèle n'a pas pu lire | Nommée dans le rapport, avec ses pages et la raison. Les autres aboutissent : une feuille perdue ne perd pas la pile |
+| Une pile au-delà du plafond | **Refusée en le disant**, avec les deux nombres. Scannez en deux fois : chaque page porte son identité, l'ordre des piles n'a aucune importance |
+
+> Si l'application redémarre pendant la lecture, le travail est marqué en échec
+> et vous invite à recharger le scan. Les feuilles déjà lues avant
+> l'interruption sont enregistrées ; elles seront simplement relues.
+
 ### 2.10 Arbitrer
 
 **GENERIQUE → Arbitrages.**

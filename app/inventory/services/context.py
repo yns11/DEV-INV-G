@@ -28,6 +28,7 @@ from ..db import (
     ImportBatchRepository,
     JournalRepository,
     ReferentialRepository,
+    ScanJobRepository,
     SheetRepository,
     StockFlowRepository,
     get_database,
@@ -115,6 +116,10 @@ class ServiceContext:
     @functools.cached_property
     def imports(self) -> ImportBatchRepository:
         return ImportBatchRepository(self.db)
+
+    @functools.cached_property
+    def scan_jobs(self) -> ScanJobRepository:
+        return ScanJobRepository(self.db)
 
     @functools.cached_property
     def evidence(self) -> EvidenceStore:

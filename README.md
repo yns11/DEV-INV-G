@@ -62,6 +62,10 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   l'assemblage et la zone qui l'ont produite.
 - **L'IA propose, l'humain décide.** Lecture des feuilles scannées, suggestions
   de causes, synthèse — toujours en proposition, jamais en décision.
+- **Toute la pile part au scanner.** Cent feuilles, deux cents pages : chaque
+  page se rattache à la sienne par l'identifiant imprimé en pied de page, les
+  lectures partent en parallèle, et le dépôt rend la main tout de suite — la
+  progression s'affiche pendant que les feuilles se remplissent.
 - **Chaque action est tracée.** Journal d'audit en ajout seul, protégé au niveau
   du moteur de base de données.
 
@@ -130,7 +134,7 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      881 tests, ~5 s, sans base de données
+tests/                      933 tests, ~8 s, sans base de données
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -155,7 +159,7 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 881 tests, ~5 s, aucune base requise
+make test            # 933 tests, ~8 s, aucune base requise
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000

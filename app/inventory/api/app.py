@@ -153,6 +153,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if applied:
                 log.info("Applied migrations: %s", ", ".join(applied))
             app.state.ready = database.ping()
+            # Un scan encore « en cours » appartient à un conteneur qui n'existe
+            # plus : son PDF vivait dans sa mémoire. Le laisser dans cet état
+            # afficherait une progression qui n'avancera jamais.
+            from ..services import abandon_orphan_jobs
+
+            abandon_orphan_jobs()
         except Exception as exc:  # pragma: no cover - infrastructure dependent
             app.state.startup_error = str(exc)
             log.exception("Lakebase initialisation failed")
@@ -166,7 +172,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         from ..db import reset_database
+        from ..services import shutdown_workers
 
+        # Le fil de scan avant le pool : il écrit dedans.
+        shutdown_workers()
         reset_database()
         log.info("Shutdown complete")
 

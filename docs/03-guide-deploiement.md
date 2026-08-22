@@ -326,7 +326,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 881 tests, ~5 s, aucune base requise
+make test      # 933 tests, ~8 s, aucune base requise
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -574,6 +574,11 @@ Onglet **Environment**, ajoutez :
 | `INV_LOG_LEVEL` | `INFO` |
 | `INV_ENV` | `prod` |
 | `INV_ASSISTANT_PROFILE` | `etendu` (seul profil livré) |
+| `INV_SCAN_LLM_ENDPOINT` | *(vide)* — voir §8.2 bis |
+| `INV_SCAN_MAX_WORKERS` | `4` |
+| `INV_SCAN_MAX_PAGES` | `250` |
+| `INV_SCAN_ROUTING_BATCH` | `12` |
+| `INV_SCAN_DPI` | `150` |
 | `INV_ERP_SCHEMA` | `emotors_data_champions.silver_erp_ye` |
 | `INV_ERP_ITEMS_TABLE` | `silver_base_article` |
 | `INV_ERP_BOM_TABLE` | `silver_bom` |
@@ -620,6 +625,54 @@ Ces lectures empruntent l'entrepôt SQL attaché (`DATABRICKS_WAREHOUSE_ID`) et
 les droits Unity Catalog de l'application : sans entrepôt ou sans `SELECT` sur
 ces tables, l'option apparaît désactivée avec sa raison, et le chargement par
 fichier reste disponible.
+
+### 8.2 bis — Régler la lecture des scans
+
+Une pile de cent feuilles de comptage fait deux cents pages. Cinq variables
+gouvernent ce que ce volume coûte, et **aucune n'a de valeur optimale
+universelle** : elles dépendent du débit réel de l'endpoint. Les défauts sont un
+point de départ à mesurer, pas un réglage.
+
+| Variable | Défaut | Ce qu'elle décide |
+|---|---|---|
+| `INV_SCAN_LLM_ENDPOINT` | *(vide)* | L'endpoint qui lit les scans. Vide, c'est `INV_LLM_ENDPOINT` — le comportement d'avant |
+| `INV_SCAN_MAX_WORKERS` | `4` | Combien de feuilles sont lues en même temps |
+| `INV_SCAN_MAX_PAGES` | `250` | Le plafond d'une pile. Au-delà : refus explicite, jamais troncature |
+| `INV_SCAN_ROUTING_BATCH` | `12` | Combien de pieds de page partent dans un même appel de routage |
+| `INV_SCAN_DPI` | `150` | Résolution de rastérisation |
+
+**Un endpoint vision dédié.** Transcrire des chiffres manuscrits en JSON
+n'appelle aucun raisonnement : payer un modèle de raisonnement pour cela coûte
+du temps sur *chacune* des cent feuilles d'une pile, et c'est le temps qui fait
+renoncer à scanner. Pointer `INV_SCAN_LLM_ENDPOINT` sur un modèle vision rapide
+laisse l'assistant de campagne sur le modèle puissant. Les deux clients
+négocient leurs paramètres séparément : ils n'ont aucune raison d'accepter les
+mêmes.
+
+**Le parallélisme se mesure, il ne se devine pas.** Quatre est un début. Montez
+en surveillant deux choses dans les journaux du serving endpoint : les **429**
+et la **profondeur de file**. Au-delà de ce que l'endpoint absorbe, les appels
+attendent côté serving et le temps gagné se paie en relances. La marche à
+suivre est celle que Databricks recommande pour tout endpoint : un test de
+charge, puis un réglage sur le débit observé.
+
+**Ce que le rapport mesure.** Chaque lecture renvoie ses chronomètres —
+`evidence_upload_ms`, `pdf_render_ms`, `routing_ms`, `model_inference_ms`,
+`db_write_ms`, `totalMs` — plus le nombre de pages, d'octets d'image et de
+tokens. « C'est lent » ne dit pas où ; ces cinq nombres, si, et trois des cinq
+causes possibles ne sont pas dans ce code.
+
+**Le travail est asynchrone.** Le dépôt (`POST …/generic/scan`) rend un
+identifiant tout de suite ; l'écran interroge `GET …/generic/scan/jobs/{id}`. La
+lecture tourne dans **un** fil de l'application — pas dans un job Databricks :
+le démarrage d'un job coûterait à lui seul plus que le rendu de la pile. Un seul
+scan à la fois par conteneur, délibérément : deux piles se disputeraient le même
+endpoint sans aller plus vite.
+
+Conséquence à connaître : le PDF vit en mémoire du conteneur qui l'a reçu.
+**Un redémarrage pendant une lecture la perd**, et le travail est marqué en
+échec au démarrage suivant avec un message qui invite à recharger. Les feuilles
+déjà écrites avant l'interruption sont conservées.
 
 ### 8.3 bis — Quand le catalogue de l'ERP n'est pas ouvrable à l'application
 

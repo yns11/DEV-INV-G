@@ -39,11 +39,19 @@ class _FakeClient:
         return self.payload, LlmResponse(text="", prompt_tokens=1, completion_tokens=1)
 
 
-def route(payload: dict[str, Any], pages: int = 2, candidates=CANDIDATES):
+def route(
+    payload: dict[str, Any],
+    pages: int = 2,
+    candidates=CANDIDATES,
+    batch_size: int = 12,
+):
     client = _FakeClient(payload)
     extractor = SheetExtractor(client=client)
     routing = extractor.route_pages(
-        images=[b"page"] * pages, candidates=candidates
+        footers=[b"bande"] * pages,
+        candidates=candidates,
+        batch_size=batch_size,
+        max_workers=1,
     )
     return routing, client
 
@@ -61,13 +69,17 @@ class TestRouting:
         assert routing.unrouted == []
 
     def test_several_pages_of_one_sheet_stay_in_reading_order(self):
+        """Le modèle a répondu dans le désordre ; les pages, non.
+
+        Une feuille sur deux pages dont la liste d'articles continue au verso,
+        envoyée à l'extraction verso d'abord, se lit à l'envers. Rien ne le
+        signale : le modèle rend des lignes plausibles, dans le mauvais ordre.
+        """
         routing, _ = route({"pages": [
             {"page": 2, "sheet": "aaaaaaaa"},
             {"page": 1, "sheet": "aaaaaaaa"},
         ]})
-        # The model answered out of order; the pages are still fed to the
-        # extractor in the order they were scanned.
-        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == [1, 0]
+        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == [0, 1]
 
     def test_the_candidate_list_is_what_the_model_is_shown(self):
         _, client = route({"pages": []})
@@ -142,10 +154,93 @@ class TestPreconditions:
     def test_no_pages_is_refused(self):
         extractor = SheetExtractor(client=_FakeClient({}))
         with pytest.raises(ValidationError):
-            extractor.route_pages(images=[], candidates=CANDIDATES)
+            extractor.route_pages(footers=[], candidates=CANDIDATES)
 
     def test_no_candidate_sheet_is_refused(self):
         """With nothing to route to, the model would have to invent a target."""
         extractor = SheetExtractor(client=_FakeClient({}))
         with pytest.raises(ValidationError, match="Aucune feuille"):
-            extractor.route_pages(images=[b"page"], candidates=[])
+            extractor.route_pages(footers=[b"bande"], candidates=[])
+
+
+class _BatchClient:
+    """Répond par lot, et note ce que chaque appel portait.
+
+    Le routage d'une pile de cent pages est découpé : cette doublure sert à
+    vérifier que le découpage rend les mêmes numéros de page qu'un appel
+    unique — c'est là que le décalage d'un lot se voit, ou pas.
+    """
+
+    def __init__(self, per_batch: list[dict[str, Any]] | None = None) -> None:
+        self.per_batch = per_batch or []
+        self.calls: list[int] = []
+
+    def complete_json(self, *, system: str, user: str, images=(), **kwargs: Any):
+        index = len(self.calls)
+        self.calls.append(len(images))
+        payload = (
+            self.per_batch[index] if index < len(self.per_batch)
+            else {"pages": [
+                {"page": n + 1, "sheet": "aaaaaaaa"} for n in range(len(images))
+            ]}
+        )
+        return payload, LlmResponse(text="", prompt_tokens=1, completion_tokens=1)
+
+
+class _FailingBatchClient(_BatchClient):
+    """Le deuxième lot échoue ; les autres aboutissent."""
+
+    def complete_json(self, **kwargs: Any):
+        index = len(self.calls)
+        if index == 1:
+            self.calls.append(len(kwargs.get("images") or ()))
+            raise RuntimeError("endpoint saturé")
+        return super().complete_json(**kwargs)
+
+
+class TestBatching:
+    """Une pile de cent pages ne tient pas dans un appel.
+
+    Un appel unique portant toutes les pages est une charge utile que l'endpoint
+    refuse bien avant que le modèle ait un problème de lecture — et une réponse
+    tronquée y perdait le routage de la pile entière.
+    """
+
+    def test_the_pages_are_split_into_batches(self):
+        client = _BatchClient()
+        SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 25, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
+        )
+        assert client.calls == [10, 10, 5]
+
+    def test_a_batch_numbers_its_pages_from_the_stack_not_from_itself(self):
+        """Le décalage du lot : sans lui, les pages 11 à 20 s'écrivent 1 à 10."""
+        client = _BatchClient()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 25, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
+        )
+        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == list(range(25))
+        assert routing.unrouted == []
+
+    def test_a_failed_batch_loses_only_its_own_pages(self):
+        client = _FailingBatchClient()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 25, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
+        )
+        # Pages 1-10 et 21-25 routées ; 11-20 rendues à l'humain, avec la raison.
+        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == (
+            list(range(10)) + list(range(20, 25))
+        )
+        assert [u["page"] for u in routing.unrouted] == list(range(11, 21))
+        assert "saturé" in routing.unrouted[0]["note"]
+
+    def test_the_tokens_of_every_batch_are_counted(self):
+        client = _BatchClient()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 25, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
+        )
+        assert routing.tokens_used == 6  # trois lots × (1 + 1)

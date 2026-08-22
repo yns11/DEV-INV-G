@@ -395,6 +395,44 @@ export interface MultiScanReport {
   }>
   /** Pages whose footer could not be read — reported, never guessed. */
   unroutedPages: Array<{ page: number; read: string; note: string }>
+  /** Une feuille que le modèle n'a pas pu lire. Nommée, jamais tue. */
+  sheetsFailed?: Array<{
+    sheetId: string
+    zoneCode: string
+    passNo: number
+    pages: number[]
+    reason: string
+  }>
+  /** Où le temps est passé. Absent des scans lus avant l'instrumentation. */
+  timings?: Record<string, number | string>
+}
+
+/**
+ * La lecture d'une pile scannée, suivie pendant qu'elle se fait.
+ *
+ * Le dépôt rend immédiatement ce travail en `QUEUED` ; l'écran l'interroge
+ * jusqu'à `isDone`, et lit alors `report`. Sans ce suivi, six minutes de
+ * traitement sont indistinguables d'une panne — et c'est précisément ce que
+ * faisait la version qui attendait le rapport dans la requête de dépôt.
+ */
+export interface ScanJob {
+  id: string
+  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
+  step: string
+  filename: string
+  totalPages: number
+  pagesRouted: number
+  sheetsTotal: number
+  sheetsDone: number
+  percent: number
+  report: MultiScanReport | Record<string, never>
+  error: string
+  createdBy: string
+  createdAt: string | null
+  startedAt: string | null
+  finishedAt: string | null
+  /** Vrai quand il n'y a plus rien à attendre — succès comme échec. */
+  isDone: boolean
 }
 
 /**

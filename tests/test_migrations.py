@@ -40,6 +40,7 @@ SHIPPED = {
     "012_erp_movements_table": "1ba205c32173",
     "013_erp_stock_snapshot": "45d3eb84d4d5",
     "014_campaign_owner_backfill": "d1f41cef0270",
+    "015_scan_job": "20ed77f608f7",
 }
 
 

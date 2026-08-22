@@ -5,7 +5,7 @@
  * Power Query chain and the copy/paste into the ERP.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api } from '../lib/api'
@@ -16,6 +16,7 @@ import type {
   Finding,
   MultiScanReport,
   Overview,
+  ScanJob,
   PrintMode,
   Sheet,
   SheetStatus,
@@ -41,7 +42,8 @@ import { parseSheetLines } from '../lib/pasteSheetLines'
 import { useFocusMode } from '../lib/focus'
 import { CreateZoneModal } from './zones'
 import {
-  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Skeleton, useErrorToast, useToast,
+  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Progress,
+  Skeleton, useErrorToast, useToast,
 } from '../components/ui'
 
 type Tab = 'zones' | 'arbitration' | 'consolidation'
@@ -1604,6 +1606,46 @@ function WipModal({
  * a silent import would bury: a page nobody could attribute, and a sheet whose
  * AI reading somebody has already corrected by hand.
  */
+/**
+ * L'avancement d'une lecture de pile, en clair.
+ *
+ * Six minutes de silence sont indistinguables d'une panne : c'est l'étape en
+ * cours et le compteur de feuilles qui font la différence, pas le pourcentage
+ * seul — « 0 % » pendant deux minutes de rendu n'apprend rien, « Préparation
+ * des pages » si.
+ */
+function ScanProgress({ state }: { state: ScanJob | undefined }) {
+  if (!state) return <p className="subtle">Mise en file…</p>
+  const running = state.status === 'RUNNING' || state.status === 'QUEUED'
+  return (
+    <div className="stack">
+      <div className="row">
+        <Badge tone={running ? 'info' : 'success'}>{state.step || 'En file'}</Badge>
+        {state.totalPages > 0 && (
+          <span className="subtle">{state.totalPages} page(s)</span>
+        )}
+        {state.sheetsTotal > 0 && (
+          <span className="subtle">
+            {state.sheetsDone}/{state.sheetsTotal} feuille(s) lue(s)
+          </span>
+        )}
+      </div>
+      <Progress
+        total={Math.max(state.sheetsTotal, 1)}
+        segments={[
+          {
+            label: 'Feuilles lues',
+            value: state.sheetsDone,
+            color: 'var(--accent)',
+          },
+        ]}
+        caption={running ? `${state.percent} %` : null}
+      />
+    </div>
+  )
+}
+
+
 function MultiScanModal({
   campaignId,
   file,
@@ -1619,7 +1661,7 @@ function MultiScanModal({
 }) {
   const queryClient = useQueryClient()
   const showError = useErrorToast()
-  const [report, setReport] = useState<MultiScanReport | null>(null)
+  const [jobId, setJobId] = useState<string | null>(null)
 
   const atRisk = zones.flatMap((zone) =>
     zone.sheets
@@ -1627,21 +1669,76 @@ function MultiScanModal({
       .map((sheet) => ({ zone, sheet })),
   )
 
+  // Le dépôt rend un travail, pas un rapport : la lecture d'une pile de cent
+  // feuilles dure des minutes, et l'attendre dans la requête de chargement
+  // faisait couper la passerelle avant la fin.
   const scan = useMutation({
     mutationFn: (overwrite: boolean) =>
       api.scanMultipleSheets(campaignId, file, overwrite),
     onMutate: () => onBusy(true),
-    onSuccess: (result) => {
-      onBusy(false)
-      void queryClient.invalidateQueries()
-      setReport(result)
-    },
+    onSuccess: (queued) => setJobId(queued.id),
     onError: (error) => {
       onBusy(false)
-      showError(error, 'Lecture du scan impossible')
+      showError(error, 'Dépôt du scan impossible')
       onClose()
     },
   })
+
+  // Tant que le travail tourne, on redemande où il en est. Deux secondes : assez
+  // souvent pour que la barre bouge, assez rare pour ne pas peser sur une base
+  // qui écrit en même temps cent feuilles de comptage.
+  const job = useQuery({
+    queryKey: ['scan-job', campaignId, jobId],
+    queryFn: () => api.scanJob(campaignId, jobId!),
+    enabled: jobId !== null,
+    refetchInterval: (query) => (query.state.data?.isDone ? false : 2000),
+  })
+
+  const finished = job.data?.isDone ?? false
+  useEffect(() => {
+    if (!finished) return
+    onBusy(false)
+    void queryClient.invalidateQueries()
+  }, [finished, onBusy, queryClient])
+
+  // --- la lecture est en cours : on montre où elle en est ---------------------
+  if (jobId && !finished) {
+    const state = job.data
+    return (
+      <Modal title="Lecture du scan en cours" onClose={onClose} width={620}>
+        <div className="stack">
+          <p>
+            <strong className="mono">{file.name}</strong> — vous pouvez fermer
+            cette fenêtre : la lecture continue et les feuilles se remplissent au
+            fur et à mesure.
+          </p>
+          <ScanProgress state={state} />
+        </div>
+      </Modal>
+    )
+  }
+
+  // --- terminé en échec ------------------------------------------------------
+  if (finished && job.data?.status === 'FAILED') {
+    return (
+      <Modal
+        title="Scan multi-feuilles — échec"
+        onClose={onClose}
+        width={620}
+        footer={
+          <Button variant="primary" onClick={onClose}>
+            Fermer
+          </Button>
+        }
+      >
+        <Alert tone="danger" title="La lecture n’a pas abouti">
+          {job.data.error || 'Raison inconnue.'}
+        </Alert>
+      </Modal>
+    )
+  }
+
+  const report = (finished ? job.data?.report : null) as MultiScanReport | null
 
   if (report) {
     return (

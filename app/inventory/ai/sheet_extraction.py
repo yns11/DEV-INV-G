@@ -19,18 +19,23 @@ from __future__ import annotations
 
 import io
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from threading import Lock
+from typing import Any, TypeVar
 
 from ..domain.enums import CountSection, DataSource, legacy_section_alias
 from ..domain.models import CountSheetLine, Item, normalise_key
 from ..domain.quantities import to_decimal
 from ..errors import ValidationError
-from .client import LlmClient, get_llm_client
+from .client import LlmClient, get_scan_client
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+R = TypeVar("R")
 
 __all__ = [
     "ExpectedLine",
@@ -38,11 +43,18 @@ __all__ = [
     "PageRouting",
     "SheetCandidate",
     "SheetExtractor",
+    "footer_strips",
+    "page_count",
     "render_pdf_pages",
 ]
 
 #: Confidence below which a value is surfaced to the user as "to be checked".
 LOW_CONFIDENCE = 0.75
+
+#: Combien de lignes une feuille de saisie libre porte au plus, par page. Sert
+#: uniquement à dimensionner le budget de sortie : la feuille imprimée en offre
+#: une trentaine, quarante laisse la marge d'une écriture serrée.
+_FREE_ENTRY_LINES_PER_PAGE = 40
 
 _SYSTEM_PROMPT = """\
 Tu es un opérateur de saisie expert en inventaire industriel. Tu transcris des \
@@ -145,21 +157,23 @@ Renvoie les lignes dans l'ordre où elles apparaissent sur la feuille."""
 
 
 _ROUTING_SYSTEM_PROMPT = """\
-Tu tries des pages scannées de feuilles de comptage d'inventaire. Chaque page \
-imprimée porte, en bas à gauche, une ligne d'identité de la forme :
+Tu tries des pages scannées de feuilles de comptage d'inventaire.
+
+Chaque image qu'on te donne est la BANDE BASSE d'une page, découpée autour de sa \
+ligne d'identité, de la forme :
 
     <CODE CAMPAGNE> · zone <NOM DE ZONE> · comptage n°<1 ou 2> · feuille <identifiant>
 
-Ta seule tâche est de lire cette ligne sur chaque page et de rendre \
-l'identifiant de feuille. Tu ne transcris aucune quantité.
+Ta seule tâche est de lire cette ligne et de rendre l'identifiant de feuille. Tu \
+ne transcris aucune quantité — il n'y en a pas sur ces bandes.
 
 Règles absolues :
-1. Tu ne rends qu'un identifiant présent dans la liste fournie. Si le pied de \
-page est illisible, coupé ou absent, tu rends null : une page mal attribuée \
-verse un comptage sur la mauvaise zone, ce qui est pire qu'une page non traitée.
-2. Si le pied de page est illisible mais que le titre de la page nomme sans \
-ambiguïté une seule zone de la liste et un seul numéro de comptage, tu peux \
-t'en servir, avec une confiance basse.
+1. Tu ne rends qu'un identifiant présent dans la liste fournie. Si la ligne est \
+illisible, coupée ou absente, tu rends null : une page mal attribuée verse un \
+comptage sur la mauvaise zone, ce qui est pire qu'une page non traitée.
+2. Si l'identifiant est illisible mais que la bande nomme sans ambiguïté une \
+seule zone de la liste et un seul numéro de comptage, tu peux t'en servir, avec \
+une confiance basse.
 
 Tu réponds exclusivement en JSON valide, sans texte autour."""
 
@@ -167,15 +181,15 @@ _ROUTING_TEMPLATE = """\
 Feuilles attendues dans ce lot :
 {candidates}
 
-Pour chacune des {count} pages fournies, dans l'ordre, renvoie ce JSON :
+Pour chacune des {count} bandes fournies, dans l'ordre, renvoie ce JSON :
 
 {{
   "pages": [
     {{
-      "page": <numéro de page, à partir de 1>,
+      "page": <numéro de bande dans CE lot, à partir de 1>,
       "sheet": "<identifiant de feuille de la liste, ou null>",
       "confidence": <nombre entre 0 et 1>,
-      "note": "<ce que tu as lu au pied de page, ou la raison du doute>"
+      "note": "<ce que tu as lu, ou la raison du doute>"
     }}
   ]
 }}"""
@@ -258,7 +272,7 @@ class SheetExtractor:
     """Turns a scanned counting sheet into editable :class:`CountSheetLine` rows."""
 
     def __init__(self, client: LlmClient | None = None) -> None:
-        self._client = client or get_llm_client()
+        self._client = client or get_scan_client()
 
     def extract(
         self,
@@ -301,7 +315,7 @@ class SheetExtractor:
             user=prompt,
             images=images,
             image_mime=image_mime,
-            max_tokens=8192,
+            max_tokens=extraction_tokens(len(expected)),
         )
 
         result = ExtractionResult(
@@ -424,7 +438,10 @@ class SheetExtractor:
             user=_FREE_ENTRY_TEMPLATE.format(zone=zone_label, pass_no=pass_no),
             images=images,
             image_mime=image_mime,
-            max_tokens=8192,
+            # Aucune liste attendue, donc aucun compte de lignes connu — mais une
+            # page A4 lignée n'en porte pas plus d'une quarantaine, et le budget
+            # se calcule sur le nombre de pages fournies.
+            max_tokens=extraction_tokens(_FREE_ENTRY_LINES_PER_PAGE * len(images)),
         )
 
         result = ExtractionResult(
@@ -491,9 +508,11 @@ class SheetExtractor:
     def route_pages(
         self,
         *,
-        images: Sequence[bytes],
+        footers: Sequence[bytes],
         candidates: Sequence[SheetCandidate],
         image_mime: str = "image/png",
+        batch_size: int = 12,
+        max_workers: int = 4,
     ) -> PageRouting:
         """Work out which sheet each page of a multi-sheet scan belongs to.
 
@@ -506,8 +525,18 @@ class SheetExtractor:
         A page whose footer cannot be read is **reported, never guessed**:
         attributing a page to the wrong zone posts a count against stock that was
         never there, which is worse than leaving the page for a human.
+
+        **Par lots, en parallèle, et sur les bandes seules.** Un appel unique
+        portant deux cents pages entières est une charge utile que l'endpoint
+        refuse bien avant que le modèle ait un problème de lecture — et une seule
+        réponse tronquée y perdait le routage de toute la pile. Découpé, un lot
+        qui échoue n'emporte que ses propres pages : elles deviennent non
+        attribuées, avec la raison, et les autres lots aboutissent.
+
+        :param footers: les bandes de pied de page, dans l'ordre des pages
+            (:func:`footer_strips`).
         """
-        if not images:
+        if not footers:
             raise ValidationError("Aucune page à analyser.")
         if not candidates:
             raise ValidationError(
@@ -520,39 +549,68 @@ class SheetExtractor:
             f"- {c.token} → zone « {c.zone_code} », comptage n°{c.pass_no}"
             for c in candidates
         )
-        payload, response = self._client.complete_json(
-            system=_ROUTING_SYSTEM_PROMPT,
-            user=_ROUTING_TEMPLATE.format(candidates=listing, count=len(images)),
-            images=images,
-            image_mime=image_mime,
-            max_tokens=4096,
-        )
+        # Les lots gardent l'ordre des pages : le décalage ramène chaque numéro
+        # relatif au lot vers son numéro dans la pile.
+        batches = [
+            (offset, list(footers[offset:offset + batch_size]))
+            for offset in range(0, len(footers), batch_size)
+        ]
 
-        routing = PageRouting(tokens_used=response.total_tokens)
+        def read(batch: tuple[int, list[bytes]]) -> tuple[int, dict[str, Any], int]:
+            offset, strips = batch
+            payload, response = self._client.complete_json(
+                system=_ROUTING_SYSTEM_PROMPT,
+                user=_ROUTING_TEMPLATE.format(candidates=listing, count=len(strips)),
+                images=strips,
+                image_mime=image_mime,
+                max_tokens=_routing_tokens(len(strips)),
+            )
+            return offset, payload, response.total_tokens
+
+        routing = PageRouting()
         seen_pages: set[int] = set()
-        for raw in payload.get("pages") or []:
-            if not isinstance(raw, dict):
+        for batch, outcome in zip(
+            batches, in_parallel(read, batches, max_workers), strict=True
+        ):
+            if isinstance(outcome, BaseException):
+                # Le lot est perdu, pas la pile : ses pages tombent en non
+                # attribuées avec la raison, et un humain les reprend.
+                offset, strips = batch
+                log.warning("Routage du lot page %d échoué : %s", offset + 1, outcome)
+                for index in range(len(strips)):
+                    seen_pages.add(offset + index)
+                    routing.unrouted.append({
+                        "page": offset + index + 1,
+                        "read": "",
+                        "note": f"Routage interrompu : {outcome}",
+                    })
                 continue
-            try:
-                page = int(raw.get("page") or 0) - 1
-            except (TypeError, ValueError):
-                continue
-            if not 0 <= page < len(images) or page in seen_pages:
-                continue
-            seen_pages.add(page)
 
-            token = str(raw.get("sheet") or "").strip().upper()
-            candidate = by_token.get(token)
-            if candidate is None:
-                routing.unrouted.append({
-                    "page": page + 1,
-                    "read": str(raw.get("sheet") or ""),
-                    "note": str(raw.get("note") or "Pied de page illisible."),
-                })
-                continue
-            routing.pages_by_sheet.setdefault(candidate.sheet_id, []).append(page)
+            offset, payload, tokens = outcome
+            routing.tokens_used += tokens
+            for raw in payload.get("pages") or []:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    page = offset + int(raw.get("page") or 0) - 1
+                except (TypeError, ValueError):
+                    continue
+                if not offset <= page < offset + len(batch[1]) or page in seen_pages:
+                    continue
+                seen_pages.add(page)
 
-        for page in range(len(images)):
+                token = str(raw.get("sheet") or "").strip().upper()
+                candidate = by_token.get(token)
+                if candidate is None:
+                    routing.unrouted.append({
+                        "page": page + 1,
+                        "read": str(raw.get("sheet") or ""),
+                        "note": str(raw.get("note") or "Pied de page illisible."),
+                    })
+                    continue
+                routing.pages_by_sheet.setdefault(candidate.sheet_id, []).append(page)
+
+        for page in range(len(footers)):
             if page not in seen_pages:
                 routing.unrouted.append({
                     "page": page + 1,
@@ -560,6 +618,11 @@ class SheetExtractor:
                     "note": "Le modèle n'a rien renvoyé pour cette page.",
                 })
         routing.unrouted.sort(key=lambda u: u["page"])
+        # Les lots arrivent dans l'ordre, mais un modèle peut rendre ses pages
+        # dans le désordre : c'est ici que l'ordre de lecture est rétabli, sans
+        # quoi les pages d'une feuille partiraient mélangées au modèle.
+        for pages in routing.pages_by_sheet.values():
+            pages.sort()
         return routing
 
     def expected_from_items(
@@ -580,6 +643,89 @@ class SheetExtractor:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+def in_parallel(
+    work: Callable[[T], R],
+    items: Sequence[T],
+    max_workers: int,
+    *,
+    on_done: Callable[[int], None] | None = None,
+) -> list[R | BaseException]:
+    """Exécute *work* sur chaque élément, à concurrence bornée, dans l'ordre.
+
+    Trois propriétés, et chacune répond à un défaut de la boucle séquentielle
+    qu'elle remplace :
+
+    * **l'ordre est celui des éléments**, pas celui des réponses. Une feuille
+      dont l'appel revient en premier ne doit pas prendre la place d'une autre
+      dans le rapport ;
+    * **une exception est une valeur**, rendue à sa place au lieu d'être levée.
+      Sur une pile de cent feuilles, un refus du modèle sur la douzième ne peut
+      pas emporter les quatre-vingt-huit autres ;
+    * **la borne est explicite**. Le parallélisme utile est celui que
+      l'endpoint absorbe : au-delà, les appels font la queue côté serving et les
+      429 arrivent — le temps gagné se paie en relances.
+
+    Les écritures en base **ne passent pas par ici** : seuls les appels au
+    modèle sont parallélisés, et l'appelant écrit ensuite, séquentiellement,
+    dans sa propre transaction.
+
+    :param on_done: reçoit le nombre d'éléments terminés, à chaque fois qu'un
+        de plus l'est. C'est ce qui fait avancer une barre de progression *au
+        fil* du traitement : sans lui, elle reste à zéro pendant six minutes
+        puis saute à cent, ce qui n'apprend rien pendant les six minutes.
+    """
+    if not items:
+        return []
+
+    done = 0
+    counter = Lock()
+
+    def run(item: T) -> R | BaseException:
+        nonlocal done
+        outcome = _captured(work, item)
+        if on_done is not None:
+            with counter:
+                done += 1
+                finished = done
+            try:
+                on_done(finished)
+            except Exception as exc:  # pragma: no cover — l'avancement n'est
+                # pas le travail : le signaler ne doit jamais le faire échouer.
+                log.warning("Avancement non signalé : %s", exc)
+        return outcome
+
+    if max_workers <= 1 or len(items) == 1:
+        return [run(item) for item in items]
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+        return list(pool.map(run, items))
+
+
+def _captured(work: Callable[[T], R], item: T) -> R | BaseException:
+    try:
+        return work(item)
+    except Exception as exc:
+        return exc
+
+
+#: Budget de sortie d'une extraction : un préambule fixe, puis ce que coûte une
+#: ligne de JSON. Le plafond de 8192 tokens servait pour toutes les feuilles, y
+#: compris celles de dix lignes — une réservation que l'endpoint facture en
+#: latence sur chacune des cent feuilles d'une pile.
+_TOKENS_PER_LINE = 110
+_TOKENS_PREAMBLE = 700
+_TOKENS_CEILING = 8192
+
+
+def extraction_tokens(expected_lines: int) -> int:
+    """Ce qu'il faut pour rendre *expected_lines* lignes, sans plus."""
+    return min(_TOKENS_CEILING, _TOKENS_PREAMBLE + _TOKENS_PER_LINE * expected_lines)
+
+
+def _routing_tokens(pages: int) -> int:
+    """Le routage rend quatre champs par page, pas une transcription."""
+    return min(4096, 200 + 90 * pages)
+
 
 _SECTION_LABELS = {
     CountSection.LINE_SIDE: "bord de ligne",
@@ -632,7 +778,18 @@ def render_pdf_pages(
     PDFium engine bundled, so it works in a container with no system packages
     and no root, unlike Poppler-based tooling.
 
-    :param max_pages: guard against a 200-page scan blowing the token budget.
+    **Niveaux de gris, et sans ``optimize``.** Une feuille de comptage est du
+    trait noir sur blanc : la couleur n'y porte aucune information et coûte trois
+    canaux. ``optimize=True`` faisait, lui, chercher au compresseur le meilleur
+    encodage possible — quelques pourcents d'octets contre un temps CPU
+    proportionnel au nombre de pages, ce qui est exactement le mauvais échange
+    sur une pile de deux cents.
+
+    Le PNG reste : une feuille de comptage est du trait, où les artefacts JPEG se
+    posent précisément sur les jambages que le modèle doit lire.
+
+    :param max_pages: au-delà, l'appelant décide — ici on tronque et on le dit
+        par le compte renvoyé, jamais en silence. Voir :func:`page_count`.
     :param dpi: 150 keeps a handwritten quantity legible while staying well
         under the per-request payload budget; 300 doubles the bytes for no
         measurable gain on the counting sheets this reads.
@@ -646,12 +803,67 @@ def render_pdf_pages(
             log.warning("Scan truncated at %d pages (document has %d)", max_pages, total)
         pages: list[bytes] = []
         for index in range(min(total, max_pages)):
-            image = document[index].render(scale=dpi / 72).to_pil()
-            buffer = io.BytesIO()
-            # PNG rather than JPEG: a counting sheet is line art and text, where
-            # JPEG artefacts land exactly on the strokes the model must read.
-            image.save(buffer, format="PNG", optimize=True)
-            pages.append(buffer.getvalue())
+            image = document[index].render(scale=dpi / 72, grayscale=True).to_pil()
+            pages.append(_png(image))
         return pages
     finally:
         document.close()
+
+
+def page_count(payload: bytes) -> int:
+    """Combien de pages porte ce PDF, sans en rendre aucune.
+
+    Lu avant le rendu pour pouvoir refuser une pile trop épaisse en la nommant,
+    plutôt que d'en rendre le début et de perdre le reste sans le dire.
+    """
+    import pypdfium2
+
+    document = pypdfium2.PdfDocument(payload)
+    try:
+        return len(document)
+    finally:
+        document.close()
+
+
+#: Hauteur de la bande de pied de page découpée pour le routage, en fraction de
+#: la page. L'identité est imprimée à 8 mm du bas d'un A4 (297 mm), soit à 2,7 %
+#: — 10 % laisse une marge confortable pour un scan de travers ou recadré.
+FOOTER_BAND = 0.10
+
+
+def footer_strips(pages: Sequence[bytes], *, band: float = FOOTER_BAND) -> list[bytes]:
+    """La bande basse de chaque page, celle qui porte l'identité de la feuille.
+
+    Le routage n'a besoin de lire qu'une ligne : « <campagne> · zone <nom> ·
+    comptage n°<n> · feuille <identifiant> », que l'application a imprimée
+    elle-même en pied de page. Lui envoyer la page entière, c'est transmettre
+    quatre-vingt-dix pour cent de surface qui ne sert à rien — et sur une pile de
+    deux cents pages, c'est cette surface qui fait dépasser la charge utile
+    acceptée par l'endpoint bien avant que le modèle ait un problème de lecture.
+
+    Une bande illisible n'est pas rattrapée ici : ``route_pages`` rend la page
+    comme non attribuée, et un humain la reprend. C'est la règle inchangée — une
+    page classée dans la mauvaise zone verse un comptage sur du stock qui n'y a
+    jamais été.
+    """
+    from PIL import Image
+
+    strips: list[bytes] = []
+    for blob in pages:
+        try:
+            image = Image.open(io.BytesIO(blob))
+            width, height = image.size
+            top = int(height * (1 - band))
+            strips.append(_png(image.crop((0, top, width, height)).convert("L")))
+        except Exception as exc:  # pragma: no cover - dépend de l'image reçue
+            # Une page qui ne s'ouvre pas part telle quelle : le routage la
+            # traitera comme les autres et dira ce qu'il n'a pas pu lire.
+            log.warning("Pied de page non découpé, page envoyée entière : %s", exc)
+            strips.append(blob)
+    return strips
+
+
+def _png(image: Any) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()

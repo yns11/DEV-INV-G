@@ -19,6 +19,7 @@ from ..services import (
     ManagerService,
     Perimeter,
     ReportService,
+    ScanJobService,
     ServiceContext,
 )
 
@@ -38,6 +39,7 @@ __all__ = [
     "import_service",
     "manager_service",
     "report_service",
+    "scan_job_service",
     "resolve_perimeter",
 ]
 
@@ -145,3 +147,7 @@ def resolve_perimeter(
 
 def report_service(ctx: Ctx) -> ReportService:
     return ReportService(ctx)
+
+
+def scan_job_service(ctx: Ctx) -> ScanJobService:
+    return ScanJobService(ctx)

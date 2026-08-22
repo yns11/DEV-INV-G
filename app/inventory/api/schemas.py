@@ -86,7 +86,9 @@ class ErrorPayload(ApiModel):
 class CampaignConfigPayload(ApiModel):
     generic_warehouse: str = Field(default="B06VRAC", alias="genericWarehouse")
     generic_location: str = Field(default="GENERIQUE", alias="genericLocation")
-    generic_passes: int = Field(default=2, ge=1, le=3, alias="genericPasses")
+    #: Deux au maximum : au-delà, la campagne annonçait un comptage que rien
+    #: ne savait produire. Voir ``CampaignConfig.generic_passes``.
+    generic_passes: int = Field(default=2, ge=1, le=2, alias="genericPasses")
     arbitration_tolerance: Decimal = Field(
         default=Decimal("0"), ge=0, le=1, alias="arbitrationTolerance"
     )

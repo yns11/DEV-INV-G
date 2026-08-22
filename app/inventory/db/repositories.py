@@ -903,6 +903,7 @@ class JournalRepository(_Base):
 
     def set_status(
         self,
+        campaign_id: str,
         journal_ids: Sequence[str],
         status: JournalStatus,
         *,
@@ -910,13 +911,21 @@ class JournalRepository(_Base):
         posted_at: dt.datetime | None = None,
         conn: psycopg.Connection | None = None,
     ) -> int:
+        """Poste un lot de journaux — **de cette campagne**.
+
+        Le filtre sur la campagne n'est pas une ceinture de plus : la
+        permission est vérifiée sur la campagne de l'URL, tandis que les
+        identifiants viennent du corps de la requête. Sans ce filtre, un
+        gestionnaire habilité sur A postait un journal de B en connaissant son
+        UUID, et la garde d'écriture n'y voyait rien.
+        """
         if not journal_ids:
             return 0
         return self._execute(
             "UPDATE count_journal SET status = %s, posted_at = COALESCE(%s, posted_at), "
             "updated_by = %s, updated_at = now(), row_version = row_version + 1 "
-            "WHERE id = ANY(%s::uuid[])",
-            (str(status), posted_at, actor, list(journal_ids)),
+            "WHERE campaign_id = %s AND id = ANY(%s::uuid[])",
+            (str(status), posted_at, actor, campaign_id, list(journal_ids)),
             conn=conn,
         )
 
@@ -1054,7 +1063,9 @@ class JournalRepository(_Base):
         return len(lines)
 
     def upsert_line(
-        self, line: CountJournalLine, *, actor: str, expected_version: int | None = None
+        self, line: CountJournalLine, *, actor: str,
+        expected_version: int | None = None,
+        conn: psycopg.Connection | None = None,
     ) -> CountJournalLine:
         """Insert or update one line, honouring optimistic concurrency."""
         if expected_version is not None:
@@ -1062,9 +1073,11 @@ class JournalRepository(_Base):
                 "UPDATE count_journal_line SET qty_manual = %s, unit = %s, "
                 "comment = %s, source = %s, updated_by = %s, updated_at = now(), "
                 "row_version = row_version + 1 "
-                "WHERE id = %s AND row_version = %s AND deleted_at IS NULL",
+                "WHERE campaign_id = %s AND id = %s AND row_version = %s "
+                "AND deleted_at IS NULL",
                 (line.qty_manual, line.unit, line.comment, str(DataSource.MANUAL),
-                 actor, line.id, expected_version),
+                 actor, line.campaign_id, line.id, expected_version),
+                conn=conn,
             )
             if n == 0:
                 raise ConflictError(
@@ -1085,14 +1098,19 @@ class JournalRepository(_Base):
             (line.id, line.journal_id, line.campaign_id, line.item_number,
              line.qty_imported, line.qty_manual, line.unit, str(line.source),
              line.comment, actor),
+            conn=conn,
         )
         return line
 
-    def delete_line(self, line_id: str, *, actor: str) -> None:
+    def delete_line(
+        self, campaign_id: str, line_id: str, *, actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
         n = self._execute(
             "UPDATE count_journal_line SET deleted_at = now(), updated_by = %s "
-            "WHERE id = %s AND deleted_at IS NULL",
-            (actor, line_id),
+            "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
+            (actor, campaign_id, line_id),
+            conn=conn,
         )
         if n == 0:
             raise NotFoundError("Ligne de journal introuvable.", lineId=line_id)
@@ -1243,6 +1261,7 @@ class SheetRepository(_Base):
 
     def set_zone_closed(
         self,
+        campaign_id: str,
         zone_id: str,
         *,
         closed: bool,
@@ -1256,19 +1275,26 @@ class SheetRepository(_Base):
         """
         return self._execute(
             "UPDATE zone SET closed_at = %s, closed_by = %s, updated_by = %s, "
-            "updated_at = now() WHERE id = %s AND deleted_at IS NULL",
+            "updated_at = now() "
+            "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
             (dt.datetime.now(dt.UTC) if closed else None,
              actor if closed else "",
-             actor, zone_id),
+             actor, campaign_id, zone_id),
             conn=conn,
         )
 
     def delete_zone(
-        self, zone_id: str, *, actor: str, conn: psycopg.Connection | None = None
+        self,
+        campaign_id: str,
+        zone_id: str,
+        *,
+        actor: str,
+        conn: psycopg.Connection | None = None,
     ) -> None:
         self._execute(
-            "UPDATE zone SET deleted_at = now(), updated_by = %s WHERE id = %s",
-            (actor, zone_id),
+            "UPDATE zone SET deleted_at = now(), updated_by = %s "
+            "WHERE campaign_id = %s AND id = %s",
+            (actor, campaign_id, zone_id),
             conn=conn,
         )
 
@@ -1327,7 +1353,8 @@ class SheetRepository(_Base):
             params.append(zone_id)
         rows = self._fetch_all(
             "SELECT id, campaign_id, zone_id, pass_no, counter_name, "
-            "started_at, ended_at, evidence_path, extraction_confidence, updated_at "
+            "started_at, ended_at, evidence_path, evidence_sha256, evidence_bytes, "
+            "evidence_mime, extraction_confidence, updated_at "
             f"FROM count_sheet WHERE {' AND '.join(clauses)} ORDER BY zone_id, pass_no",
             params,
             conn=conn,
@@ -1397,7 +1424,8 @@ class SheetRepository(_Base):
     def get_sheet(self, sheet_id: str) -> CountSheet:
         row = self._fetch_one(
             "SELECT id, campaign_id, zone_id, pass_no, counter_name, "
-            "started_at, ended_at, evidence_path, extraction_confidence, updated_at "
+            "started_at, ended_at, evidence_path, evidence_sha256, evidence_bytes, "
+            "evidence_mime, extraction_confidence, updated_at "
             "FROM count_sheet WHERE id = %s",
             (sheet_id,),
         )
@@ -1424,14 +1452,19 @@ class SheetRepository(_Base):
 
     def update_sheet(
         self,
+        campaign_id: str,
         sheet_id: str,
         *,
         counter_name: str | None = None,
         started_at: dt.datetime | None = None,
         ended_at: dt.datetime | None = None,
         evidence_path: str | None = None,
+        evidence_sha256: str | None = None,
+        evidence_bytes: int | None = None,
+        evidence_mime: str | None = None,
         extraction_confidence: float | None = None,
         actor: str,
+        conn: psycopg.Connection | None = None,
     ) -> None:
         sets = ["updated_by = %s", "updated_at = now()", "row_version = row_version + 1"]
         params: list[Any] = [actor]
@@ -1440,14 +1473,20 @@ class SheetRepository(_Base):
             ("started_at", started_at),
             ("ended_at", ended_at),
             ("evidence_path", evidence_path),
+            ("evidence_sha256", evidence_sha256),
+            ("evidence_bytes", evidence_bytes),
+            ("evidence_mime", evidence_mime),
             ("extraction_confidence", extraction_confidence),
         ):
             if value is not None:
                 sets.append(f"{column} = %s")
                 params.append(value)
-        params.append(sheet_id)
+        params += [campaign_id, sheet_id]
         n = self._execute(
-            f"UPDATE count_sheet SET {', '.join(sets)} WHERE id = %s", params
+            f"UPDATE count_sheet SET {', '.join(sets)} "
+            "WHERE campaign_id = %s AND id = %s",
+            params,
+            conn=conn,
         )
         if n == 0:
             raise NotFoundError("Feuille de comptage introuvable.", sheetId=sheet_id)
@@ -1542,15 +1581,20 @@ class SheetRepository(_Base):
             conn=conn,
         )
 
-    def delete_sheet_line(self, line_id: str, *, actor: str) -> None:
+    def delete_sheet_line(
+        self, campaign_id: str, line_id: str, *, actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
         self._execute(
             "UPDATE count_sheet_line SET deleted_at = now(), updated_by = %s "
-            "WHERE id = %s",
-            (actor, line_id),
+            "WHERE campaign_id = %s AND id = %s",
+            (actor, campaign_id, line_id),
+            conn=conn,
         )
 
     def replace_sheet_lines(
-        self, sheet_id: str, lines: Sequence[CountSheetLine], *, actor: str
+        self, sheet_id: str, lines: Sequence[CountSheetLine], *, actor: str,
+        conn: psycopg.Connection | None = None,
     ) -> int:
         """Make the sheet's content exactly *lines* — grid save, AI extraction.
 
@@ -1571,7 +1615,9 @@ class SheetRepository(_Base):
             for l in lines
         ]
         kept = [str(l.id) for l in owned]
-        with self.db.transaction() as conn, conn.cursor() as cur:
+        owns = conn is None
+        outer = self.db.transaction() if owns else _NullContext(conn)
+        with outer as connection, connection.cursor() as cur:
             cur.execute(
                 "UPDATE count_sheet_line SET deleted_at = now(), updated_by = %s "
                 "WHERE sheet_id = %s AND deleted_at IS NULL "
@@ -1580,7 +1626,7 @@ class SheetRepository(_Base):
                 (actor, sheet_id, kept),
             )
             if owned:
-                self.upsert_sheet_lines(owned, actor=actor, conn=conn)
+                self.upsert_sheet_lines(owned, actor=actor, conn=connection)
         return len(owned)
 
     # -- arbitration ---------------------------------------------------------
@@ -1710,6 +1756,9 @@ class SheetRepository(_Base):
             counter_name=row["counter_name"],
             started_at=row["started_at"], ended_at=row["ended_at"],
             evidence_path=row["evidence_path"],
+            evidence_sha256=row["evidence_sha256"],
+            evidence_bytes=row["evidence_bytes"],
+            evidence_mime=row["evidence_mime"],
             extraction_confidence=row["extraction_confidence"],
             updated_at=row["updated_at"],
         )
@@ -1744,10 +1793,19 @@ class ConsolidationRepository(_Base):
         findings: Sequence[dict[str, Any]],
         lines: Sequence[ConsolidatedLine],
         breakdown: Sequence[WipBreakdown],
+        conn: psycopg.Connection | None = None,
     ) -> str:
-        """Persist a run and make it the current one, atomically."""
+        """Persist a run and make it the current one, atomically.
+
+        Accepte une transaction déjà ouverte : enregistrer le calcul et poster
+        le journal qu'il produit sont un seul acte, et un calcul « courant »
+        dont le journal n'a jamais été écrit ferait passer pour consolidée une
+        campagne qui ne l'est pas.
+        """
         run_id = new_id()
-        with self.db.transaction() as conn, conn.cursor() as cur:
+        owns = conn is None
+        outer = self.db.transaction() if owns else _NullContext(conn)
+        with outer as connection, connection.cursor() as cur:
             cur.execute(
                 "UPDATE consolidation_run SET is_current = false "
                 "WHERE campaign_id = %s AND is_current",
@@ -1886,11 +1944,11 @@ class AdjustmentRepository(_Base):
             conn=conn,
         )
 
-    def delete(self, line_id: str, *, actor: str) -> None:
+    def delete(self, campaign_id: str, line_id: str, *, actor: str) -> None:
         n = self._execute(
             "UPDATE adjustment_line SET deleted_at = now(), updated_by = %s "
-            "WHERE id = %s AND deleted_at IS NULL",
-            (actor, line_id),
+            "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
+            (actor, campaign_id, line_id),
         )
         if n == 0:
             raise NotFoundError("Ligne d'ajustement introuvable.", lineId=line_id)
@@ -2415,9 +2473,20 @@ class ImportBatchRepository(_Base):
         rows_rejected: int,
         report: dict[str, Any],
         imported_by: str,
+        batch_id: str | None = None,
         conn: psycopg.Connection | None = None,
     ) -> str:
-        batch_id = new_id()
+        """Enregistre la provenance d'un chargement.
+
+        ``batch_id`` peut être imposé par l'appelant. Les imports qui **marquent
+        les lignes chargées** avec un identifiant de lot — le stock ERP, l'écart
+        backflush — le tirent avant d'écrire, puis passent le même ici. Sans
+        cela, deux identifiants coexistaient : celui gravé dans les lignes et
+        celui de la ligne d'historique, chacun désignant le même chargement sans
+        qu'aucune requête ne puisse aller de l'un à l'autre. « D'où vient cette
+        quantité » n'avait alors pas de réponse.
+        """
+        batch_id = batch_id or new_id()
         self._execute(
             "INSERT INTO import_batch (id, campaign_id, target, filename, "
             "content_hash, storage_path, rows_received, rows_accepted, rows_rejected, "

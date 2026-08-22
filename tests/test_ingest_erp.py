@@ -241,7 +241,267 @@ class TestReadingTheWholeTable:
     def test_the_read_is_ordered_so_a_truncation_is_a_prefix(self):
         _, client = read_items([item_row()])
         assert "ORDER BY item_id" in client.statements[0]
-        assert "LIMIT 1000" in client.statements[0]
+
+    def test_the_query_asks_for_one_row_more_than_the_ceiling(self):
+        """C'est ce qui rend la troncature détectable, et donc refusable."""
+        _, client = read_items([item_row()])
+        assert "LIMIT 1001" in client.statements[0]
+
+
+class TestAReadIsNeverTruncatedInSilence:
+    """Le plafond coupait la lecture sans le dire.
+
+    ``LIMIT n`` ramène ``n`` lignes que la source en ait ``n`` ou dix mille, et
+    rien dans la réponse ne distingue les deux cas. Une campagne partait donc
+    avec un référentiel amputé sans qu'aucun écran ne l'annonce : le comptage se
+    faisait contre un stock qui ne couvrait pas l'usine, et l'écart qui en
+    sortait n'était l'écart de rien. C'est le genre de faute qu'on ne découvre
+    qu'à la réunion des écarts, quand il est trop tard pour recompter.
+
+    La requête demande désormais une ligne de plus que le plafond. Si elle
+    revient, la source en avait davantage — et c'est un refus.
+    """
+
+    def test_a_source_bigger_than_the_ceiling_is_refused(self):
+        client = _FakeClient([item_row(item_id=f"P-{n}") for n in range(4)])
+        with pytest.raises(UpstreamError):
+            ErpReader(client=client, warehouse_id="wh-1").fetch_items(limit=3)
+
+    @pytest.mark.parametrize("name", ["items", "boms", "book_stock"])
+    def test_every_query_asks_for_one_row_more_than_the_ceiling(self, name):
+        """Sans la ligne sonde, le refus ne se déclencherait jamais en vrai.
+
+        La doublure de client ignore le ``LIMIT`` — c'est ce qui rend les
+        contrôles de refus lisibles, et ce qui les rend aveugles à la sonde.
+        Elle se vérifie donc ici, sur la requête émise.
+        """
+        client = _FakeClient([])
+        reader = ErpReader(client=client, warehouse_id="wh-1")
+        {
+            "items": reader.fetch_items,
+            "boms": reader.fetch_bom_links,
+            "book_stock": reader.fetch_book_stock,
+        }[name](limit=1000)
+        assert "LIMIT 1001" in client.statements[0], client.statements[0]
+
+    def test_a_source_exactly_at_the_ceiling_passes(self):
+        """La limite n'est pas un seuil d'alarme : elle est atteignable."""
+        client = _FakeClient([item_row(item_id=f"P-{n}") for n in range(3)])
+        rows = ErpReader(client=client, warehouse_id="wh-1").fetch_items(limit=3)
+        assert len(rows) == 3
+
+    def test_the_refusal_names_the_source_and_the_ceiling(self):
+        """« Ça a échoué » n'est pas actionnable ; « relevez le plafond » l'est."""
+        client = _FakeClient([item_row(item_id=f"P-{n}") for n in range(4)])
+        with pytest.raises(UpstreamError) as raised:
+            ErpReader(client=client, warehouse_id="wh-1").fetch_items(limit=3)
+        message = str(raised.value)
+        assert "silver_base_article" in message
+        assert "3" in message
+        assert "tronqué" in message
+
+    def test_nothing_is_returned_when_the_read_is_refused(self):
+        """Un refus qui rendrait quand même les lignes ne serait pas un refus."""
+        client = _FakeClient([item_row(item_id=f"P-{n}") for n in range(4)])
+        reader = ErpReader(client=client, warehouse_id="wh-1")
+        with pytest.raises(UpstreamError):
+            reader.fetch_items(limit=1)
+
+    @pytest.mark.parametrize("kind", ["items", "boms"])
+    def test_both_referentials_are_guarded(self, kind):
+        rows = ([item_row(item_id=f"P-{n}") for n in range(4)] if kind == "items"
+                else [bom_row(child_itemid=f"C-{n}") for n in range(4)])
+        client = _FakeClient(rows)
+        reader = ErpReader(client=client, warehouse_id="wh-1")
+        with pytest.raises(UpstreamError):
+            (reader.fetch_items if kind == "items" else reader.fetch_bom_links)(
+                limit=3
+            )
+
+    def test_the_stock_snapshot_is_guarded_too(self):
+        """Le pire cas : un stock ERP amputé rend chaque écart faux."""
+        from inventory.ingest.erp import STOCK_COLUMNS
+
+        stock = [
+            [f"P-{n}", "B06", "VRAC", "10", "PCE", "1.0", "2026-09-01"][
+                : len(STOCK_COLUMNS)
+            ]
+            for n in range(4)
+        ]
+        client = _FakeClient(stock)
+        with pytest.raises(UpstreamError):
+            ErpReader(client=client, warehouse_id="wh-1").fetch_book_stock(limit=3)
+
+
+class TestTheMirrorIsGuardedLikeTheWarehouse:
+    """Deux transports, une seule garantie.
+
+    Le miroir local sert exactement les mêmes chargements que l'entrepôt SQL.
+    Vérifier la troncature sur un seul des deux laisserait la moitié des
+    déploiements avec le défaut d'origine, et personne ne saurait lequel.
+    """
+
+    def read(self, monkeypatch, *, returned, limit, kind="items"):
+        from inventory.config import get_settings
+        from inventory.ingest import erp
+
+        monkeypatch.setenv("INV_ERP_SOURCE", "mirror")
+        get_settings.cache_clear()
+        monkeypatch.setattr(
+            erp, "_mirror_rows",
+            lambda source, columns, **kwargs: returned,
+        )
+        try:
+            reader = erp.ErpReader()
+            fetch = (reader.fetch_items if kind == "items"
+                     else reader.fetch_bom_links)
+            return fetch(limit=limit)
+        finally:
+            monkeypatch.delenv("INV_ERP_SOURCE", raising=False)
+            get_settings.cache_clear()
+
+    def test_a_mirror_read_over_the_ceiling_is_refused(self, monkeypatch):
+        with pytest.raises(UpstreamError):
+            self.read(
+                monkeypatch,
+                returned=[item_row(item_id=f"P-{n}") for n in range(4)],
+                limit=3,
+            )
+
+    @pytest.mark.parametrize("kind", ["items", "boms", "book_stock"])
+    def test_every_mirror_read_asks_for_the_probe_row(self, monkeypatch, kind):
+        """Comme pour l'entrepôt : la doublure ignore le ``LIMIT``, pas ce test."""
+        from inventory.config import get_settings
+        from inventory.ingest import erp
+
+        monkeypatch.setenv("INV_ERP_SOURCE", "mirror")
+        get_settings.cache_clear()
+        seen: dict = {}
+        monkeypatch.setattr(
+            erp, "_mirror_rows",
+            lambda source, columns, **kwargs: seen.update(kwargs) or [],
+        )
+        try:
+            reader = erp.ErpReader()
+            {
+                "items": reader.fetch_items,
+                "boms": reader.fetch_bom_links,
+                "book_stock": reader.fetch_book_stock,
+            }[kind](limit=1000)
+        finally:
+            monkeypatch.delenv("INV_ERP_SOURCE", raising=False)
+            get_settings.cache_clear()
+        assert seen["limit"] == 1001
+
+    def test_a_mirror_read_at_the_ceiling_passes(self, monkeypatch):
+        rows = self.read(
+            monkeypatch,
+            returned=[item_row(item_id=f"P-{n}") for n in range(3)],
+            limit=3,
+        )
+        assert len(rows) == 3
+
+    def test_the_stock_snapshot_too(self, monkeypatch):
+        """Celui dont la troncature coûte le plus cher."""
+        from inventory.config import get_settings
+        from inventory.ingest import erp
+
+        monkeypatch.setenv("INV_ERP_SOURCE", "mirror")
+        get_settings.cache_clear()
+        monkeypatch.setattr(
+            erp, "_mirror_rows",
+            lambda source, columns, **kwargs: [
+                [f"P-{n}", "B06", "VRAC", "10", "PCE", "1.0", "2026-09-01"][
+                    : len(erp.STOCK_COLUMNS)
+                ]
+                for n in range(4)
+            ],
+        )
+        try:
+            with pytest.raises(UpstreamError):
+                erp.ErpReader().fetch_book_stock(limit=3)
+        finally:
+            monkeypatch.delenv("INV_ERP_SOURCE", raising=False)
+            get_settings.cache_clear()
+
+    def test_the_bill_of_materials_too(self, monkeypatch):
+        with pytest.raises(UpstreamError):
+            self.read(
+                monkeypatch,
+                returned=[bom_row(child_itemid=f"C-{n}") for n in range(4)],
+                limit=3,
+                kind="boms",
+            )
+
+
+class TestTheAggregatedReadsAreGuardedToo:
+    """Backflush, flux et mouvements passent par un autre chemin de transport.
+
+    Ces quatre lectures sont agrégées — quelques milliers de lignes, pas
+    quelques centaines de milliers — mais « affordable » n'est pas « borné » :
+    une usine qui double son catalogue franchit le plafond sans prévenir, et
+    l'écart backflush ainsi tronqué se lit comme une consommation qui n'a pas eu
+    lieu.
+    """
+
+    MONDAY = dt.date(2026, 8, 3)
+    NEXT = dt.date(2026, 8, 31)
+
+    def fetches(self, reader):
+        from inventory.domain.enums import FlowKind
+
+        window = {"period_start": self.MONDAY, "period_end": self.NEXT}
+        return {
+            "backflush": lambda limit: reader.fetch_backflush(limit=limit, **window),
+            "flux": lambda limit: reader.fetch_stock_flow(limit=limit, **window),
+            "mouvements": lambda limit: reader.fetch_movements(
+                FlowKind.RECEIPT, limit=limit, **window
+            ),
+            "tous les flux": lambda limit: reader.fetch_all_flows(
+                limit=limit, **window
+            ),
+        }
+
+    @pytest.mark.parametrize(
+        "name", ["backflush", "flux", "mouvements", "tous les flux"]
+    )
+    def test_an_aggregate_over_the_ceiling_is_refused(self, name):
+        client = _FakeClient([[f"P-{n}", "1", "1"] for n in range(4)])
+        reader = ErpReader(client=client, warehouse_id="wh-1")
+        with pytest.raises(UpstreamError):
+            self.fetches(reader)[name](3)
+
+    @pytest.mark.parametrize(
+        "name", ["backflush", "flux", "mouvements", "tous les flux"]
+    )
+    def test_the_query_asks_for_the_probe_row(self, name):
+        # Aucune ligne : la forme des colonnes diffère d'une lecture à l'autre
+        # et n'est pas le sujet ici — seule la requête émise l'est.
+        client = _FakeClient([])
+        reader = ErpReader(client=client, warehouse_id="wh-1")
+        self.fetches(reader)[name](3)
+        assert "LIMIT 4" in client.statements[0], client.statements[0]
+
+
+class TestTheListOfSnapshotDatesMayBeCut:
+    """La seule lecture bornée volontairement, et l'exception doit rester une.
+
+    L'écran propose les dernières photos disponibles ; la source garde son
+    historique. Offrir trois cents dates ne servirait qu'à rendre introuvables
+    les cinq qui intéressent quelqu'un le jour d'un inventaire — la troncature
+    *est* l'intention.
+    """
+
+    def test_more_dates_than_asked_for_is_not_a_failure(self):
+        client = _FakeClient([[f"2026-09-0{n}"] for n in range(1, 5)])
+        dates = ErpReader(client=client, warehouse_id="wh-1").stock_dates(limit=3)
+        assert dates
+
+    def test_the_query_asks_for_exactly_the_ceiling(self):
+        """Pas de ligne sonde ici : rien ne la lirait."""
+        client = _FakeClient([["2026-09-01"]])
+        ErpReader(client=client, warehouse_id="wh-1").stock_dates(limit=3)
+        assert "LIMIT 3" in client.statements[0]
 
 
 class TestFailures:
@@ -455,7 +715,10 @@ class TestTheLocalMirror:
     def test_the_read_stays_ordered_and_bounded(self, monkeypatch):
         _, seen = self.rows_from_mirror(monkeypatch, [item_row()])
         assert seen["order_by"] == "item_id"
-        assert seen["limit"] == 1000
+        # Le miroir demande la ligne de trop, comme l'entrepôt : la troncature
+        # doit se détecter sur les deux transports, ou la garantie n'en est pas
+        # une.
+        assert seen["limit"] == 1001
 
     def test_no_warehouse_is_needed(self, monkeypatch):
         """That is the whole point: no SQL warehouse, no Unity Catalog grant."""
@@ -511,7 +774,7 @@ class TestTheMovementsFollowTheSameSwitch:
         captured: dict = {}
         try:
             reader = ErpReader()
-            reader._read = lambda statement, *, source: (
+            reader._read = lambda statement, *, source, limit=None: (
                 captured.update(sql=" ".join(statement.split()), table=source) or []
             )
             reader.fetch_movements(

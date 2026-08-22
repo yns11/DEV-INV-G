@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from conftest import with_transactions
 
 from inventory.domain.enums import CampaignStatus, SheetPass
 from inventory.domain.models import CountSheetLine
@@ -40,7 +41,9 @@ def service(*lines: CountSheetLine) -> tuple[GenericService, list[str]]:
 
     sheets = SimpleNamespace(
         lines_by_sheet=lambda cid: by_sheet,
-        delete_sheet_line=lambda line_id, *, actor: deleted.append(line_id),
+        delete_sheet_line=(
+            lambda campaign_id, line_id, *, actor, conn=None: deleted.append(line_id)
+        ),
     )
     ctx = SimpleNamespace(
         actor="testeur",
@@ -48,6 +51,7 @@ def service(*lines: CountSheetLine) -> tuple[GenericService, list[str]]:
         sheets=sheets,
         record=lambda **kw: "evt",
     )
+    with_transactions(ctx)
     return GenericService(cast(Any, ctx)), deleted
 
 

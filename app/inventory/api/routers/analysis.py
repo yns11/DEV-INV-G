@@ -296,7 +296,7 @@ def delete_adjustment(
     campaign: CampaignDep, line_id: str, ctx: Ctx
 ) -> dict[str, bool]:
     ctx.guard(campaign, "adjustments")
-    ctx.adjustments.delete(line_id, actor=ctx.actor)
+    ctx.adjustments.delete(campaign.id, line_id, actor=ctx.actor)
     ctx.record(
         campaign_id=campaign.id,
         action=AuditAction.DELETE,

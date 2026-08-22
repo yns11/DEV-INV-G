@@ -237,6 +237,45 @@ def _is_stale(synced_at: Any) -> bool:
     return (now - synced_at).days >= MIRROR_STALE_AFTER_DAYS
 
 
+def _probe(limit: int) -> int:
+    """Le plafond réel de la requête : une ligne de plus que ce qui est attendu.
+
+    Un ``LIMIT n`` exact ne dit pas si la source en avait ``n`` ou dix mille : la
+    lecture revient pleine dans les deux cas, et une campagne partait avec un
+    référentiel amputé sans que rien ne l'annonce. Le comptage se faisait alors
+    contre un stock qui ne couvrait pas l'usine, et l'écart qui en sortait
+    n'était l'écart de rien.
+
+    Demander ``n + 1`` transforme la question en réponse : ``n + 1`` lignes
+    reviennent, donc la source en avait strictement plus de ``n``, et c'est un
+    refus. La ligne excédentaire est lue puis jetée — le coût d'une ligne contre
+    celui d'un inventaire faux.
+    """
+    return int(limit) + 1
+
+
+def _assert_complete(
+    rows: list[Sequence[Any]], limit: int | None, source: str
+) -> list[Sequence[Any]]:
+    """Refuse une lecture que le plafond a coupée.
+
+    ``limit is None`` désigne les lectures délibérément bornées — une liste de
+    dates proposée à l'écran, par exemple : là, la troncature *est* l'intention,
+    et la vérifier n'aurait pas de sens.
+    """
+    if limit is None or len(rows) <= limit:
+        return rows
+    raise UpstreamError(
+        f"La lecture de « {source} » dépasse le plafond de {limit:,} lignes "
+        "configuré pour cette source. Le chargement est refusé plutôt que "
+        "tronqué : un référentiel amputé produirait un écart d'inventaire qui "
+        "ne veut rien dire. Relevez le plafond, ou restreignez la lecture."
+        .replace(",", " "),
+        source=source,
+        limit=limit,
+    )
+
+
 class ErpReader:
     """Reads the ERP silver tables and yields grid-contract rows."""
 
@@ -260,8 +299,12 @@ class ErpReader:
         planner is impossible to reason about the next day.
         """
         if self._from_mirror:
-            return [_item_row(r) for r in _mirror_rows(
-                MIRROR_ITEMS_TABLE, ITEM_COLUMNS, order_by="item_id", limit=limit
+            return [_item_row(r) for r in _assert_complete(
+                _mirror_rows(
+                    MIRROR_ITEMS_TABLE, ITEM_COLUMNS, order_by="item_id",
+                    limit=_probe(limit),
+                ),
+                limit, MIRROR_ITEMS_TABLE,
             )]
         table = self._settings.erp_items_fqn
         rows = self._query(
@@ -269,9 +312,10 @@ class ErpReader:
             SELECT {", ".join(ITEM_COLUMNS)}
             FROM {table}
             ORDER BY item_id
-            LIMIT {int(limit)}
+            LIMIT {_probe(limit)}
             """,
             source=table,
+            limit=limit,
         )
         return [_item_row(r) for r in rows]
 
@@ -290,12 +334,16 @@ class ErpReader:
         The explosion applies the filter instead, where it belongs.
         """
         if self._from_mirror:
-            return [_bom_row(r) for r in _mirror_rows(
-                f"{MIRROR_BOM_TABLE} b "
-                f"LEFT JOIN {MIRROR_ITEMS_TABLE} p ON b.parent_itemid = p.item_id",
-                _BOM_SELECT,
-                order_by="b.parent_itemid, b.child_itemid",
-                limit=limit,
+            return [_bom_row(r) for r in _assert_complete(
+                _mirror_rows(
+                    f"{MIRROR_BOM_TABLE} b "
+                    f"LEFT JOIN {MIRROR_ITEMS_TABLE} p "
+                    f"ON b.parent_itemid = p.item_id",
+                    _BOM_SELECT,
+                    order_by="b.parent_itemid, b.child_itemid",
+                    limit=_probe(limit),
+                ),
+                limit, MIRROR_BOM_TABLE,
             )]
         bom, items = self._settings.erp_bom_fqn, self._settings.erp_items_fqn
         rows = self._query(
@@ -304,9 +352,10 @@ class ErpReader:
             FROM {bom} b
             LEFT JOIN {items} p ON b.parent_itemid = p.item_id
             ORDER BY b.parent_itemid, b.child_itemid
-            LIMIT {int(limit)}
+            LIMIT {_probe(limit)}
             """,
             source=bom,
+            limit=limit,
         )
         return [_bom_row(r) for r in rows]
 
@@ -322,6 +371,12 @@ class ErpReader:
         Ne lève jamais : la date se choisit *avant* de savoir si la lecture
         marchera, et un écran incapable d'afficher sa liste vaut moins qu'un
         écran qui propose la date du jour par défaut.
+
+        **La seule lecture qui a le droit d'être coupée.** Partout ailleurs, un
+        plafond atteint est un refus — un référentiel amputé produit un écart
+        d'inventaire qui ne veut rien dire. Ici le plafond n'est pas une limite
+        technique mais le choix d'affichage énoncé plus haut : `_probe` et sa
+        vérification n'y ont donc pas leur place, et leur absence est délibérée.
         """
         try:
             if self._from_mirror:
@@ -367,11 +422,12 @@ class ErpReader:
         inatteignable, sans le dire.
         """
         if self._from_mirror:
-            return [_stock_row(r) for r in _mirror_rows(
+            return [_stock_row(r) for r in _assert_complete(
+                _mirror_rows(
                 MIRROR_STOCK_TABLE,
                 STOCK_COLUMNS,
                 order_by="item_id, entrepot, emplacement",
-                limit=limit,
+                limit=_probe(limit),
                 where=(
                     f"WHERE snapshot_date = (SELECT max(snapshot_date) "
                     f"FROM {MIRROR_STOCK_TABLE})"
@@ -386,6 +442,8 @@ class ErpReader:
                          "source ERP. Choisissez une autre date : la liste ne "
                          "propose que des jours effectivement publiés."
                 ),
+                ),
+                limit, MIRROR_STOCK_TABLE,
             )]
         table = self._settings.erp_stock_fqn
         # Une `dt.date` ne peut pas porter de guillemet : son interpolation est
@@ -401,9 +459,10 @@ class ErpReader:
             FROM {table}
             WHERE snapshot_date = {chosen}
             ORDER BY item_id, entrepot, emplacement
-            LIMIT {int(limit)}
+            LIMIT {_probe(limit)}
             """,
             source=table,
+            limit=limit,
         )
         return [_stock_row(r) for r in rows]
 
@@ -452,11 +511,11 @@ class ErpReader:
               AND f.semaine_debut <  DATE '{end}'
             GROUP BY f.child_itemid
             ORDER BY f.child_itemid
-            LIMIT {int(limit)}
+            LIMIT {_probe(limit)}
         """
         return [
             _backflush_row(row, start=period_start, end=period_end)
-            for row in self._read(statement, source=table)
+            for row in self._read(statement, source=table, limit=limit)
         ]
 
     def fetch_stock_flow(
@@ -482,9 +541,12 @@ class ErpReader:
             GROUP BY reference
             HAVING SUM(production) <> 0 OR SUM(conso_theorique) <> 0
             ORDER BY 1
-            LIMIT {int(limit)}
+            LIMIT {_probe(limit)}
         """
-        return [_stock_flow_row(row) for row in self._read(statement, source=table)]
+        return [
+            _stock_flow_row(row)
+            for row in self._read(statement, source=table, limit=limit)
+        ]
 
     # ------------------------------------------------------------- mouvements
 
@@ -527,9 +589,12 @@ class ErpReader:
             GROUP BY reference
             HAVING SUM({column}) <> 0
             ORDER BY 1
-            LIMIT {int(limit)}
+            LIMIT {_probe(limit)}
         """
-        return [_movement_row(row) for row in self._read(statement, source=table)]
+        return [
+            _movement_row(row)
+            for row in self._read(statement, source=table, limit=limit)
+        ]
 
     def fetch_all_flows(
         self, *, period_start: dt.date, period_end: dt.date, limit: int
@@ -552,12 +617,12 @@ class ErpReader:
             GROUP BY reference
             HAVING {" OR ".join(f"SUM({c}) <> 0" for c in columns)}
             ORDER BY 1
-            LIMIT {int(limit)}
+            LIMIT {_probe(limit)}
         """
         return [
             {"item_number": _text(row[0])}
             | {c: _number(v) for c, v in zip(columns, _pad(row, 6)[1:], strict=True)}
-            for row in self._read(statement, source=table)
+            for row in self._read(statement, source=table, limit=limit)
         ]
 
     def _movements_table(self) -> str:
@@ -596,7 +661,9 @@ class ErpReader:
             else self._settings.erp_backflush_fqn
         )
 
-    def _read(self, statement: str, *, source: str) -> list[Sequence[Any]]:
+    def _read(
+        self, statement: str, *, source: str, limit: int | None = None
+    ) -> list[Sequence[Any]]:
         """One statement, against whichever transport this reader is bound to.
 
         The two dialects agree on everything these statements use — ``GREATEST``,
@@ -606,13 +673,22 @@ class ErpReader:
         rows.
         """
         if not self._from_mirror:
-            return self._query(statement, source=source)
-        return _mirror_statement(statement, source=source)
+            return self._query(statement, source=source, limit=limit)
+        return _assert_complete(
+            _mirror_statement(statement, source=source), limit, source
+        )
 
     # ---------------------------------------------------------------- transport
 
-    def _query(self, statement: str, *, source: str) -> list[Sequence[Any]]:
-        """Run one statement and return its rows, chunks included."""
+    def _query(
+        self, statement: str, *, source: str, limit: int | None = None
+    ) -> list[Sequence[Any]]:
+        """Run one statement and return its rows, chunks included.
+
+        ``limit`` est le nombre de lignes *attendues* — la requête, elle, en a
+        demandé une de plus. Une lecture qui les ramène toutes est une lecture
+        coupée, et elle est refusée ici plutôt que servie amputée.
+        """
         if not self._warehouse_id:
             raise ValidationError(
                 "Aucun entrepôt SQL n'est attaché à l'application : la lecture "
@@ -635,7 +711,7 @@ class ErpReader:
             ) from exc
 
         _assert_succeeded(response, source)
-        return list(_rows_of(response, client))
+        return _assert_complete(list(_rows_of(response, client)), limit, source)
 
 
 def _mirror_rows(

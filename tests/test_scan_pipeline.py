@@ -38,6 +38,34 @@ from inventory.ai.sheet_extraction import (
 # Un PDF réel, produit par l'application elle-même
 # --------------------------------------------------------------------------- #
 
+class ArchiveSpy:
+    """Doublure du magasin de pièces : retient comment elle a été appelée.
+
+    Deux choses se vérifient ici et nulle part ailleurs : que le scan exige
+    l'archivage (``required=True``) plutôt que de s'en accommoder, et que
+    l'empreinte du fichier déposé finit bien sur la feuille.
+    """
+
+    def __init__(self) -> None:
+        from inventory.evidence import ArchivedFile
+
+        self.calls: list[dict] = []
+        self.archived = ArchivedFile(
+            path="/Volumes/x/scan.pdf", sha256="a" * 64, size=4096,
+            mime="application/pdf",
+        )
+
+    def put(self, payload, **kwargs):
+        self.calls.append(kwargs)
+        return self.archived
+
+    @property
+    def demanded_archiving(self) -> bool:
+        return bool(self.calls) and all(
+            call.get("required") is True for call in self.calls
+        )
+
+
 def counting_sheet(lines: int = 30) -> bytes:
     """La feuille telle qu'elle sort de l'imprimante, pied de page compris."""
     import datetime as dt
@@ -286,7 +314,7 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
     from types import SimpleNamespace
     from typing import cast
 
-    from conftest import with_access
+    from conftest import with_access, with_transactions
 
     from inventory.ai.sheet_extraction import ExtractionResult, PageRouting
     from inventory.config import Settings
@@ -340,25 +368,157 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
 
     monkeypatch.setattr(ai_module, "SheetExtractor", _Extractor)
 
+    archive = ArchiveSpy()
+    sheet_updates: list[dict] = []
+
     ctx = SimpleNamespace(
         actor="chef@usine",
         settings=Settings(),
         progress=lambda c: SimpleNamespace(
             items=10, zones=2, book_stock_lines=5, book_stock_frozen=True
         ),
-        evidence=SimpleNamespace(put=lambda *a, **k: "/Volumes/x/scan.pdf"),
+        evidence=archive,
         sheets=SimpleNamespace(
             list_zones=lambda cid: zones,
             list_sheets=lambda cid: sheets,
             lines_by_sheet=lambda cid: lines_by_sheet,
-            replace_sheet_lines=lambda sid, lines, *, actor: written.append(sid),
-            update_sheet=lambda sid, **k: None,
+            replace_sheet_lines=lambda sid, lines, *, actor, conn=None: (
+                written.append(sid) or ctx.db.note(f"lignes:{sid}")
+            ),
+            update_sheet=lambda cid, sid, **k: (
+                sheet_updates.append(k) or ctx.db.note(f"feuille:{sid}")
+            ),
         ),
         referentials=SimpleNamespace(items_by_number=lambda cid: {}),
         record=lambda **kw: "evt",
     )
+    with_transactions(ctx)
     with_access(ctx)
-    return module.GenericService(cast(object, ctx)), campaign, written, ExtractionResult
+    service = module.GenericService(cast(object, ctx))
+    service._archive_spy = archive  # type: ignore[attr-defined]
+    service._sheet_updates = sheet_updates  # type: ignore[attr-defined]
+    return service, campaign, written, ExtractionResult
+
+
+class TestLaPieceEstObligatoirePourUnScan:
+    """L'archivage se taisait partout, y compris là où il ne le peut pas.
+
+    Un export ERP se relit dans l'ERP. Une feuille manuscrite, non : le papier
+    repart dans l'atelier. Écrire les quantités que le modèle y a lues alors que
+    l'image n'a pas été archivée fabriquerait un comptage invérifiable, et
+    l'écran ne le dirait pas — la colonne est nullable, et « pas de pièce » et
+    « pièce perdue » s'y ressemblent.
+    """
+
+    def test_une_feuille_seule_exige_larchivage(self, monkeypatch):
+        service, campaign = one_sheet_bench(monkeypatch)
+        service.extract_from_scan(
+            campaign, "s-1", payload=b"x", filename="scan.png",
+            content_type="image/png",
+        )
+        spy = service._archive_spy
+        assert spy.calls, "aucune pièce archivée"
+        assert spy.demanded_archiving, spy.calls
+
+    def test_une_pile_aussi(self, monkeypatch):
+        from inventory.ai.sheet_extraction import ExtractionResult, PageRouting
+
+        service, campaign, _w, _ = multi_scan_service(
+            monkeypatch,
+            routing=PageRouting(pages_by_sheet={"s-0": [0]}),
+            results={"s-0": ExtractionResult(pages=1, tokens_used=10)},
+        )
+        service.extract_from_multi_scan(
+            campaign, payload=counting_sheet(), filename="pile.pdf",
+            content_type="application/pdf",
+        )
+        spy = service._archive_spy
+        assert spy.calls, "aucune pièce archivée"
+        assert spy.demanded_archiving, spy.calls
+
+    def test_lempreinte_du_fichier_depose_arrive_sur_la_feuille(self, monkeypatch):
+        """Le chemin dit *où*, l'empreinte dit *lequel*. La feuille doit les deux."""
+        service, campaign = one_sheet_bench(monkeypatch)
+        service.extract_from_scan(
+            campaign, "s-1", payload=b"x", filename="scan.png",
+            content_type="image/png",
+        )
+        archived = service._archive_spy.archived
+        written = service._sheet_updates
+        assert written, "la feuille n'a pas été mise à jour"
+        assert written[-1]["evidence_path"] == archived.path
+        assert written[-1]["evidence_sha256"] == archived.sha256
+        assert written[-1]["evidence_bytes"] == archived.size
+        assert written[-1]["evidence_mime"] == archived.mime
+
+    def test_chaque_feuille_dune_pile_porte_la_meme_empreinte(self, monkeypatch):
+        """Une seule pièce justifie toute la pile : elles pointent dessus."""
+        from inventory.ai.sheet_extraction import ExtractionResult, PageRouting
+
+        service, campaign, _w, _ = multi_scan_service(
+            monkeypatch,
+            routing=PageRouting(pages_by_sheet={"s-0": [0], "s-1": [1]}),
+            results={
+                "s-0": ExtractionResult(pages=1, tokens_used=10),
+                "s-1": ExtractionResult(pages=1, tokens_used=10),
+            },
+        )
+        service.extract_from_multi_scan(
+            campaign, payload=counting_sheet(), filename="pile.pdf",
+            content_type="application/pdf",
+        )
+        archived = service._archive_spy.archived
+        written = service._sheet_updates
+        assert len(written) == 2
+        assert all(w["evidence_sha256"] == archived.sha256 for w in written), written
+
+
+class TestUneFeuilleEcriteEstUneFeuilleJustifiee:
+    """Les lignes lues et le chemin de la preuve tiennent ensemble, ou pas du tout.
+
+    Les deux écritures étaient enchaînées sans transaction. Une panne entre
+    elles laissait une feuille dont les quantités viennent du modèle et dont le
+    scan qui les justifie n'est référencé nulle part : six mois plus tard, une
+    quantité contestée n'a plus rien derrière elle.
+    """
+
+    def test_une_feuille_seule(self, monkeypatch):
+        service, campaign = one_sheet_bench(monkeypatch)
+        service.extract_from_scan(
+            campaign, "s-1", payload=b"x", filename="scan.png",
+            content_type="image/png",
+        )
+        db = service.ctx.db
+        assert set(db.writes) == {"lignes:s-1", "feuille:s-1"}
+        assert db.all_writes_inside_one_transaction(), db.writes
+
+    def test_chaque_feuille_dune_pile_a_la_sienne(self, monkeypatch):
+        """Une par feuille, pas une pour la pile.
+
+        Le rapport nomme les feuilles traitées une à une : une pile de trente
+        ne doit pas perdre les vingt-neuf qui ont abouti parce que la trentième
+        a échoué.
+        """
+        from inventory.ai.sheet_extraction import ExtractionResult, PageRouting
+
+        service, campaign, _written, _ = multi_scan_service(
+            monkeypatch,
+            routing=PageRouting(pages_by_sheet={"s-0": [0], "s-1": [1]}),
+            results={
+                "s-0": ExtractionResult(pages=1, tokens_used=10),
+                "s-1": ExtractionResult(pages=1, tokens_used=10),
+            },
+        )
+        service.extract_from_multi_scan(
+            campaign, payload=counting_sheet(), filename="pile.pdf",
+            content_type="application/pdf",
+        )
+        db = service.ctx.db
+        assert set(db.writes) == {
+            "lignes:s-0", "feuille:s-0", "lignes:s-1", "feuille:s-1",
+        }
+        assert db.all_writes_inside_one_transaction(), db.writes
+        assert db.opened == 2, "une transaction par feuille, pas une pour la pile"
 
 
 class TestTheStackIsNotTruncatedInSilence:
@@ -450,7 +610,7 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
     from types import SimpleNamespace
     from typing import cast
 
-    from conftest import with_access
+    from conftest import with_access, with_transactions
 
     from inventory.ai.sheet_extraction import ExtractionResult
     from inventory.config import Settings
@@ -498,25 +658,36 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
         ai_module, "render_pdf_pages", lambda *a, **k: [b"page"] * pages
     )
 
+    archive = ArchiveSpy()
+    sheet_updates: list[dict] = []
+
     ctx = SimpleNamespace(
         actor="chef@usine",
         settings=Settings(),
         progress=lambda c: SimpleNamespace(
             items=10, zones=2, book_stock_lines=5, book_stock_frozen=True
         ),
-        evidence=SimpleNamespace(put=lambda *a, **k: "/Volumes/x/scan.pdf"),
+        evidence=archive,
         sheets=SimpleNamespace(
             get_sheet=lambda sid: sheet,
             list_zones=lambda cid: [zone],
             list_sheet_lines=lambda sid: expected,
-            replace_sheet_lines=lambda sid, lines, *, actor: None,
-            update_sheet=lambda sid, **k: None,
+            replace_sheet_lines=lambda sid, lines, *, actor, conn=None: ctx.db.note(
+                f"lignes:{sid}"
+            ),
+            update_sheet=lambda cid, sid, **k: (
+                sheet_updates.append(k) or ctx.db.note(f"feuille:{sid}")
+            ),
         ),
         referentials=SimpleNamespace(items_by_number=lambda cid: {}),
         record=lambda **kw: "evt",
     )
+    with_transactions(ctx)
     with_access(ctx)
-    return module.GenericService(cast(object, ctx)), campaign
+    service = module.GenericService(cast(object, ctx))
+    service._archive_spy = archive  # type: ignore[attr-defined]
+    service._sheet_updates = sheet_updates  # type: ignore[attr-defined]
+    return service, campaign
 
 
 class TestASingleSheetAnnouncesItsStages:

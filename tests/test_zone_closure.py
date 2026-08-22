@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from conftest import with_access
+from conftest import with_access, with_transactions
 
 from inventory.domain.enums import CampaignStatus
 from inventory.domain.models import ArbitrationLine, Campaign, Zone
@@ -68,8 +68,8 @@ def service(
     sheets = SimpleNamespace(
         list_zones=lambda cid: [zone],
         list_arbitrations=lambda cid: list(arbitrations),
-        set_zone_closed=lambda zid, *, closed, actor: written.append(
-            {"zone": zid, "closed": closed, "actor": actor}
+        set_zone_closed=lambda cid, zid, *, closed, actor, conn=None: written.append(
+            {"campaign": cid, "zone": zid, "closed": closed, "actor": actor}
         ),
     )
     ctx = SimpleNamespace(
@@ -81,6 +81,7 @@ def service(
             items=10, zones=1, book_stock_lines=5, book_stock_frozen=True
         ),
     )
+    with_transactions(ctx)
     with_access(ctx)
     generic = GenericService(cast(Any, ctx))
     # L'arbitrage est recalculé avant toute clôture ; ici on note l'appel
@@ -96,7 +97,9 @@ class TestClosingAZone:
         generic, written, _, _, zid = service()
         out = generic.set_zone_closed(campaign(), zid, closed=True)
         assert out == {"id": "z-1", "closed": True}
-        assert written == [{"zone": "z-1", "closed": True, "actor": "chef@usine"}]
+        assert written == [
+            {"campaign": "camp-1", "zone": "z-1", "closed": True, "actor": "chef@usine"}
+        ]
 
     def test_an_open_discrepancy_refuses_it(self):
         """Fermer sur un écart non tranché promettrait à la consolidation une
@@ -139,7 +142,9 @@ class TestReopeningAZone:
             closed=True, arbitrations=(arbitration(resolved=False),)
         )
         generic.set_zone_closed(campaign(), zid, closed=False)
-        assert written == [{"zone": "z-1", "closed": False, "actor": "chef@usine"}]
+        assert written == [
+            {"campaign": "camp-1", "zone": "z-1", "closed": False, "actor": "chef@usine"}
+        ]
 
     def test_reopening_does_not_recompute_the_arbitrations(self):
         generic, _, _, refreshed, zid = service(closed=True)

@@ -43,6 +43,8 @@ SHIPPED = {
     "015_scan_job": "20ed77f608f7",
     "016_scan_job_sheet": "461bab2d5e5b",
     "017_zone_closure": "67ae24533ced",
+    "018_campaign_scoped_keys": "1d70d899edc1",
+    "019_sheet_evidence_fingerprint": "9477b2463139",
 }
 
 

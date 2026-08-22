@@ -57,7 +57,7 @@ def query(kind: FlowKind) -> str:
     """La requête d'une étape, capturée sans transport."""
     captured: dict[str, str] = {}
     rdr = reader()
-    rdr._read = lambda statement, *, source: (  # type: ignore[method-assign]
+    rdr._read = lambda statement, *, source, limit=None: (  # type: ignore[method-assign]
         captured.update(sql=" ".join(statement.split()), source=source) or []
     )
     rdr.fetch_movements(
@@ -107,7 +107,7 @@ class TestWhichColumnFeedsWhichStep:
         """
         captured: dict[str, str] = {}
         rdr = reader()
-        rdr._read = lambda statement, *, source: (  # type: ignore[method-assign]
+        rdr._read = lambda statement, *, source, limit=None: (  # type: ignore[method-assign]
             captured.update(sql=" ".join(statement.split()), source=source) or []
         )
         rdr.fetch_stock_flow(
@@ -137,7 +137,7 @@ class TestAReferenceOnlyAppearsInTheStepsItTouched:
         """Un parent produit sans consommation reste une ligne du rapport."""
         captured: dict[str, str] = {}
         rdr = reader()
-        rdr._read = lambda statement, *, source: (  # type: ignore[method-assign]
+        rdr._read = lambda statement, *, source, limit=None: (  # type: ignore[method-assign]
             captured.update(sql=" ".join(statement.split())) or []
         )
         rdr.fetch_stock_flow(

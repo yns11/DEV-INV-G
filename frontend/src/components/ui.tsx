@@ -556,6 +556,16 @@ export function ViewTabs<T extends string>({
 // Modal
 // --------------------------------------------------------------------------- //
 
+/**
+ * Ce qui prend le focus à la tabulation, à l'intérieur d'une fenêtre modale.
+ *
+ * `:not([disabled])` et `tabindex="-1"` sont exclus : les inclure ferait
+ * atterrir le focus sur un bouton grisé, ce qui ressemble à une fenêtre figée.
+ */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 export function Modal({
   title,
   onClose,
@@ -570,16 +580,56 @@ export function Modal({
   children: ReactNode
 }) {
   const titleId = useId()
+  const dialog = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
+    // Ce qui avait le focus avant l'ouverture — le bouton qui a ouvert la
+    // fenêtre, neuf fois sur dix. À la fermeture, le focus y retourne : sans
+    // cela il repart au début du document, et un utilisateur au clavier
+    // retraverse toute la navigation pour revenir là où il en était.
+    const opener = document.activeElement as HTMLElement | null
+
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape') {
+        onClose()
+        return
+      }
+      if (event.key !== 'Tab') return
+      // Le piège de focus. `aria-modal` dit aux lecteurs d'écran que le reste
+      // de la page n'existe plus ; la tabulation, elle, continuait d'en sortir
+      // et de parcourir la grille, la navigation latérale et la barre du
+      // navigateur — le tout invisible derrière l'overlay. On revient donc au
+      // premier élément après le dernier, et inversement.
+      const focusable = dialog.current?.querySelectorAll<HTMLElement>(FOCUSABLE)
+      if (!focusable?.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (!first || !last) return
+      const active = document.activeElement
+      if (event.shiftKey && (active === first || !dialog.current?.contains(active))) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
+
     document.addEventListener('keydown', onKey)
     const previous = document.body.style.overflow
     document.body.style.overflow = 'hidden'
+
+    // Le focus entre dans la fenêtre à l'ouverture. Il restait sur le bouton
+    // d'origine : un lecteur d'écran annonçait la fenêtre sans y être, et la
+    // première tabulation partait dans la page du dessous.
+    const initial =
+      dialog.current?.querySelector<HTMLElement>(FOCUSABLE) ?? dialog.current
+    initial?.focus()
+
     return () => {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = previous
+      opener?.focus?.()
     }
   }, [onClose])
 
@@ -587,9 +637,14 @@ export function Modal({
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
         className="modal"
+        ref={dialog}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        // La fenêtre elle-même reçoit le focus quand elle ne contient rien de
+        // focalisable — une fenêtre de lecture seule. `-1` la rend atteignable
+        // par script sans l'insérer dans l'ordre de tabulation.
+        tabIndex={-1}
         style={width ? ({ '--modal-width': `${width}px` } as React.CSSProperties) : undefined}
       >
         <header className="modal__head">

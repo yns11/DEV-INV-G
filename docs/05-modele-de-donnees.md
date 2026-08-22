@@ -10,7 +10,9 @@ Elles sont issues du cahier des charges et appliquées sans exception.
 | Chaque dimension a sa colonne et une clé technique | Toutes les tables mutables portent un `id UUID` en plus de leur clé métier. |
 | Article, unité, emplacement, BOM et prix sont snapshotés | Chaque campagne possède sa copie complète des référentiels. |
 | Les valeurs calculées conservent la règle et la version de code | `engine_version` sur la campagne et sur chaque exécution de consolidation. |
-| La preuve documentaire est référencée | `count_sheet.evidence_path` et `import_batch.storage_path` pointent vers le volume UC. |
+| La preuve documentaire est référencée **et vérifiable** | `count_sheet.evidence_path` et `import_batch.storage_path` pointent vers le volume UC ; le chemin porte l'empreinte du contenu, et une feuille scannée conserve `evidence_sha256` / `evidence_bytes` / `evidence_mime`. Un volume se modifie depuis l'espace de travail : le chemin dit *où*, l'empreinte dit *lequel*. |
+| Un enfant ne peut pas appartenir à la campagne d'un autre | Clés uniques `(id, campaign_id)` sur `count_journal`, `zone` et `count_sheet` ; clés étrangères **composites** depuis `count_journal_line`, `count_sheet`, `count_sheet_line` et `arbitration`. La permission d'écriture se vérifie sur la campagne de l'URL, les identifiants arrivent dans le corps : c'est Postgres qui garantit qu'ils désignent la même campagne. |
+| Un chargement porte un seul identifiant de lot | Le stock ERP et l'écart backflush marquent leurs lignes avec l'identifiant que porte aussi leur ligne d'`import_batch`. Deux identifiants pour un chargement rendaient « d'où vient cette quantité » sans réponse. |
 | Les suppressions logiques sont préférées aux suppressions physiques | `deleted_at` partout ; le journal d'audit résout donc toujours. |
 
 ## 2. Types numériques
@@ -183,6 +185,29 @@ Ils suivent les chemins réellement empruntés :
 
 Les index partiels (`WHERE deleted_at IS NULL`) évitent d'indexer les lignes
 logiquement supprimées, qui ne sont jamais lues.
+
+### 3.1 Les clés composites, et pourquoi elles existent
+
+La garde d'écriture vérifie une permission sur la campagne de l'**URL**. Les
+identifiants des objets, eux, arrivent dans le **corps** de la requête. Rien
+dans cette architecture ne relie les deux : un gestionnaire habilité sur la
+campagne A pouvait poster un journal, fermer une zone ou supprimer une ligne de
+la campagne B en connaissant son identifiant, et la garde n'y voyait rien
+puisqu'elle avait bien vu A.
+
+Le correctif est en deux couches, et les deux sont nécessaires.
+
+**Applicative** — chaque écriture est portée par sa campagne :
+`WHERE campaign_id = ? AND id = ?`. Neuf méthodes de dépôt exigent désormais
+`campaign_id` en premier paramètre, sans valeur par défaut.
+
+**Structurelle** — migration 018. `count_journal`, `zone` et `count_sheet`
+portent une clé unique `(id, campaign_id)`, redondante avec leur clé primaire ;
+c'est le prix d'une garantie qui reste vraie même si une requête future oublie
+le filtre. Les clés étrangères simples de `count_journal_line`, `count_sheet`,
+`count_sheet_line` et `arbitration` sont **remplacées** — pas doublées — par
+des clés composites. Garder les deux laisserait croire que la garantie tient
+alors que seule la plus faible s'appliquerait.
 
 ## 4. Schéma analytique (Delta / Unity Catalog)
 

@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
@@ -283,21 +283,77 @@ def create_app() -> FastAPI:
         )
 
     # ---- routes ------------------------------------------------------------
-    @app.get("/api/health", tags=["système"], summary="Sonde de santé")
-    def health() -> dict[str, Any]:
-        """Liveness and readiness in one payload.
-
-        Always answers 200 so the platform does not recycle a container that is
-        merely degraded; ``ready`` carries the truth.
-        """
+    def _database_ok() -> bool:
         from ..db import get_database
 
-        database_ok = False
-        if settings.lakebase_configured:
-            try:
-                database_ok = get_database(settings).ping()
-            except Exception:  # pragma: no cover - infrastructure dependent
-                database_ok = False
+        if not settings.lakebase_configured:
+            return False
+        try:
+            return get_database(settings).ping()
+        except Exception:  # pragma: no cover - infrastructure dependent
+            return False
+
+    @app.get("/api/health/live", tags=["système"], summary="Sonde de vivacité")
+    def health_live() -> dict[str, Any]:
+        """Le processus répond-il ? Rien d'autre.
+
+        Aucune dépendance n'est consultée : la vivacité dit « ce conteneur
+        n'est pas figé », et c'est sur cette réponse que la plateforme décide de
+        le recycler. Y faire entrer l'état de Lakebase reviendrait à faire
+        redémarrer en boucle des conteneurs parfaitement sains le jour où la
+        base est indisponible — le redémarrage ne répare pas la base, et la
+        rafale de reconnexions qu'il provoque l'empêche de revenir.
+        """
+        return {"status": "ok", "version": app.version}
+
+    @app.get(
+        "/api/health/ready",
+        tags=["système"],
+        summary="Sonde de disponibilité",
+        responses={503: {"description": "Le conteneur ne peut pas servir."}},
+    )
+    def health_ready(response: Response) -> dict[str, Any]:
+        """Ce conteneur peut-il servir une requête ? Répond 503 sinon.
+
+        C'est la sonde que la plateforme lit pour décider de lui envoyer du
+        trafic. Le diagnostic complet — ``/api/health`` — répond 200 quoi qu'il
+        arrive, ce qui est juste pour un humain qui vient lire l'état et faux
+        pour un orchestrateur : un conteneur dont les migrations ont échoué
+        recevait des requêtes exactement comme les autres, et les servait avec
+        des erreurs SQL. Ici, l'indisponibilité est dans le **code de statut**,
+        seul endroit qu'une sonde regarde.
+
+        Une migration en attente compte comme une indisponibilité : le schéma
+        n'est pas celui que le code attend, et servir dans cet état produit des
+        colonnes manquantes plutôt qu'un refus franc.
+        """
+        migrations = _migration_state(settings)
+        ready = (
+            _database_ok()
+            and not migrations["pending"]
+            and not migrations["error"]
+            and getattr(app.state, "startup_error", None) is None
+        )
+        if not ready:
+            response.status_code = 503
+        return {
+            "ready": ready,
+            "database": _database_ok(),
+            "pendingMigrations": migrations["pending"],
+            "startupError": getattr(app.state, "startup_error", None),
+        }
+
+    @app.get("/api/health", tags=["système"], summary="Diagnostic complet")
+    def health() -> dict[str, Any]:
+        """Tout ce qu'on peut savoir de ce conteneur, en une réponse.
+
+        Répond toujours 200 : c'est une page de diagnostic, lue par un humain
+        qui cherche pourquoi quelque chose ne marche pas, et une page de
+        diagnostic qui refuse de s'afficher quand ça va mal ne sert à rien. Les
+        deux sondes que la plateforme interroge sont ``/api/health/live`` et
+        ``/api/health/ready``.
+        """
+        database_ok = _database_ok()
         return {
             "status": "ok" if database_ok else "degraded",
             "ready": database_ok,
@@ -349,7 +405,10 @@ def create_app() -> FastAPI:
         )
         return {
             "actor": actor,
-            "authenticated": actor not in ("local@dev", "unknown@unauthenticated"),
+            # `get_current_user` refuse désormais une requête déployée sans
+            # identité : arriver ici signifie qu'on en a une, ou qu'on est en
+            # local. Seul le repli local reste « non authentifié ».
+            "authenticated": actor != "local@dev",
             "source": (
                 "databricks-apps"
                 if request.headers.get("x-forwarded-email")
@@ -407,6 +466,7 @@ databricks apps deploy -t prod --profile PROD</pre>
  <p>Sous Linux ou macOS, <code>make deploy</code> enchaîne les deux étapes.
     L'API reste utilisable en attendant&nbsp;:
     <a href="/api/health">/api/health</a> ·
+    <a href="/api/health/ready">/api/health/ready</a> ·
     <a href="/api/docs">/api/docs</a></p>
 </main></html>
 """

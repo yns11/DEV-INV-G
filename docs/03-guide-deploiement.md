@@ -326,7 +326,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 996 tests, ~8 s, aucune base requise
+make test      # 1131 tests, ~16 s, aucune base requise
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -496,6 +496,34 @@ Réponse attendue :
   "warehouseConfigured": true,
   "startupError": null
 }
+```
+
+#### Les trois points d'entrée de santé
+
+Ils répondent à trois questions différentes, et ne s'échangent pas.
+
+| Chemin | Question | Code | À câbler sur |
+|---|---|---|---|
+| `/api/health/live` | Le processus est-il figé ? | Toujours 200 | La sonde de **vivacité** |
+| `/api/health/ready` | Ce conteneur peut-il servir ? | 200 ou **503** | La sonde de **disponibilité** |
+| `/api/health` | Que sait-on de ce conteneur ? | Toujours 200 | Un humain, un `curl` |
+
+`/api/health/live` ne consulte **aucune** dépendance, et c'est délibéré : y
+faire entrer l'état de Lakebase ferait redémarrer en boucle des conteneurs
+parfaitement sains le jour où la base est indisponible, et la rafale de
+reconnexions qu'ils produiraient l'empêcherait de revenir.
+
+`/api/health/ready` répond 503 quand la base ne répond pas, quand une migration
+reste en attente, quand l'état du schéma est illisible, ou quand
+l'initialisation a échoué. Une migration en attente compte : le schéma n'est
+pas celui que le code attend, et servir dans cet état produit des colonnes
+manquantes au moment où quelqu'un enregistre un comptage, plutôt qu'un refus
+franc à la porte.
+
+```bash
+URL="$(databricks apps get campagnes-inventaire --profile PROD -o json | jq -r .url)"
+curl -s -o /dev/null -w "live:%{http_code}\n"  "$URL/api/health/live"
+curl -s -w "\nready:%{http_code}\n"           "$URL/api/health/ready"
 ```
 
 ### 4.6 Déployer le job de publication
@@ -984,9 +1012,20 @@ Ou, à la souris : onglet **Permissions** de l'app.
 ### 7.2 Vérifier l'identité vue par l'application
 
 Ouvrez `<url-de-lapp>/api/me`. Vous devez voir votre adresse et
-`"source": "databricks-apps"`. Si vous voyez `unknown@unauthenticated`,
-l'application est accessible sans passer par le proxy : vérifiez la configuration
-réseau du workspace.
+`"source": "databricks-apps"`.
+
+Si la réponse est un **401** (`« Identité absente. Cette application doit être
+atteinte via le proxy d'authentification Databricks »`), l'application est
+joignable sans passer par le proxy. Vérifiez la configuration réseau du
+workspace avant toute autre chose : dans cet état, chaque écriture serait
+attribuée à quelqu'un que personne n'a authentifié.
+
+L'application inventait auparavant une identité générique dans ce cas et
+laissait passer. Les campagnes créées ainsi portent un propriétaire que
+personne ne peut identifier, et la barrière d'identité — propriétaire ou
+gestionnaire déclaré — ne protégeait alors rien. Le refus a remplacé
+l'invention : mieux vaut une application injoignable qu'une piste d'audit qui
+ment.
 
 ### 7.3 Première campagne
 
@@ -1024,19 +1063,48 @@ Il s'organise par campagne, puis par nature de pièce :
 ```
 /Volumes/<catalogue>/<schéma>/<volume>/
   INV-2026-T3/
-    items/       20260901T063015-articles.xlsx
-    book_stock/  20260901T071140-stock-erp.csv
-    scans/       20260902T081205-releve-atelier.pdf
+    items/       20260901T063015-3016ef88-articles.xlsx
+    book_stock/  20260901T071140-a71c0e42-stock-erp.csv
+    scans/       20260902T081205-9d4b1f07-releve-atelier.pdf
 ```
 
 L'horodatage précède le nom pour que l'ordre alphabétique du dossier soit
 l'ordre chronologique, qui est celui dans lequel on cherche.
 
-**L'archivage ne fait jamais échouer un chargement.** Volume absent, droit
-manquant, API indisponible : la pièce n'est pas déposée, le chargement aboutit,
-et l'avertissement part dans les journaux. L'écran affiche alors le nom du
-fichier en texte simple au lieu d'un lien — « pas de pièce » se voit, ce qui
-vaut mieux qu'un import de deux cent mille lignes refusé.
+**Le fragment hexadécimal est l'empreinte du contenu.** Le chemin ne portait
+auparavant que l'horodatage à la seconde et le nom du fichier, et le dépôt se
+faisait en écrasement. Deux scans nommés `scan.pdf` déposés dans la même
+seconde — deux feuilles envoyées ensemble, un re-scan après correction —
+écrivaient au même endroit : le second effaçait le premier, et la feuille dont
+la base gardait le chemin pointait alors sur l'image d'une autre. Rien ne le
+signalait, et un contrôle six mois plus tard aurait relu la mauvaise pièce.
+
+Deux contenus différents ne peuvent plus se retrouver au même chemin ; deux
+dépôts du **même** fichier convergent vers le même, ce qui est le comportement
+voulu. Plus rien n'est déposé en écrasement.
+
+Les feuilles scannées conservent en outre l'empreinte, la taille et le type du
+fichier lu (`count_sheet.evidence_sha256`, `evidence_bytes`, `evidence_mime`,
+migration 019). Le chemin dit *où* ; l'empreinte dit *lequel* — un volume se
+modifie depuis l'espace de travail, et c'est la seule façon de répondre
+autrement que par la confiance. Les feuilles scannées avant la migration 019
+gardent leur chemin sans empreinte : les remplir après coup reviendrait à
+affirmer que le fichier présent aujourd'hui est bien l'original, ce que ces
+colonnes existent précisément pour ne plus avoir à supposer.
+
+**L'archivage fait échouer ce qu'il accompagne — ou non, selon la pièce.**
+
+*Un chargement de fichier* aboutit même si l'archivage échoue : volume absent,
+droit manquant, API indisponible, la pièce n'est pas déposée et
+l'avertissement part dans les journaux. L'écran affiche alors le nom du fichier
+en texte simple au lieu d'un lien — « pas de pièce » se voit, ce qui vaut mieux
+qu'un import de deux cent mille lignes refusé, et l'export se relit dans l'ERP.
+
+*Un scan de feuille* est refusé. Le papier manuscrit repart dans l'atelier et
+finit à la benne ; écrire les quantités que le modèle y a lues en sachant que
+l'image n'a pas été archivée fabriquerait un comptage que personne ne pourra
+jamais vérifier. Si le volume n'est pas configuré, la lecture de scans est donc
+indisponible et le dit, au lieu de produire des chiffres sans pièce.
 
 `<url-de-lapp>/api/health` répond `"evidenceConfigured": true` quand les trois
 noms qui composent le chemin sont renseignés. Les droits, eux, ne se vérifient

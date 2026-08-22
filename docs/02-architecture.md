@@ -48,7 +48,7 @@ inventory.domain     règles métier pures — n'importe aucun driver, aucun fra
 **`inventory.domain` n'importe rien du reste.** C'est ce qui permet de tester
 l'intégralité des règles métier — éclatement BOM, consolidation, écarts,
 contrôles, machine à états, matrice d'impression — en une fraction de seconde
-sans base de données. La suite compte 287 tests ; c'est la propriété que le
+sans base de données. La suite compte 1131 tests ; c'est la propriété que le
 classeur Excel n'avait pas.
 
 Dernier arrivé dans cette couche : `domain/printing.py`, qui décide lequel des
@@ -145,11 +145,62 @@ jamais effacer une correction humaine. L'interface affiche les deux côte à cô
 avec un badge de provenance (`Import ERP`, `Saisie manuelle`, `Extraction IA`,
 `Consolidation`, `Arbitrage`, `Système`).
 
+### Une commande métier écrit tout, ou rien
+
+Une commande qui touche plusieurs tables les touche dans **une** transaction.
+La liste n'est pas décorative : c'est celle des états que rien dans
+l'application ne saurait décrire s'ils survenaient.
+
+| Commande | Ce qu'un incident au milieu laissait derrière |
+|---|---|
+| Création d'une zone | Une zone sans feuilles, que l'écran présente comme prête à compter |
+| Saisie d'une quantité | Un chiffre sans la trace de qui l'a saisi, dans une application dont c'est la raison d'être |
+| Suppression d'un lot de lignes | Une trace annonçant « 40 lignes supprimées » quand 12 sont parties |
+| Lecture d'un scan | Des quantités lues par le modèle et un chemin de preuve manquant |
+| Consolidation | Un calcul « courant » dont le journal GENERIQUE est resté vide |
+
+Le dernier cas était le plus retors : le refus « aucun journal GENERIQUE
+n'existe » se déclenchait **après** l'enregistrement du calcul. Une campagne mal
+configurée repartait donc avec une consolidation courante et rien pour la
+porter.
+
+La lecture d'une **pile** de scans fait exception, et délibérément : une
+transaction par feuille, pas une pour la pile. Le rapport nomme les feuilles
+traitées une à une, et trente feuilles ne doivent pas perdre les vingt-neuf qui
+ont abouti parce que la trentième a échoué.
+
+### Une lecture ERP n'est jamais coupée en silence
+
+`LIMIT n` ramène `n` lignes que la source en ait `n` ou dix mille, et rien dans
+la réponse ne distingue les deux cas. Une campagne pouvait donc partir avec un
+référentiel amputé sans qu'aucun écran ne l'annonce : le comptage se faisait
+contre un stock qui ne couvrait pas l'usine, et l'écart qui en sortait n'était
+l'écart de rien — une faute qu'on ne découvre qu'à la réunion des écarts, quand
+il est trop tard pour recompter.
+
+Chaque lecture demande désormais **une ligne de plus** que son plafond. Si elle
+revient, la source en avait davantage, et la lecture est refusée en nommant la
+table et le plafond. La ligne excédentaire est lue puis jetée : le coût d'une
+ligne contre celui d'un inventaire faux.
+
+Une seule lecture garde le droit d'être coupée — la liste des dates de snapshot
+proposée à l'écran, où la troncature *est* l'intention.
+
 ## 6. Sécurité et identité
 
 - L'authentification est terminée par le proxy Databricks Apps ; l'identité
   arrive dans `x-forwarded-email`. C'est la **seule** source d'identité :
   l'application ne lit jamais un identifiant utilisateur dans un corps de requête.
+- **Sans en-tête d'identité, la requête est refusée** (401), et non attribuée à
+  une identité générique. L'application en inventait une auparavant : les
+  écritures partaient sous un nom que personne n'avait authentifié, et la
+  barrière d'identité — propriétaire ou gestionnaire déclaré — ne protégeait
+  alors rien. En environnement local, et là seulement, l'identité `local@dev`
+  tient lieu de proxy.
+- **La campagne de l'URL est celle qui est écrite.** La permission se vérifie
+  sur la campagne de l'URL, les identifiants arrivent dans le corps : chaque
+  écriture porte donc `WHERE campaign_id = ? AND id = ?`, et des clés étrangères
+  composites l'imposent au niveau du schéma (voir *Modèle de données*, §3.1).
 - Les accès aux ressources (warehouse, endpoint LLM, Lakebase) passent par le
   service principal de l'app, dont les permissions sont accordées
   automatiquement par la plateforme à partir des déclarations de `databricks.yml`.
@@ -166,9 +217,11 @@ avec un badge de provenance (`Import ERP`, `Saisie manuelle`, `Extraction IA`,
 | Proxy : 120 s par requête | Budget de 100 s côté app ; les traitements lourds sont bornés et paginés |
 | 6 Go de RAM, 2 vCPU | Lecture des `.xlsx` en flux, écriture `constant_memory`, pool de 8 connexions, `n_jobs=1` sur scikit-learn |
 | 10 Mo par fichier | Bundle SPA de 109 Ko compressé, aucun `node_modules` dans la charge utile |
+| Téléversements non bornés | Lecture par tranches d'1 Mio, interrompue dès le plafond `INV_MAX_UPLOAD_BYTES` franchi. Le refus coûte une tranche, pas un fichier — il arrivait auparavant après que tout avait été chargé en mémoire, et seulement sur la route d'import |
 | Pas d'accès root | Uniquement des roues PyPI ; pas de Poppler, donc les PDF scannés sont découpés page par page en PDF, pas rasterisés |
 | Système de fichiers éphémère | Aucun état sur disque ; les preuves vont dans un volume UC |
 | Seuls stdout/stderr sont capturés | Journalisation JSON structurée sur stdout |
+| Sondes de la plateforme | `/api/health/live` (jamais de dépendance : une base en panne ne doit pas faire recycler des conteneurs sains) et `/api/health/ready` (503 tant que la base, les migrations ou le démarrage ne suivent pas). `/api/health` reste la page de diagnostic, toujours 200 |
 | Démarrage en 10 min max | Dépendances épinglées, migrations idempotentes et rapides |
 
 ## 8. Reproductibilité

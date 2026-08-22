@@ -25,6 +25,7 @@ from ..schemas import (
     PasteRequest,
     RowsRequest,
 )
+from ..uploads import read_upload
 
 router = APIRouter(tags=["données"])
 
@@ -91,7 +92,7 @@ async def import_file(
     *would* happen, which is how a user checks a file before committing to it.
     """
     method = _resolve(target)
-    payload = await file.read()
+    payload = await read_upload(file)
     kwargs: dict[str, Any] = {
         "mode": "file",
         "payload": payload,

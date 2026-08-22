@@ -13,6 +13,58 @@ if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 
 
+class FakeTransactions:
+    """Une doublure de ``Database`` qui ne retient que l'ouverture et la clôture.
+
+    Une commande métier qui écrit dans plusieurs tables doit le faire dans une
+    seule transaction, sinon un incident au milieu laisse la moitié du geste
+    derrière lui — une zone sans ses feuilles, une saisie sans sa trace. Les
+    doublures de cette suite n'ont pas de base ; ce qu'on peut malgré tout
+    observer, c'est *quand* la transaction était ouverte, et c'est exactement la
+    question posée.
+
+    ``opened`` compte les transactions ouvertes sur la durée du test, ``depth``
+    dit si l'une est ouverte à l'instant, et ``connection`` est le jeton que les
+    dépôts doivent recevoir en ``conn=``. Les dépôts factices appellent
+    :meth:`note` à chaque écriture ; ``writes`` en garde la profondeur.
+    """
+
+    connection = "connexion-de-test"
+
+    def __init__(self) -> None:
+        self.opened = 0
+        self.depth = 0
+        self.writes: dict[str, int] = {}
+
+    def note(self, what: str) -> None:
+        """Enregistre qu'une écriture a eu lieu, et à quelle profondeur."""
+        self.writes[what] = self.depth
+
+    def all_writes_inside_one_transaction(self) -> bool:
+        """Vrai si des écritures ont eu lieu, toutes dans une transaction."""
+        return bool(self.writes) and all(d == 1 for d in self.writes.values())
+
+    def transaction(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _open():
+            self.opened += 1
+            self.depth += 1
+            try:
+                yield self.connection
+            finally:
+                self.depth -= 1
+
+        return _open()
+
+
+def with_transactions(ctx):
+    """Greffe une base factice observable sur un contexte de test."""
+    ctx.db = FakeTransactions()
+    return ctx.db
+
+
 def with_access(ctx, *, managers=()):
     """Greffe les vraies règles d'accès sur un contexte factice.
 

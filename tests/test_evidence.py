@@ -28,7 +28,7 @@ from typing import Any, cast
 import pytest
 
 from inventory.config import Settings
-from inventory.errors import NotFoundError
+from inventory.errors import NotFoundError, UpstreamError
 from inventory.evidence import EvidenceStore, safe_name
 
 AT = dt.datetime(2026, 9, 1, 6, 30, 15, tzinfo=dt.UTC)
@@ -40,10 +40,17 @@ class FakeFiles:
     def __init__(self, *, fail: bool = False) -> None:
         self.stored: dict[str, bytes] = {}
         self.fail = fail
+        #: Le drapeau reçu à chaque dépôt. Le volume réel refuse un chemin déjà
+        #: pris quand il vaut ``False`` ; c'est cette garantie que le magasin
+        #: exige désormais, et un test la lit ici.
+        self.overwrites: list[bool] = []
 
     def upload(self, path: str, contents: bytes, overwrite: bool = False) -> None:
         if self.fail:
             raise RuntimeError("PERMISSION_DENIED: WRITE VOLUME")
+        self.overwrites.append(overwrite)
+        if path in self.stored and not overwrite:
+            raise RuntimeError(f"ALREADY EXISTS: {path}")
         self.stored[path] = contents
 
     def download(self, path: str) -> Any:
@@ -92,13 +99,14 @@ class TestTheNameOfAFileBecomesASegmentOfPath:
 
 
 class TestWhereAPieceLands:
-    def test_the_path_carries_campaign_kind_and_moment(self):
+    def test_the_path_carries_campaign_kind_moment_and_fingerprint(self):
         s, _ = store()
         assert s.path_for(
-            campaign_code="INV-2026-T3", kind="scans", filename="feuille.pdf", at=AT
+            campaign_code="INV-2026-T3", kind="scans", filename="feuille.pdf",
+            at=AT, digest="abcdef1234567890",
         ) == (
             "/Volumes/cat/inventory/inventory_evidence/INV-2026-T3/scans/"
-            "20260901T063015-feuille.pdf"
+            "20260901T063015-abcdef12-feuille.pdf"
         )
 
     def test_the_stamp_comes_first_so_the_folder_sorts_chronologically(self):
@@ -123,21 +131,105 @@ class TestWhereAPieceLands:
 class TestDepositing:
     def test_a_file_is_written_where_the_path_says(self):
         s, files = store()
-        path = s.put(b"contenu", campaign_code="C", kind="imports",
-                     filename="stock.xlsx", at=AT)
-        assert path is not None
-        assert files.stored[path] == b"contenu"
+        archived = s.put(b"contenu", campaign_code="C", kind="imports",
+                         filename="stock.xlsx", at=AT)
+        assert archived is not None
+        assert files.stored[archived.path] == b"contenu"
 
     def test_the_path_returned_is_the_one_stored(self):
         s, files = store()
-        path = s.put(b"x", campaign_code="C", kind="imports", filename="f.xlsx")
-        assert list(files.stored) == [path]
+        archived = s.put(b"x", campaign_code="C", kind="imports", filename="f.xlsx")
+        assert archived is not None
+        assert list(files.stored) == [archived.path]
 
     def test_an_empty_payload_writes_nothing(self):
         """Il n'y a rien à justifier avec un fichier vide."""
         s, files = store()
         assert s.put(b"", campaign_code="C", kind="imports", filename="f") is None
         assert files.stored == {}
+
+
+class TestTwoPiecesNeverCollide:
+    """Le défaut : horodatage à la seconde + nom, déposés en écrasement.
+
+    Deux feuilles envoyées ensemble, ou un re-scan après correction, portent le
+    nom que le scanner leur a donné — souvent le même. Dans la même seconde,
+    les deux chemins étaient identiques, et le second effaçait le premier : la
+    feuille dont la base gardait le chemin pointait alors sur l'image d'une
+    autre. Un contrôle six mois plus tard aurait relu la mauvaise pièce sans
+    que rien ne le signale.
+    """
+
+    def test_two_different_files_of_the_same_name_and_second_coexist(self):
+        s, files = store()
+        first = s.put(b"la feuille de Z1", campaign_code="C", kind="scans",
+                      filename="scan.pdf", at=AT)
+        second = s.put(b"la feuille de Z2", campaign_code="C", kind="scans",
+                       filename="scan.pdf", at=AT)
+        assert first is not None and second is not None
+        assert first.path != second.path
+        assert files.stored[first.path] == b"la feuille de Z1"
+        assert files.stored[second.path] == b"la feuille de Z2"
+
+    def test_the_same_file_twice_lands_on_the_same_path(self):
+        """Deux dépôts identiques ne doivent pas encombrer le volume."""
+        s, files = store()
+        once = s.put(b"identique", campaign_code="C", kind="scans",
+                     filename="scan.pdf", at=AT)
+        twice = s.put(b"identique", campaign_code="C", kind="scans",
+                      filename="scan.pdf", at=AT)
+        assert once is not None and twice is not None
+        assert once.path == twice.path
+        assert len(files.stored) == 1
+
+    def test_nothing_is_ever_deposited_in_overwrite_mode(self):
+        """La propriété tient parce que rien n'écrase : c'est vérifié ici."""
+        s, files = store()
+        s.put(b"x", campaign_code="C", kind="scans", filename="f.pdf", at=AT)
+        assert files.overwrites == [False]
+
+
+class TestWhatIsKnownAboutAPiece:
+    """Le chemin seul ne dit pas si le fichier relu est celui qui a été lu.
+
+    Un volume se modifie depuis l'espace de travail. L'empreinte est ce qui
+    permet, six mois plus tard, de répondre autrement que par la confiance.
+    """
+
+    def test_the_fingerprint_is_the_sha256_of_the_content(self):
+        import hashlib
+
+        s, _ = store()
+        archived = s.put(b"contenu", campaign_code="C", kind="imports",
+                         filename="f.xlsx")
+        assert archived is not None
+        assert archived.sha256 == hashlib.sha256(b"contenu").hexdigest()
+
+    def test_the_size_is_the_size(self):
+        s, _ = store()
+        archived = s.put(b"12345", campaign_code="C", kind="imports", filename="f")
+        assert archived is not None
+        assert archived.size == 5
+
+    def test_the_type_comes_from_the_name(self):
+        s, _ = store()
+        archived = s.put(b"x", campaign_code="C", kind="scans", filename="p.png")
+        assert archived is not None
+        assert archived.mime == "image/png"
+
+    def test_an_unknown_extension_does_not_invent_a_type(self):
+        s, _ = store()
+        archived = s.put(b"x", campaign_code="C", kind="scans", filename="p.zzz")
+        assert archived is not None
+        assert archived.mime == "application/octet-stream"
+
+    def test_the_path_begins_with_the_fingerprint_that_is_returned(self):
+        """Les deux doivent parler du même fichier, sinon aucun ne sert."""
+        s, _ = store()
+        archived = s.put(b"contenu", campaign_code="C", kind="imports",
+                         filename="f.xlsx", at=AT)
+        assert archived is not None
+        assert f"-{archived.sha256[:8]}-" in archived.path
 
 
 class TestWhenArchivingCannotHappen:
@@ -162,12 +254,74 @@ class TestWhenArchivingCannotHappen:
         assert "PERMISSION_DENIED" in caplog.text
 
 
+class TestWhenTheArchiveIsNotOptional:
+    """Le silence était la règle partout, y compris là où il ne peut pas l'être.
+
+    Un export ERP se relit dans l'ERP : ne pas l'archiver est un incident
+    d'exploitation. Une feuille manuscrite, non : le papier repart dans
+    l'atelier et finit à la benne. Écrire les quantités que le modèle y a lues
+    en sachant que l'image n'a pas été archivée fabriquerait un comptage que
+    personne ne pourra jamais vérifier — et c'est très exactement ce que
+    l'application existe pour empêcher.
+    """
+
+    def test_a_refused_write_stops_the_operation(self):
+        s, _ = store(fail=True)
+        with pytest.raises(UpstreamError):
+            s.put(b"x", campaign_code="C", kind="scans", filename="f.pdf",
+                  required=True)
+
+    def test_an_unconfigured_volume_stops_it_too(self):
+        """Une archive non déclarée est une archive absente, pas une dispense."""
+        s, _ = store(volume="")
+        with pytest.raises(UpstreamError):
+            s.put(b"x", campaign_code="C", kind="scans", filename="f.pdf",
+                  required=True)
+
+    def test_an_empty_file_stops_it_as_well(self):
+        s, _ = store()
+        with pytest.raises(UpstreamError):
+            s.put(b"", campaign_code="C", kind="scans", filename="f.pdf",
+                  required=True)
+
+    def test_the_refusal_says_what_to_do(self):
+        s, _ = store(volume="")
+        with pytest.raises(UpstreamError) as raised:
+            s.put(b"x", campaign_code="C", kind="scans", filename="f.pdf",
+                  required=True)
+        assert "volume Unity Catalog" in str(raised.value)
+
+    def test_the_refusal_is_traced_as_an_error_not_a_warning(self, caplog):
+        s, _ = store(fail=True)
+        with caplog.at_level("ERROR"), pytest.raises(UpstreamError):
+            s.put(b"x", campaign_code="C", kind="scans", filename="f.pdf",
+                  required=True)
+        assert "PERMISSION_DENIED" in caplog.text
+
+    def test_a_file_already_there_is_not_a_failure(self):
+        """Le même contenu déposé deux fois : la pièce est là, et c'est la bonne."""
+        s, files = store()
+        first = s.put(b"identique", campaign_code="C", kind="scans",
+                      filename="f.pdf", at=AT, required=True)
+        again = s.put(b"identique", campaign_code="C", kind="scans",
+                      filename="f.pdf", at=AT, required=True)
+        assert first is not None and again is not None
+        assert first.path == again.path
+        assert len(files.stored) == 1
+
+    def test_without_the_flag_nothing_changes(self):
+        """Le régime par défaut reste celui que le module défend depuis toujours."""
+        s, _ = store(fail=True)
+        assert s.put(b"x", campaign_code="C", kind="imports", filename="f") is None
+
+
 class TestRereading:
     def test_a_piece_comes_back_byte_for_byte(self):
         s, _ = store()
-        path = s.put(b"\x89PNG\r\n scan", campaign_code="C", kind="scans",
-                     filename="p.png")
-        assert s.get(cast(str, path)) == b"\x89PNG\r\n scan"
+        archived = s.put(b"\x89PNG\r\n scan", campaign_code="C", kind="scans",
+                         filename="p.png")
+        assert archived is not None
+        assert s.get(cast(str, archived.path)) == b"\x89PNG\r\n scan"
 
     def test_a_missing_piece_says_so_instead_of_returning_nothing(self):
         """L'utilisateur a cliqué sur « pièce jointe » et attend un fichier."""
@@ -348,3 +502,48 @@ class TestTheNameThatTravelsInTheHeader:
         contrairement à « № », que la décomposition Unicode rend en « No ».
         """
         assert 'filename="fichier"' in self.header("关于库存")
+
+
+class TestWhatTheSheetActuallyStores:
+    """Le service transmet l'empreinte ; encore faut-il que la requête l'écrive.
+
+    Les contrôles du pipeline de scan doublent le dépôt : ils voient ce que le
+    service *transmet*, jamais ce que Postgres *reçoit*. Une colonne oubliée
+    dans le constructeur de requête leur échapperait entièrement — c'est déjà
+    arrivé, sur une autre colonne, et seule la base réelle l'avait vu.
+    """
+
+    def _spy(self):
+        from inventory.db.repositories import SheetRepository
+
+        repo = SheetRepository.__new__(SheetRepository)
+        seen: list[tuple[str, tuple[Any, ...]]] = []
+        repo._execute = lambda q, p=(), *, conn=None: (  # type: ignore[method-assign]
+            seen.append((" ".join(q.split()), tuple(p))) or 1
+        )
+        return repo, seen
+
+    def test_the_three_columns_reach_the_statement(self):
+        repo, seen = self._spy()
+        repo.update_sheet(
+            "camp-1", "s-1",
+            evidence_path="/Volumes/x/scan.pdf",
+            evidence_sha256="d" * 64,
+            evidence_bytes=4096,
+            evidence_mime="application/pdf",
+            actor="chef@usine",
+        )
+        query, params = seen[-1]
+        for column in ("evidence_path", "evidence_sha256", "evidence_bytes",
+                       "evidence_mime"):
+            assert f"{column} = %s" in query, f"{column} absent de la requête"
+        assert "d" * 64 in params
+        assert 4096 in params
+        assert "application/pdf" in params
+
+    def test_a_sheet_without_a_scan_writes_none_of_them(self):
+        """Une correction de nom de compteur ne doit pas toucher la pièce."""
+        repo, seen = self._spy()
+        repo.update_sheet("camp-1", "s-1", counter_name="Alice", actor="a")
+        query, _ = seen[-1]
+        assert "evidence" not in query

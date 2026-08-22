@@ -280,18 +280,24 @@ class GenericService:
                 f"Une zone « {zone.code} » existe déjà dans cette campagne.",
                 code=zone.code,
             )
-        ctx.sheets.create_zone(zone, actor=ctx.actor)
-        ctx.sheets.ensure_sheets(
-            campaign.id, zone.id, passes_for(zone.passes), actor=ctx.actor,
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.CREATE,
-            entity_type="zone",
-            entity_id=zone.id,
-            summary=f"Création de la zone {zone.code}",
-            after=zone.model_dump(mode="json"),
-        )
+        # Une zone sans ses feuilles n'est pas une demi-zone : c'est une zone
+        # que rien ne permet de compter, et que l'écran présente pourtant comme
+        # prête. Les trois écritures tiennent ou tombent ensemble.
+        with ctx.db.transaction() as conn:
+            ctx.sheets.create_zone(zone, actor=ctx.actor, conn=conn)
+            ctx.sheets.ensure_sheets(
+                campaign.id, zone.id, passes_for(zone.passes),
+                actor=ctx.actor, conn=conn,
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.CREATE,
+                entity_type="zone",
+                entity_id=zone.id,
+                summary=f"Création de la zone {zone.code}",
+                after=zone.model_dump(mode="json"),
+                conn=conn,
+            )
         # A zone is what unlocks the pilotage steps; the counts move with it.
         ctx.forget_progress(campaign.id)
         return zone
@@ -456,7 +462,7 @@ class GenericService:
         with ctx.db.transaction() as conn:
             sheets = ctx.sheets.delete_sheets(campaign.id, doomed, conn=conn)
             for zone_id in unique:
-                ctx.sheets.delete_zone(zone_id, actor=ctx.actor, conn=conn)
+                ctx.sheets.delete_zone(campaign.id, zone_id, actor=ctx.actor, conn=conn)
             ctx.record(
                 campaign_id=campaign.id,
                 action=AuditAction.DELETE,
@@ -513,20 +519,24 @@ class GenericService:
             if blocker:
                 raise WorkflowError(blocker, zone=zone.code, pending=pending)
 
-        ctx.sheets.set_zone_closed(zone_id, closed=closed, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.STATUS_CHANGE,
-            entity_type="zone",
-            entity_id=zone_id,
-            summary=(
-                f"Zone {zone.code} déclarée terminée."
-                if closed
-                else f"Zone {zone.code} rouverte."
-            ),
-            before={"closed": zone.closed_at is not None},
-            after={"closed": closed},
-        )
+        with ctx.db.transaction() as conn:
+            ctx.sheets.set_zone_closed(
+                campaign.id, zone_id, closed=closed, actor=ctx.actor, conn=conn
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.STATUS_CHANGE,
+                entity_type="zone",
+                entity_id=zone_id,
+                summary=(
+                    f"Zone {zone.code} déclarée terminée."
+                    if closed
+                    else f"Zone {zone.code} rouverte."
+                ),
+                before={"closed": zone.closed_at is not None},
+                after={"closed": closed},
+                conn=conn,
+            )
         return {"id": zone_id, "closed": closed}
 
     def upsert_sheet_lines(
@@ -601,19 +611,24 @@ class GenericService:
                 )
             )
 
-        if replace:
-            written = ctx.sheets.replace_sheet_lines(sheet_id, lines, actor=ctx.actor)
-        else:
-            written = ctx.sheets.upsert_sheet_lines(lines, actor=ctx.actor)
-
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.UPDATE,
-            entity_type="count_sheet_line",
-            entity_id=sheet_id,
-            summary=f"{written} ligne(s) enregistrée(s) sur la feuille",
-            after={"lines": written, "replace": replace},
-        )
+        with ctx.db.transaction() as conn:
+            if replace:
+                written = ctx.sheets.replace_sheet_lines(
+                    sheet_id, lines, actor=ctx.actor, conn=conn
+                )
+            else:
+                written = ctx.sheets.upsert_sheet_lines(
+                    lines, actor=ctx.actor, conn=conn
+                )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.UPDATE,
+                entity_type="count_sheet_line",
+                entity_id=sheet_id,
+                summary=f"{written} ligne(s) enregistrée(s) sur la feuille",
+                after={"lines": written, "replace": replace},
+                conn=conn,
+            )
         return written
 
     def list_all_lines(
@@ -691,15 +706,22 @@ class GenericService:
                 missing=missing[:20],
             )
 
-        for line_id in unique:
-            ctx.sheets.delete_sheet_line(line_id, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.DELETE,
-            entity_type="count_sheet_line",
-            summary=f"Suppression de {len(unique)} ligne(s) de feuille",
-            after={"lineIds": ", ".join(unique[:50])},
-        )
+        # La trace annonce « suppression de N lignes » : elle ne doit pas
+        # survivre à un lot interrompu au milieu, sans quoi elle décrit un état
+        # que la base n'a jamais eu.
+        with ctx.db.transaction() as conn:
+            for line_id in unique:
+                ctx.sheets.delete_sheet_line(
+                    campaign.id, line_id, actor=ctx.actor, conn=conn
+                )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.DELETE,
+                entity_type="count_sheet_line",
+                summary=f"Suppression de {len(unique)} ligne(s) de feuille",
+                after={"lineIds": ", ".join(unique[:50])},
+                conn=conn,
+            )
         return len(unique)
 
     def delete_sheet_line(self, campaign: Campaign, line_id: str) -> None:
@@ -769,9 +791,14 @@ class GenericService:
         # quantités : sans elle, une valeur contestée six mois plus tard n'a
         # plus rien derrière elle, le conteneur qui l'a reçue ayant disparu.
         say(step="Archivage de la pièce justificative")
-        storage_path = ctx.evidence.put(
-            payload, campaign_code=campaign.code, kind="scans", filename=filename
+        # `required=True` : la feuille manuscrite repart dans l'atelier et finit
+        # à la benne. Écrire les quantités lues en sachant que l'image n'a pas
+        # été archivée fabriquerait un comptage invérifiable.
+        archived = ctx.evidence.put(
+            payload, campaign_code=campaign.code, kind="scans", filename=filename,
+            required=True,
         )
+        storage_path = archived.path if archived else None
 
         say(step="Rendu des pages")
         if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
@@ -818,25 +845,39 @@ class GenericService:
         )
 
         say(step="Écriture des quantités lues")
-        ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
-        ctx.sheets.update_sheet(
-            sheet_id,
-            counter_name=result.counter_name or None,
-            evidence_path=storage_path,
-            extraction_confidence=result.mean_confidence,
-            actor=ctx.actor,
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.IMPORT,
-            entity_type="count_sheet",
-            entity_id=sheet_id,
-            summary=(
-                f"Extraction IA du scan « {filename} » : {len(result.lines)} lignes, "
-                f"confiance moyenne {result.mean_confidence or 0:.0%}."
-            ),
-            after=result.as_report(),
-        )
+        # Les quantités lues, le chemin de la pièce qui les justifie et la trace
+        # de la lecture forment un tout : une feuille dont les lignes sont
+        # écrites mais dont le chemin de preuve manque affiche des chiffres que
+        # plus rien ne rattache au papier.
+        with ctx.db.transaction() as conn:
+            ctx.sheets.replace_sheet_lines(
+                sheet_id, result.lines, actor=ctx.actor, conn=conn
+            )
+            ctx.sheets.update_sheet(
+                campaign.id,
+                sheet_id,
+                counter_name=result.counter_name or None,
+                evidence_path=storage_path,
+                evidence_sha256=archived.sha256 if archived else None,
+                evidence_bytes=archived.size if archived else None,
+                evidence_mime=archived.mime if archived else None,
+                extraction_confidence=result.mean_confidence,
+                actor=ctx.actor,
+                conn=conn,
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.IMPORT,
+                entity_type="count_sheet",
+                entity_id=sheet_id,
+                summary=(
+                    f"Extraction IA du scan « {filename} » : "
+                    f"{len(result.lines)} lignes, confiance moyenne "
+                    f"{result.mean_confidence or 0:.0%}."
+                ),
+                after=result.as_report(),
+                conn=conn,
+            )
         say(step="Terminé", sheets_total=1, sheets_done=1)
         return {
             "report": result.as_report(),
@@ -893,9 +934,11 @@ class GenericService:
         # c'est bien un seul document qui les justifie toutes, et le découper
         # inventerait des originaux qui n'ont jamais existé.
         with clock.step("evidence_upload_ms"):
-            storage_path = ctx.evidence.put(
-                payload, campaign_code=campaign.code, kind="scans", filename=filename
+            archived = ctx.evidence.put(
+                payload, campaign_code=campaign.code, kind="scans",
+                filename=filename, required=True,
             )
+            storage_path = archived.path if archived else None
 
         is_pdf = content_type == "application/pdf" or filename.lower().endswith(".pdf")
         if is_pdf:
@@ -1059,14 +1102,28 @@ class GenericService:
                 corrected = [
                     l for l in lines_by_sheet.get(sheet_id, ()) if l.was_ai_corrected
                 ]
-                ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
-                ctx.sheets.update_sheet(
-                    sheet_id,
-                            counter_name=result.counter_name or None,
-                    evidence_path=storage_path,
-                    extraction_confidence=result.mean_confidence,
-                    actor=ctx.actor,
-                )
+                # Une transaction par feuille, pas une pour la pile : le
+                # rapport nomme les feuilles traitées une à une, et une pile de
+                # trente feuilles ne doit pas perdre les vingt-neuf qui ont
+                # abouti parce que la trentième a échoué. Ce qui doit tenir
+                # ensemble, ce sont les lignes d'une feuille et le chemin de la
+                # preuve qui les justifie.
+                with ctx.db.transaction() as conn:
+                    ctx.sheets.replace_sheet_lines(
+                        sheet_id, result.lines, actor=ctx.actor, conn=conn
+                    )
+                    ctx.sheets.update_sheet(
+                        campaign.id,
+                        sheet_id,
+                        counter_name=result.counter_name or None,
+                        evidence_path=storage_path,
+                        evidence_sha256=archived.sha256 if archived else None,
+                        evidence_bytes=archived.size if archived else None,
+                        evidence_mime=archived.mime if archived else None,
+                        extraction_confidence=result.mean_confidence,
+                        actor=ctx.actor,
+                        conn=conn,
+                    )
                 # The per-sheet report is spread *first*: it carries its own
                 # ``pages`` key holding a count, and the page list is what the
                 # screen renders. Spreading it last silently replaced the list
@@ -1331,17 +1388,6 @@ class GenericService:
                 "La consolidation ne produit aucune ligne : aucune zone terminée."
             )
 
-        run_id = ctx.consolidation.save_run(
-            campaign_id=campaign.id,
-            run_by=ctx.actor,
-            engine_version=ENGINE_VERSION,
-            zones_included=result.zones_included,
-            zones_skipped=result.zones_skipped,
-            findings=[f.model_dump(mode="json") for f in result.findings],
-            lines=result.lines,
-            breakdown=result.breakdown,
-        )
-
         generic_key = campaign.config.generic_key
         journal = next(
             (j for j in ctx.journals.list(campaign.id) if j.key == generic_key), None
@@ -1374,13 +1420,29 @@ class GenericService:
             )
             for line in result.lines
         ]
+        # Le calcul est enregistré *dans* la transaction qui poste le journal.
+        # Séparés, ils laissaient une campagne dont la consolidation courante
+        # existe et dont le journal correspondant est vide — le refus « aucun
+        # journal GENERIQUE » se déclenchant après l'enregistrement du calcul.
         with ctx.db.transaction() as conn:
+            run_id = ctx.consolidation.save_run(
+                campaign_id=campaign.id,
+                run_by=ctx.actor,
+                engine_version=ENGINE_VERSION,
+                zones_included=result.zones_included,
+                zones_skipped=result.zones_skipped,
+                findings=[f.model_dump(mode="json") for f in result.findings],
+                lines=result.lines,
+                breakdown=result.breakdown,
+                conn=conn,
+            )
             ctx.journals.replace_lines_for_journal(
                 journal.id, campaign.id, journal_lines, actor=ctx.actor, conn=conn
             )
             if journal.status is JournalStatus.PENDING:
                 ctx.journals.set_status(
-                    [journal.id], JournalStatus.IN_PROGRESS, actor=ctx.actor, conn=conn
+                    campaign.id, [journal.id], JournalStatus.IN_PROGRESS,
+                    actor=ctx.actor, conn=conn,
                 )
             ctx.record(
                 campaign_id=campaign.id,

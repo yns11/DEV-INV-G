@@ -16,6 +16,7 @@ from ...errors import ValidationError
 from ...services import ImportService, StockFlowService
 from ..deps import CampaignDep, Ctx, import_service
 from ..schemas import PasteRequest, RowsRequest, StockFlowRunRequest
+from ..uploads import read_upload
 
 router = APIRouter(
     prefix="/campaigns/{campaign_id}/stock-flow", tags=["réconciliation"]
@@ -161,7 +162,7 @@ async def load_file(
     sheet: Annotated[str | None, Form()] = None,
     dry_run: Annotated[bool, Form(alias="dryRun")] = False,
 ) -> dict[str, Any]:
-    payload = await file.read()
+    payload = await read_upload(file)
     kwargs: dict[str, Any] = {
         "mode": "file", "payload": payload,
         "filename": file.filename or "", "sheet": sheet,

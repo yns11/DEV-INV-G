@@ -13,6 +13,7 @@ labels are only ever seen at the import boundary.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
 from collections.abc import Mapping
 from decimal import Decimal
@@ -38,6 +39,8 @@ from .enums import (
     SheetPass,
 )
 from .quantities import ZERO, quantize_money, quantize_qty, to_decimal
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "DomainModel",
@@ -195,8 +198,36 @@ class CampaignConfig(DomainModel):
 
     generic_warehouse: str = "B06VRAC"
     generic_location: str = "GENERIQUE"
-    #: Number of independent counts required on GENERIQUE zones.
-    generic_passes: int = Field(default=2, ge=1, le=3)
+    #: Nombre de comptages indépendants exigés sur les zones GENERIQUE.
+    #:
+    #: **Deux au maximum, et pas trois.** Ce champ acceptait 3, mais rien
+    #: derrière ne savait en faire quoi que ce soit : :class:`SheetPass` ne
+    #: connaît que ``PASS_1`` et ``PASS_2``, une zone est bornée à 2, et
+    #: :func:`passes_for` ramenait silencieusement à 2. Une campagne configurée
+    #: à 3 affichait donc « 3 comptages » sur son écran de configuration et
+    #: créait deux feuilles — un troisième comptage que tout le monde croyait
+    #: exigé, que personne ne pouvait faire, et dont l'absence ne se signalait
+    #: nulle part.
+    generic_passes: int = Field(default=2, ge=1, le=2)
+
+    @field_validator("generic_passes", mode="before")
+    @classmethod
+    def _at_most_two_counts(cls, value: Any) -> Any:
+        """Ramène une valeur enregistrée à 3 sans faire échouer la campagne.
+
+        Le champ a accepté 3 : des campagnes existantes peuvent le porter.
+        Refuser de les charger reviendrait à les rendre inaccessibles pour une
+        valeur qui n'a jamais rien produit de différent — 2 est ce que la base
+        contient réellement, en feuilles comme en arbitrages.
+        """
+        if isinstance(value, int) and value > 2:
+            log.warning(
+                "Campagne configurée à %d comptages GENERIQUE : ramenée à 2, "
+                "qui est ce que les feuilles et l'arbitrage savent porter.",
+                value,
+            )
+            return 2
+        return value
     #: Relative gap between pass 1 and pass 2 above which arbitration is
     #: mandatory rather than automatic (0 = any difference triggers arbitration).
     arbitration_tolerance: Decimal = Field(default=Decimal("0"))
@@ -667,6 +698,15 @@ class CountSheet(DomainModel):
     ended_at: dt.datetime | None = None
     #: UC volume path of the scanned sheet, when one was uploaded.
     evidence_path: str | None = None
+    #: sha256 du fichier déposé. Le chemin dit *où*, l'empreinte dit *lequel* :
+    #: un volume se modifie depuis l'espace de travail, et six mois plus tard
+    #: c'est la seule façon de répondre autrement que par la confiance.
+    #: ``None`` sur les feuilles scannées avant la migration 019.
+    evidence_sha256: str | None = None
+    #: Taille du fichier déposé, en octets.
+    evidence_bytes: int | None = None
+    #: Type MIME déduit du nom du fichier déposé.
+    evidence_mime: str | None = None
     #: Mean confidence reported by the extraction model, in [0, 1].
     extraction_confidence: float | None = None
     updated_at: dt.datetime | None = None

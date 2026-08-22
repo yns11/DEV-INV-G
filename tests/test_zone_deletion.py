@@ -70,7 +70,9 @@ def service(
     managers: tuple[Manager, ...] = (),
 ) -> tuple[GenericService, dict[str, list]]:
     """Le service, et le journal de ce qu'il a fait."""
-    log: dict[str, list] = {"zones": [], "sheets": [], "events": [], "conns": []}
+    log: dict[str, list] = {
+        "zones": [], "sheets": [], "events": [], "conns": [], "scopes": [],
+    }
 
     @contextmanager
     def transaction():
@@ -81,8 +83,9 @@ def service(
         log["sheets"].extend(sheet_ids)
         return len(sheet_ids)
 
-    def delete_zone(zone_id, *, actor, conn=None):
+    def delete_zone(campaign_id, zone_id, *, actor, conn=None):
         log["conns"].append(conn)
+        log["scopes"].append(campaign_id)
         log["zones"].append(zone_id)
 
     ctx = SimpleNamespace(

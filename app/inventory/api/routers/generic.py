@@ -27,6 +27,7 @@ from ..schemas import (
     ZonePassesRequest,
     ZoneRequest,
 )
+from ..uploads import read_upload
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/generic", tags=["GENERIQUE"])
 
@@ -248,7 +249,7 @@ async def extract_scan(
             "Formats acceptés : PDF, PNG, JPEG, WEBP, TIFF.",
             contentType=content_type,
         )
-    payload = await file.read()
+    payload = await read_upload(file, what="Le scan")
     if not payload:
         raise ValidationError("Le fichier reçu est vide.")
     return jobs.queue(
@@ -305,7 +306,7 @@ async def extract_multi_scan(
             "Formats acceptés : PDF, PNG, JPEG, WEBP, TIFF.",
             contentType=content_type,
         )
-    payload = await file.read()
+    payload = await read_upload(file, what="Le scan")
     if not payload:
         raise ValidationError("Le fichier reçu est vide.")
     return jobs.queue(

@@ -187,34 +187,41 @@ class CountingService:
                 before = existing.model_dump(mode="json")
                 line.qty_imported = existing.qty_imported
 
-        saved = ctx.journals.upsert_line(
-            line, actor=ctx.actor, expected_version=expected_version
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.UPDATE if line_id else AuditAction.CREATE,
-            entity_type="count_journal_line",
-            entity_id=saved.id,
-            summary=(
-                f"{journal.key} — {item_number} : quantité manuelle "
-                f"{'effacée' if qty is None else qty}"
-            ),
-            before=before,
-            after=saved.model_dump(mode="json"),
-        )
+        # La ligne et sa trace d'audit sont un seul acte : une saisie sans
+        # trace ne se justifie pas devant un contrôle, et une trace sans saisie
+        # décrit un comptage qui n'a pas eu lieu.
+        with ctx.db.transaction() as conn:
+            saved = ctx.journals.upsert_line(
+                line, actor=ctx.actor, expected_version=expected_version, conn=conn
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.UPDATE if line_id else AuditAction.CREATE,
+                entity_type="count_journal_line",
+                entity_id=saved.id,
+                summary=(
+                    f"{journal.key} — {item_number} : quantité manuelle "
+                    f"{'effacée' if qty is None else qty}"
+                ),
+                before=before,
+                after=saved.model_dump(mode="json"),
+                conn=conn,
+            )
         return saved
 
     def delete_line(self, campaign: Campaign, line_id: str) -> None:
         ctx = self.ctx
         ctx.guard(campaign, "count_journals")
-        ctx.journals.delete_line(line_id, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.DELETE,
-            entity_type="count_journal_line",
-            entity_id=line_id,
-            summary="Suppression logique d'une ligne de comptage",
-        )
+        with ctx.db.transaction() as conn:
+            ctx.journals.delete_line(campaign.id, line_id, actor=ctx.actor, conn=conn)
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.DELETE,
+                entity_type="count_journal_line",
+                entity_id=line_id,
+                summary="Suppression logique d'une ligne de comptage",
+                conn=conn,
+            )
 
     # --------------------------------------------------------- status changes
 
@@ -233,16 +240,19 @@ class CountingService:
             return self.enforce_book_stock(campaign, journal_ids)
 
         posted_at = utcnow() if status is JournalStatus.POSTED else None
-        count = ctx.journals.set_status(
-            journal_ids, status, actor=ctx.actor, posted_at=posted_at
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.STATUS_CHANGE,
-            entity_type="count_journal",
-            summary=f"{count} journal(aux) passé(s) au statut {status}",
-            after={"status": str(status), "journalIds": list(journal_ids)},
-        )
+        with ctx.db.transaction() as conn:
+            count = ctx.journals.set_status(
+                campaign.id, journal_ids, status, actor=ctx.actor,
+                posted_at=posted_at, conn=conn,
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.STATUS_CHANGE,
+                entity_type="count_journal",
+                summary=f"{count} journal(aux) passé(s) au statut {status}",
+                after={"status": str(status), "journalIds": list(journal_ids)},
+                conn=conn,
+            )
         return count
 
     def enforce_book_stock(
@@ -297,7 +307,7 @@ class CountingService:
                 touched += 1
 
             ctx.journals.set_status(
-                journal_ids, JournalStatus.BOOK_ENFORCED,
+                campaign.id, journal_ids, JournalStatus.BOOK_ENFORCED,
                 actor=ctx.actor, posted_at=utcnow(), conn=conn,
             )
             ctx.record(

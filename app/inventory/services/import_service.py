@@ -610,6 +610,10 @@ class ImportService:
                 rows_rejected=outcome.rows_rejected,
                 report=outcome.as_dict(),
                 imported_by=ctx.actor,
+                # Le même identifiant que celui gravé dans les lignes de stock
+                # juste au-dessus : c'est ce qui rend « d'où vient cette
+                # quantité » interrogeable.
+                batch_id=batch_id,
                 conn=conn,
             )
             ctx.record(
@@ -719,6 +723,23 @@ class ImportService:
         with ctx.db.transaction() as conn:
             written = ctx.backflush.replace(
                 campaign.id, lines, batch_id=batch_id, conn=conn
+            )
+            # Les lignes portaient un identifiant de lot dont aucune ligne
+            # d'`import_batch` n'existait : l'écran d'historique ne montrait pas
+            # ce chargement, et la pièce archivée n'était rattachée à rien.
+            ctx.imports.create(
+                campaign_id=campaign.id,
+                target="backflush",
+                filename=self._origin_of("backflush", kwargs),
+                content_hash=_hash_of(kwargs),
+                storage_path=outcome.storage_path,
+                rows_received=outcome.rows_received,
+                rows_accepted=written,
+                rows_rejected=outcome.rows_rejected,
+                report=outcome.as_dict(),
+                imported_by=ctx.actor,
+                batch_id=batch_id,
+                conn=conn,
             )
             ctx.record(
                 campaign_id=campaign.id,
@@ -873,7 +894,7 @@ class ImportService:
             ]
             if fully_posted:
                 ctx.journals.set_status(
-                    fully_posted, JournalStatus.POSTED,
+                    campaign.id, fully_posted, JournalStatus.POSTED,
                     actor=ctx.actor, posted_at=utcnow(), conn=conn,
                 )
             for group in (partially, in_progress):
@@ -884,7 +905,8 @@ class ImportService:
                 ]
                 if running:
                     ctx.journals.set_status(
-                        running, JournalStatus.IN_PROGRESS, actor=ctx.actor, conn=conn
+                        campaign.id, running, JournalStatus.IN_PROGRESS,
+                        actor=ctx.actor, conn=conn,
                     )
 
             outcome.rows_accepted = len(lines)
@@ -1109,12 +1131,13 @@ class ImportService:
         payload = kwargs.get("payload")
         if not isinstance(payload, bytes):
             return None
-        return self.ctx.evidence.put(
+        archived = self.ctx.evidence.put(
             payload,
             campaign_code=campaign.code,
             kind=target,
             filename=kwargs.get("filename") or f"{target}.bin",
         )
+        return archived.path if archived else None
 
     def _record_batch(
         self,

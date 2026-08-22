@@ -53,6 +53,23 @@ une recherche texte plutôt qu'une liste à cocher de mille entrées. Les filtre
 cumulent, la barre de recherche s'y ajoute, et le pied de grille rappelle combien
 de lignes restent.
 
+Chaque colonne est une **puce d'une ligne** ; le détail s'ouvre au clic,
+au-dessus du tableau, sans le déplacer :
+
+- une **liste à cocher** porte le nombre de lignes de chaque valeur — « Terminée
+  412 / En cours 3 » dit d'un coup d'œil où est la matière — avec une recherche
+  au-delà de sept valeurs, et *Tout cocher* / *Effacer* ;
+- les valeurs proposées sont celles que la colonne **affiche** : on coche
+  « Composant », pas `COMPONENT` ;
+- une **fourchette** rappelle les bornes réellement présentes dans la colonne,
+  de quoi savoir quoi taper ;
+- un filtre posé colore sa puce et porte une croix qui le retire seule.
+
+Une fois la barre refermée, les critères en cours restent affichés en **puces
+retirables** au-dessus du tableau. Un compteur « Filtres (3) » dit qu'il y a
+trois critères ; il ne dit pas lesquels, et un tableau amputé des deux tiers de
+ses lignes reste alors inexplicable tant qu'on n'a pas rouvert le panneau.
+
 **Les totaux** s'affichent en pied de grille, sur les colonnes qui s'additionnent
 — quantités, valeurs, écarts. Ils portent sur les **lignes affichées** : filtrez
 sur un entrepôt et le total devient celui de cet entrepôt. C'est le chiffre qu'on
@@ -466,6 +483,13 @@ non par accident. Les lignes sont matérialisées et tracées.
 
 ### 2.8 Compter les zones GENERIQUE
 
+**Deux affichages, au choix, mémorisé.** *Icônes* donne une carte par zone, ses
+feuilles côte à côte — la lecture qui va bien jusqu'à une dizaine de zones.
+*Liste* donne une grille triable, filtrable et exportable, qui tient encore à
+quatre-vingts. La ligne y est la **feuille**, pas la zone : c'est elle qui porte
+un état, un compteur et une action, et la colonne « Zone » les regroupe. Le
+bouton d'action reste épinglé au bord droit, atteignable sans faire défiler.
+
 Pour chaque zone, le cycle est :
 
 ```
@@ -514,6 +538,18 @@ Une feuille de **saisie libre** se scanne aussi, bien qu'elle n'ait aucune liste
 à confronter : le modèle recopie alors la référence telle qu'elle est écrite, et
 la garde se déplace d'un cran — c'est le **référentiel articles** qui tranche.
 Une référence qu'il ne connaît pas est signalée, jamais créée.
+
+La lecture **dit où elle en est** : le bouton passe en « Lecture en cours… » et
+une barre affiche l'étape — archivage de la pièce, rendu des pages, lecture par
+le modèle (avec le nombre de pages et de lignes attendues), écriture des
+quantités. Cette lecture dure de dix secondes à plus d'une minute selon la
+longueur de la liste pré-imprimée, et un bouton grisé ne distingue pas un
+travail qui avance d'un appel qui a calé. La barre est **indéterminée** parce
+que l'essentiel du temps part dans un seul appel au modèle, dont personne ne
+connaît l'avancement : afficher un pourcentage qui saute de 0 à 100 % ne
+mesurerait rien. Si vous rechargez la page pendant la lecture, l'écran retrouve
+le travail en cours et reprend son suivi, au lieu de vous inviter à relancer un
+scan qui tourne déjà.
 
 Tout atterrit dans une grille modifiable, avec le badge *Extraction IA*.
 **Rien n'est posté automatiquement.**

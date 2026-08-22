@@ -5,7 +5,7 @@
  * Power Query chain and the copy/paste into the ERP.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api } from '../lib/api'
@@ -17,6 +17,7 @@ import type {
   MultiScanReport,
   Overview,
   ScanJob,
+  SheetScanReport,
   PrintMode,
   Sheet,
   SheetStatus,
@@ -153,6 +154,17 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   const [scanning, setScanning] = useState(false)
   const [openSheet, setOpenSheet] = useState<{ zone: Zone; sheet: Sheet } | null>(null)
   const [stage, setStage] = useState<ZoneStage | ''>('')
+  const [display, setDisplay] = useState<ZoneDisplay>(readZoneDisplay)
+
+  const chooseDisplay = (next: ZoneDisplay) => {
+    setDisplay(next)
+    try {
+      window.localStorage.setItem(ZONE_DISPLAY_KEY, next)
+    } catch {
+      // Navigation privée ou stockage plein : le choix vaut pour la session,
+      // ce qui reste mieux que de refuser de l'appliquer.
+    }
+  }
 
   const [focus] = useFocusMode()
   // A zone created here needs its manager straight away: with the focus switch
@@ -294,6 +306,33 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
               ))}
             </div>
 
+            <div className="row-wrap">
+              <span className="subtle num">
+                {visible.length} / {zones.length} zone(s)
+              </span>
+              <span className="spacer" />
+              <div className="row" style={{ gap: 0 }}>
+                <Button
+                  variant={display === 'cards' ? 'primary' : 'ghost'}
+                  size="sm"
+                  icon={<Icons.dashboard size={14} />}
+                  title="Affichage en icônes"
+                  onClick={() => chooseDisplay('cards')}
+                >
+                  Icônes
+                </Button>
+                <Button
+                  variant={display === 'list' ? 'primary' : 'ghost'}
+                  size="sm"
+                  icon={<Icons.grid size={14} />}
+                  title="Affichage en liste — triable, filtrable, exportable"
+                  onClick={() => chooseDisplay('list')}
+                >
+                  Liste
+                </Button>
+              </div>
+            </div>
+
             {visible.length === 0 ? (
               <Card>
                 <EmptyState
@@ -305,6 +344,15 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                   }
                 />
               </Card>
+            ) : display === 'list' ? (
+              <ZoneTable
+                zones={visible}
+                editable={editable}
+                busy={transition.isPending}
+                onOpen={setOpenSheet}
+                onPrint={setPrintSheet}
+                onAdvance={(sheetId, target) => transition.mutate({ sheetId, target })}
+              />
             ) : (
               <div className="grid grid--2">
                 {visible.map((zone) => (
@@ -468,6 +516,214 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
 }
 
 /**
+ * Cartes ou lignes — le même choix que sur « Toutes les campagnes ».
+ *
+ * Les deux lectures sont légitimes et aucune ne gagne en général : la carte
+ * porte les feuilles d'une zone côte à côte et se lit bien à dix zones, la
+ * grille trie, filtre et totalise et tient encore à quatre-vingts. Le choix est
+ * donc celui de l'utilisateur, et il est retenu — une préférence d'affichage
+ * qui se réinitialise à chaque visite est une préférence que l'application fait
+ * redire au lieu de la tenir.
+ *
+ * **Une ligne par feuille, pas par zone.** C'est la feuille qui porte un état,
+ * un compteur et une action ; une ligne de zone devrait dédoubler chaque
+ * colonne ou renvoyer aux cartes pour agir, ce qui retirerait à la grille son
+ * intérêt. La colonne « Zone » les regroupe, et le tri par zone rend la lecture
+ * par zone.
+ */
+type ZoneDisplay = 'cards' | 'list'
+
+const ZONE_DISPLAY_KEY = 'campagnes-inventaire.zones.display'
+
+function readZoneDisplay(): ZoneDisplay {
+  try {
+    return window.localStorage.getItem(ZONE_DISPLAY_KEY) === 'list' ? 'list' : 'cards'
+  } catch {
+    return 'cards'
+  }
+}
+
+/** Une feuille et la zone qui la porte, mises à plat pour la grille. */
+interface SheetRow extends Record<string, unknown> {
+  id: string
+  zone: Zone
+  sheet: Sheet
+}
+
+function ZoneTable({
+  zones,
+  editable,
+  busy,
+  onOpen,
+  onPrint,
+  onAdvance,
+}: {
+  zones: Zone[]
+  editable: boolean
+  busy: boolean
+  onOpen: (row: { zone: Zone; sheet: Sheet }) => void
+  onPrint: (row: { sheetId: string; zone: Zone }) => void
+  onAdvance: (sheetId: string, target: SheetStatus) => void
+}) {
+  const rows: SheetRow[] = zones.flatMap((zone) =>
+    zone.sheets.map((sheet) => ({ id: sheet.id, zone, sheet })),
+  )
+
+  const columns: Column<SheetRow>[] = [
+    {
+      key: 'zone',
+      label: 'Zone',
+      width: 200,
+      render: (row) => (
+        <span className="truncate" title={row.zone.code}>
+          {row.zone.label || row.zone.code}
+        </span>
+      ),
+      value: (row) => row.zone.label || row.zone.code,
+    },
+    {
+      key: 'sector',
+      label: 'Secteur',
+      width: 130,
+      filter: 'choice',
+      value: (row) => row.zone.sector || '',
+    },
+    {
+      key: 'zoneStatus',
+      label: 'État de la zone',
+      width: 150,
+      filter: 'choice',
+      choiceLabel: (value) => toLabel(ZONE_STATUS_LABELS, value),
+      render: (row) => (
+        <Badge tone={ZONE_TONE[row.zone.status] ?? 'neutral'} dot>
+          {toLabel(ZONE_STATUS_LABELS, row.zone.status)}
+        </Badge>
+      ),
+      value: (row) => row.zone.status,
+    },
+    {
+      key: 'pass',
+      label: 'Comptage',
+      width: 110,
+      filter: 'choice',
+      value: (row) => (row.sheet.pass_no === 'PASS_1' ? 'n°1' : 'n°2'),
+    },
+    {
+      key: 'sheetStatus',
+      label: 'État de la feuille',
+      width: 160,
+      filter: 'choice',
+      choiceLabel: (value) => toLabel(SHEET_STATUS_LABELS, value),
+      render: (row) => (
+        <Badge tone={SHEET_TONE[row.sheet.status]}>
+          {toLabel(SHEET_STATUS_LABELS, row.sheet.status)}
+        </Badge>
+      ),
+      value: (row) => row.sheet.status,
+    },
+    {
+      key: 'countedLines',
+      label: 'Lignes comptées',
+      numeric: true,
+      width: 150,
+      render: (row) => (
+        <span className="num">
+          {row.sheet.countedLines} / {row.sheet.lineCount}
+        </span>
+      ),
+      value: (row) => row.sheet.countedLines,
+    },
+    {
+      key: 'counter',
+      label: 'Compteur',
+      width: 150,
+      value: (row) => row.sheet.counter_name || '',
+    },
+    {
+      key: 'confidence',
+      label: 'Confiance IA',
+      numeric: true,
+      width: 130,
+      render: (row) =>
+        row.sheet.extraction_confidence === null ? (
+          <span className="subtle">—</span>
+        ) : (
+          <Badge tone={row.sheet.extraction_confidence < 0.75 ? 'danger' : 'neutral'}>
+            {percent(row.sheet.extraction_confidence)}
+          </Badge>
+        ),
+      value: (row) => row.sheet.extraction_confidence ?? 0,
+    },
+    {
+      key: 'corrected',
+      label: 'Corrigées à la main',
+      numeric: true,
+      width: 160,
+      help: 'Un scan multi-feuilles préserve ces feuilles plutôt que d’écraser les corrections.',
+      value: (row) => row.sheet.correctedLines,
+    },
+    {
+      key: 'arbitrations',
+      label: 'À arbitrer',
+      numeric: true,
+      width: 120,
+      help: 'La consolidation reste bloquée tant qu’une quantité n’est pas retenue.',
+      value: (row) => row.zone.pendingArbitrations,
+    },
+    {
+      key: 'actions',
+      label: '',
+      width: 210,
+      sortable: false,
+      filter: false,
+      sticky: 'right',
+      render: (row) => (
+        <span className="row" style={{ gap: 'var(--space-2)' }}>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<Icons.printer size={13} />}
+            onClick={() => onPrint({ sheetId: row.sheet.id, zone: row.zone })}
+            aria-label="Imprimer"
+            title="Imprimer cette feuille — vierge ou remplie"
+          />
+          {row.sheet.status === 'ENCODING' && (
+            <Button size="sm" onClick={() => onOpen(row)}>
+              Ouvrir
+            </Button>
+          )}
+          {editable && (
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={busy}
+              onClick={() => onAdvance(row.sheet.id, SHEET_ACTION[row.sheet.status].target)}
+            >
+              {SHEET_ACTION[row.sheet.status].label}
+            </Button>
+          )}
+        </span>
+      ),
+    },
+  ]
+
+  return (
+    <Card>
+      <DataGrid
+        columns={columns}
+        rows={rows}
+        getRowId={(row) => row.id}
+        searchable
+        searchPlaceholder="Filtrer par zone, secteur ou compteur…"
+        emptyTitle="Aucune feuille"
+        maxHeight={640}
+      />
+    </Card>
+  )
+}
+
+
+/**
  * Le bouton bleu d'une feuille : ce qu'il fait, et comment il s'appelle.
  *
  * Il porte l'action suivante, jamais l'état courant — « Commencer le comptage »
@@ -537,32 +793,81 @@ function SheetModal({
     onError: (error) => showError(error, 'Enregistrement impossible'),
   })
 
+  // --- le scan, mené comme un travail suivi ---------------------------------
+  //
+  // Le dépôt rend un identifiant, pas un rapport : la lecture d'une feuille dure
+  // de dix secondes à plus d'une minute, et l'attendre dans la requête ne
+  // laissait rien à regarder — un bouton grisé qui ne distingue pas un travail
+  // qui avance d'un appel qui a calé. On interroge donc le travail, comme le
+  // fait déjà le scan multi-feuilles.
+  const [jobId, setJobId] = useState<string | null>(null)
+
+  // À l'ouverture, on cherche un scan déjà en cours sur cette feuille. Sans
+  // cela, un rafraîchissement pendant la lecture rend la feuille inerte et
+  // invite à relancer un travail qui tourne déjà.
+  useQuery({
+    queryKey: ['sheet-scan-job', campaignId, sheet.id],
+    queryFn: async () => {
+      const running = await api.sheetScanJob(campaignId, sheet.id)
+      if (running && !running.isDone) {
+        setJobId(running.id)
+        setScanning(true)
+      }
+      return running
+    },
+    staleTime: Infinity,
+  })
+
+  const job = useQuery({
+    queryKey: ['scan-job', campaignId, jobId],
+    queryFn: () => api.scanJob(campaignId, jobId!),
+    enabled: jobId !== null,
+    refetchInterval: (query) => (query.state.data?.isDone ? false : 2000),
+  })
+
   const scan = useMutation({
     mutationFn: (file: File) => api.scanSheet(campaignId, sheet.id, file),
-    onSuccess: (result) => {
-      void queryClient.invalidateQueries()
-      setDraft(null)
-      setScanning(false)
-      const report = result.report as Record<string, unknown>
-      const low = (report.lowConfidence as string[]) ?? []
-      const unexpected = (report.unexpected as unknown[]) ?? []
-      toast.push({
-        tone: low.length || unexpected.length ? 'warning' : 'success',
-        title: `Scan lu : ${report.counted} quantité(s) extraite(s)`,
-        body: [
-          low.length ? `${low.length} valeur(s) à confiance faible` : null,
-          unexpected.length ? `${unexpected.length} lecture(s) hors liste attendue` : null,
-          'Vérifiez et validez avant de terminer l’encodage.',
-        ]
-          .filter(Boolean)
-          .join(' · '),
-      })
-    },
+    onSuccess: (queued) => setJobId(queued.id),
     onError: (error) => {
       setScanning(false)
-      showError(error, 'Extraction impossible')
+      showError(error, 'Dépôt du scan impossible')
     },
   })
+
+  // Le travail est terminé : on annonce le résultat une fois, et on recharge.
+  const finished = job.data?.isDone ?? false
+  const announced = useRef<string | null>(null)
+  useEffect(() => {
+    const state = job.data
+    if (!finished || !state || announced.current === state.id) return
+    announced.current = state.id
+    setScanning(false)
+    setJobId(null)
+    if (state.status === 'FAILED') {
+      toast.push({
+        tone: 'danger',
+        title: 'La lecture du scan n’a pas abouti',
+        body: state.error || 'Raison inconnue.',
+      })
+      return
+    }
+    void queryClient.invalidateQueries()
+    setDraft(null)
+    const report = state.report as SheetScanReport
+    const low = report.lowConfidence ?? []
+    const unexpected = report.unexpected ?? []
+    toast.push({
+      tone: low.length || unexpected.length ? 'warning' : 'success',
+      title: `Scan lu : ${report.counted} quantité(s) extraite(s)`,
+      body: [
+        low.length ? `${low.length} valeur(s) à confiance faible` : null,
+        unexpected.length ? `${unexpected.length} lecture(s) hors liste attendue` : null,
+        'Vérifiez et validez avant de terminer l’encodage.',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    })
+  }, [finished, job.data, queryClient, toast])
 
   const rows = draft ?? (query.data?.lines as Array<Record<string, unknown>>) ?? []
 
@@ -766,6 +1071,15 @@ function SheetModal({
                 acceptée.
               </span>
             </div>
+
+            {/* Ce que fait la lecture, pendant qu'elle le fait. Un bouton grisé
+                ne distingue pas un travail qui avance d'un appel qui a calé, et
+                cette lecture-là dure jusqu'à une minute. */}
+            {scanning && (
+              <Card>
+                <ScanProgress state={job.data} />
+              </Card>
+            )}
 
             <Alert tone="info" title="Case vide = non compté">
               Pour déclarer une absence de stock, saisissez explicitement 0.
@@ -1614,33 +1928,58 @@ function WipModal({
  * seul — « 0 % » pendant deux minutes de rendu n'apprend rien, « Préparation
  * des pages » si.
  */
+/**
+ * Où en est la lecture d'un scan — une pile, ou une feuille seule.
+ *
+ * **Deux barres, parce qu'il y a deux vérités.** Sur une pile, « douze feuilles
+ * sur cent » est une mesure : la barre se remplit et le pourcentage veut dire
+ * quelque chose. Sur une feuille seule, l'essentiel du temps part dans **un**
+ * appel au modèle, dont personne ne connaît l'avancement : une barre qui
+ * sauterait de 0 à 100 % ne mesurerait rien et laisserait croire à une panne
+ * pendant toute la minute qu'elle passe à zéro. C'est donc une barre
+ * indéterminée, doublée de l'étape en cours — qui, elle, avance vraiment.
+ */
 function ScanProgress({ state }: { state: ScanJob | undefined }) {
   if (!state) return <p className="subtle">Mise en file…</p>
   const running = state.status === 'RUNNING' || state.status === 'QUEUED'
+  const measurable = state.sheetsTotal > 1
   return (
-    <div className="stack">
+    <div className="stack" style={{ gap: 'var(--space-2)' }}>
       <div className="row">
         <Badge tone={running ? 'info' : 'success'}>{state.step || 'En file'}</Badge>
         {state.totalPages > 0 && (
           <span className="subtle">{state.totalPages} page(s)</span>
         )}
-        {state.sheetsTotal > 0 && (
+        {measurable && (
           <span className="subtle">
             {state.sheetsDone}/{state.sheetsTotal} feuille(s) lue(s)
           </span>
         )}
       </div>
-      <Progress
-        total={Math.max(state.sheetsTotal, 1)}
-        segments={[
-          {
-            label: 'Feuilles lues',
-            value: state.sheetsDone,
-            color: 'var(--accent)',
-          },
-        ]}
-        caption={running ? `${state.percent} %` : null}
-      />
+      {measurable ? (
+        <Progress
+          total={state.sheetsTotal}
+          segments={[
+            {
+              label: 'Feuilles lues',
+              value: state.sheetsDone,
+              color: 'var(--accent)',
+            },
+          ]}
+          caption={running ? `${state.percent} %` : null}
+        />
+      ) : (
+        <div
+          className={`progress__track${running ? ' progress__track--pending' : ''}`}
+          role="progressbar"
+          aria-label="Lecture du scan"
+          aria-valuetext={state.step || 'En file'}
+        >
+          {!running && (
+            <div className="progress__fill" style={{ width: '100%', background: 'var(--accent)' }} />
+          )}
+        </div>
+      )}
     </div>
   )
 }

@@ -419,8 +419,36 @@ export interface MultiScanReport {
  * traitement sont indistinguables d'une panne — et c'est précisément ce que
  * faisait la version qui attendait le rapport dans la requête de dépôt.
  */
+/**
+ * Ce que rend la lecture d'**une** feuille.
+ *
+ * Les listes portent des étiquettes prêtes à lire — « MASS-1 » ou
+ * « MASS-1 [WIP non déclaré] » quand la référence figure deux fois sur la
+ * feuille et qu'il faut dire laquelle vérifier.
+ */
+export interface SheetScanReport {
+  linesExtracted: number
+  counted: number
+  pagesRead: number
+  meanConfidence: number | null
+  counterName: string
+  startedAt: string | null
+  endedAt: string | null
+  lowConfidence: string[]
+  missing: string[]
+  unexpected: Array<{ text?: string; qty?: unknown; note?: string }>
+  tokensUsed?: number
+}
+
 export interface ScanJob {
   id: string
+  /**
+   * Renseigné = le scan d'une feuille ; nul = une pile multi-feuilles.
+   *
+   * Les deux chemins partagent la table, le suivi et l'écran d'avancement :
+   * ce qui les sépare est la lecture, et c'est ce champ qui la désigne.
+   */
+  sheetId: string | null
   status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
   step: string
   filename: string
@@ -429,7 +457,8 @@ export interface ScanJob {
   sheetsTotal: number
   sheetsDone: number
   percent: number
-  report: MultiScanReport | Record<string, never>
+  /** Multi-feuilles : `MultiScanReport`. Feuille seule : le rapport d'extraction. */
+  report: MultiScanReport | SheetScanReport | Record<string, never>
   error: string
   createdBy: string
   createdAt: string | null

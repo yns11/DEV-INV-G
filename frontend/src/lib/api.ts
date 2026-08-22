@@ -543,14 +543,24 @@ export const api = {
     request<ScanJob>(`/campaigns/${id}/generic/scan/jobs/${jobId}`),
   scanJobs: (id: string) =>
     request<ScanJob[]>(`/campaigns/${id}/generic/scan/jobs`),
+  /**
+   * Dépose le scan d'une feuille. Rend un **travail**, pas un rapport.
+   *
+   * Comme pour une pile : la lecture dure de dix secondes à plus d'une minute,
+   * et l'attendre dans cette requête ne laissait rien à regarder. Le rapport
+   * arrive par `scanJob`, quand le travail est terminé.
+   */
   scanSheet: (id: string, sheetId: string, file: File) => {
     const form = new FormData()
     form.append('file', file)
-    return request<{ report: Record<string, unknown>; sheet: Record<string, unknown> }>(
-      `/campaigns/${id}/generic/sheets/${sheetId}/scan`,
-      { method: 'POST', body: form },
-    )
+    return request<ScanJob>(`/campaigns/${id}/generic/sheets/${sheetId}/scan`, {
+      method: 'POST',
+      body: form,
+    })
   },
+  /** Le dernier scan de cette feuille, pour reprendre un suivi interrompu. */
+  sheetScanJob: (id: string, sheetId: string) =>
+    request<ScanJob | null>(`/campaigns/${id}/generic/sheets/${sheetId}/scan/job`),
   arbitrations: (id: string, zoneId?: string) =>
     request<Arbitration[]>(`/campaigns/${id}/generic/arbitrations${qs({ zoneId })}`),
   refreshArbitrations: (id: string, zoneId: string) =>

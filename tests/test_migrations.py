@@ -41,6 +41,7 @@ SHIPPED = {
     "013_erp_stock_snapshot": "45d3eb84d4d5",
     "014_campaign_owner_backfill": "d1f41cef0270",
     "015_scan_job": "20ed77f608f7",
+    "016_scan_job_sheet": "461bab2d5e5b",
 }
 
 

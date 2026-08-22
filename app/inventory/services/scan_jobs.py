@@ -69,18 +69,28 @@ class ScanJobService:
         filename: str,
         content_type: str,
         overwrite_reviewed: bool = False,
+        sheet_id: str | None = None,
     ) -> dict[str, Any]:
         """Enregistre le travail et rend la main immédiatement.
 
         La garde d'écriture est passée **ici**, pas dans le fil de travail : un
         refus doit répondre au chargement, pendant que l'utilisateur regarde,
         et non apparaître deux minutes plus tard dans un travail en échec.
+
+        ``sheet_id`` renseigné vise une feuille ; nul, c'est la pile entière.
         """
         ctx = self.ctx
         ctx.guard(campaign, "count_entries")
+        if sheet_id is not None:
+            # Vérifié au dépôt, pas dans le fil : « feuille introuvable » doit
+            # répondre au chargement, pas s'afficher deux minutes plus tard.
+            sheet = ctx.sheets.get_sheet(sheet_id)
+            if sheet.campaign_id != campaign.id:
+                raise NotFoundError("Feuille introuvable dans cette campagne.")
 
         job_id = ctx.scan_jobs.create(
             campaign_id=campaign.id,
+            sheet_id=sheet_id,
             filename=filename,
             content_type=content_type,
             overwrite_reviewed=overwrite_reviewed,
@@ -109,6 +119,19 @@ class ScanJobService:
         return [
             _as_dict(row) for row in self.ctx.scan_jobs.list(campaign.id, limit=limit)
         ]
+
+    def latest_for_sheet(
+        self, campaign: Campaign, sheet_id: str
+    ) -> dict[str, Any] | None:
+        """Le dernier scan de cette feuille, pour reprendre un suivi interrompu.
+
+        Un navigateur rafraîchi pendant une lecture perd l'identifiant du
+        travail. Sans ce rappel, l'écran revient inerte et invite à relancer un
+        scan qui tourne déjà — deux lectures concurrentes sur la même feuille,
+        dont la seconde écrase la première.
+        """
+        row = self.ctx.scan_jobs.latest_for_sheet(sheet_id, campaign.id)
+        return _as_dict(row) if row else None
 
 
 # --------------------------------------------------------------------------- #
@@ -146,19 +169,31 @@ def _run(*, job_id: str, campaign_id: str, actor: str, request_id: str) -> None:
                 # doit pas faire perdre une lecture de cent feuilles.
                 log.warning("Avancement du scan %s non écrit : %s", job_id, exc)
 
-        report = GenericService(ctx).extract_from_multi_scan(
-            campaign,
-            payload=payload,
-            filename=row.get("filename") or "scan",
-            content_type=row.get("content_type") or "",
-            overwrite_reviewed=bool(row.get("overwrite_reviewed")),
-            on_progress=say,
-        )
+        service = GenericService(ctx)
+        sheet_id = row.get("sheet_id")
+        common = {
+            "payload": payload,
+            "filename": row.get("filename") or "scan",
+            "content_type": row.get("content_type") or "",
+            "on_progress": say,
+        }
+        # Une feuille ou une pile : même table, même suivi, même écran. Seule
+        # la lecture diffère, et c'est `sheet_id` qui la désigne.
+        if sheet_id:
+            outcome = service.extract_from_scan(campaign, str(sheet_id), **common)
+            report = outcome["report"]
+            log.info("Scan %s terminé : feuille %s lue", job_id, sheet_id)
+        else:
+            report = service.extract_from_multi_scan(
+                campaign,
+                overwrite_reviewed=bool(row.get("overwrite_reviewed")),
+                **common,
+            )
+            log.info(
+                "Scan %s terminé : %d feuille(s) lue(s)",
+                job_id, len(report.get("sheetsProcessed") or []),
+            )
         jobs.finish(job_id, report=report)
-        log.info(
-            "Scan %s terminé : %d feuille(s) lue(s)",
-            job_id, len(report.get("sheetsProcessed") or []),
-        )
     except InventoryError as exc:
         # Un refus métier — pile trop épaisse, aucune feuille lisible, phase
         # gelée. Le message est déjà écrit pour un humain : il part tel quel.
@@ -216,6 +251,9 @@ def _as_dict(row: dict[str, Any]) -> dict[str, Any]:
     done = int(row.get("sheets_done") or 0)
     return {
         "id": str(row["id"]),
+        # Renseigné = scan d'une feuille. L'écran s'en sert pour savoir s'il
+        # regarde son propre travail ou celui de la pile.
+        "sheetId": str(row["sheet_id"]) if row.get("sheet_id") else None,
         "status": row.get("status") or "QUEUED",
         "step": row.get("step") or "",
         "filename": row.get("filename") or "",

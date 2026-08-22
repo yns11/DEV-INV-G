@@ -45,11 +45,12 @@ class FakeJobs:
         self._seq = 0
 
     def create(self, *, campaign_id, filename, content_type,
-               overwrite_reviewed, actor) -> str:
+               overwrite_reviewed, actor, sheet_id=None) -> str:
         self._seq += 1
         job_id = f"job-{self._seq}"
         self.rows[job_id] = {
-            "id": job_id, "campaign_id": campaign_id, "filename": filename,
+            "id": job_id, "campaign_id": campaign_id, "sheet_id": sheet_id,
+            "filename": filename,
             "content_type": content_type, "overwrite_reviewed": overwrite_reviewed,
             "created_by": actor, "status": "QUEUED", "step": "",
             "total_pages": 0, "pages_routed": 0, "sheets_total": 0,
@@ -57,6 +58,13 @@ class FakeJobs:
             "created_at": None, "started_at": None, "finished_at": None,
         }
         return job_id
+
+    def latest_for_sheet(self, sheet_id, campaign_id):
+        rows = [
+            r for r in self.rows.values()
+            if r.get("sheet_id") == sheet_id and r["campaign_id"] == campaign_id
+        ]
+        return rows[-1] if rows else None
 
     def get(self, job_id, campaign_id):
         row = self.rows.get(job_id)
@@ -294,3 +302,177 @@ class TestTheProgressIsReported:
             raise RuntimeError("écriture d'avancement impossible")
 
         assert in_parallel(lambda n: n * 2, [1, 2], 2, on_done=refuse) == [2, 4]
+
+
+# --------------------------------------------------------------------------- #
+# Le scan d'UNE feuille, mené comme le scan d'une pile
+# --------------------------------------------------------------------------- #
+
+class FakeSheets:
+    """Juste ce qu'il faut pour dire à quelle campagne une feuille appartient."""
+
+    def __init__(self, owners: dict[str, str]) -> None:
+        self.owners = owners
+
+    def get_sheet(self, sheet_id: str):
+        if sheet_id not in self.owners:
+            raise NotFoundError("Feuille inconnue.")
+        return SimpleNamespace(id=sheet_id, campaign_id=self.owners[sheet_id])
+
+
+def sheet_service(owners: dict[str, str] | None = None, *, actor: str = "chef@usine"):
+    svc, jobs = service(actor=actor)
+    svc.ctx.sheets = FakeSheets(owners or {"sheet-1": "camp-1"})
+    return svc, jobs
+
+
+class TestScanningOneSheetIsAJobToo:
+    """Une feuille seule est plus courte à lire qu'une pile, mais pas courte.
+
+    Rendu des pages, un appel au modèle de vision, écriture des lignes : de dix
+    secondes à plus d'une minute. Tenue dans la requête de chargement, l'attente
+    n'offrait rien à regarder — un bouton grisé qui ne distingue pas un travail
+    qui avance d'un appel qui a calé.
+    """
+
+    def test_the_upload_returns_a_job_carrying_the_sheet(self, no_real_worker):
+        svc, _ = sheet_service()
+        out = svc.queue(
+            campaign(), payload=b"%PDF", filename="f.pdf",
+            content_type="application/pdf", sheet_id="sheet-1",
+        )
+        assert out["status"] == "QUEUED"
+        assert out["isDone"] is False
+        assert out["sheetId"] == "sheet-1"
+
+    def test_a_stack_carries_no_sheet(self, no_real_worker):
+        """C'est ce champ, et lui seul, qui sépare les deux lectures."""
+        svc, _ = sheet_service()
+        out = svc.queue(campaign(), payload=b"%PDF", filename="p.pdf", content_type="")
+        assert out["sheetId"] is None
+
+    def test_a_sheet_of_another_campaign_is_refused_at_the_upload(
+        self, no_real_worker
+    ):
+        """Le refus doit répondre au chargement, pas dans un travail en échec
+        que personne n'a de raison d'ouvrir deux minutes plus tard."""
+        svc, jobs = sheet_service({"sheet-9": "camp-VOISINE"})
+        with pytest.raises(NotFoundError):
+            svc.queue(
+                campaign(), payload=b"%PDF", filename="f.pdf",
+                content_type="", sheet_id="sheet-9",
+            )
+        assert jobs.rows == {}
+        assert no_real_worker == []
+
+    def test_a_reader_is_refused_before_the_sheet_is_even_looked_up(
+        self, no_real_worker
+    ):
+        svc, jobs = sheet_service(actor="tiers@usine")
+        with pytest.raises(PermissionDeniedError):
+            svc.queue(
+                campaign(), payload=b"%PDF", filename="f.pdf",
+                content_type="", sheet_id="sheet-1",
+            )
+        assert jobs.rows == {}
+
+
+class TestFindingAReadingAgainAfterARefresh:
+    """Un navigateur rafraîchi perd l'identifiant du travail.
+
+    Sans ce rappel, l'écran revient inerte et invite à relancer un scan qui
+    tourne déjà — deux lectures concurrentes sur la même feuille, dont la
+    seconde écrase la première.
+    """
+
+    def test_the_last_job_of_the_sheet_comes_back(self, no_real_worker):
+        svc, _ = sheet_service()
+        first = svc.queue(
+            campaign(), payload=b"%PDF", filename="a.pdf",
+            content_type="", sheet_id="sheet-1",
+        )
+        second = svc.queue(
+            campaign(), payload=b"%PDF", filename="b.pdf",
+            content_type="", sheet_id="sheet-1",
+        )
+        found = svc.latest_for_sheet(campaign(), "sheet-1")
+        assert found is not None
+        assert found["id"] == second["id"] != first["id"]
+
+    def test_a_sheet_never_scanned_gives_nothing_rather_than_a_404(
+        self, no_real_worker
+    ):
+        """L'écran interroge à chaque ouverture : une erreur ici ferait clignoter
+        un toast rouge sur toute feuille jamais scannée."""
+        svc, _ = sheet_service()
+        assert svc.latest_for_sheet(campaign(), "sheet-1") is None
+
+
+class TestTheWorkerReadsWhatTheJobNames:
+    """Une colonne sépare les deux lectures ; le fil doit la lire.
+
+    Se tromper d'aiguillage ici est silencieux et coûteux : une feuille traitée
+    comme une pile part au routage, aucune page ne porte le pied de page attendu,
+    et le travail se termine « réussi » avec zéro quantité écrite.
+    """
+
+    def worker(self, monkeypatch, *, sheet_id):
+        """Fait tourner `_run` sur une doublure, et note ce qui a été appelé."""
+        jobs = FakeJobs()
+        job_id = jobs.create(
+            campaign_id="camp-1", sheet_id=sheet_id, filename="f.pdf",
+            content_type="application/pdf", overwrite_reviewed=False,
+            actor="chef@usine",
+        )
+        scan_jobs._payloads[job_id] = b"%PDF"
+        calls: list[tuple[str, tuple[Any, ...]]] = []
+
+        class FakeGeneric:
+            def __init__(self, _ctx): pass
+
+            def extract_from_scan(self, campaign, sheet, **kw):
+                calls.append(("one", (campaign.id, sheet)))
+                kw["on_progress"](step="Lecture par le modèle")
+                return {"report": {"counted": 3}}
+
+            def extract_from_multi_scan(self, campaign, **kw):
+                calls.append(("many", (campaign.id,)))
+                return {"sheetsProcessed": [1, 2]}
+
+        monkeypatch.setattr(
+            "inventory.services.generic_service.GenericService", FakeGeneric
+        )
+        monkeypatch.setattr(
+            scan_jobs, "ServiceContext",
+            lambda **kw: SimpleNamespace(
+                scan_jobs=jobs,
+                campaigns=SimpleNamespace(get=lambda _id: campaign()),
+            ),
+        )
+        scan_jobs._run(
+            job_id=job_id, campaign_id="camp-1", actor="chef@usine", request_id="r",
+        )
+        return jobs, job_id, calls
+
+    def test_a_job_naming_a_sheet_reads_that_sheet(self, monkeypatch):
+        jobs, job_id, calls = self.worker(monkeypatch, sheet_id="sheet-1")
+        assert calls == [("one", ("camp-1", "sheet-1"))]
+        assert jobs.rows[job_id]["status"] == "SUCCEEDED"
+        assert jobs.rows[job_id]["report"] == {"counted": 3}
+
+    def test_a_job_naming_no_sheet_reads_the_whole_stack(self, monkeypatch):
+        _, _, calls = self.worker(monkeypatch, sheet_id=None)
+        assert calls == [("many", ("camp-1",))]
+
+    def test_the_report_of_a_single_sheet_is_the_extraction_report(self, monkeypatch):
+        """Pas l'enveloppe `{report, sheet}` : l'écran lit un rapport, et il en
+        lit un seul, quel que soit le chemin qui l'a produit."""
+        jobs, job_id, _ = self.worker(monkeypatch, sheet_id="sheet-1")
+        assert "report" not in jobs.rows[job_id]["report"]
+
+    def test_the_progress_of_a_single_sheet_is_written(self, monkeypatch):
+        jobs, _, _ = self.worker(monkeypatch, sheet_id="sheet-1")
+        assert any(
+            "Lecture par le modèle" in (c.get("step") or "")
+            for c in jobs.progress_calls
+        )

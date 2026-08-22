@@ -2455,8 +2455,8 @@ class ScanJobRepository(_Base):
     """
 
     _COLUMNS = (
-        "id, campaign_id, filename, content_type, status, step, total_pages, "
-        "pages_routed, sheets_total, sheets_done, report, error, "
+        "id, campaign_id, sheet_id, filename, content_type, status, step, "
+        "total_pages, pages_routed, sheets_total, sheets_done, report, error, "
         "overwrite_reviewed, created_by, created_at, started_at, finished_at"
     )
 
@@ -2468,14 +2468,32 @@ class ScanJobRepository(_Base):
         content_type: str,
         overwrite_reviewed: bool,
         actor: str,
+        sheet_id: str | None = None,
     ) -> str:
+        """``sheet_id`` renseigné = scan d'une feuille ; nul = pile complète."""
         job_id = new_id()
         self._execute(
-            "INSERT INTO scan_job (id, campaign_id, filename, content_type, "
-            "overwrite_reviewed, created_by) VALUES (%s,%s,%s,%s,%s,%s)",
-            (job_id, campaign_id, filename, content_type, overwrite_reviewed, actor),
+            "INSERT INTO scan_job (id, campaign_id, sheet_id, filename, "
+            "content_type, overwrite_reviewed, created_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (job_id, campaign_id, sheet_id, filename, content_type,
+             overwrite_reviewed, actor),
         )
         return job_id
+
+    def latest_for_sheet(self, sheet_id: str, campaign_id: str) -> dict[str, Any] | None:
+        """Le dernier scan déposé sur cette feuille, terminé ou non.
+
+        C'est ce qui permet à l'écran de retrouver une lecture en cours après un
+        rafraîchissement : sans lui, recharger la page pendant un scan donne une
+        feuille d'apparence inerte, et l'utilisateur relance une lecture qui
+        tourne déjà.
+        """
+        return self._fetch_one(
+            f"SELECT {self._COLUMNS} FROM scan_job WHERE sheet_id = %s "
+            "AND campaign_id = %s ORDER BY created_at DESC LIMIT 1",
+            (sheet_id, campaign_id),
+        )
 
     def get(self, job_id: str, campaign_id: str) -> dict[str, Any] | None:
         """Filtré sur la campagne autant que sur le travail : l'identifiant vient

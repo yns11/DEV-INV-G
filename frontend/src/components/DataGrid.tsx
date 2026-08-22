@@ -65,6 +65,25 @@ export interface Column<T extends Row = Record<string, unknown>> {
    */
   filter?: 'choice' | 'range' | 'text' | false
   /**
+   * Comment nommer une valeur dans la liste de filtres.
+   *
+   * Une colonne peut afficher « Composant » et valoir `COMPONENT` — c'est le
+   * code qui trie, s'exporte et se compare, et le libellé qui se lit. Sans
+   * cette correspondance, le filtre proposait de cocher des valeurs
+   * introuvables dans le tableau, et la recherche du panneau ne trouvait pas
+   * ce que l'utilisateur avait sous les yeux.
+   */
+  choiceLabel?: (value: string) => string
+  /**
+   * Épingle la colonne au bord droit du tableau.
+   *
+   * Réservé à la colonne d'actions d'une grille large : sans cela, le bouton
+   * qui fait avancer la ligne se retrouve hors écran dès qu'il y a dix
+   * colonnes, et il faut faire défiler horizontalement à chaque ligne pour
+   * l'atteindre.
+   */
+  sticky?: 'right'
+  /**
    * Ce que la colonne totalise en pied de tableau.
    *
    * Somme par défaut sur les colonnes numériques. `false` pour celles dont la
@@ -101,6 +120,15 @@ type ColumnFilter =
   | { kind: 'text'; needle: string }
 
 type Filters = Record<string, ColumnFilter>
+
+/** Une valeur possible d'une colonne, telle qu'elle se lit, et son poids. */
+interface Choice {
+  /** Ce qui filtre — le code, jamais le libellé. */
+  value: string
+  /** Ce qui s'affiche et se cherche. */
+  label: string
+  count: number
+}
 
 /** Au-delà, une liste de valeurs cesse d'être un choix et devient un annuaire. */
 const CHOICE_CEILING = 40
@@ -228,21 +256,58 @@ export function DataGrid<T extends Row>({
   // ---- filtres par colonne -------------------------------------------------
   const [filters, setFilters] = useState<Filters>({})
 
-  /** Les valeurs distinctes d'une colonne, pour alimenter une liste de choix. */
+  /**
+   * Les valeurs distinctes d'une colonne, **avec leur nombre de lignes**.
+   *
+   * Le compte n'est pas décoratif : « TERMINÉE 412 / EN COURS 3 » dit d'un coup
+   * d'œil où est la matière, et évite de cocher une valeur pour découvrir
+   * qu'elle ne ramène rien. C'est aussi ce qui permet de trier les valeurs les
+   * plus représentées en tête d'une liste de quarante.
+   */
   const distinct = useMemo(() => {
-    const out: Record<string, string[]> = {}
+    const out: Record<string, Choice[]> = {}
     for (const column of columns) {
       if (column.filter === false) continue
-      const seen = new Set<string>()
+      const tally = new Map<string, number>()
       for (const row of rows) {
         const value = defaultValue(row, column)
         if (value === null || value === '') continue
-        seen.add(String(value))
-        if (seen.size > CHOICE_CEILING) break
+        const key = String(value)
+        tally.set(key, (tally.get(key) ?? 0) + 1)
+        if (tally.size > CHOICE_CEILING) break
       }
-      out[column.key] = [...seen].sort((a, b) =>
-        a.localeCompare(b, 'fr', { numeric: true }),
-      )
+      out[column.key] = [...tally]
+        .map(([value, count]) => ({
+          value,
+          label: column.choiceLabel?.(value) ?? value,
+          count,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'fr', { numeric: true }))
+    }
+    return out
+  }, [rows, columns])
+
+  /**
+   * Les bornes réelles d'une colonne numérique, sur **toutes** les lignes.
+   *
+   * Elles ne peuvent pas se déduire de `distinct`, qui s'arrête à quarante
+   * valeurs : sur un référentiel de cent vingt prix, le panneau annonçait
+   * « valeurs présentes : 87 à 1787 » alors que la colonne descend à 0,40 —
+   * une aide de saisie qui ment est pire que pas d'aide du tout.
+   */
+  const bounds = useMemo(() => {
+    const out: Record<string, { min: number; max: number }> = {}
+    for (const column of columns) {
+      if (!column.numeric || column.filter === false) continue
+      let min = Infinity
+      let max = -Infinity
+      for (const row of rows) {
+        const value = Number(defaultValue(row, column))
+        if (!Number.isFinite(value)) continue
+        if (value < min) min = value
+        if (value > max) max = value
+      }
+      if (min <= max) out[column.key] = { min, max }
     }
     return out
   }, [rows, columns])
@@ -587,6 +652,41 @@ export function DataGrid<T extends Row>({
         </div>
       )}
 
+      {/* Ce qui filtre, visible sans rouvrir quoi que ce soit.
+          Un compteur « Filtres (3) » dit qu'il y a trois critères ; il ne dit
+          pas lesquels, et le tableau amputé de ses deux tiers reste alors
+          inexplicable tant qu'on n'a pas rouvert le panneau.
+          Barre ouverte, les déclencheurs portent déjà cet état : afficher les
+          deux ferait deux rangées disant la même chose. */}
+      {activeFilters > 0 && !showFilters && (
+        <div className="filter-chips">
+          {filterable
+            .filter(({ column }) => filters[column.key])
+            .map(({ column }) => (
+              <button
+                key={column.key}
+                type="button"
+                className="chip chip--active"
+                title={`Retirer le filtre sur « ${column.label} »`}
+                onClick={() => setFilter(column.key, null)}
+              >
+                <span className="subtle">{column.label}</span>{' '}
+                {summarise(filters[column.key], distinct[column.key])}
+                <span className="chip__remove">
+                  <Icons.x size={11} />
+                </span>
+              </button>
+            ))}
+          <button
+            type="button"
+            className="chip"
+            onClick={() => setFilters({})}
+          >
+            Tout effacer
+          </button>
+        </div>
+      )}
+
       {showFilters && filterable.length > 0 && (
         <div className="filter-bar">
           {filterable.map(({ column, kind }) => (
@@ -595,20 +695,11 @@ export function DataGrid<T extends Row>({
               column={column}
               kind={kind}
               choices={distinct[column.key] ?? []}
+              observed={bounds[column.key]}
               value={filters[column.key] ?? null}
               onChange={(filter) => setFilter(column.key, filter)}
             />
           ))}
-          {activeFilters > 0 && (
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={<Icons.x size={13} />}
-              onClick={() => setFilters({})}
-            >
-              Tout effacer
-            </Button>
-          )}
         </div>
       )}
 
@@ -642,6 +733,7 @@ export function DataGrid<T extends Row>({
                     className={[
                       column.numeric ? 'num' : '',
                       column.sortable !== false ? 'sortable' : '',
+                      column.sticky === 'right' ? 'sticky-right' : '',
                     ].join(' ')}
                     style={column.width ? { minWidth: column.width } : undefined}
                     onClick={() => column.sortable !== false && toggleSort(column.key)}
@@ -684,14 +776,26 @@ export function DataGrid<T extends Row>({
                       </td>
                     )}
                     {visible.map((column) => {
+                      const sticky = column.sticky === 'right' ? ' sticky-right' : ''
                       if (column.render) {
                         return (
-                          <td key={column.key} className={column.numeric ? 'num' : undefined}>
+                          <td
+                            key={column.key}
+                            className={`${column.numeric ? 'num' : ''}${sticky}`.trim() || undefined}
+                          >
                             {column.render(row, index)}
                           </td>
                         )
                       }
-                                      const raw = cellOf(row, column.key)
+                      // Une colonne sans `render` affiche la valeur portée par
+                      // la clé — et, à défaut, ce que `value` calcule. Sans ce
+                      // repli, une colonne dérivée d'un champ imbriqué (la zone
+                      // d'une feuille, par exemple) déclarait bien sa valeur
+                      // pour le tri, le filtre et l'export, et rendait une
+                      // cellule vide à l'écran.
+                      const raw = column.key in row
+                        ? cellOf(row, column.key)
+                        : defaultValue(row, column)
                       const text = raw === null || raw === undefined || raw === '' ? '' : String(raw)
                       if (editable && column.editable !== false) {
                         return (
@@ -759,7 +863,15 @@ export function DataGrid<T extends Row>({
                       )
                     }
                     return (
-                      <td key={column.key} className={column.numeric ? 'num' : ''}>
+                      <td
+                        key={column.key}
+                        className={[
+                          column.numeric ? 'num' : '',
+                          // La colonne épinglée l'est aussi sous les totaux,
+                          // sinon elle laisse un blanc sur cette ligne-là.
+                          column.sticky === 'right' ? 'sticky-right' : '',
+                        ].join(' ').trim()}
+                      >
                         {total
                           ? column.totalFormat
                             ? column.totalFormat(total.sum)
@@ -863,90 +975,300 @@ function ColumnPicker<T extends Row>({
   )
 }
 
-/** Un filtre de colonne, dans la forme que sa nature appelle. */
+/**
+ * Un filtre de colonne, dans la forme que sa nature appelle.
+ *
+ * **Un déclencheur compact, un panneau au clic.** La première version posait le
+ * filtre de chaque colonne à plat dans la barre — dont, pour une liste de
+ * valeurs, un `<select multiple>` natif. Trois défauts, dans cet ordre :
+ *
+ * * la sélection multiple native se fait au Ctrl+clic, un geste que personne
+ *   n'a de raison de connaître, et qui perd tout au clic simple suivant ;
+ * * la liste n'a ni recherche ni compte, donc quarante valeurs sont un mur ;
+ * * quinze colonnes filtrables faisaient quinze champs déployés en permanence,
+ *   qui repoussaient le tableau hors de l'écran.
+ *
+ * Ici le repos est une puce d'une ligne, et le détail ne s'ouvre que sur
+ * demande — au-dessus du tableau, sans le déplacer.
+ */
 function ColumnFilterField<T extends Row>({
   column,
   kind,
   choices,
+  observed,
   value,
   onChange,
 }: {
   column: Column<T>
   kind: 'choice' | 'range' | 'text'
-  choices: string[]
+  choices: Choice[]
+  /** Les bornes réelles de la colonne, quand elle est numérique. */
+  observed: { min: number; max: number } | undefined
   value: ColumnFilter | null
   onChange: (filter: ColumnFilter | null) => void
 }) {
-  if (kind === 'range') {
-    const range = value?.kind === 'range' ? value : { min: null, max: null }
-    const update = (part: 'min' | 'max', raw: string) => {
-      const next = {
-        kind: 'range' as const,
-        min: range.min,
-        max: range.max,
-        [part]: raw === '' ? null : Number(raw),
-      }
-      onChange(next.min === null && next.max === null ? null : next)
+  const [open, setOpen] = useState(false)
+  const [needle, setNeedle] = useState('')
+  const box = useRef<HTMLDivElement>(null)
+
+  // Fermeture au clic extérieur et à Échap. Sans cela, deux panneaux ouverts se
+  // recouvrent et masquent la barre elle-même.
+  useEffect(() => {
+    if (!open) return
+    const onClick = (event: MouseEvent) => {
+      if (!box.current?.contains(event.target as Node)) setOpen(false)
     }
-    return (
-      <span className="filter-field">
-        <span className="filter-field__label">{column.label}</span>
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const active = value !== null
+  return (
+    <div className="filter" ref={box}>
+      <button
+        type="button"
+        className={`filter__trigger${active ? ' filter__trigger--active' : ''}`}
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title={column.help}
+      >
+        <span className="filter__label">{column.label}</span>
+        {/* Au repos, le nom de la colonne suffit : un « toutes » accolé à
+            chaque puce est du bruit, et son accord dépend d'un libellé dont
+            le genre varie. Le résumé n'apparaît qu'une fois le filtre posé. */}
+        {active && <span className="filter__summary">{summarise(value, choices)}</span>}
+        {active && (
+          <span
+            className="filter__clear"
+            role="button"
+            tabIndex={-1}
+            aria-label={`Retirer le filtre ${column.label}`}
+            onClick={(event) => {
+              // Sans cela, le clic ouvre le panneau qu'il vient de vider.
+              event.stopPropagation()
+              onChange(null)
+              setOpen(false)
+            }}
+          >
+            <Icons.x size={11} />
+          </span>
+        )}
+        <Icons.chevronDown size={12} className="filter__caret" />
+      </button>
+
+      {open && (
+        <div className="filter__panel" role="dialog" aria-label={column.label}>
+          {kind === 'choice' && (
+            <ChoicePanel
+              choices={choices}
+              needle={needle}
+              onNeedle={setNeedle}
+              picked={value?.kind === 'choice' ? value.values : []}
+              onChange={(values) =>
+                onChange(values.length ? { kind: 'choice', values } : null)
+              }
+            />
+          )}
+          {kind === 'range' && (
+            <RangePanel
+              range={value?.kind === 'range' ? value : { min: null, max: null }}
+              observed={observed}
+              onChange={onChange}
+            />
+          )}
+          {kind === 'text' && (
+            <TextPanel
+              needle={value?.kind === 'text' ? value.needle : ''}
+              onChange={(text) =>
+                onChange(text ? { kind: 'text', needle: text } : null)
+              }
+            />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Ce que porte une puce de filtre : le critère, pas le nom de la colonne.
+ *
+ * Les libellés viennent de `choices` : une puce qui afficherait « COMPONENT »
+ * quand la colonne montre « Composant » ne se rattache à rien de visible.
+ */
+function summarise(
+  value: ColumnFilter | null | undefined,
+  choices: Choice[] = [],
+): string {
+  if (!value) return ''
+  if (value.kind === 'choice') {
+    const [first] = value.values
+    if (value.values.length === 1 && first !== undefined) {
+      return choices.find((choice) => choice.value === first)?.label ?? first
+    }
+    return `${value.values.length} valeurs`
+  }
+  if (value.kind === 'range') {
+    const { min, max } = value
+    if (min !== null && max !== null) return `${min} – ${max}`
+    if (min !== null) return `≥ ${min}`
+    return `≤ ${max}`
+  }
+  return `« ${value.needle} »`
+}
+
+function ChoicePanel({
+  choices,
+  needle,
+  onNeedle,
+  picked,
+  onChange,
+}: {
+  choices: Choice[]
+  needle: string
+  onNeedle: (value: string) => void
+  picked: string[]
+  onChange: (values: string[]) => void
+}) {
+  const term = needle.trim().toLowerCase()
+  const shown = term
+    ? choices.filter((choice) => choice.label.toLowerCase().includes(term))
+    : choices
+  const toggle = (value: string) =>
+    onChange(
+      picked.includes(value)
+        ? picked.filter((v) => v !== value)
+        : [...picked, value],
+    )
+  return (
+    <>
+      {/* La recherche n'apparaît qu'au-delà de ce qui se parcourt à l'œil. */}
+      {choices.length > 7 && (
         <input
-          className="input input--mini num"
+          className="input input--sm filter__search"
+          placeholder="Rechercher une valeur…"
+          value={needle}
+          onChange={(event) => onNeedle(event.target.value)}
+          autoFocus
+        />
+      )}
+      <div className="filter__actions">
+        <button
+          type="button"
+          className="filter__action"
+          disabled={shown.length === 0}
+          onClick={() => onChange([...new Set([...picked, ...shown.map((c) => c.value)])])}
+        >
+          Tout cocher{term && ` (${shown.length})`}
+        </button>
+        <button
+          type="button"
+          className="filter__action"
+          disabled={picked.length === 0}
+          onClick={() => onChange([])}
+        >
+          Effacer
+        </button>
+      </div>
+      <div className="filter__list">
+        {shown.length === 0 && <p className="subtle filter__empty">Aucune valeur</p>}
+        {shown.map((choice) => (
+          <label key={choice.value} className="filter__option">
+            <input
+              type="checkbox"
+              checked={picked.includes(choice.value)}
+              onChange={() => toggle(choice.value)}
+            />
+            <span className="truncate">{choice.label}</span>
+            {/* Combien de lignes portent cette valeur : cocher devient une
+                décision plutôt qu'un essai. */}
+            <span className="filter__count num">{choice.count}</span>
+          </label>
+        ))}
+      </div>
+    </>
+  )
+}
+
+function RangePanel({
+  range,
+  observed,
+  onChange,
+}: {
+  range: { min: number | null; max: number | null }
+  /** Les bornes réelles, affichées en aide de saisie : sans elles, « de … à … »
+      sur une colonne inconnue se remplit au hasard. */
+  observed: { min: number; max: number } | undefined
+  onChange: (filter: ColumnFilter | null) => void
+}) {
+  const update = (part: 'min' | 'max', raw: string) => {
+    const next = {
+      kind: 'range' as const,
+      min: range.min,
+      max: range.max,
+      [part]: raw === '' ? null : Number(raw),
+    }
+    onChange(next.min === null && next.max === null ? null : next)
+  }
+  return (
+    <>
+      <div className="filter__range">
+        <input
+          className="input input--sm num"
           type="number"
-          placeholder="min"
+          placeholder={observed ? String(observed.min) : 'min'}
+          aria-label="Minimum"
           value={range.min ?? ''}
           onChange={(event) => update('min', event.target.value)}
+          autoFocus
         />
+        <span className="subtle">à</span>
         <input
-          className="input input--mini num"
+          className="input input--sm num"
           type="number"
-          placeholder="max"
+          placeholder={observed ? String(observed.max) : 'max'}
+          aria-label="Maximum"
           value={range.max ?? ''}
           onChange={(event) => update('max', event.target.value)}
         />
-      </span>
-    )
-  }
+      </div>
+      <p className="subtle filter__hint">
+        {observed
+          ? `Une seule borne suffit. Valeurs présentes : ${observed.min} à ${observed.max}.`
+          : 'Une seule borne suffit.'}
+      </p>
+    </>
+  )
+}
 
-  if (kind === 'choice') {
-    const picked = value?.kind === 'choice' ? value.values : []
-    return (
-      <span className="filter-field">
-        <span className="filter-field__label">{column.label}</span>
-        <select
-          className="input input--mini"
-          multiple
-          size={Math.min(choices.length, 3)}
-          value={picked}
-          onChange={(event) => {
-            const values = [...event.target.selectedOptions].map((o) => o.value)
-            onChange(values.length ? { kind: 'choice', values } : null)
-          }}
-        >
-          {choices.map((choice) => (
-            <option key={choice} value={choice}>
-              {choice}
-            </option>
-          ))}
-        </select>
-      </span>
-    )
-  }
-
-  const needle = value?.kind === 'text' ? value.needle : ''
+function TextPanel({
+  needle,
+  onChange,
+}: {
+  needle: string
+  onChange: (value: string) => void
+}) {
   return (
-    <span className="filter-field">
-      <span className="filter-field__label">{column.label}</span>
+    <>
       <input
-        className="input input--mini"
+        className="input input--sm"
+        placeholder="Contient…"
         value={needle}
-        placeholder="contient…"
-        onChange={(event) =>
-          onChange(event.target.value ? { kind: 'text', needle: event.target.value } : null)
-        }
+        onChange={(event) => onChange(event.target.value)}
+        autoFocus
       />
-    </span>
+      <p className="subtle filter__hint">
+        Insensible à la casse et aux accents.
+      </p>
+    </>
   )
 }
 

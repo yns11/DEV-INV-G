@@ -438,3 +438,137 @@ class TestOneSheetDoesNotLoseTheStack:
         assert timings["pages"] == 2
         assert timings["imageBytes"] > 0
         assert timings["maxWorkers"] >= 1
+
+
+# --------------------------------------------------------------------------- #
+# La lecture d'UNE feuille annonce elle aussi où elle en est
+# --------------------------------------------------------------------------- #
+
+def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
+    """Le banc de `extract_from_scan`, réduit à ce que l'avancement traverse."""
+    import datetime as dt
+    from types import SimpleNamespace
+    from typing import cast
+
+    from conftest import with_access
+
+    from inventory.ai.sheet_extraction import ExtractionResult
+    from inventory.config import Settings
+    from inventory.domain.enums import CampaignStatus, SheetPass, SheetStatus
+    from inventory.domain.models import Campaign, CountSheet, Zone
+    from inventory.services import generic_service as module
+
+    campaign = Campaign(
+        id="camp-1", code="INV-2026-09", label="Inventaire",
+        count_date="2026-09-01", status=CampaignStatus.COUNTING,
+        created_by="chef@usine", created_at=dt.datetime(2026, 9, 1, tzinfo=dt.UTC),
+    )
+    zone = Zone(id="z-1", campaign_id="camp-1", code="FI ASSY", free_entry=free_entry)
+    sheet = CountSheet(
+        id="s-1", campaign_id="camp-1", zone_id="z-1",
+        pass_no=SheetPass.PASS_1, status=SheetStatus.COUNTING,
+    )
+    expected = (
+        []
+        if free_entry
+        else [
+            module.CountSheetLine(
+                id="s-1-l1", sheet_id="s-1", campaign_id="camp-1",
+                item_number="MASS-1",
+            )
+        ]
+    )
+
+    class _Extractor:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def expected_from_items(self, lines, items):
+            return list(lines)
+
+        def extract(self, **kwargs):
+            return ExtractionResult(pages=pages)
+
+        extract_free_entry = extract
+
+    import inventory.ai as ai_module
+
+    monkeypatch.setattr(ai_module, "SheetExtractor", _Extractor)
+    monkeypatch.setattr(
+        ai_module, "render_pdf_pages", lambda *a, **k: [b"page"] * pages
+    )
+
+    ctx = SimpleNamespace(
+        actor="chef@usine",
+        settings=Settings(),
+        progress=lambda c: SimpleNamespace(
+            items=10, zones=2, book_stock_lines=5, book_stock_frozen=True
+        ),
+        evidence=SimpleNamespace(put=lambda *a, **k: "/Volumes/x/scan.pdf"),
+        sheets=SimpleNamespace(
+            get_sheet=lambda sid: sheet,
+            list_zones=lambda cid: [zone],
+            list_sheet_lines=lambda sid: expected,
+            replace_sheet_lines=lambda sid, lines, *, actor: None,
+            update_sheet=lambda sid, **k: None,
+        ),
+        referentials=SimpleNamespace(items_by_number=lambda cid: {}),
+        record=lambda **kw: "evt",
+    )
+    with_access(ctx)
+    return module.GenericService(cast(object, ctx)), campaign
+
+
+class TestASingleSheetAnnouncesItsStages:
+    """Dix secondes à une minute, et rien à regarder pendant ce temps.
+
+    Le scan d'une feuille était resté dans la requête HTTP du chargement : le
+    bouton disait « Lecture en cours… » et plus rien ne bougeait. Devenu un
+    travail suivi, il doit dire *ce qu'il fait* — sinon l'écran d'avancement
+    affiche une étape vide et n'apprend rien de plus qu'un bouton grisé.
+    """
+
+    def steps(self, monkeypatch, **kw) -> list[str]:
+        service, campaign = one_sheet_bench(monkeypatch, **kw)
+        seen: list[str] = []
+        service.extract_from_scan(
+            campaign, "s-1", payload=b"%PDF", filename="f.pdf",
+            content_type="application/pdf",
+            on_progress=lambda **p: seen.append(str(p.get("step") or "")),
+        )
+        return [s for s in seen if s]
+
+    def test_every_stage_is_named(self, monkeypatch):
+        steps = self.steps(monkeypatch)
+        assert len(steps) >= 4, steps
+        assert any("Archivage" in s for s in steps)
+        assert any("Rendu" in s for s in steps)
+        assert any("Lecture" in s for s in steps)
+        assert any("Écriture" in s for s in steps)
+
+    def test_the_reading_stage_says_what_it_is_reading(self, monkeypatch):
+        """« Lecture par le modèle » seul ne distingue pas une feuille de trois
+        lignes d'une de trois cents, alors que l'attente n'a rien à voir."""
+        reading = next(s for s in self.steps(monkeypatch, pages=3) if "Lecture" in s)
+        assert "3 page(s)" in reading
+        assert "1 ligne(s) attendues" in reading
+
+    def test_a_free_entry_sheet_has_no_expected_lines_to_announce(self, monkeypatch):
+        """Annoncer « 0 ligne(s) attendues » sur une saisie libre décrirait un
+        manque, alors que c'est la définition de la feuille."""
+        reading = next(
+            s for s in self.steps(monkeypatch, free_entry=True) if "Lecture" in s
+        )
+        assert "attendues" not in reading
+
+    def test_the_last_word_is_that_it_is_over(self, monkeypatch):
+        assert self.steps(monkeypatch)[-1] == "Terminé"
+
+    def test_a_reading_without_a_reporter_still_works(self, monkeypatch):
+        """L'avancement n'est pas le travail : le chemin sans suivi doit vivre."""
+        service, campaign = one_sheet_bench(monkeypatch)
+        out = service.extract_from_scan(
+            campaign, "s-1", payload=b"%PDF", filename="f.pdf",
+            content_type="application/pdf",
+        )
+        assert "report" in out

@@ -68,8 +68,10 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           ├─ import_batch                 (provenance de chaque chargement)
           └─ audit_event                  (append-only, UPDATE/DELETE neutralisés)
 
-          └─ scan_job                    (lecture d'une pile scannée : statut,
-                                            avancement, rapport, chronomètres)
+          └─ scan_job                    (lecture d'un scan : statut, avancement,
+                                            rapport, chronomètres. `sheet_id`
+                                            renseigné = une feuille ; nul = une
+                                            pile multi-feuilles)
 
 assignable_cause                          (référentiel de site, hors campagne)
 schema_migration                          (bookkeeping des migrations)

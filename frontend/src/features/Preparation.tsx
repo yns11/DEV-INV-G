@@ -236,6 +236,9 @@ function ItemsTab({
       // pas sur un petit référentiel, où quatre types sur sept lignes ne se
       // distinguent pas d'un identifiant.
       filter: 'choice',
+      // Le filtre propose ce que la colonne affiche : cocher « COMPONENT »
+      // quand le tableau montre « Composant » ne se rattache à rien de visible.
+      choiceLabel: (value) => ITEM_TYPE_LABELS[value] ?? value,
       render: (row) => (
         <Badge tone="neutral">
           {ITEM_TYPE_LABELS[String(row.item_type)] ?? String(row.item_type)}
@@ -273,6 +276,13 @@ function ItemsTab({
           </span>
         )
       },
+      // Une ligne peut porter deux exclusions : la valeur filtrée est la
+      // combinaison, et son libellé les nomme toutes les deux.
+      choiceLabel: (value) =>
+        value
+          .split(',')
+          .map((one) => EXCLUSION_LABELS[one] ?? one)
+          .join(' + '),
       value: (row) => ((row.exclusions as string[] | undefined) ?? []).join(','),
     },
     {

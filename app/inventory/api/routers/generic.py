@@ -218,19 +218,26 @@ def delete_sheet_line(
     return {"deleted": True}
 
 
-@router.post("/sheets/{sheet_id}/scan", summary="Extraire une feuille scannée par IA")
+@router.post("/sheets/{sheet_id}/scan", summary="Déposer le scan d'une feuille")
 async def extract_scan(
     campaign: CampaignDep,
     sheet_id: str,
-    service: Service,
+    jobs: ScanJobs,
     file: Annotated[UploadFile, File()],
 ) -> dict[str, Any]:
-    """Read a scanned counting sheet with the vision model.
+    """Dépose le scan d'une feuille et rend de quoi en suivre la lecture.
 
-    Values land in the grid as ``SCAN_AI`` with a per-line confidence; a human
-    reviews and validates them. Nothing is posted automatically, and a reference
-    the model reads that was not on the printed sheet is reported as suspect
-    rather than accepted.
+    **La réponse est immédiate**, comme pour une pile. Une feuille seule est plus
+    courte à lire qu'une pile de cent, mais pas courte : rendu des pages, un
+    appel au modèle de vision, écriture des lignes — de dix secondes à plus d'une
+    minute. Tenue dans cette requête, l'attente n'offrait rien à regarder et ne
+    distinguait pas un travail qui avance d'un appel qui a calé. L'écran
+    interroge ``GET /scan/jobs/{jobId}``, exactement comme pour le multi-feuilles.
+
+    Ce que la lecture fait n'a pas changé. Les quantités arrivent en ``SCAN_AI``
+    avec une confiance par ligne, qu'un humain relit et valide ; rien n'est posté
+    automatiquement, et une référence lue qui ne figure pas sur la feuille
+    imprimée est signalée comme suspecte plutôt qu'acceptée.
     """
     content_type = (file.content_type or "").lower()
     if content_type and content_type not in _ACCEPTED_SCAN_TYPES:
@@ -242,13 +249,27 @@ async def extract_scan(
     payload = await file.read()
     if not payload:
         raise ValidationError("Le fichier reçu est vide.")
-    return service.extract_from_scan(
+    return jobs.queue(
         campaign,
-        sheet_id,
+        sheet_id=sheet_id,
         payload=payload,
         filename=file.filename or "scan",
         content_type=content_type,
     )
+
+
+@router.get(
+    "/sheets/{sheet_id}/scan/job", summary="Le dernier scan déposé sur cette feuille"
+)
+def latest_sheet_scan_job(
+    campaign: CampaignDep, sheet_id: str, jobs: ScanJobs
+) -> dict[str, Any] | None:
+    """De quoi reprendre un suivi qu'un rafraîchissement a interrompu.
+
+    Sans lui, recharger la page pendant une lecture donne une feuille
+    d'apparence inerte, et l'utilisateur relance un scan qui tourne déjà.
+    """
+    return jobs.latest_for_sheet(campaign, sheet_id)
 
 
 @router.post("/scan", summary="Déposer un scan de plusieurs feuilles")

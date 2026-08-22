@@ -704,6 +704,7 @@ class GenericService:
         payload: bytes,
         filename: str,
         content_type: str,
+        on_progress: ProgressReporter | None = None,
     ) -> dict[str, Any]:
         """Read a scanned sheet with the vision model.
 
@@ -721,6 +722,12 @@ class GenericService:
 
         ctx = self.ctx
         ctx.guard(campaign, "count_entries")
+        # L'avancement est annoncé étape par étape. Une lecture de feuille dure
+        # de dix secondes à plus d'une minute selon la longueur de la liste
+        # pré-imprimée : sans ces jalons, l'écran ne distingue pas un travail qui
+        # avance d'un appel qui a calé, et l'utilisateur relance.
+        say = on_progress or (lambda **_: None)
+        say(step="Ouverture de la feuille")
         sheet = ctx.sheets.get_sheet(sheet_id)
         if sheet.campaign_id != campaign.id:
             raise NotFoundError("Feuille introuvable dans cette campagne.")
@@ -744,10 +751,12 @@ class GenericService:
         # Le scan est archivé avant d'être lu. C'est la pièce qui justifie les
         # quantités : sans elle, une valeur contestée six mois plus tard n'a
         # plus rien derrière elle, le conteneur qui l'a reçue ayant disparu.
+        say(step="Archivage de la pièce justificative")
         storage_path = ctx.evidence.put(
             payload, campaign_code=campaign.code, kind="scans", filename=filename
         )
 
+        say(step="Rendu des pages")
         if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
             # Rasterised, not split: the endpoint accepts images only.
             #
@@ -771,6 +780,17 @@ class GenericService:
             "image_mime": mime,
             "id_factory": new_id,
         }
+        say(
+            step=(
+                f"Lecture par le modèle ({len(images)} page(s), "
+                f"{len(expected_lines)} ligne(s) attendues)"
+                if expected_lines
+                else f"Lecture par le modèle ({len(images)} page(s))"
+            ),
+            total_pages=len(images),
+            sheets_total=1,
+            sheets_done=0,
+        )
         result = (
             extractor.extract_free_entry(known_items=items, **common)
             if free_entry
@@ -780,6 +800,7 @@ class GenericService:
             )
         )
 
+        say(step="Écriture des quantités lues")
         ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
         ctx.sheets.update_sheet(
             sheet_id,
@@ -800,6 +821,7 @@ class GenericService:
             ),
             after=result.as_report(),
         )
+        say(step="Terminé", sheets_total=1, sheets_done=1)
         return {
             "report": result.as_report(),
             "sheet": ctx.sheets.get_sheet(sheet_id).model_dump(mode="json"),

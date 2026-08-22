@@ -500,6 +500,16 @@ Le modèle lit la feuille **en s'appuyant sur la liste d'articles pré-imprimée
 - chaque valeur porte une **confiance** ; celles sous 75 % sont mises en avant ;
 - les articles attendus mais non lus apparaissent en ligne vide, à saisir.
 
+Le rapprochement se fait sur le trio **feuille + article + section**, jamais sur
+la seule référence. Un même article figure légitimement deux fois sur une
+feuille — en bord de ligne pour les bacs, en WIP non déclaré pour ce qui est
+monté sur un assemblage — et ce sont deux comptages distincts, posés sur deux
+tableaux différents du papier. Quand la référence ne figure qu'une fois, la
+section lue ne sert à rien et n'est pas exigée ; quand elle figure deux fois et
+que la section est illisible, la ligne est **signalée plutôt que posée au
+hasard** : se tromper de tableau fausse deux quantités d'un coup, et rien en
+aval ne peut le rattraper.
+
 Une feuille de **saisie libre** se scanne aussi, bien qu'elle n'ait aucune liste
 à confronter : le modèle recopie alors la référence telle qu'elle est écrite, et
 la garde se déplace d'un cran — c'est le **référentiel articles** qui tranche.
@@ -511,10 +521,16 @@ Tout atterrit dans une grille modifiable, avec le badge *Extraction IA*.
 **Toute la pile d'un coup.** *Compil B06VRAC → Importer un scan multi-feuilles*
 accepte le PDF sorti du scanner avec l'ensemble des feuilles dedans — jusqu'à
 deux cent cinquante pages, soit environ cent vingt feuilles recto-verso. Chaque
-page est rattachée à sa feuille par l'identifiant que l'application a imprimé en
-pied de page ; une page dont le pied est illisible est **signalée, jamais
-devinée** : une page classée dans la mauvaise zone verse un comptage sur du
-stock qui n'y a jamais été.
+page est rattachée à sa feuille par ce que l'application a imprimé en pied de
+page. Le modèle **recopie** ce pied — identifiant, zone, numéro de comptage —
+sans rien vérifier ; c'est l'application qui rapproche ensuite la lecture des
+feuilles de la campagne. L'identifiant suffit à lui seul ; s'il est illisible,
+la paire **zone + numéro de comptage** rattrape la page dès qu'elle ne désigne
+qu'une feuille. Deux lectures qui se contredisent, ou un pied vraiment
+illisible, sont **signalés, jamais devinés** : une page classée dans la mauvaise
+zone verse un comptage sur du stock qui n'y a jamais été. Le rapport affiche ce
+qui a été lu (`lu : feuille … · zone … · comptage n°…`), de quoi voir tout de
+suite s'il s'agit d'un pied abîmé ou d'une page étrangère à la pile.
 
 Le dépôt répond **tout de suite**, et la lecture continue derrière. Vous pouvez
 fermer la fenêtre : les feuilles se remplissent au fur et à mesure, et l'écran

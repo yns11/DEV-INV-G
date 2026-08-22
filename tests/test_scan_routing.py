@@ -96,7 +96,7 @@ class TestRefusalToGuess:
         ]})
         assert routing.pages_by_sheet == {"bbbbbbbb-3333-4444": [1]}
         assert routing.unrouted[0]["page"] == 1
-        assert routing.unrouted[0]["read"] == "aaaaaaab"
+        assert "aaaaaaab" in routing.unrouted[0]["read"]
 
     def test_a_null_identifier_is_reported(self):
         routing, _ = route({"pages": [
@@ -244,3 +244,88 @@ class TestBatching:
             batch_size=10, max_workers=1,
         )
         assert routing.tokens_used == 6  # trois lots × (1 + 1)
+
+
+class TestTheCodeMatchesNotTheModel:
+    """Rapprocher est le travail du programme, pas celui du modèle.
+
+    Le prompt lui demandait de ne rendre qu'un identifiant « présent dans la
+    liste fournie » — une recherche, alors qu'il est là pour lire. Il s'y est
+    contredit en production : une bande parfaitement lisible est revenue avec
+    l'identifiant correct recopié dans sa *note* et ``null`` dans le champ, et
+    la page est tombée en non attribuée alors que rien, sur le papier, ne
+    clochait.
+
+    Le pied de page imprime **deux** identités — le jeton, et le couple zone +
+    comptage. Le modèle recopie les deux, le programme cherche.
+    """
+
+    def test_the_token_alone_routes_the_page(self):
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": "aaaaaaaa", "zone": None, "pass": None},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {"aaaaaaaa-1111-2222": [0]}
+
+    def test_the_zone_and_pass_alone_route_it_too(self):
+        """Le cas signalé : le modèle a lu la ligne mais rendu null au jeton."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": None, "zone": "FI ASSY", "pass": 1,
+             "note": "Lu « zone FI ASSY · comptage n°1 · feuille aaaaaaaa »"},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {"aaaaaaaa-1111-2222": [0]}
+        assert routing.unrouted == []
+
+    def test_a_misread_token_is_rescued_by_the_zone(self):
+        """Un « O » lu pour un « 0 » ne doit pas coûter une page."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": "aaaaaaaO", "zone": "FI ASSY", "pass": 1},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {"aaaaaaaa-1111-2222": [0]}
+
+    def test_the_zone_is_matched_regardless_of_case_and_spacing(self):
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": None, "zone": "  fi   assy ", "pass": 1},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {"aaaaaaaa-1111-2222": [0]}
+
+    def test_two_readings_that_disagree_are_not_arbitrated(self):
+        """L'une des deux est fausse, et rien ici ne dit laquelle."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": "bbbbbbbb", "zone": "FI ASSY", "pass": 1},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {}
+        assert "contradictoires" in routing.unrouted[0]["note"]
+
+    def test_a_zone_without_a_pass_is_not_enough(self):
+        """Une zone a deux feuilles : sans le n° de comptage, on ne tranche pas."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": None, "zone": "FI ASSY", "pass": None},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {}
+
+    def test_an_unreadable_band_still_says_so(self):
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": None, "zone": None, "pass": None},
+        ]}, pages=1)
+        assert routing.unrouted[0]["note"] == "Pied de page illisible."
+
+    def test_what_was_read_is_reported(self):
+        """« Pied de page illisible » ne distingue pas une bande abîmée d'une
+        bande lisible que le programme n'a pas su rapprocher."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": "zzzzzzzz", "zone": "ZONE INCONNUE", "pass": 2},
+        ]}, pages=1)
+        read = routing.unrouted[0]["read"]
+        assert "zzzzzzzz" in read and "ZONE INCONNUE" in read and "2" in read
+
+
+class TestTheRoutingPromptAsksForATranscription:
+    def test_it_asks_for_the_three_printed_fields(self):
+        _, client = route({"pages": []})
+        for field in ('"sheet"', '"zone"', '"pass"'):
+            assert field in client.prompts[0]
+
+    def test_it_does_not_ask_the_model_to_check_the_list(self):
+        """C'est la consigne qui a produit la contradiction en production."""
+        _, client = route({"pages": []})
+        assert "aucune" in client.prompts[0].lower()

@@ -92,6 +92,7 @@ Transcris la feuille scannée et renvoie ce JSON :
   "lines": [
     {{
       "item_number": "<référence, exactement telle qu'écrite dans la liste attendue>",
+      "section": "<la section du tableau où figure cette ligne : {sections}>",
       "qty": <nombre ou null>,
       "confidence": <nombre entre 0 et 1>,
       "note": "<doute de lecture, ou chaîne vide>"
@@ -102,8 +103,10 @@ Transcris la feuille scannée et renvoie ce JSON :
   ]
 }}
 
-Renvoie une entrée dans "lines" pour CHAQUE référence attendue, même non comptée \
-(qty = null)."""
+Renvoie une entrée dans "lines" pour CHAQUE ligne de la liste attendue, même non \
+comptée (qty = null). Une même référence peut figurer sur DEUX lignes, dans deux \
+sections différentes : ce sont deux comptages distincts, et « section » est ce \
+qui les sépare."""
 
 
 _FREE_ENTRY_SYSTEM_PROMPT = """\
@@ -157,28 +160,35 @@ Renvoie les lignes dans l'ordre où elles apparaissent sur la feuille."""
 
 
 _ROUTING_SYSTEM_PROMPT = """\
-Tu tries des pages scannées de feuilles de comptage d'inventaire.
+Tu relèves l'identité de pages scannées de feuilles de comptage d'inventaire.
 
 Chaque image qu'on te donne est la BANDE BASSE d'une page, découpée autour de sa \
 ligne d'identité, de la forme :
 
     <CODE CAMPAGNE> · zone <NOM DE ZONE> · comptage n°<1 ou 2> · feuille <identifiant>
 
-Ta seule tâche est de lire cette ligne et de rendre l'identifiant de feuille. Tu \
-ne transcris aucune quantité — il n'y en a pas sur ces bandes.
+Ta seule tâche est de **recopier** ce que tu lis. Tu ne transcris aucune \
+quantité — il n'y en a pas sur ces bandes.
 
 Règles absolues :
-1. Tu ne rends qu'un identifiant présent dans la liste fournie. Si la ligne est \
-illisible, coupée ou absente, tu rends null : une page mal attribuée verse un \
-comptage sur la mauvaise zone, ce qui est pire qu'une page non traitée.
-2. Si l'identifiant est illisible mais que la bande nomme sans ambiguïté une \
-seule zone de la liste et un seul numéro de comptage, tu peux t'en servir, avec \
-une confiance basse.
+1. Tu recopies chaque champ **exactement tel qu'il est écrit**, caractère par \
+caractère. Tu ne le complètes pas, tu ne le corriges pas, tu ne le rapproches \
+d'aucune liste.
+2. Tu ne vérifies **rien**. Savoir si ce que tu as lu correspond à une feuille \
+connue n'est pas ton travail : c'est le programme qui s'en charge, et il le fait \
+mieux que toi. Une bande parfaitement lisible dont tu croirais l'identifiant \
+inconnu se recopie quand même.
+3. Un champ que tu ne parviens **pas** à lire vaut null. Un champ lisible ne vaut \
+jamais null, même si le reste de la bande est abîmé : chaque champ est relevé \
+pour lui-même, et un seul suffit souvent.
+4. Tu ne devines pas un caractère douteux : tu recopies ta meilleure lecture et \
+tu baisses la confiance.
 
 Tu réponds exclusivement en JSON valide, sans texte autour."""
 
 _ROUTING_TEMPLATE = """\
-Feuilles attendues dans ce lot :
+Pour information seulement — les feuilles attendues dans ce lot. Cette liste \
+t'aide à lever un doute de lecture ; elle ne te demande **aucune** vérification.
 {candidates}
 
 Pour chacune des {count} bandes fournies, dans l'ordre, renvoie ce JSON :
@@ -187,9 +197,11 @@ Pour chacune des {count} bandes fournies, dans l'ordre, renvoie ce JSON :
   "pages": [
     {{
       "page": <numéro de bande dans CE lot, à partir de 1>,
-      "sheet": "<identifiant de feuille de la liste, ou null>",
+      "sheet": "<l'identifiant de feuille lu après « feuille », ou null>",
+      "zone": "<le nom de zone lu après « zone », ou null>",
+      "pass": <le numéro lu après « comptage n° » : 1 ou 2, ou null>,
       "confidence": <nombre entre 0 et 1>,
-      "note": "<ce que tu as lu, ou la raison du doute>"
+      "note": "<la ligne entière telle que tu l'as lue>"
     }}
   ]
 }}"""
@@ -301,13 +313,29 @@ class SheetExtractor:
                 "précédente) avant d'importer un scan."
             )
 
-        expected_by_number = {e.item_number: e for e in expected}
+        # **La clé est le couple (référence, section), pas la référence.** Un
+        # même article figure légitimement deux fois sur une feuille — en bord
+        # de ligne *et* dans un en-cours — et ce sont deux comptages distincts,
+        # posés sur deux tableaux différents du papier. Indexé sur la référence
+        # seule, le dictionnaire n'en gardait qu'une : la seconde ligne était
+        # perdue à l'écriture, et la quantité relevée sur l'une atterrissait sur
+        # la section de l'autre. Rien ne le signalait.
+        expected_by_key = {(e.item_number, e.section): e for e in expected}
+        sections_by_number: dict[str, list[CountSection]] = {}
+        for line in expected:
+            known = sections_by_number.setdefault(line.item_number, [])
+            if line.section not in known:
+                known.append(line.section)
+
         listing = "\n".join(
             f"- {e.item_number} [{_section_label(e.section)}] {e.name}"[:160]
             for e in expected
         )
         prompt = _USER_TEMPLATE.format(
-            zone=zone_label, pass_no=pass_no, expected=listing
+            zone=zone_label,
+            pass_no=pass_no,
+            expected=listing,
+            sections=", ".join(str(s) for s in CountSection),
         )
 
         payload, response = self._client.complete_json(
@@ -327,14 +355,14 @@ class SheetExtractor:
         )
 
         confidences: list[float] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, CountSection]] = set()
 
         for order, raw in enumerate(payload.get("lines") or []):
             if not isinstance(raw, dict):
                 continue
             number = normalise_key(str(raw.get("item_number") or ""))
-            expected_line = expected_by_number.get(number)
-            if expected_line is None:
+            sections = sections_by_number.get(number)
+            if not sections:
                 # A reading that matches nothing on the printed sheet is a
                 # hallucination: surface it, never accept it as a count.
                 result.unexpected.append({
@@ -343,16 +371,45 @@ class SheetExtractor:
                     "note": "Référence absente de la liste attendue.",
                 })
                 continue
-            if number in seen:
+
+            # La section lue ne sert qu'à départager. Une référence qui ne figure
+            # qu'une fois sur la feuille n'a rien à départager : exiger d'elle
+            # une section correcte ajouterait un mode d'échec au cas courant,
+            # pour rien.
+            read = legacy_section_alias(str(raw.get("section") or ""))
+            if read in sections:
+                section = read
+            elif len(sections) == 1:
+                section = sections[0]
+            else:
+                # Ambiguë, et sans section exploitable : on ne devine pas. Poser
+                # un comptage d'en-cours sur la ligne de bord de ligne fausse
+                # deux quantités d'un coup, et rien en aval ne peut le rattraper.
+                result.unexpected.append({
+                    "text": str(raw.get("item_number") or ""),
+                    "qty": raw.get("qty"),
+                    "note": (
+                        f"{number} figure deux fois sur cette feuille "
+                        f"({' et '.join(_section_label(s) for s in sections)}) "
+                        "et la section lue est inexploitable. Saisissez la "
+                        "quantité à la main sur la bonne ligne."
+                    ),
+                })
                 continue
-            seen.add(number)
+
+            key = (number, section)
+            if key in seen:
+                continue
+            seen.add(key)
+            expected_line = expected_by_key[key]
+            label = _line_label(number, section, ambiguous=len(sections) > 1)
 
             qty = _clean_qty(raw.get("qty"))
             confidence = _clean_confidence(raw.get("confidence"))
             if qty is not None:
                 confidences.append(confidence)
                 if confidence < LOW_CONFIDENCE:
-                    result.low_confidence_items.append(number)
+                    result.low_confidence_items.append(label)
 
             result.lines.append(
                 CountSheetLine(
@@ -360,7 +417,7 @@ class SheetExtractor:
                     sheet_id=sheet_id,
                     campaign_id=campaign_id,
                     item_number=number,
-                    section=expected_line.section,
+                    section=section,
                     qty_imported=qty,
                     qty_manual=None,
                     unit=expected_line.unit,
@@ -379,17 +436,26 @@ class SheetExtractor:
                     "note": str(raw.get("note") or ""),
                 })
 
-        result.missing_items = sorted(set(expected_by_number) - seen)
+        # Manquantes au sens du *couple* : une feuille portant l'article en bord
+        # de ligne et en WIP, lue sur une seule des deux, doit voir l'autre.
+        unread = sorted(
+            set(expected_by_key) - seen, key=lambda k: (k[0], str(k[1]))
+        )
+        result.missing_items = [
+            _line_label(number, section,
+                        ambiguous=len(sections_by_number[number]) > 1)
+            for number, section in unread
+        ]
         # A missing expected line still gets a row, blank, so the encoder sees
         # it and can type the value instead of discovering the gap at posting.
-        for order, number in enumerate(result.missing_items, start=len(result.lines)):
-            expected_line = expected_by_number[number]
+        for order, key in enumerate(unread, start=len(result.lines)):
+            expected_line = expected_by_key[key]
             result.lines.append(
                 CountSheetLine(
                     id=id_factory(),
                     sheet_id=sheet_id,
                     campaign_id=campaign_id,
-                    item_number=number,
+                    item_number=expected_line.item_number,
                     section=expected_line.section,
                     unit=expected_line.unit,
                     source=DataSource.SCAN_AI,
@@ -453,7 +519,11 @@ class SheetExtractor:
         )
 
         confidences: list[float] = []
-        seen: set[str] = set()
+        doubtful: list[tuple[str, CountSection]] = []
+        # Le couple, ici aussi : le compteur qui écrit la même référence dans le
+        # tableau bord de ligne *et* dans celui des en-cours relève deux
+        # quantités, pas une qu'il aurait recopiée deux fois.
+        seen: set[tuple[str, CountSection]] = set()
 
         for order, raw in enumerate(payload.get("lines") or []):
             if not isinstance(raw, dict):
@@ -470,16 +540,20 @@ class SheetExtractor:
                     "note": "Référence absente du référentiel articles.",
                 })
                 continue
-            if number in seen:
+            section = (
+                legacy_section_alias(str(raw.get("section") or ""))
+                or CountSection.LINE_SIDE
+            )
+            if (number, section) in seen:
                 continue
-            seen.add(number)
+            seen.add((number, section))
 
             qty = _clean_qty(raw.get("qty"))
             confidence = _clean_confidence(raw.get("confidence"))
             if qty is not None:
                 confidences.append(confidence)
                 if confidence < LOW_CONFIDENCE:
-                    result.low_confidence_items.append(number)
+                    doubtful.append((number, section))
 
             result.lines.append(
                 CountSheetLine(
@@ -487,10 +561,7 @@ class SheetExtractor:
                     sheet_id=sheet_id,
                     campaign_id=campaign_id,
                     item_number=number,
-                    section=(
-                        legacy_section_alias(str(raw.get("section") or ""))
-                        or CountSection.LINE_SIDE
-                    ),
+                    section=section,
                     qty_imported=qty,
                     qty_manual=None,
                     unit=str(raw.get("unit") or "") or getattr(item, "unit", "PCE"),
@@ -500,6 +571,20 @@ class SheetExtractor:
                     display_order=order,
                 )
             )
+
+        # Les étiquettes se posent à la fin : « P-1 » suffit tant que la
+        # référence n'apparaît qu'une fois, et il faut « P-1 [WIP] » dès
+        # qu'elle apparaît deux fois — ce qui ne se sait qu'une fois la feuille
+        # entièrement lue.
+        multiple = {
+            number
+            for number, _ in seen
+            if sum(1 for n, _ in seen if n == number) > 1
+        }
+        result.low_confidence_items = [
+            _line_label(number, section, ambiguous=number in multiple)
+            for number, section in doubtful
+        ]
 
         if confidences:
             result.mean_confidence = round(sum(confidences) / len(confidences), 4)
@@ -544,7 +629,14 @@ class SheetExtractor:
                 "d'abord les zones et leurs feuilles."
             )
 
+        # Deux index, parce que le pied de page imprime deux identités : le
+        # jeton, et le couple zone + comptage. L'un rattrape l'autre.
         by_token = {c.token.upper(): c for c in candidates}
+        by_zone_pass: dict[tuple[str, int], list[SheetCandidate]] = {}
+        for candidate in candidates:
+            key = (normalise_key(candidate.zone_code), candidate.pass_no)
+            by_zone_pass.setdefault(key, []).append(candidate)
+
         listing = "\n".join(
             f"- {c.token} → zone « {c.zone_code} », comptage n°{c.pass_no}"
             for c in candidates
@@ -599,13 +691,12 @@ class SheetExtractor:
                     continue
                 seen_pages.add(page)
 
-                token = str(raw.get("sheet") or "").strip().upper()
-                candidate = by_token.get(token)
+                candidate, refusal = _resolve_page(raw, by_token, by_zone_pass)
                 if candidate is None:
                     routing.unrouted.append({
                         "page": page + 1,
-                        "read": str(raw.get("sheet") or ""),
-                        "note": str(raw.get("note") or "Pied de page illisible."),
+                        "read": _as_read(raw),
+                        "note": refusal,
                     })
                     continue
                 routing.pages_by_sheet.setdefault(candidate.sheet_id, []).append(page)
@@ -736,6 +827,93 @@ _SECTION_LABELS = {
 
 def _section_label(section: CountSection) -> str:
     return _SECTION_LABELS.get(section, str(section))
+
+
+def _line_label(number: str, section: CountSection, *, ambiguous: bool) -> str:
+    """Comment nommer une ligne dans les listes du rapport.
+
+    La section n'est ajoutée que lorsqu'elle départage : « MASS-1 » suffit quand
+    l'article ne figure qu'une fois sur la feuille, et « MASS-1 [WIP non
+    déclaré] » est indispensable quand il y figure deux fois — sans quoi la
+    liste des valeurs douteuses nomme deux fois la même chose et n'indique plus
+    laquelle vérifier.
+    """
+    return f"{number} [{_section_label(section)}]" if ambiguous else number
+
+
+def _as_read(raw: Mapping[str, Any]) -> str:
+    """Ce que le modèle dit avoir lu, tel quel, pour le rapport.
+
+    Affiché à côté de la page non attribuée : sans cela, « pied de page
+    illisible » ne distingue pas une bande vraiment abîmée d'une bande
+    parfaitement lisible que le programme n'a pas su rapprocher — et le second
+    cas est un défaut de ce code, pas du papier.
+    """
+    parts = [
+        f"feuille {raw['sheet']}" if raw.get("sheet") else "",
+        f"zone {raw['zone']}" if raw.get("zone") else "",
+        f"comptage n°{raw['pass']}" if raw.get("pass") else "",
+    ]
+    return " · ".join(p for p in parts if p)
+
+
+def _resolve_page(
+    raw: Mapping[str, Any],
+    by_token: Mapping[str, SheetCandidate],
+    by_zone_pass: Mapping[tuple[str, int], Sequence[SheetCandidate]],
+) -> tuple[SheetCandidate | None, str]:
+    """La feuille que cette bande désigne, ou la raison de ne pas trancher.
+
+    **Le rapprochement est ici, pas dans le modèle.** La version précédente lui
+    demandait de ne rendre qu'un identifiant « présent dans la liste fournie » :
+    une tâche de recherche, alors qu'il est là pour lire. Il s'y contredisait —
+    une bande parfaitement lisible revenait avec l'identifiant correct dans sa
+    note et ``null`` dans le champ, et la page tombait en non attribuée. Le
+    modèle recopie désormais, et cette fonction cherche.
+
+    **Deux identités valent mieux qu'une**, et le pied de page les imprime
+    toutes les deux. Le jeton d'abord — c'est le plus court et le plus sûr —
+    puis le couple zone + comptage, qui rattrape un jeton mal lu (un ``0`` pour
+    un ``O``) sans rien deviner : il désigne lui aussi une feuille et une seule.
+
+    **Deux lectures qui se contredisent ne se départagent pas.** Si le jeton
+    désigne une feuille et le couple zone + comptage une autre, l'une des deux
+    est fausse et rien ici ne dit laquelle. La page part à l'humain — c'est la
+    règle inchangée : une page classée dans la mauvaise zone verse un comptage
+    sur du stock qui n'y a jamais été.
+    """
+    token = str(raw.get("sheet") or "").strip().upper()
+    by_id = by_token.get(token)
+
+    zone = normalise_key(str(raw.get("zone") or ""))
+    try:
+        pass_no = int(raw.get("pass") or 0)
+    except (TypeError, ValueError):
+        pass_no = 0
+    same_zone = list(by_zone_pass.get((zone, pass_no), ())) if zone and pass_no else []
+    by_zone = same_zone[0] if len(same_zone) == 1 else None
+
+    if by_id is not None and by_zone is not None and by_id.sheet_id != by_zone.sheet_id:
+        return None, (
+            f"Lectures contradictoires : l'identifiant « {token} » désigne la "
+            f"zone {by_id.zone_code} n°{by_id.pass_no}, la ligne dit "
+            f"{by_zone.zone_code} n°{by_zone.pass_no}."
+        )
+    if by_id is not None:
+        return by_id, ""
+    if by_zone is not None:
+        return by_zone, ""
+
+    if len(same_zone) > 1:
+        return None, (
+            f"Zone « {raw.get('zone')} » comptage n°{pass_no} : plusieurs "
+            "feuilles y correspondent, et l'identifiant est illisible."
+        )
+    read = _as_read(raw)
+    return None, (
+        f"Identité lue « {read} », qui ne correspond à aucune feuille de cette "
+        "campagne." if read else "Pied de page illisible."
+    )
 
 
 def _clean_qty(value: Any) -> Decimal | None:

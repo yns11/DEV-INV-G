@@ -393,7 +393,11 @@ export interface MultiScanReport {
     correctedLines: number
     reason: string
   }>
-  /** Pages whose footer could not be read — reported, never guessed. */
+  /**
+   * Pages no sheet could be matched to — reported, never guessed. `read` is
+   * what the model transcribed off the footer, which tells a damaged strip
+   * apart from a page that simply belongs to another campaign.
+   */
   unroutedPages: Array<{ page: number; read: string; note: string }>
   /** Une feuille que le modèle n'a pas pu lire. Nommée, jamais tue. */
   sheetsFailed?: Array<{

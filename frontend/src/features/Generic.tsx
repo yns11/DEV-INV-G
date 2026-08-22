@@ -1834,12 +1834,22 @@ function MultiScanModal({
               tone="warning"
               title={`${report.unroutedPages.length} page(s) non attribuée(s)`}
             >
-              Pied de page illisible : signalées plutôt que devinées. Ouvrez la
-              feuille concernée et importez ces pages une par une.
+              Signalées plutôt que devinées. Ouvrez la feuille concernée et
+              importez ces pages une par une.
               <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
                 {report.unroutedPages.map((page) => (
                   <li key={page.page}>
                     Page {page.page} — {page.note}
+                    {/* Ce que le modèle dit avoir lu, à côté de la raison :
+                        « pied de page illisible » ne distingue pas une bande
+                        abîmée d'une bande lisible que le rapprochement n'a pas
+                        su résoudre, et les deux appellent des gestes opposés. */}
+                    {page.read && (
+                      <>
+                        {' '}
+                        <span className="subtle mono">(lu : {page.read})</span>
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>

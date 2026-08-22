@@ -36,8 +36,6 @@ from .enums import (
     LocationStatus,
     LocationType,
     SheetPass,
-    SheetStatus,
-    ZoneStatus,
 )
 from .quantities import ZERO, quantize_money, quantize_qty, to_decimal
 
@@ -622,7 +620,11 @@ class Zone(DomainModel):
     campaign_id: str
     code: str
     label: str = ""
-    status: ZoneStatus = ZoneStatus.PENDING
+    #: Quand un humain a déclaré la zone terminée, et qui. C'est la **seule**
+    #: donnée d'état stockée du parcours de comptage : les deux autres statuts
+    #: se déduisent des quantités relevées, et ne peuvent donc pas mentir.
+    closed_at: dt.datetime | None = None
+    closed_by: str = ""
     #: Free-text owner/sector, used for dispatching printed sheets.
     sector: str = ""
     display_order: int = 0
@@ -660,7 +662,6 @@ class CountSheet(DomainModel):
     campaign_id: str
     zone_id: str
     pass_no: SheetPass
-    status: SheetStatus = SheetStatus.PENDING
     counter_name: str = ""
     started_at: dt.datetime | None = None
     ended_at: dt.datetime | None = None

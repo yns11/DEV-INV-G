@@ -78,6 +78,10 @@ export const Icons = {
   scale: svg(<><path d="M12 3v18" /><path d="m5 8 7-5 7 5" /><path d="M3 14h6l-3-6-3 6Z" /><path d="M15 14h6l-3-6-3 6Z" /></>),
   history: svg(<><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l3 2" /></>),
   plus: svg(<><path d="M12 5v14M5 12h14" /></>),
+  /** Ouvrir une feuille pour la saisir : le geste, pas l'état. */
+  pencil: svg(<><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></>),
+  /** Rouvrir ce qu'on vient de déclarer fini. */
+  undo: svg(<><path d="M3 7v6h6" /><path d="M3.5 13a9 9 0 1 0 2.1-5.9L3 10" /></>),
   check: svg(<><path d="m5 13 4 4L19 7" /></>),
   x: svg(<><path d="M18 6 6 18M6 6l12 12" /></>),
   search: svg(<><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>),

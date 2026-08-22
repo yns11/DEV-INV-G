@@ -29,7 +29,6 @@ from ..domain.enums import (
     DataSource,
     JournalStatus,
     SheetPass,
-    SheetStatus,
 )
 from ..domain.models import (
     Campaign,
@@ -41,9 +40,18 @@ from ..domain.models import (
 )
 from ..domain.printing import available_print_modes
 from ..domain.quantities import ZERO
-from ..domain.workflow import assert_sheet_transition, derive_zone_status, passes_for
-from ..errors import ConflictError, NotFoundError, ValidationError
-from .context import ENGINE_VERSION, ServiceContext, utcnow
+from ..domain.workflow import (
+    derive_zone_status,
+    passes_for,
+    zone_closure_blockers,
+)
+from ..errors import (
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+    WorkflowError,
+)
+from .context import ENGINE_VERSION, ServiceContext
 from .manager_service import Perimeter
 
 log = logging.getLogger(__name__)
@@ -126,10 +134,14 @@ class GenericService:
         out: list[dict[str, Any]] = []
         for zone in zones:
             zone_sheets = by_zone.get(zone.id, [])
+            counted = sum(
+                1
+                for sheet in zone_sheets
+                for line in lines.get(sheet.id, [])
+                if line.is_counted
+            )
             status = derive_zone_status(
-                zone_sheets,
-                passes_required=zone.passes,
-                pending_arbitrations=pending.get(zone.id, 0),
+                counted_lines=counted, closed=zone.closed_at is not None
             )
             out.append({
                 **zone.model_dump(mode="json"),
@@ -461,56 +473,61 @@ class GenericService:
 
     # ---------------------------------------------------------------- sheets
 
-    def transition_sheet(
-        self,
-        campaign: Campaign,
-        sheet_id: str,
-        target: SheetStatus,
-        *,
-        counter_name: str | None = None,
-    ) -> CountSheet:
-        """Advance a sheet through PENDING → COUNTING → ENCODING → DONE."""
+    def set_zone_closed(
+        self, campaign: Campaign, zone_id: str, *, closed: bool
+    ) -> dict[str, Any]:
+        """Déclare une zone terminée, ou la rouvre.
+
+        La seule décision d'état du parcours de comptage. Elle remplace quatre
+        transitions par feuille — en attente, comptage, encodage, terminée —
+        qu'il fallait faire avancer à la main sans qu'aucune écriture n'en
+        dépende : le papier partait au comptage que le bouton ait été cliqué ou
+        non, et les quantités s'enregistraient dans tous les cas.
+
+        Un écart non tranché refuse la clôture, et le dit : la consolidation ne
+        saurait pas quelle quantité retenir, et fermer la zone reviendrait à
+        promettre un chiffre qui n'existe pas encore. Rouvrir, en revanche, ne
+        se refuse jamais — c'est le geste qui répare une clôture trop rapide.
+        """
         ctx = self.ctx
         ctx.guard(campaign, "count_entries")
-        sheet = ctx.sheets.get_sheet(sheet_id)
-        if sheet.campaign_id != campaign.id:
-            raise NotFoundError("Feuille introuvable dans cette campagne.")
-
-        pass_1_status: SheetStatus | None = None
-        if sheet.pass_no is SheetPass.PASS_2:
-            siblings = ctx.sheets.list_sheets(campaign.id, zone_id=sheet.zone_id)
-            first = next(
-                (s for s in siblings if s.pass_no is SheetPass.PASS_1), None
-            )
-            pass_1_status = first.status if first else None
-
-        assert_sheet_transition(sheet, target, pass_1_status=pass_1_status)
-
-        started_at = utcnow() if target is SheetStatus.COUNTING else None
-        ended_at = utcnow() if target is SheetStatus.ENCODING else None
-        ctx.sheets.update_sheet(
-            sheet_id,
-            status=target,
-            counter_name=counter_name,
-            started_at=started_at,
-            ended_at=ended_at,
-            actor=ctx.actor,
+        zone = next(
+            (z for z in ctx.sheets.list_zones(campaign.id) if z.id == zone_id), None
         )
+        if zone is None:
+            raise NotFoundError("Zone introuvable dans cette campagne.")
+
+        if closed:
+            # L'arbitrage se calcule sur les quantités du moment : le rafraîchir
+            # d'abord évite de refuser une clôture pour un écart déjà tranché,
+            # ou de l'accepter alors qu'une saisie vient d'en créer un.
+            self.refresh_arbitrations(campaign, zone_id)
+            pending = sum(
+                1
+                for a in ctx.sheets.list_arbitrations(campaign.id)
+                if a.zone_id == zone_id
+                and not a.is_resolved
+                and a.qty_pass_1 != a.qty_pass_2
+            )
+            blocker = zone_closure_blockers(pending_arbitrations=pending)
+            if blocker:
+                raise WorkflowError(blocker, zone=zone.code, pending=pending)
+
+        ctx.sheets.set_zone_closed(zone_id, closed=closed, actor=ctx.actor)
         ctx.record(
             campaign_id=campaign.id,
             action=AuditAction.STATUS_CHANGE,
-            entity_type="count_sheet",
-            entity_id=sheet_id,
-            summary=f"Feuille {sheet.pass_no} : {sheet.status} → {target}",
-            before={"status": str(sheet.status)},
-            after={"status": str(target), "counterName": counter_name},
+            entity_type="zone",
+            entity_id=zone_id,
+            summary=(
+                f"Zone {zone.code} déclarée terminée."
+                if closed
+                else f"Zone {zone.code} rouverte."
+            ),
+            before={"closed": zone.closed_at is not None},
+            after={"closed": closed},
         )
-
-        # Reaching DONE on the last pass is what makes an arbitration list
-        # meaningful, so refresh it immediately rather than on the next page load.
-        if target is SheetStatus.DONE:
-            self.refresh_arbitrations(campaign, sheet.zone_id)
-        return ctx.sheets.get_sheet(sheet_id)
+        return {"id": zone_id, "closed": closed}
 
     def upsert_sheet_lines(
         self,
@@ -804,7 +821,6 @@ class GenericService:
         ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
         ctx.sheets.update_sheet(
             sheet_id,
-            status=SheetStatus.ENCODING,
             counter_name=result.counter_name or None,
             evidence_path=storage_path,
             extraction_confidence=result.mean_confidence,
@@ -1046,8 +1062,7 @@ class GenericService:
                 ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
                 ctx.sheets.update_sheet(
                     sheet_id,
-                    status=SheetStatus.ENCODING,
-                    counter_name=result.counter_name or None,
+                            counter_name=result.counter_name or None,
                     evidence_path=storage_path,
                     extraction_confidence=result.mean_confidence,
                     actor=ctx.actor,

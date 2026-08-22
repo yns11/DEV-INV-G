@@ -21,7 +21,7 @@ from ..schemas import (
     ReclassifyRequest,
     SheetLineDeleteRequest,
     SheetLinesRequest,
-    SheetTransitionRequest,
+    ZoneClosureRequest,
     ZoneDeleteRequest,
     ZoneNegativeRequest,
     ZonePassesRequest,
@@ -169,22 +169,24 @@ def get_sheet(
     return service.get_sheet(campaign, sheet_id)
 
 
-@router.post("/sheets/{sheet_id}/transition", summary="Changer le statut d'une feuille")
-def transition_sheet(
+@router.post("/zones/{zone_id}/closure", summary="Terminer une zone, ou la rouvrir")
+def set_zone_closure(
     campaign: CampaignDep,
-    sheet_id: str,
-    payload: SheetTransitionRequest,
+    zone_id: str,
+    payload: ZoneClosureRequest,
     service: Service,
 ) -> dict[str, Any]:
-    """PENDING → COUNTING → ENCODING → DONE, each step reversible one notch.
+    """La seule décision d'état du parcours de comptage.
 
-    Pass 2 cannot start before pass 1 has been returned: two simultaneous counts
-    are not two independent counts.
+    Elle remplace quatre transitions par feuille — en attente, comptage en
+    cours, encodage en cours, terminée — qu'il fallait faire avancer à la main
+    sans qu'aucune écriture n'en dépende.
+
+    Une zone dont les deux comptages se contredisent encore refuse la clôture,
+    et le dit : la consolidation ne saurait pas quelle quantité retenir.
+    Rouvrir, en revanche, ne se refuse jamais.
     """
-    sheet = service.transition_sheet(
-        campaign, sheet_id, payload.target, counter_name=payload.counter_name
-    )
-    return sheet.model_dump(mode="json")
+    return service.set_zone_closed(campaign, zone_id, closed=payload.closed)
 
 
 @router.put("/sheets/{sheet_id}/lines", summary="Enregistrer les lignes d'une feuille")

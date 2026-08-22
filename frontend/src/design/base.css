@@ -467,8 +467,51 @@ h1, h2, h3, h4 {
   grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
 }
 
+/* Les vignettes de campagne : quatre par ligne au plus.
+   `auto-fit` seul en posait cinq voire six sur un grand écran, et une carte de
+   deux cents pixels de large tronque le code de la campagne — l'information qui
+   sert à la reconnaître. Le plancher garde le repli sur écran étroit : la piste
+   ne descend jamais sous 280 px, donc le nombre de colonnes tombe de lui-même. */
 .grid--3 {
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+/* Quatre au plus. `auto-fit` seul en posait cinq voire six sur un grand écran,
+   et une vignette de deux cents pixels tronque le code de la campagne —
+   l'information qui sert à la reconnaître. Le compte est fixé plutôt que calculé
+   en pourcentages : la même formule rendait trois colonnes ou quatre selon
+   l'arrondi de la largeur disponible. */
+/* Le seuil porte sur la fenêtre, alors que la contrainte porte sur la zone de
+   contenu : quatre pistes d'au moins 280 px et trois écarts demandent 1168 px,
+   soit la fenêtre moins la barre latérale et ses marges. En deçà, `auto-fit`
+   reprend la main et pose trois colonnes, puis deux. */
+@media (min-width: 1500px) {
+  .grid--3 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* ---- Rangée de filtres d'écran -------------------------------------------
+   Une grille et non une ligne : les étiquettes s'alignent entre elles et les
+   champs aussi, quelle que soit la largeur des colonnes ou la présence d'une
+   aide de saisie sous l'une d'elles. */
+.filters-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: end;
+  gap: var(--space-3) var(--space-4);
+}
+
+/* Les deux bornes de date tiennent dans un champ, qui a donc besoin du double. */
+.filters-row .field--wide {
+  grid-column: span 2;
+}
+
+.filters-row .field,
+.filters-row .input,
+.filters-row .select,
+.filters-row .search {
+  width: 100%;
 }
 
 /* ---- KPI tile -------------------------------------------------------------- */
@@ -1005,6 +1048,13 @@ table.data td.editable input.num {
 .filter__action:disabled {
   color: var(--fg-subtle);
   cursor: default;
+}
+
+.filter__action--on {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  font-weight: var(--weight-semibold);
 }
 
 /* Plafonnée puis défilante : quarante valeurs ne doivent pas pousser le

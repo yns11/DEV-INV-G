@@ -36,7 +36,6 @@ import type {
   ScanJob,
   Overview,
   PrintMode,
-  SheetStatus,
   StockBasis,
   StockFlowCandidate,
   StockFlowErpRead,
@@ -503,10 +502,17 @@ export const api = {
     request<{ sheet: Record<string, unknown>; lines: Array<Record<string, unknown>> }>(
       `/campaigns/${id}/generic/sheets/${sheetId}`,
     ),
-  transitionSheet: (id: string, sheetId: string, target: SheetStatus, counterName?: string) =>
-    request<Record<string, unknown>>(
-      `/campaigns/${id}/generic/sheets/${sheetId}/transition`,
-      { method: 'POST', body: JSON.stringify({ target, counterName }) },
+  /**
+   * Déclare une zone terminée, ou la rouvre.
+   *
+   * La seule décision d'état du parcours de comptage. Elle a remplacé quatre
+   * transitions par feuille — en attente, comptage, encodage, terminée — qu'il
+   * fallait faire avancer à la main sans qu'aucune écriture n'en dépende.
+   */
+  setZoneClosed: (id: string, zoneId: string, closed: boolean) =>
+    request<{ id: string; closed: boolean }>(
+      `/campaigns/${id}/generic/zones/${zoneId}/closure`,
+      { method: 'POST', body: JSON.stringify({ closed }) },
     ),
   saveSheetLines: (id: string, sheetId: string, lines: unknown[], replace = false) =>
     request<{ written: number }>(`/campaigns/${id}/generic/sheets/${sheetId}/lines`, {

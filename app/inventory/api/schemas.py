@@ -21,7 +21,6 @@ from ..domain.enums import (
     ItemType,
     JournalStatus,
     LocationStatus,
-    SheetStatus,
 )
 
 __all__ = [
@@ -53,7 +52,7 @@ __all__ = [
     "ManagerRowsRequest",
     "WarehouseAssignment",
     "WarehouseAssignmentRequest",
-    "SheetTransitionRequest",
+    "ZoneClosureRequest",
     "SheetLinesRequest",
     "ZoneDeleteRequest",
     "SheetLineDeleteRequest",
@@ -337,9 +336,11 @@ class WarehouseAssignmentRequest(ApiModel):
     assignments: list[WarehouseAssignment] = Field(min_length=1)
 
 
-class SheetTransitionRequest(ApiModel):
-    target: SheetStatus
-    counter_name: str | None = Field(default=None, alias="counterName")
+class ZoneClosureRequest(ApiModel):
+    """Déclarer une zone terminée, ou la rouvrir. La seule décision d'état
+    qui reste au parcours de comptage."""
+
+    closed: bool = True
 
 
 class SheetLineRow(ApiModel):

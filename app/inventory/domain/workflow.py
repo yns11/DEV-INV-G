@@ -1,4 +1,4 @@
-"""Campaign, journal, sheet and zone state machines.
+"""Campaign, journal and zone state machines.
 
 Everything the specification calls "gel" (freeze) is expressed here as a single
 source of truth: :func:`mutability_of` answers "may I still edit X?" for every
@@ -20,10 +20,9 @@ from .enums import (
     ControlSeverity,
     JournalStatus,
     SheetPass,
-    SheetStatus,
     ZoneStatus,
 )
-from .models import ArbitrationLine, ControlFinding, CountSheet
+from .models import ArbitrationLine, ControlFinding
 
 __all__ = [
     "Editable",
@@ -32,11 +31,9 @@ __all__ = [
     "passes_for",
     "assert_campaign_transition",
     "campaign_transition_blockers",
-    "next_sheet_status",
-    "assert_sheet_transition",
     "derive_zone_status",
+    "zone_closure_blockers",
     "arbitration_required",
-    "SHEET_TRANSITIONS",
 ]
 
 
@@ -277,8 +274,8 @@ def campaign_transition_blockers(
                     code="ZONES_NOT_DONE",
                     severity=ControlSeverity.BLOCKER,
                     message=(
-                        f"{len(open_zones)} zone(s) GENERIQUE ne sont pas terminées "
-                        "(comptage, encodage ou arbitrage en cours)."
+                        f"{len(open_zones)} zone(s) GENERIQUE ne sont pas "
+                        "terminées : ouvrez-les et déclarez-les finies."
                     ),
                     entity_type="zone",
                     context={"open": len(open_zones)},
@@ -292,21 +289,8 @@ def campaign_transition_blockers(
 
 
 # --------------------------------------------------------------------------- #
-# Counting-sheet lifecycle
+# Counting sheets
 # --------------------------------------------------------------------------- #
-
-#: PENDING → COUNTING → ENCODING → DONE, every step reversible one notch back so
-#: an encoder can reopen a sheet to fix a typo (explicit requirement).
-SHEET_TRANSITIONS: dict[SheetStatus, frozenset[SheetStatus]] = {
-    SheetStatus.PENDING: frozenset({SheetStatus.COUNTING}),
-    SheetStatus.COUNTING: frozenset({SheetStatus.ENCODING, SheetStatus.PENDING}),
-    SheetStatus.ENCODING: frozenset({SheetStatus.DONE, SheetStatus.COUNTING}),
-    SheetStatus.DONE: frozenset({SheetStatus.ENCODING}),
-}
-
-#: Sheet statuses that mean "pass 1 has produced usable data".
-_PASS_1_READY = frozenset({SheetStatus.ENCODING, SheetStatus.DONE})
-
 
 def passes_for(count: int) -> list[SheetPass]:
     """The sheets a zone requiring *count* independent counts must carry.
@@ -324,56 +308,8 @@ def passes_for(count: int) -> list[SheetPass]:
     return order[: max(1, min(count, 2))]
 
 
-def next_sheet_status(current: SheetStatus) -> SheetStatus | None:
-    """The natural forward step, or ``None`` when already ``DONE``."""
-    order = [
-        SheetStatus.PENDING,
-        SheetStatus.COUNTING,
-        SheetStatus.ENCODING,
-        SheetStatus.DONE,
-    ]
-    idx = order.index(current)
-    return order[idx + 1] if idx + 1 < len(order) else None
-
-
-def assert_sheet_transition(
-    sheet: CountSheet,
-    target: SheetStatus,
-    *,
-    pass_1_status: SheetStatus | None = None,
-) -> None:
-    """Guard a counting-sheet transition.
-
-    Beyond the generic ordering, one cross-sheet rule from the specification is
-    enforced: **pass 2 cannot start before pass 1 has been returned**. Two
-    simultaneous counts are not independent counts — they are one count done
-    twice by people who can see each other's sheet.
-
-    :param pass_1_status: status of the pass-1 sheet of the same zone. Required
-        when *sheet* is a pass-2 sheet moving to ``COUNTING``.
-    """
-    if target not in SHEET_TRANSITIONS[sheet.status]:
-        raise WorkflowError(
-            f"Transition de feuille {sheet.status} → {target} interdite.",
-            current=str(sheet.status),
-            target=str(target),
-            allowed=sorted(str(s) for s in SHEET_TRANSITIONS[sheet.status]),
-        )
-
-    if (
-        sheet.pass_no is SheetPass.PASS_2
-        and target is SheetStatus.COUNTING
-        and pass_1_status not in _PASS_1_READY
-    ):
-        raise WorkflowError(
-            "Le comptage n°2 ne peut démarrer que lorsque le comptage n°1 est "
-            "en cours d'encodage ou terminé.",
-            pass_1_status=str(pass_1_status) if pass_1_status else None,
-        )
-
-
 # --------------------------------------------------------------------------- #
-# Zone status derivation
+# Zone status
 # --------------------------------------------------------------------------- #
 
 def arbitration_required(
@@ -401,62 +337,40 @@ def arbitration_required(
     return out
 
 
-def derive_zone_status(
-    sheets: Sequence[CountSheet],
-    *,
-    passes_required: int = 2,
-    pending_arbitrations: int = 0,
-) -> ZoneStatus:
-    """Compute a zone's status from its sheets and its open arbitrations.
+def derive_zone_status(*, counted_lines: int, closed: bool) -> ZoneStatus:
+    """Où en est une zone : trois états, dont deux se déduisent.
 
-    The zone status is *derived*, never stored as an independent truth, so it
-    can never drift from the sheets it summarises.
+    * ``DONE``        un humain l'a déclarée terminée ;
+    * ``PENDING``     sinon, et aucune quantité n'a encore été relevée ;
+    * ``IN_PROGRESS`` sinon.
 
-    Rules, in order:
+    Les deux derniers se lisent dans les quantités elles-mêmes, donc ils ne
+    peuvent pas mentir : il n'y a rien à faire avancer à la main, et une zone
+    dont on saisit la première quantité passe « en cours » du seul fait qu'on
+    l'a saisie.
 
-    1. no sheet started            → ``PENDING``
-    2. pass 1 not finished         → ``PASS_1_RUNNING``
-    3. pass 2 not finished         → ``PASS_2_RUNNING``
-    4. unresolved discrepancies    → ``ARBITRATION``
-    5. otherwise                   → ``DONE``
-
-    A single-pass zone (``passes_required=1``) skips steps 3 and 4.
+    ``DONE`` reste une décision. La déduire de « toutes les lignes comptées »
+    paraît plus pur et ne l'est pas : une ligne qu'on ne peut légitimement pas
+    compter — l'article a disparu, l'emplacement est inaccessible — laisserait
+    la zone ouverte pour toujours, et avec elle le passage de la campagne en
+    analyse, qui exige que toutes les zones soient terminées.
     """
-    by_pass: dict[SheetPass, CountSheet] = {}
-    for sheet in sheets:
-        # Keep the most advanced sheet if duplicates ever appear.
-        current = by_pass.get(sheet.pass_no)
-        if current is None or _sheet_rank(sheet.status) > _sheet_rank(current.status):
-            by_pass[sheet.pass_no] = sheet
-
-    p1 = by_pass.get(SheetPass.PASS_1)
-    p2 = by_pass.get(SheetPass.PASS_2)
-
-    if p1 is None or p1.status is SheetStatus.PENDING:
-        if passes_required >= 2 and p2 is not None and p2.status is not SheetStatus.PENDING:
-            # Defensive: pass 2 started without pass 1 — surface it as running.
-            return ZoneStatus.PASS_2_RUNNING
-        return ZoneStatus.PENDING
-
-    if p1.status is not SheetStatus.DONE:
-        return ZoneStatus.PASS_1_RUNNING
-
-    if passes_required < 2:
+    if closed:
         return ZoneStatus.DONE
+    return ZoneStatus.IN_PROGRESS if counted_lines > 0 else ZoneStatus.PENDING
 
-    if p2 is None or p2.status is not SheetStatus.DONE:
-        return ZoneStatus.PASS_2_RUNNING
 
+def zone_closure_blockers(*, pending_arbitrations: int) -> str:
+    """Ce qui empêche de déclarer une zone terminée, en clair. Vide = rien.
+
+    Un écart non tranché entre les deux comptages est le seul refus : la
+    consolidation ne saurait pas quelle quantité retenir, et fermer la zone
+    reviendrait à promettre un chiffre qui n'existe pas encore.
+    """
     if pending_arbitrations > 0:
-        return ZoneStatus.ARBITRATION
-
-    return ZoneStatus.DONE
-
-
-def _sheet_rank(status: SheetStatus) -> int:
-    return {
-        SheetStatus.PENDING: 0,
-        SheetStatus.COUNTING: 1,
-        SheetStatus.ENCODING: 2,
-        SheetStatus.DONE: 3,
-    }[status]
+        return (
+            f"{pending_arbitrations} écart(s) entre les deux comptages ne sont "
+            "pas tranchés. Arbitrez-les avant de terminer la zone : sans "
+            "décision, la consolidation ne sait pas quelle quantité retenir."
+        )
+    return ""

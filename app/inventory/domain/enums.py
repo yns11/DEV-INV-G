@@ -26,7 +26,6 @@ __all__ = [
     "JournalKind",
     "JournalStatus",
     "SheetPass",
-    "SheetStatus",
     "ZoneStatus",
     "CountSection",
     "DataSource",
@@ -151,26 +150,30 @@ class SheetPass(StrEnum):
     PASS_2 = "PASS_2"
 
 
-class SheetStatus(StrEnum):
-    """Life of a single printed counting sheet.
+class ZoneStatus(StrEnum):
+    """Où en est une zone de l'emplacement GENERIQUE. Trois états, pas plus.
 
-    PENDING → COUNTING (sheet handed to the counter) → ENCODING (sheet returned,
-    scanned or being typed in) → DONE (encoding validated; reversible).
+    Une feuille de comptage n'a **pas** d'état propre. Elle en a eu quatre —
+    en attente, comptage en cours, encodage en cours, terminée — que quelqu'un
+    devait faire avancer à la main, deux fois par zone, sans qu'aucune écriture
+    n'en dépende : le papier partait au comptage que le bouton ait été cliqué ou
+    non, et les quantités s'enregistraient dans tous les cas. Quatre clics par
+    zone pour tenir à jour une donnée que personne ne lisait.
+
+    Ce qui reste :
+
+    * ``PENDING``     aucune quantité relevée dans la zone ;
+    * ``IN_PROGRESS`` des quantités sont là, la zone n'est pas déclarée close ;
+    * ``DONE``        un humain a déclaré la zone terminée.
+
+    Les deux premiers se **déduisent** des quantités : ils ne peuvent donc pas
+    mentir. Le troisième est la seule décision humaine du parcours, et elle est
+    nécessaire — dérivé de « toutes les lignes comptées », il condamnerait une
+    campagne entière pour une ligne qu'on ne peut légitimement pas compter.
     """
 
     PENDING = "PENDING"
-    COUNTING = "COUNTING"
-    ENCODING = "ENCODING"
-    DONE = "DONE"
-
-
-class ZoneStatus(StrEnum):
-    """Aggregated state of a physical zone of the GENERIQUE location."""
-
-    PENDING = "PENDING"
-    PASS_1_RUNNING = "PASS_1_RUNNING"
-    PASS_2_RUNNING = "PASS_2_RUNNING"
-    ARBITRATION = "ARBITRATION"
+    IN_PROGRESS = "IN_PROGRESS"
     DONE = "DONE"
 
 

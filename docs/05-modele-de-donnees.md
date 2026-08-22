@@ -44,6 +44,11 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           │    1 par emplacement actif      qty_imported / qty_manual séparées
           │
           ├─ zone ──── count_sheet ──── count_sheet_line
+          │    └─ closed_at / closed_by   (« zone terminée » : la seule donnée
+          │                                d'état du parcours de comptage. Les
+          │                                deux autres statuts d'une zone se
+          │                                déduisent de ses quantités. La feuille,
+          │                                elle, n'a plus d'état)
           │  passes 1|2   (1 par passage)      section : LINE_SIDE / WIP / WIP_OK
           │  free_entry
           │  manager_code

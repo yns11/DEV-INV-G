@@ -246,17 +246,24 @@ function CampaignFilters({
   // *quoi* est affiché, la seconde *comment*. Mêlées, les contrôles s'échangent
   // de place au gré des largeurs et rien ne se retrouve deux fois au même
   // endroit d'une visite à l'autre.
+  //
+  // La première rangée est une **grille**, pas une ligne qui déborde. En ligne,
+  // chaque champ prenait la hauteur de son contenu : la recherche, sans
+  // étiquette, se calait en bas pendant que les listes se calaient en haut, et
+  // la seule aide de saisie de la rangée décalait sa colonne à elle seule. Une
+  // grille pose les étiquettes sur une ligne et les champs sur une autre, quelle
+  // que soit la largeur.
   return (
     <Card>
       <div className="stack" style={{ gap: 'var(--space-3)' }}>
-      <div className="row-wrap" style={{ alignItems: 'flex-end' }}>
-        <div style={{ minWidth: 220, flex: '1 1 220px' }}>
+      <div className="filters-row">
+        <Field label="Recherche">
           <SearchInput
             value={filters.text}
             onChange={(value) => set('text', value)}
             placeholder="Code ou libellé…"
           />
-        </div>
+        </Field>
         <Field label="Statut">
           <select
             className="select"
@@ -287,7 +294,8 @@ function CampaignFilters({
         </Field>
         {/* Les deux bornes dans un seul champ : deux étiquettes « du » et « au »
             l'une à côté de l'autre se lisent comme deux filtres indépendants. */}
-        <Field label="Date de comptage" hint="Date d’inventaire, pas de création.">
+        <div className="field--wide">
+        <Field label="Date de comptage">
           <div className="row" style={{ gap: 'var(--space-2)' }}>
             <input
               className="input"
@@ -306,6 +314,7 @@ function CampaignFilters({
             />
           </div>
         </Field>
+        </div>
       </div>
       <div className="row-wrap">
         <Switch
@@ -446,7 +455,10 @@ function CampaignGrid({
                   </>
                 )}
               </dl>
-              <div className="row" style={{ marginTop: 'auto' }}>
+              {/* Se replie plutôt que de rogner : à quatre vignettes par ligne,
+                  la carte devient assez étroite pour que « Ouvrir » sorte du
+                  cadre, et un bouton à moitié visible ne se clique pas. */}
+              <div className="row-wrap" style={{ marginTop: 'auto', gap: 'var(--space-2)' }}>
                 <Button
                   variant="secondary"
                   size="sm"

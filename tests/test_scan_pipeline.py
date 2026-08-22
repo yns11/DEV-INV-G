@@ -290,7 +290,7 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
 
     from inventory.ai.sheet_extraction import ExtractionResult, PageRouting
     from inventory.config import Settings
-    from inventory.domain.enums import CampaignStatus, SheetPass, SheetStatus
+    from inventory.domain.enums import CampaignStatus, SheetPass
     from inventory.domain.models import Campaign, CountSheet, Zone
     from inventory.services import generic_service as module
 
@@ -302,7 +302,7 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
     zones = [Zone(id=f"z-{n}", campaign_id="camp-1", code=f"ZONE-{n}") for n in range(sheets_count)]
     sheets = [
         CountSheet(id=f"s-{n}", campaign_id="camp-1", zone_id=f"z-{n}",
-                   pass_no=SheetPass.PASS_1, status=SheetStatus.PENDING)
+                   pass_no=SheetPass.PASS_1)
         for n in range(sheets_count)
     ]
     lines_by_sheet = {
@@ -454,7 +454,7 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
 
     from inventory.ai.sheet_extraction import ExtractionResult
     from inventory.config import Settings
-    from inventory.domain.enums import CampaignStatus, SheetPass, SheetStatus
+    from inventory.domain.enums import CampaignStatus, SheetPass
     from inventory.domain.models import Campaign, CountSheet, Zone
     from inventory.services import generic_service as module
 
@@ -466,7 +466,7 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
     zone = Zone(id="z-1", campaign_id="camp-1", code="FI ASSY", free_entry=free_entry)
     sheet = CountSheet(
         id="s-1", campaign_id="camp-1", zone_id="z-1",
-        pass_no=SheetPass.PASS_1, status=SheetStatus.COUNTING,
+        pass_no=SheetPass.PASS_1,
     )
     expected = (
         []

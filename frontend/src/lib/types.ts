@@ -8,9 +8,14 @@
 
 export type CampaignStatus = 'PREPARATION' | 'COUNTING' | 'ANALYSIS' | 'CLOSED'
 export type JournalStatus = 'PENDING' | 'IN_PROGRESS' | 'POSTED' | 'BOOK_ENFORCED'
-export type SheetStatus = 'PENDING' | 'COUNTING' | 'ENCODING' | 'DONE'
-export type ZoneStatus =
-  | 'PENDING' | 'PASS_1_RUNNING' | 'PASS_2_RUNNING' | 'ARBITRATION' | 'DONE'
+/**
+ * Trois états, dont deux se déduisent des quantités relevées.
+ *
+ * Une feuille de comptage n'a plus d'état propre : elle en avait quatre,
+ * qu'il fallait faire avancer à la main deux fois par zone sans qu'aucune
+ * écriture n'en dépende.
+ */
+export type ZoneStatus = 'PENDING' | 'IN_PROGRESS' | 'DONE'
 export type CountSection = 'LINE_SIDE' | 'WIP' | 'WIP_OK'
 export type ItemType =
   | 'COMPONENT' | 'SEMI_FINISHED' | 'FINISHED' | 'PACKAGING' | 'UNKNOWN'
@@ -352,7 +357,6 @@ export interface Sheet {
   id: string
   zone_id: string
   pass_no: 'PASS_1' | 'PASS_2'
-  status: SheetStatus
   counter_name: string
   started_at: string | null
   ended_at: string | null
@@ -498,6 +502,9 @@ export interface Zone {
   /** Whether a negative counted quantity is accepted on this zone's sheets. */
   allow_negative: boolean
   status: ZoneStatus
+  /** Quand la zone a été déclarée terminée, et par qui. Null = encore ouverte. */
+  closed_at: string | null
+  closed_by: string
   pendingArbitrations: number
   /** What this zone can be printed as right now, in the order to offer them. */
   printModes: PrintMode[]

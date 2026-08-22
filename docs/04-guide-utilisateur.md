@@ -484,27 +484,47 @@ non par accident. Les lignes sont matérialisées et tracées.
 ### 2.8 Compter les zones GENERIQUE
 
 **Deux affichages, au choix, mémorisé.** *Icônes* donne une carte par zone, ses
-feuilles côte à côte — la lecture qui va bien jusqu'à une dizaine de zones.
-*Liste* donne une grille triable, filtrable et exportable, qui tient encore à
-quatre-vingts. La ligne y est la **feuille**, pas la zone : c'est elle qui porte
-un état, un compteur et une action, et la colonne « Zone » les regroupe. Le
-bouton d'action reste épinglé au bord droit, atteignable sans faire défiler.
+feuilles l'une sous l'autre — la lecture qui va bien jusqu'à une dizaine de
+zones. *Liste* donne une grille triable, filtrable et exportable, qui tient
+encore à quatre-vingts. La ligne y est la **feuille**, et la colonne « Zone »
+les regroupe. Les boutons restent épinglés au bord droit, atteignables sans
+faire défiler.
 
-Pour chaque zone, le cycle est :
+**Une feuille n'a pas d'état.** Deux boutons suffisent, sur chaque feuille :
 
-```
-En attente → Comptage en cours → Encodage en cours → Terminée
-```
+| Bouton | Ce qu'il fait |
+|---|---|
+| ✏️ **Crayon** | Ouvre la feuille pour saisir, coller ou scanner. Actif pendant toute la phase Comptage |
+| 🖨️ **Imprimante** | Imprime la feuille — vierge ou remplie |
 
-- **Comptage en cours** : la feuille est remise au compteur.
-- **Encodage en cours** : la feuille est revenue ; on saisit ou on scanne.
-- **Terminée** : l'encodage est validé. Réversible d'un cran pour corriger.
+Il fallait auparavant cliquer *Commencer le comptage*, puis *Commencer
+l'encodage*, avant de pouvoir écrire la première quantité, puis *Valider* pour
+finir — quatre clics par feuille, huit par zone à double comptage. Aucune
+écriture n'en dépendait : le papier partait au comptage que le bouton ait été
+cliqué ou non, et les quantités s'enregistraient dans tous les cas.
 
-> Le **comptage n°2 ne peut pas démarrer** tant que le comptage n°1 n'est pas
-> revenu. Deux comptages simultanés ne sont pas deux comptages indépendants.
+**Une zone a trois états**, et c'est le seul suivi qui reste :
 
-Une zone réglée sur **un seul comptage** n'a qu'une feuille et se termine dès
-qu'elle est encodée : sans second avis, il n'y a rien à arbitrer.
+| État | Ce qu'il veut dire |
+|---|---|
+| **À compter** | Aucune quantité relevée dans la zone |
+| **En cours** | Des quantités sont là ; la zone n'est pas déclarée finie |
+| **Terminée** | Quelqu'un l'a déclarée finie : elle entre dans la consolidation |
+
+Les deux premiers se **déduisent des quantités** : rien à cliquer, saisir la
+première quantité *est* le démarrage. Le troisième est une décision, prise sur
+la carte de la zone par **Terminer la zone**, et **Rouvrir** la défait. Cette
+décision-là ne peut pas se déduire : une ligne qu'on ne peut légitimement pas
+compter — l'article a disparu, l'emplacement est inaccessible — laisserait sinon
+la zone ouverte pour toujours, et avec elle le passage de la campagne en analyse.
+
+> Terminer une zone dont les deux comptages se contredisent encore est
+> **refusé**, en le disant : sans arbitrage, la consolidation ne sait pas quelle
+> quantité retenir. Rouvrir, en revanche, ne se refuse jamais — c'est le geste
+> qui répare une clôture trop rapide.
+
+Une zone réglée sur **un seul comptage** n'a qu'une feuille : sans second avis,
+il n'y a rien à arbitrer, et rien ne s'oppose à sa clôture.
 
 À l'ouverture de la **feuille n°2**, une colonne « Comptage n°1 » affiche la
 quantité du premier passage. Voir la divergence pendant la saisie transforme

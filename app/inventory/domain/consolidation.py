@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from .bom import BomCycleError, BomIndex, ExplosionResult
-from .enums import ControlSeverity, CountSection, ItemType, SheetPass, SheetStatus
+from .enums import ControlSeverity, CountSection, ItemType, SheetPass
 from .models import (
     ArbitrationLine,
     ConsolidatedLine,
@@ -489,15 +489,14 @@ def consolidate_generic(payload: ConsolidationInput) -> ConsolidationResult:
 # --------------------------------------------------------------------------- #
 
 def _zone_is_complete(zone: ZoneCounts) -> bool:
-    """A zone contributes once every pass *it* requires is encoded and validated."""
-    done = {
-        sheet.pass_no
-        for sheet in zone.sheets
-        if sheet.status is SheetStatus.DONE
-    }
-    if zone.passes_required >= 2:
-        return SheetPass.PASS_1 in done and SheetPass.PASS_2 in done
-    return bool(done)
+    """Une zone entre dans la consolidation une fois **déclarée terminée**.
+
+    C'était auparavant lu dans le statut de chaque feuille, qu'il fallait faire
+    avancer à la main quatre fois par feuille. La question posée était pourtant
+    la même — « cette zone est-elle finie ? » — et elle a maintenant une réponse
+    unique, portée par la zone : la date de clôture.
+    """
+    return zone.zone.closed_at is not None
 
 
 def _is_finished(item_number: str, items: Mapping[str, Item]) -> bool:

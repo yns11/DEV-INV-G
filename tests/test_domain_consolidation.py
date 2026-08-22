@@ -19,7 +19,6 @@ from inventory.domain.enums import (
     CountSection,
     ItemType,
     SheetPass,
-    SheetStatus,
 )
 from inventory.domain.models import (
     ArbitrationLine,
@@ -56,9 +55,9 @@ BOM = BomIndex([
 ])
 
 
-def sheet(zone_id: str, pass_no: SheetPass, status=SheetStatus.DONE) -> CountSheet:
+def sheet(zone_id: str, pass_no: SheetPass) -> CountSheet:
     return CountSheet(
-        id=next_id(), campaign_id="c", zone_id=zone_id, pass_no=pass_no, status=status
+        id=next_id(), campaign_id="c", zone_id=zone_id, pass_no=pass_no
     )
 
 
@@ -73,16 +72,23 @@ def line(sheet_id: str, number: str, section: CountSection, qty) -> CountSheetLi
     )
 
 
+#: Une zone entre dans la consolidation une fois **déclarée terminée** ; c'est
+#: la date de clôture qui le dit, et non plus le statut de chaque feuille.
+CLOSED = dt.datetime(2026, 6, 30, 12, 0, tzinfo=dt.UTC)
+
+
 def zone_counts(
-    *, code="Z1", rows_1, rows_2=None, status=SheetStatus.DONE, arbitrations=(),
+    *, code="Z1", rows_1, rows_2=None, closed=CLOSED, arbitrations=(),
     passes=2,
 ) -> ZoneCounts:
-    zone = Zone(id=next_id(), campaign_id="c", code=code, passes=passes)
-    s1 = sheet(zone.id, SheetPass.PASS_1, status)
+    zone = Zone(
+        id=next_id(), campaign_id="c", code=code, passes=passes, closed_at=closed
+    )
+    s1 = sheet(zone.id, SheetPass.PASS_1)
     lines = {s1.id: [line(s1.id, *row) for row in rows_1]}
     sheets = [s1]
     if passes >= 2:
-        s2 = sheet(zone.id, SheetPass.PASS_2, status)
+        s2 = sheet(zone.id, SheetPass.PASS_2)
         sheets.append(s2)
         lines[s2.id] = [
             line(s2.id, *row) for row in (rows_2 if rows_2 is not None else rows_1)
@@ -407,9 +413,13 @@ class TestTwoPassResolution:
 
 class TestZoneCompleteness:
     def test_unfinished_zones_are_skipped_when_posting(self):
+        """« Finie » se lit sur la zone, plus sur le statut de ses feuilles.
+
+        Poster une zone encore ouverte publierait un comptage que personne n'a
+        déclaré fini, et que la suite du comptage peut encore changer.
+        """
         zone = zone_counts(
-            rows_1=[("VIS", CountSection.LINE_SIDE, 100)],
-            status=SheetStatus.ENCODING,
+            rows_1=[("VIS", CountSection.LINE_SIDE, 100)], closed=None,
         )
         result = run(zone)
         assert result.zones_skipped == [zone.zone.code]
@@ -417,8 +427,7 @@ class TestZoneCompleteness:
 
     def test_preview_includes_unfinished_zones(self):
         zone = zone_counts(
-            rows_1=[("VIS", CountSection.LINE_SIDE, 100)],
-            status=SheetStatus.COUNTING,
+            rows_1=[("VIS", CountSection.LINE_SIDE, 100)], closed=None,
         )
         result = run(zone, require_done=False)
         assert result.zones_included == [zone.zone.code]
@@ -487,9 +496,10 @@ class TestSinglePassZones:
         assert result.zones_skipped == []
         assert result.lines[0].qty == Decimal("100.000000")
 
-    def test_a_two_pass_zone_with_one_done_sheet_is_still_skipped(self):
-        zone = zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)])
-        zone.sheets[1].status = SheetStatus.ENCODING
+    def test_a_two_pass_zone_counted_but_not_closed_is_still_skipped(self):
+        """Des quantités partout ne valent pas une zone finie : le second
+        comptage peut être en cours, et l'arbitrage n'a pas eu lieu."""
+        zone = zone_counts(rows_1=[("VIS", CountSection.LINE_SIDE, 100)], closed=None)
         result = run(zone)
         assert result.zones_skipped == [zone.zone.code]
 

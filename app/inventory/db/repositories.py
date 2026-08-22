@@ -36,7 +36,6 @@ from ..domain.enums import (
     JournalStatus,
     LocationStatus,
     SheetPass,
-    SheetStatus,
 )
 from ..domain.models import (
     AdjustmentLine,
@@ -1213,7 +1212,7 @@ class SheetRepository(_Base):
 
     _ZONE_COLUMNS = (
         "id, campaign_id, code, label, sector, display_order, passes, free_entry, "
-        "manager_code, allow_negative"
+        "manager_code, allow_negative, closed_at, closed_by"
     )
 
     def list_zones(
@@ -1241,6 +1240,28 @@ class SheetRepository(_Base):
             conn=conn,
         )
         return zone
+
+    def set_zone_closed(
+        self,
+        zone_id: str,
+        *,
+        closed: bool,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Déclare une zone terminée, ou la rouvre.
+
+        La seule écriture d'état du parcours de comptage : les deux autres
+        statuts d'une zone se déduisent de ses quantités.
+        """
+        return self._execute(
+            "UPDATE zone SET closed_at = %s, closed_by = %s, updated_by = %s, "
+            "updated_at = now() WHERE id = %s AND deleted_at IS NULL",
+            (dt.datetime.now(dt.UTC) if closed else None,
+             actor if closed else "",
+             actor, zone_id),
+            conn=conn,
+        )
 
     def delete_zone(
         self, zone_id: str, *, actor: str, conn: psycopg.Connection | None = None
@@ -1305,7 +1326,7 @@ class SheetRepository(_Base):
             clauses.append("zone_id = %s")
             params.append(zone_id)
         rows = self._fetch_all(
-            "SELECT id, campaign_id, zone_id, pass_no, status, counter_name, "
+            "SELECT id, campaign_id, zone_id, pass_no, counter_name, "
             "started_at, ended_at, evidence_path, extraction_confidence, updated_at "
             f"FROM count_sheet WHERE {' AND '.join(clauses)} ORDER BY zone_id, pass_no",
             params,
@@ -1375,7 +1396,7 @@ class SheetRepository(_Base):
 
     def get_sheet(self, sheet_id: str) -> CountSheet:
         row = self._fetch_one(
-            "SELECT id, campaign_id, zone_id, pass_no, status, counter_name, "
+            "SELECT id, campaign_id, zone_id, pass_no, counter_name, "
             "started_at, ended_at, evidence_path, extraction_confidence, updated_at "
             "FROM count_sheet WHERE id = %s",
             (sheet_id,),
@@ -1405,7 +1426,6 @@ class SheetRepository(_Base):
         self,
         sheet_id: str,
         *,
-        status: SheetStatus | None = None,
         counter_name: str | None = None,
         started_at: dt.datetime | None = None,
         ended_at: dt.datetime | None = None,
@@ -1416,7 +1436,6 @@ class SheetRepository(_Base):
         sets = ["updated_by = %s", "updated_at = now()", "row_version = row_version + 1"]
         params: list[Any] = [actor]
         for column, value in (
-            ("status", str(status) if status else None),
             ("counter_name", counter_name),
             ("started_at", started_at),
             ("ended_at", ended_at),
@@ -1680,6 +1699,7 @@ class SheetRepository(_Base):
             display_order=row["display_order"], passes=row["passes"],
             free_entry=row["free_entry"], manager_code=row["manager_code"],
             allow_negative=row["allow_negative"],
+            closed_at=row["closed_at"], closed_by=row["closed_by"] or "",
         )
 
     @staticmethod
@@ -1687,7 +1707,7 @@ class SheetRepository(_Base):
         return CountSheet(
             id=str(row["id"]), campaign_id=str(row["campaign_id"]),
             zone_id=str(row["zone_id"]), pass_no=SheetPass(row["pass_no"]),
-            status=SheetStatus(row["status"]), counter_name=row["counter_name"],
+            counter_name=row["counter_name"],
             started_at=row["started_at"], ended_at=row["ended_at"],
             evidence_path=row["evidence_path"],
             extraction_confidence=row["extraction_confidence"],

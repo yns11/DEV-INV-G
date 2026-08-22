@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 
 from inventory.domain.controls import check_zones
-from inventory.domain.enums import SheetPass, SheetStatus
+from inventory.domain.enums import SheetPass
 from inventory.domain.models import CountSheet, CountSheetLine, Zone
 
 _ids = itertools.count(1)
@@ -18,8 +18,7 @@ def zone(**kwargs) -> Zone:
 
 def sheets_of(z: Zone, *passes: SheetPass) -> list[CountSheet]:
     return [
-        CountSheet(id=next_id(), campaign_id="c", zone_id=z.id, pass_no=p,
-                   status=SheetStatus.PENDING)
+        CountSheet(id=next_id(), campaign_id="c", zone_id=z.id, pass_no=p)
         for p in passes
     ]
 

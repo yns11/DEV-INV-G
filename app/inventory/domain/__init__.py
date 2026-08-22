@@ -33,7 +33,6 @@ from .enums import (
     LocationStatus,
     LocationType,
     SheetPass,
-    SheetStatus,
     ZoneStatus,
     legacy_section_alias,
 )
@@ -86,11 +85,11 @@ from .workflow import (
     Editable,
     arbitration_required,
     assert_campaign_transition,
-    assert_sheet_transition,
     campaign_transition_blockers,
     derive_zone_status,
     mutability_of,
     passes_for,
+    zone_closure_blockers,
 )
 
 __all__ = [
@@ -98,7 +97,7 @@ __all__ = [
     "AdjustmentKind", "AuditAction", "CampaignStatus", "ControlSeverity",
     "CountSection", "DataSource", "ExclusionScope", "ItemCommonality", "ItemType",
     "JournalKind", "JournalStatus", "LocationStatus", "LocationType", "SheetPass",
-    "SheetStatus", "ZoneStatus", "legacy_section_alias",
+    "ZoneStatus", "legacy_section_alias",
     # models
     "AdjustmentLine", "ArbitrationLine", "AssignableCause", "AuditEvent", "BomLink",
     "BookStockLine", "Campaign", "CampaignConfig", "ConsolidatedLine",
@@ -122,7 +121,8 @@ __all__ = [
     "run_all_controls", "summarise",
     # workflow
     "CAMPAIGN_TRANSITIONS", "Editable", "arbitration_required",
-    "assert_campaign_transition", "assert_sheet_transition",
+    "assert_campaign_transition",
     "campaign_transition_blockers", "derive_zone_status", "mutability_of",
+    "zone_closure_blockers",
     "passes_for",
 ]

@@ -8,7 +8,14 @@ import { compositeKey, splitCompositeKey } from '../lib/rowKey'
 import type {
   GridContract, Manager, Overview, PrintMode, Threshold, Zone,
 } from '../lib/types'
-import { ITEM_TYPE_LABELS, moneyShort, qty, percent } from '../lib/format'
+import {
+  ITEM_TYPE_LABELS,
+  SECTION_LABELS,
+  moneyShort,
+  qty,
+  percent,
+  label as toLabel,
+} from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { FindingGroups } from '../components/Findings'
@@ -1509,6 +1516,7 @@ function SheetLinesView({
       label: 'Section',
       width: 150,
       choices: ['LINE_SIDE', 'WIP', 'WIP_OK'],
+      choiceLabel: (value) => toLabel(SECTION_LABELS, value),
     },
     { key: 'unit', label: 'Unité', width: 90 },
     { key: 'comment', label: 'Commentaire', width: 220 },

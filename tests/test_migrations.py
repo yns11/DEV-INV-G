@@ -42,6 +42,7 @@ SHIPPED = {
     "014_campaign_owner_backfill": "d1f41cef0270",
     "015_scan_job": "20ed77f608f7",
     "016_scan_job_sheet": "461bab2d5e5b",
+    "017_zone_closure": "67ae24533ced",
 }
 
 

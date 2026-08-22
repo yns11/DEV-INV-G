@@ -118,6 +118,16 @@ type ColumnFilter =
   | { kind: 'choice'; values: string[] }
   | { kind: 'range'; min: number | null; max: number | null }
   | { kind: 'text'; needle: string }
+  /**
+   * L'absence de valeur, ou sa présence.
+   *
+   * « Les articles dans le périmètre » se lit dans la colonne Exclusion comme
+   * un trait, « les lignes sans commentaire » comme une case vide : deux
+   * questions courantes qu'aucun des trois autres filtres ne pose. Une liste de
+   * valeurs répond par sa case *(vide)* ; une colonne texte, dont les valeurs
+   * ne se listent pas, a besoin de ce filtre-ci.
+   */
+  | { kind: 'blank'; empty: boolean }
 
 type Filters = Record<string, ColumnFilter>
 
@@ -129,6 +139,9 @@ interface Choice {
   label: string
   count: number
 }
+
+/** Comment se nomme l'absence de valeur, partout où elle se coche ou se résume. */
+const BLANK_LABEL = '(vide)'
 
 /** Au-delà, une liste de valeurs cesse d'être un choix et devient un annuaire. */
 const CHOICE_CEILING = 40
@@ -271,18 +284,27 @@ export function DataGrid<T extends Row>({
       const tally = new Map<string, number>()
       for (const row of rows) {
         const value = defaultValue(row, column)
-        if (value === null || value === '') continue
-        const key = String(value)
+        // La case vide est une valeur comme une autre : c'est celle qui répond
+        // à « les articles dans le périmètre » ou « les lignes sans
+        // commentaire ». L'écarter rendait ces deux questions impossibles à
+        // poser, alors qu'elles sont parmi les plus courantes.
+        const key = value === null ? '' : String(value)
         tally.set(key, (tally.get(key) ?? 0) + 1)
         if (tally.size > CHOICE_CEILING) break
       }
       out[column.key] = [...tally]
         .map(([value, count]) => ({
           value,
-          label: column.choiceLabel?.(value) ?? value,
+          label: value === '' ? BLANK_LABEL : column.choiceLabel?.(value) ?? value,
           count,
         }))
-        .sort((a, b) => a.label.localeCompare(b.label, 'fr', { numeric: true }))
+        // La case vide en tête : c'est le complément de toutes les autres, et
+        // la chercher au milieu d'un ordre alphabétique n'a pas de sens.
+        .sort((a, b) =>
+          a.value === '' ? -1
+          : b.value === '' ? 1
+          : a.label.localeCompare(b.label, 'fr', { numeric: true }),
+        )
     }
     return out
   }, [rows, columns])
@@ -361,6 +383,10 @@ export function DataGrid<T extends Row>({
           if (filter.min !== null && numeric < filter.min) return false
           if (filter.max !== null && numeric > filter.max) return false
           return true
+        }
+        if (filter.kind === 'blank') {
+          const empty = value === null || String(value).trim() === ''
+          return empty === filter.empty
         }
         return String(value ?? '').toLowerCase().includes(filter.needle.toLowerCase())
       })
@@ -1086,10 +1112,8 @@ function ColumnFilterField<T extends Row>({
           )}
           {kind === 'text' && (
             <TextPanel
-              needle={value?.kind === 'text' ? value.needle : ''}
-              onChange={(text) =>
-                onChange(text ? { kind: 'text', needle: text } : null)
-              }
+              value={value}
+              onChange={onChange}
             />
           )}
         </div>
@@ -1122,6 +1146,7 @@ function summarise(
     if (min !== null) return `≥ ${min}`
     return `≤ ${max}`
   }
+  if (value.kind === 'blank') return value.empty ? BLANK_LABEL : 'renseignées'
   return `« ${value.needle} »`
 }
 
@@ -1250,21 +1275,49 @@ function RangePanel({
 }
 
 function TextPanel({
-  needle,
+  value,
   onChange,
 }: {
-  needle: string
-  onChange: (value: string) => void
+  value: ColumnFilter | null
+  onChange: (filter: ColumnFilter | null) => void
 }) {
+  const needle = value?.kind === 'text' ? value.needle : ''
+  const blank = value?.kind === 'blank' ? value.empty : null
   return (
     <>
       <input
         className="input input--sm"
         placeholder="Contient…"
         value={needle}
-        onChange={(event) => onChange(event.target.value)}
+        onChange={(event) =>
+          onChange(event.target.value ? { kind: 'text', needle: event.target.value } : null)
+        }
         autoFocus
       />
+      {/* Une colonne dont les valeurs ne se listent pas — un commentaire, un nom
+          de compteur — n'offrait aucun moyen de demander « celles qui sont
+          restées vides », qui est pourtant la question la plus fréquente qu'on
+          lui pose. Deux boutons, mutuellement exclusifs avec la recherche. */}
+      <div className="filter__actions">
+        <button
+          type="button"
+          className={`filter__action${blank === true ? ' filter__action--on' : ''}`}
+          onClick={() =>
+            onChange(blank === true ? null : { kind: 'blank', empty: true })
+          }
+        >
+          Vides
+        </button>
+        <button
+          type="button"
+          className={`filter__action${blank === false ? ' filter__action--on' : ''}`}
+          onClick={() =>
+            onChange(blank === false ? null : { kind: 'blank', empty: false })
+          }
+        >
+          Renseignées
+        </button>
+      </div>
       <p className="subtle filter__hint">
         Insensible à la casse et aux accents.
       </p>

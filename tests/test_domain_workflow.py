@@ -1,4 +1,4 @@
-"""Campaign, sheet and zone state machines, and the freeze matrix."""
+"""Campaign and zone state machines, and the freeze matrix."""
 
 from __future__ import annotations
 
@@ -9,26 +9,18 @@ import pytest
 from inventory.domain.enums import (
     CampaignStatus,
     JournalStatus,
-    SheetPass,
-    SheetStatus,
     ZoneStatus,
 )
-from inventory.domain.models import ArbitrationLine, CountSheet
+from inventory.domain.models import ArbitrationLine
 from inventory.domain.workflow import (
     arbitration_required,
     assert_campaign_transition,
-    assert_sheet_transition,
     campaign_transition_blockers,
     derive_zone_status,
     mutability_of,
+    zone_closure_blockers,
 )
 from inventory.errors import WorkflowError
-
-
-def sheet(pass_no: SheetPass, status: SheetStatus) -> CountSheet:
-    return CountSheet(
-        id=f"s-{pass_no}", campaign_id="c", zone_id="z", pass_no=pass_no, status=status
-    )
 
 
 class TestCampaignTransitions:
@@ -125,84 +117,50 @@ class TestTransitionBlockers:
             CampaignStatus.COUNTING,
             CampaignStatus.ANALYSIS,
             book_stock_frozen=True,
-            zone_statuses=[ZoneStatus.DONE, ZoneStatus.ARBITRATION],
+            zone_statuses=[ZoneStatus.DONE, ZoneStatus.IN_PROGRESS],
         )
         assert any(b.code == "ZONES_NOT_DONE" for b in blockers)
 
 
-class TestSheetTransitions:
-    def test_forward_and_one_step_back_are_allowed(self):
-        assert_sheet_transition(
-            sheet(SheetPass.PASS_1, SheetStatus.PENDING), SheetStatus.COUNTING
-        )
-        assert_sheet_transition(
-            sheet(SheetPass.PASS_1, SheetStatus.DONE), SheetStatus.ENCODING
-        )
-
-    def test_skipping_a_step_is_refused(self):
-        with pytest.raises(WorkflowError):
-            assert_sheet_transition(
-                sheet(SheetPass.PASS_1, SheetStatus.PENDING), SheetStatus.DONE
-            )
-
-    def test_pass_two_cannot_start_before_pass_one_is_returned(self):
-        """Two simultaneous counts are one count done twice, not two counts."""
-        with pytest.raises(WorkflowError, match="comptage n°1"):
-            assert_sheet_transition(
-                sheet(SheetPass.PASS_2, SheetStatus.PENDING),
-                SheetStatus.COUNTING,
-                pass_1_status=SheetStatus.COUNTING,
-            )
-
-    def test_pass_two_may_start_once_pass_one_is_being_encoded(self):
-        assert_sheet_transition(
-            sheet(SheetPass.PASS_2, SheetStatus.PENDING),
-            SheetStatus.COUNTING,
-            pass_1_status=SheetStatus.ENCODING,
-        )
-
-
 class TestZoneStatus:
-    def test_pending_when_nothing_started(self):
-        sheets = [
-            sheet(SheetPass.PASS_1, SheetStatus.PENDING),
-            sheet(SheetPass.PASS_2, SheetStatus.PENDING),
-        ]
-        assert derive_zone_status(sheets) is ZoneStatus.PENDING
+    """Trois états, dont deux se lisent dans les quantités.
 
-    def test_pass_one_running(self):
-        sheets = [
-            sheet(SheetPass.PASS_1, SheetStatus.COUNTING),
-            sheet(SheetPass.PASS_2, SheetStatus.PENDING),
-        ]
-        assert derive_zone_status(sheets) is ZoneStatus.PASS_1_RUNNING
+    Une feuille n'a plus d'état propre. Elle en a eu quatre, qu'il fallait faire
+    avancer à la main deux fois par zone alors qu'aucune écriture n'en dépendait :
+    le papier partait au comptage que le bouton ait été cliqué ou non, et les
+    quantités s'enregistraient dans tous les cas.
+    """
 
-    def test_pass_two_running(self):
-        sheets = [
-            sheet(SheetPass.PASS_1, SheetStatus.DONE),
-            sheet(SheetPass.PASS_2, SheetStatus.ENCODING),
-        ]
-        assert derive_zone_status(sheets) is ZoneStatus.PASS_2_RUNNING
+    def test_pending_when_nothing_has_been_counted(self):
+        assert derive_zone_status(counted_lines=0, closed=False) is ZoneStatus.PENDING
 
-    def test_arbitration_when_both_done_but_gaps_remain(self):
-        sheets = [
-            sheet(SheetPass.PASS_1, SheetStatus.DONE),
-            sheet(SheetPass.PASS_2, SheetStatus.DONE),
-        ]
+    def test_in_progress_as_soon_as_one_quantity_exists(self):
+        """Rien à cliquer : saisir la première quantité *est* le démarrage."""
         assert (
-            derive_zone_status(sheets, pending_arbitrations=3) is ZoneStatus.ARBITRATION
+            derive_zone_status(counted_lines=1, closed=False)
+            is ZoneStatus.IN_PROGRESS
         )
 
-    def test_done_when_both_passes_agree(self):
-        sheets = [
-            sheet(SheetPass.PASS_1, SheetStatus.DONE),
-            sheet(SheetPass.PASS_2, SheetStatus.DONE),
-        ]
-        assert derive_zone_status(sheets) is ZoneStatus.DONE
+    def test_done_is_the_human_decision(self):
+        assert derive_zone_status(counted_lines=42, closed=True) is ZoneStatus.DONE
 
-    def test_single_pass_campaign_skips_pass_two(self):
-        sheets = [sheet(SheetPass.PASS_1, SheetStatus.DONE)]
-        assert derive_zone_status(sheets, passes_required=1) is ZoneStatus.DONE
+    def test_a_zone_closed_without_a_single_count_is_still_done(self):
+        """Une zone vide déclarée finie l'est : c'est le cas de la salle où il
+        n'y avait rien à compter, et la déduire du contraire bloquerait la
+        campagne sur une zone qui n'a rien à dire."""
+        assert derive_zone_status(counted_lines=0, closed=True) is ZoneStatus.DONE
+
+
+class TestClosingAZone:
+    def test_an_open_discrepancy_refuses_the_closure(self):
+        """Fermer sur un écart non tranché promettrait à la consolidation une
+        quantité qui n'existe pas encore."""
+        message = zone_closure_blockers(pending_arbitrations=3)
+        assert "3 écart" in message
+        assert "Arbitrez" in message
+
+    def test_nothing_pending_lets_it_close(self):
+        assert zone_closure_blockers(pending_arbitrations=0) == ""
 
 
 class TestArbitrationRequired:

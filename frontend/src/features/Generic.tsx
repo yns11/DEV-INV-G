@@ -20,13 +20,13 @@ import type {
   SheetScanReport,
   PrintMode,
   Sheet,
-  SheetStatus,
+  ZoneStatus,
   Zone,
 } from '../lib/types'
 import {
   SECTION_HINTS,
   SECTION_LABELS,
-  SHEET_STATUS_LABELS,
+  SOURCE_LABELS,
   ZONE_STATUS_LABELS,
   moneyShort,
   qty,
@@ -51,71 +51,38 @@ type Tab = 'zones' | 'arbitration' | 'consolidation'
 
 const ZONE_TONE: Record<string, string> = {
   PENDING: 'neutral',
-  PASS_1_RUNNING: 'accent',
-  PASS_2_RUNNING: 'accent',
-  ARBITRATION: 'warning',
-  DONE: 'success',
-}
-
-const SHEET_TONE: Record<SheetStatus, string> = {
-  PENDING: 'neutral',
-  COUNTING: 'accent',
-  ENCODING: 'warning',
+  IN_PROGRESS: 'accent',
   DONE: 'success',
 }
 
 const TABS: Tab[] = ['zones', 'arbitration', 'consolidation']
 
 /**
- * Où en est une zone, du point de vue de qui distribue le papier.
+ * Les trois états d'une zone, dans l'ordre du déroulement.
  *
- * Le statut de la zone répond à « peut-elle être consolidée ? » ; celui-ci
- * répond à « qu'est-ce qui se passe dessus en ce moment ? », qui est la
- * question qu'on se pose le jour J devant quarante zones. Les deux ne se
- * déduisent pas l'un de l'autre : une zone en arbitrage et une zone dont
- * personne n'a encore pris la feuille sont toutes deux « pas finies », et ce
- * n'est pas la même chose à faire.
+ * Il y en avait six, calculés à partir du statut des deux feuilles — 1er
+ * comptage en cours, 1er encodage en cours, 2ème comptage, 2ème encodage,
+ * arbitrage requis, terminé — et six pastilles à parcourir pour savoir où en
+ * était une campagne de quarante zones. Deux de ces six ne se distinguaient
+ * que par un bouton que quelqu'un avait pensé à cliquer.
  */
-type ZoneStage =
-  | 'pending'
-  | 'count_1'
-  | 'encode_1'
-  | 'count_2'
-  | 'encode_2'
-  | 'done'
-
-const STAGE_LABELS: Array<{ id: ZoneStage; label: string; hint: string }> = [
+const ZONE_STAGES: Array<{ id: ZoneStatus; label: string; hint: string }> = [
   {
-    id: 'pending',
-    label: 'En attente',
-    hint: 'Aucune feuille en cours : à démarrer, entre deux comptages, ou en attente d’arbitrage.',
+    id: 'PENDING',
+    label: 'À compter',
+    hint: 'Aucune quantité relevée dans cette zone.',
   },
-  { id: 'count_1', label: '1er comptage en cours', hint: 'La feuille n°1 est sur le terrain.' },
-  { id: 'encode_1', label: '1er encodage en cours', hint: 'La feuille n°1 est rentrée, sa saisie est ouverte.' },
-  { id: 'count_2', label: '2ème comptage en cours', hint: 'La feuille n°2 est sur le terrain.' },
-  { id: 'encode_2', label: '2ème encodage en cours', hint: 'La feuille n°2 est rentrée, sa saisie est ouverte.' },
-  { id: 'done', label: 'Terminé', hint: 'Comptages rendus, écarts arbitrés : la zone entre dans la consolidation.' },
+  {
+    id: 'IN_PROGRESS',
+    label: 'En cours',
+    hint: 'Des quantités sont saisies ; la zone n’est pas déclarée terminée.',
+  },
+  {
+    id: 'DONE',
+    label: 'Terminée',
+    hint: 'Déclarée finie : elle entre dans la consolidation.',
+  },
 ]
-
-/**
- * L'étape d'une zone, la plus avancée d'abord.
- *
- * L'ordre des tests est ce qui compte : une zone dont la feuille n°2 est
- * partie alors que la saisie de la n°1 traîne encore est affichée sur son
- * comptage n°2 — c'est ce qui est en jeu maintenant.
- */
-function stageOf(zone: Zone): ZoneStage {
-  if (zone.status === 'DONE') return 'done'
-  const statusOf = (pass: Sheet['pass_no']) =>
-    zone.sheets.find((sheet) => sheet.pass_no === pass)?.status
-  const pass1 = statusOf('PASS_1')
-  const pass2 = statusOf('PASS_2')
-  if (pass2 === 'ENCODING') return 'encode_2'
-  if (pass2 === 'COUNTING') return 'count_2'
-  if (pass1 === 'ENCODING') return 'encode_1'
-  if (pass1 === 'COUNTING') return 'count_1'
-  return 'pending'
-}
 
 export function Generic() {
   const overview = useOutletContext<Overview>()
@@ -153,7 +120,7 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   const [multiScan, setMultiScan] = useState<File | null>(null)
   const [scanning, setScanning] = useState(false)
   const [openSheet, setOpenSheet] = useState<{ zone: Zone; sheet: Sheet } | null>(null)
-  const [stage, setStage] = useState<ZoneStage | ''>('')
+  const [stage, setStage] = useState<ZoneStatus | ''>('')
   const [display, setDisplay] = useState<ZoneDisplay>(readZoneDisplay)
 
   const chooseDisplay = (next: ZoneDisplay) => {
@@ -200,33 +167,32 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   // qu'elle affiche une fois cliquée serait pire que pas de pilule du tout.
   const { byStage, visible } = useMemo(() => {
     const zones = query.data ?? []
-    const tally = {} as Record<ZoneStage, number>
+    const tally = {} as Record<ZoneStatus, number>
     for (const zone of zones) {
-      const id = stageOf(zone)
-      tally[id] = (tally[id] ?? 0) + 1
+      tally[zone.status] = (tally[zone.status] ?? 0) + 1
     }
     return {
       byStage: tally,
-      visible: stage === '' ? zones : zones.filter((z) => stageOf(z) === stage),
+      visible: stage === '' ? zones : zones.filter((z) => z.status === stage),
     }
   }, [query.data, stage])
 
-  const transition = useMutation({
-    mutationFn: ({ sheetId, target, counterName }: {
-      sheetId: string
-      target: SheetStatus
-      counterName?: string
-    }) => api.transitionSheet(campaignId, sheetId, target, counterName),
-    onSuccess: (_result, { target }) => {
+  // La seule décision d'état du parcours. Elle a remplacé quatre transitions
+  // par feuille, qu'il fallait faire avancer à la main sans qu'aucune écriture
+  // n'en dépende.
+  const closure = useMutation({
+    mutationFn: ({ zoneId, closed }: { zoneId: string; closed: boolean }) =>
+      api.setZoneClosed(campaignId, zoneId, closed),
+    onSuccess: (_result, { closed }) => {
       void queryClient.invalidateQueries()
       toast.success(
-        `Feuille ${toLabel(SHEET_STATUS_LABELS, target).toLowerCase()}`,
-        target === 'ENCODING'
-          ? 'Ouvrez-la pour saisir les quantités relevées.'
-          : undefined,
+        closed ? 'Zone terminée' : 'Zone rouverte',
+        closed
+          ? 'Elle entre dans la consolidation.'
+          : 'Les quantités redeviennent modifiables.',
       )
     },
-    onError: (error) => showError(error, 'Transition impossible'),
+    onError: (error) => showError(error, 'Changement impossible'),
   })
 
   const editable = overview.permissions.countSheets
@@ -294,7 +260,7 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
               >
                 Tous <span className="num">{zones.length}</span>
               </button>
-              {STAGE_LABELS.map(({ id, label, hint }) => (
+              {ZONE_STAGES.map(({ id, label, hint }) => (
                 <button
                   key={id}
                   className={`chip${stage === id ? ' chip--active' : ''}`}
@@ -348,10 +314,10 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
               <ZoneTable
                 zones={visible}
                 editable={editable}
-                busy={transition.isPending}
+                busy={closure.isPending}
                 onOpen={setOpenSheet}
                 onPrint={setPrintSheet}
-                onAdvance={(sheetId, target) => transition.mutate({ sheetId, target })}
+                onClose={(zoneId, closed) => closure.mutate({ zoneId, closed })}
               />
             ) : (
               <div className="grid grid--2">
@@ -359,8 +325,15 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                   <Card
                     key={zone.id}
                     title={
-                      <span className="row" style={{ gap: 'var(--space-3)' }}>
-                        <span className="truncate">{zone.label || zone.code}</span>
+                      // Le nom d'abord : trois badges à côté d'un titre non
+                      // prioritaire réduisaient « Zone MÉTROLOGIE » à « Z.. ».
+                      <span
+                        className="row-wrap"
+                        style={{ gap: 'var(--space-2)', rowGap: 'var(--space-1)' }}
+                      >
+                        <span className="truncate" style={{ minWidth: '8ch', flex: '1 1 auto' }}>
+                          {zone.label || zone.code}
+                        </span>
                         <Badge tone={ZONE_TONE[zone.status] ?? 'neutral'} dot>
                           {toLabel(ZONE_STATUS_LABELS, zone.status)}
                         </Badge>
@@ -379,27 +352,33 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                     message={zone.sector || undefined}
                   >
                     <div className="stack" style={{ gap: 'var(--space-3)' }}>
+                      {/* Une feuille tient sur une ligne : son numéro, ce
+                          qu'elle porte, et deux boutons. Elle affichait aussi
+                          son propre statut et le bouton qui le faisait avancer,
+                          ce qui la mettait sur deux lignes pour une donnée que
+                          personne ne lisait. */}
                       {zone.sheets.map((sheet) => (
                         <div
                           key={sheet.id}
-                          className="row-wrap"
+                          className="row"
                           style={{
-                            padding: 'var(--space-3)',
+                            padding: 'var(--space-2) var(--space-3)',
                             background: 'var(--bg-inset)',
                             borderRadius: 'var(--radius-md)',
+                            gap: 'var(--space-2)',
                           }}
                         >
-                          <strong style={{ fontSize: 'var(--text-sm)', minWidth: 90 }}>
+                          <strong
+                            className="truncate"
+                            style={{ fontSize: 'var(--text-sm)', minWidth: 92 }}
+                          >
                             Comptage n°{sheet.pass_no === 'PASS_1' ? 1 : 2}
                           </strong>
-                          <Badge tone={SHEET_TONE[sheet.status]}>
-                            {toLabel(SHEET_STATUS_LABELS, sheet.status)}
-                          </Badge>
                           <span className="subtle num">
-                            {sheet.countedLines} / {sheet.lineCount} lignes comptées
+                            {sheet.countedLines} / {sheet.lineCount} lignes
                           </span>
                           {sheet.counter_name && (
-                            <span className="subtle">· {sheet.counter_name}</span>
+                            <span className="subtle truncate">· {sheet.counter_name}</span>
                           )}
                           {sheet.extraction_confidence !== null && (
                             <Badge tone={sheet.extraction_confidence < 0.75 ? 'danger' : 'neutral'}>
@@ -411,10 +390,27 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                               tone="success"
                               title="Un scan multi-feuilles préservera cette feuille plutôt que d’écraser ces corrections."
                             >
-                              {sheet.correctedLines} corrigée(s) à la main
+                              {sheet.correctedLines} corrigée(s)
                             </Badge>
                           )}
                           <span className="spacer" />
+                          {/* Toujours actif pendant le comptage. Il l'était
+                              auparavant au seul état « encodage en cours », ce
+                              qui obligeait à cliquer deux boutons avant de
+                              pouvoir saisir la première quantité. */}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon={<Icons.pencil size={13} />}
+                            disabled={!editable}
+                            onClick={() => setOpenSheet({ zone, sheet })}
+                            aria-label="Ouvrir la feuille"
+                            title={
+                              editable
+                                ? 'Ouvrir la feuille pour saisir ou scanner'
+                                : 'Les quantités ne sont modifiables qu’en phase Comptage'
+                            }
+                          />
                           <Button
                             size="sm"
                             variant="ghost"
@@ -423,36 +419,6 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                             aria-label="Imprimer"
                             title="Imprimer cette feuille — vierge ou remplie"
                           />
-                          {/* La saisie n'a lieu qu'à l'encodage. Proposer
-                              « Ouvrir » avant, c'est inviter à remplir la
-                              feuille pendant que le compteur est encore en
-                              train de la remplir sur le papier ; après, c'est
-                              rouvrir sans le dire ce que quelqu'un a validé —
-                              « Modifier » le dit. L'impression, elle, reste
-                              accessible à tout moment. */}
-                          {sheet.status === 'ENCODING' && (
-                            <Button
-                              size="sm"
-                              onClick={() => setOpenSheet({ zone, sheet })}
-                            >
-                              Ouvrir
-                            </Button>
-                          )}
-                          {editable && (
-                            <Button
-                              size="sm"
-                              variant="primary"
-                              disabled={transition.isPending}
-                              onClick={() =>
-                                transition.mutate({
-                                  sheetId: sheet.id,
-                                  target: SHEET_ACTION[sheet.status].target,
-                                })
-                              }
-                            >
-                              {SHEET_ACTION[sheet.status].label}
-                            </Button>
-                          )}
                         </div>
                       ))}
                       {zone.pendingArbitrations > 0 && (
@@ -460,6 +426,39 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
                           La consolidation reste bloquée tant qu’une quantité n’est pas
                           retenue.
                         </Alert>
+                      )}
+                      {/* La seule décision d'état du parcours, et elle porte
+                          sur la zone. Rouvrir ne se refuse jamais : c'est le
+                          geste qui répare une clôture trop rapide. */}
+                      {editable && (
+                        <div className="row">
+                          <span className="spacer" />
+                          <Button
+                            size="sm"
+                            variant={zone.status === 'DONE' ? 'ghost' : 'primary'}
+                            icon={
+                              zone.status === 'DONE' ? (
+                                <Icons.undo size={13} />
+                              ) : (
+                                <Icons.check size={13} />
+                              )
+                            }
+                            disabled={closure.isPending}
+                            onClick={() =>
+                              closure.mutate({
+                                zoneId: zone.id,
+                                closed: zone.status !== 'DONE',
+                              })
+                            }
+                            title={
+                              zone.status === 'DONE'
+                                ? 'Rouvrir cette zone pour corriger une quantité'
+                                : 'Déclarer cette zone terminée : elle entre dans la consolidation'
+                            }
+                          >
+                            {zone.status === 'DONE' ? 'Rouvrir' : 'Terminer la zone'}
+                          </Button>
+                        </div>
                       )}
                     </div>
                   </Card>
@@ -556,14 +555,14 @@ function ZoneTable({
   busy,
   onOpen,
   onPrint,
-  onAdvance,
+  onClose,
 }: {
   zones: Zone[]
   editable: boolean
   busy: boolean
   onOpen: (row: { zone: Zone; sheet: Sheet }) => void
   onPrint: (row: { sheetId: string; zone: Zone }) => void
-  onAdvance: (sheetId: string, target: SheetStatus) => void
+  onClose: (zoneId: string, closed: boolean) => void
 }) {
   const rows: SheetRow[] = zones.flatMap((zone) =>
     zone.sheets.map((sheet) => ({ id: sheet.id, zone, sheet })),
@@ -607,19 +606,6 @@ function ZoneTable({
       width: 110,
       filter: 'choice',
       value: (row) => (row.sheet.pass_no === 'PASS_1' ? 'n°1' : 'n°2'),
-    },
-    {
-      key: 'sheetStatus',
-      label: 'État de la feuille',
-      width: 160,
-      filter: 'choice',
-      choiceLabel: (value) => toLabel(SHEET_STATUS_LABELS, value),
-      render: (row) => (
-        <Badge tone={SHEET_TONE[row.sheet.status]}>
-          {toLabel(SHEET_STATUS_LABELS, row.sheet.status)}
-        </Badge>
-      ),
-      value: (row) => row.sheet.status,
     },
     {
       key: 'countedLines',
@@ -673,37 +659,56 @@ function ZoneTable({
     {
       key: 'actions',
       label: '',
-      width: 210,
+      width: 130,
       sortable: false,
       filter: false,
       sticky: 'right',
-      render: (row) => (
-        <span className="row" style={{ gap: 'var(--space-2)' }}>
-          <Button
-            size="sm"
-            variant="ghost"
-            icon={<Icons.printer size={13} />}
-            onClick={() => onPrint({ sheetId: row.sheet.id, zone: row.zone })}
-            aria-label="Imprimer"
-            title="Imprimer cette feuille — vierge ou remplie"
-          />
-          {row.sheet.status === 'ENCODING' && (
-            <Button size="sm" onClick={() => onOpen(row)}>
-              Ouvrir
-            </Button>
-          )}
-          {editable && (
+      render: (row) => {
+        const done = row.zone.status === 'DONE'
+        return (
+          <span className="row" style={{ gap: 'var(--space-2)' }}>
             <Button
               size="sm"
-              variant="primary"
-              disabled={busy}
-              onClick={() => onAdvance(row.sheet.id, SHEET_ACTION[row.sheet.status].target)}
-            >
-              {SHEET_ACTION[row.sheet.status].label}
-            </Button>
-          )}
-        </span>
-      ),
+              variant="ghost"
+              icon={<Icons.pencil size={13} />}
+              disabled={!editable}
+              onClick={() => onOpen(row)}
+              aria-label="Ouvrir la feuille"
+              title={
+                editable
+                  ? 'Ouvrir la feuille pour saisir ou scanner'
+                  : 'Les quantités ne sont modifiables qu’en phase Comptage'
+              }
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Icons.printer size={13} />}
+              onClick={() => onPrint({ sheetId: row.sheet.id, zone: row.zone })}
+              aria-label="Imprimer"
+              title="Imprimer cette feuille — vierge ou remplie"
+            />
+            {/* Porte sur la **zone**, pas sur la feuille : les deux lignes
+                d'une zone à deux comptages montrent donc le même état, et
+                l'une ou l'autre la termine. */}
+            {editable && (
+              <Button
+                size="sm"
+                variant={done ? 'ghost' : 'secondary'}
+                icon={done ? <Icons.undo size={13} /> : <Icons.check size={13} />}
+                disabled={busy}
+                onClick={() => onClose(row.zone.id, !done)}
+                aria-label={done ? 'Rouvrir la zone' : 'Terminer la zone'}
+                title={
+                  done
+                    ? `Rouvrir la zone ${row.zone.code}`
+                    : `Déclarer la zone ${row.zone.code} terminée`
+                }
+              />
+            )}
+          </span>
+        )
+      },
     },
   ]
 
@@ -733,13 +738,6 @@ function ZoneTable({
  * faut. C'est le seul bouton bleu de la ligne, donc le seul endroit où
  * quelqu'un a besoin de regarder pour savoir quoi faire.
  */
-const SHEET_ACTION: Record<SheetStatus, { target: SheetStatus; label: string }> = {
-  PENDING: { target: 'COUNTING', label: 'Commencer le comptage' },
-  COUNTING: { target: 'ENCODING', label: 'Commencer l’encodage' },
-  ENCODING: { target: 'DONE', label: 'Valider' },
-  DONE: { target: 'ENCODING', label: 'Modifier' },
-}
-
 function SheetModal({
   campaignId,
   zone,
@@ -926,6 +924,7 @@ function SheetModal({
       width: 160,
       editable: true,
       choices: ['LINE_SIDE', 'WIP', 'WIP_OK'],
+      choiceLabel: (value) => toLabel(SECTION_LABELS, value),
       render: draft
         ? undefined
         : (row) => (
@@ -999,6 +998,7 @@ function SheetModal({
       label: 'Source',
       width: 190,
       editable: false,
+      choiceLabel: (value) => toLabel(SOURCE_LABELS, value),
       render: (row) => (
         <SourceBadge
           source={String(row.source)}
@@ -1015,8 +1015,10 @@ function SheetModal({
       title={
         <span className="row" style={{ gap: 'var(--space-3)' }}>
           {zone.label || zone.code} — comptage n°{sheet.pass_no === 'PASS_1' ? 1 : 2}
-          <Badge tone={SHEET_TONE[sheet.status]}>
-            {toLabel(SHEET_STATUS_LABELS, sheet.status)}
+          {/* L'état affiché est celui de la **zone** : la feuille n'en a plus,
+              et c'est la zone qu'on déclare terminée. */}
+          <Badge tone={ZONE_TONE[zone.status] ?? 'neutral'} dot>
+            {toLabel(ZONE_STATUS_LABELS, zone.status)}
           </Badge>
         </span>
       }

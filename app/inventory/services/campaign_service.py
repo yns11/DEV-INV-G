@@ -75,6 +75,7 @@ class CampaignService:
         zones = ctx.sheets.list_zones(campaign_id)
         sheets = ctx.sheets.list_sheets(campaign_id)
         arbitrations = ctx.sheets.list_arbitrations(campaign_id)
+        lines_by_sheet = ctx.sheets.lines_by_sheet(campaign_id)
         sheets_by_zone: dict[str, list] = {}
         for sheet in sheets:
             sheets_by_zone.setdefault(sheet.zone_id, []).append(sheet)
@@ -85,9 +86,8 @@ class CampaignService:
 
         zone_states = {
             zone.code: derive_zone_status(
-                sheets_by_zone.get(zone.id, ()),
-                passes_required=zone.passes,
-                pending_arbitrations=pending_by_zone.get(zone.id, 0),
+                counted_lines=_counted(sheets_by_zone.get(zone.id, ()), lines_by_sheet),
+                closed=zone.closed_at is not None,
             )
             for zone in zones
         }
@@ -490,22 +490,31 @@ class CampaignService:
         ctx = self.ctx
         zones = ctx.sheets.list_zones(campaign.id)
         sheets = ctx.sheets.list_sheets(campaign.id)
-        arbitrations = ctx.sheets.list_arbitrations(campaign.id)
+        lines_by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
         by_zone: dict[str, list] = {}
         for sheet in sheets:
             by_zone.setdefault(sheet.zone_id, []).append(sheet)
-        pending: dict[str, int] = {}
-        for arb in arbitrations:
-            if not arb.is_resolved and arb.qty_pass_1 != arb.qty_pass_2:
-                pending[arb.zone_id] = pending.get(arb.zone_id, 0) + 1
         return {
             zone.id: derive_zone_status(
-                by_zone.get(zone.id, ()),
-                passes_required=zone.passes,
-                pending_arbitrations=pending.get(zone.id, 0),
+                counted_lines=_counted(by_zone.get(zone.id, ()), lines_by_sheet),
+                closed=zone.closed_at is not None,
             )
             for zone in zones
         }
+
+
+def _counted(sheets, lines_by_sheet) -> int:
+    """Combien de quantités relevées portent les feuilles d'une zone.
+
+    C'est ce qui distingue « à compter » de « en cours » : les deux se lisent
+    dans les quantités, et ne peuvent donc pas mentir.
+    """
+    return sum(
+        1
+        for sheet in sheets
+        for line in lines_by_sheet.get(sheet.id, ())
+        if line.is_counted
+    )
 
 
 def _allowed_targets(status: CampaignStatus) -> set[CampaignStatus]:

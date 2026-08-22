@@ -164,18 +164,9 @@ export const JOURNAL_STATUS_LABELS: Record<string, string> = {
   BOOK_ENFORCED: 'Forcé au stock ERP',
 }
 
-export const SHEET_STATUS_LABELS: Record<string, string> = {
-  PENDING: 'En attente',
-  COUNTING: 'Comptage en cours',
-  ENCODING: 'Encodage en cours',
-  DONE: 'Terminée',
-}
-
 export const ZONE_STATUS_LABELS: Record<string, string> = {
-  PENDING: 'En attente',
-  PASS_1_RUNNING: 'Comptage n°1',
-  PASS_2_RUNNING: 'Comptage n°2',
-  ARBITRATION: 'Arbitrage requis',
+  PENDING: 'À compter',
+  IN_PROGRESS: 'En cours',
   DONE: 'Terminée',
 }
 

@@ -18,6 +18,7 @@ from inventory.ai.sheet_extraction import (
     ExtractionResult,
     SheetCandidate,
     SheetExtractor,
+    _routing_tokens,
 )
 from inventory.errors import ValidationError
 
@@ -174,10 +175,16 @@ class _BatchClient:
     def __init__(self, per_batch: list[dict[str, Any]] | None = None) -> None:
         self.per_batch = per_batch or []
         self.calls: list[int] = []
+        self.prompts: list[str] = []
+        #: Le plafond de jetons demandé par appel — c'est lui qui a coupé les
+        #: réponses en production, et il ne se voit nulle part ailleurs.
+        self.ceilings: list[int] = []
 
     def complete_json(self, *, system: str, user: str, images=(), **kwargs: Any):
         index = len(self.calls)
         self.calls.append(len(images))
+        self.prompts.append(user)
+        self.ceilings.append(kwargs.get("max_tokens", 0))
         payload = (
             self.per_batch[index] if index < len(self.per_batch)
             else {"pages": [
@@ -195,6 +202,24 @@ class _FailingBatchClient(_BatchClient):
         if index == 1:
             self.calls.append(len(kwargs.get("images") or ()))
             raise RuntimeError("endpoint saturé")
+        return super().complete_json(**kwargs)
+
+
+class _PoisonPageClient(_BatchClient):
+    """Un appel qui porte la bande empoisonnée échoue, toujours.
+
+    C'est le cas dont on ne se relève pas en recoupant : quelque chose dans
+    cette page-là fait dérailler le modèle. Le découpage doit alors isoler
+    cette page et **elle seule**.
+    """
+
+    POISON = b"POISON"
+
+    def complete_json(self, **kwargs: Any):
+        images = list(kwargs.get("images") or ())
+        if self.POISON in images:
+            self.calls.append(len(images))
+            raise RuntimeError("bande illisible")
         return super().complete_json(**kwargs)
 
 
@@ -224,18 +249,52 @@ class TestBatching:
         assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == list(range(25))
         assert routing.unrouted == []
 
-    def test_a_failed_batch_loses_only_its_own_pages(self):
+    def test_a_failed_batch_is_cut_in_two_and_retried(self):
+        """Dix pages nettes ne se perdent pas sur un appel qui a mal tourné.
+
+        C'est ce qui s'est produit en production : six lots de douze revenus en
+        erreur, soixante-douze pages déclarées non attribuées alors que leurs
+        pieds de page étaient parfaitement lisibles. La cause de l'échec est
+        rarement dans les pages ; la moitié redemandée passe.
+        """
         client = _FailingBatchClient()
         routing = SheetExtractor(client=client).route_pages(
             footers=[b"b"] * 25, candidates=CANDIDATES,
             batch_size=10, max_workers=1,
         )
-        # Pages 1-10 et 21-25 routées ; 11-20 rendues à l'humain, avec la raison.
-        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == (
-            list(range(10)) + list(range(20, 25))
+        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == list(range(25))
+        assert routing.unrouted == []
+        # Le lot de dix perdu revient en deux appels de cinq, dans l'ordre.
+        assert client.calls == [10, 10, 5, 5, 5]
+
+    def test_only_the_page_that_keeps_failing_is_lost(self):
+        """Le découpage s'arrête à la page seule, et ne perd qu'elle."""
+        footers = [b"b"] * 25
+        footers[12] = _PoisonPageClient.POISON
+        client = _PoisonPageClient()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=footers, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
         )
-        assert [u["page"] for u in routing.unrouted] == list(range(11, 21))
-        assert "saturé" in routing.unrouted[0]["note"]
+        assert [u["page"] for u in routing.unrouted] == [13]
+        assert "illisible" in routing.unrouted[0]["note"]
+        expected = [n for n in range(25) if n != 12]
+        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == expected
+
+    def test_the_cutting_terminates_when_every_call_fails(self):
+        """Une panne totale rend la pile entière, sans boucler."""
+        class _Down(_BatchClient):
+            def complete_json(self, **kwargs: Any):
+                self.calls.append(len(kwargs.get("images") or ()))
+                raise RuntimeError("endpoint indisponible")
+
+        client = _Down()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 8, candidates=CANDIDATES,
+            batch_size=8, max_workers=1,
+        )
+        assert [u["page"] for u in routing.unrouted] == list(range(1, 9))
+        assert routing.pages_by_sheet == {}
 
     def test_the_tokens_of_every_batch_are_counted(self):
         client = _BatchClient()
@@ -329,3 +388,54 @@ class TestTheRoutingPromptAsksForATranscription:
         """C'est la consigne qui a produit la contradiction en production."""
         _, client = route({"pages": []})
         assert "aucune" in client.prompts[0].lower()
+
+
+class TestTheAnswerFitsItsCeiling:
+    """Ce qu'on demande d'écrire et ce qu'on autorise à écrire vont ensemble.
+
+    Le routage demandait au modèle, pour chaque page, de recopier la ligne
+    entière du pied de page et d'y ajouter un indice de confiance — deux champs
+    que le rapprochement n'utilise pas. Le plafond, lui, était resté calibré sur
+    une réponse plus courte, et plafonnait en plus à 4096 jetons. Résultat en
+    production : les lots de douze revenaient coupés, et douze pages parfaitement
+    lisibles tombaient en « non attribuées » par appel.
+    """
+
+    def test_the_ceiling_follows_the_size_of_the_batch(self):
+        assert (_routing_tokens(24) - _routing_tokens(12)
+                == _routing_tokens(12) - _routing_tokens(0))
+
+    def test_no_cap_truncates_a_legitimate_batch(self):
+        """Un plafond fixe redevient trop court dès qu'on agrandit le lot."""
+        assert _routing_tokens(100) > _routing_tokens(50) > _routing_tokens(12)
+
+    def test_the_budget_covers_a_long_accented_zone_name(self):
+        """Le pire cas réel : « ZONE INTÉRIEUR MÉTROLOGIE », qui se découpe mal.
+
+        Un caractère accentué compte souvent pour un jeton à lui seul ; compter
+        en caractères ÷ 4, comme pour de l'anglais, est précisément l'erreur qui
+        a produit la troncature.
+        """
+        line = ('{"page":12,"sheet":"e14f9b93",'
+                '"zone":"ZONE INTÉRIEUR MÉTROLOGIE","pass":1},')
+        worst_case = len(line)  # un jeton par caractère : la borne haute
+        assert _routing_tokens(12) > worst_case * 12
+
+    def test_the_prompt_asks_for_three_fields_and_no_prose(self):
+        client = _BatchClient()
+        SheetExtractor(client=client).route_pages(
+            footers=[b"b"], candidates=CANDIDATES, batch_size=1, max_workers=1,
+        )
+        prompt = client.prompts[0]
+        for field in ('"page"', '"sheet"', '"zone"', '"pass"'):
+            assert field in prompt
+        # Les deux champs qui faisaient déborder la réponse, pour rien.
+        assert '"note"' not in prompt
+        assert '"confidence"' not in prompt
+
+    def test_the_ceiling_sent_to_the_model_matches_the_batch(self):
+        client = _BatchClient()
+        SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 12, candidates=CANDIDATES, batch_size=12, max_workers=1,
+        )
+        assert client.ceilings == [_routing_tokens(12)]

@@ -326,7 +326,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 961 tests, ~8 s, aucune base requise
+make test      # 971 tests, ~8 s, aucune base requise
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -640,6 +640,16 @@ point de départ à mesurer, pas un réglage.
 | `INV_SCAN_MAX_PAGES` | `250` | Le plafond d'une pile. Au-delà : refus explicite, jamais troncature |
 | `INV_SCAN_ROUTING_BATCH` | `12` | Combien de pieds de page partent dans un même appel de routage |
 | `INV_SCAN_DPI` | `150` | Résolution de rastérisation |
+
+**Si le routage échoue en masse.** Un lot en erreur est recoupé en deux et
+redemandé jusqu'à la page seule : la pile passe, au prix d'appels
+supplémentaires. Le rapport et les logs distinguent maintenant les deux causes —
+*« Réponse du modèle coupée au plafond de N jetons »* (le modèle a écrit plus que
+le budget accordé) de *« pas renvoyé de JSON exploitable »* (la réponse est
+entière mais mal formée). Si c'est la première, et systématiquement, baissez
+`INV_SCAN_ROUTING_BATCH` : le plafond de jetons suit la taille du lot, mais un
+endpoint peut aussi buter sur le **nombre d'images** d'un appel, et cette
+limite-là ne s'achète pas en jetons.
 
 **Un endpoint vision dédié.** Transcrire des chiffres manuscrits en JSON
 n'appelle aucun raisonnement : payer un modèle de raisonnement pour cela coûte

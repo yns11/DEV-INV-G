@@ -546,6 +546,14 @@ Trois refus explicites, plutôt qu'un silence :
 | Une feuille que le modèle n'a pas pu lire | Nommée dans le rapport, avec ses pages et la raison. Les autres aboutissent : une feuille perdue ne perd pas la pile |
 | Une pile au-delà du plafond | **Refusée en le disant**, avec les deux nombres. Scannez en deux fois : chaque page porte son identité, l'ordre des piles n'a aucune importance |
 
+Les pages partent au routage **par lots**. Un lot qui revient en erreur n'est
+plus perdu : il est **recoupé en deux et redemandé**, jusqu'à la page seule. Ce
+qui fait échouer un appel — une réponse trop longue, une bande qui fait dérailler
+le modèle — disparaît presque toujours à la moitié, et seule la page qui échoue
+encore, seule dans son appel, part en non attribuée. Une pile de soixante-quinze
+pages dont six lots sur sept échouaient rendait soixante-douze pages à la main ;
+elle passe désormais entière, au prix de quelques appels de plus.
+
 > Si l'application redémarre pendant la lecture, le travail est marqué en échec
 > et vous invite à recharger le scan. Les feuilles déjà lues avant
 > l'interruption sont enregistrées ; elles seront simplement relues.

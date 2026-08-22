@@ -41,6 +41,14 @@ class LlmResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     model: str = ""
+    #: Pourquoi le modèle s'est arrêté. ``"length"`` = réponse coupée au
+    #: plafond : le JSON est alors incomplet, et le dire coûte une ligne là où
+    #: le deviner coûte une campagne de scan.
+    finish_reason: str = ""
+
+    @property
+    def truncated(self) -> bool:
+        return self.finish_reason == "length"
 
     @property
     def total_tokens(self) -> int:
@@ -201,6 +209,7 @@ class LlmClient:
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             model=getattr(completion, "model", self._endpoint) or self._endpoint,
+            finish_reason=getattr(choice, "finish_reason", "") or "",
         )
 
     def _call(self, kwargs: dict[str, Any]) -> Any:
@@ -269,9 +278,24 @@ class LlmClient:
         )
         payload = _extract_json(response.text)
         if payload is None:
+            # Une réponse coupée au plafond et une réponse mal formée se
+            # ressemblent une fois le JSON illisible — et se corrigent de deux
+            # façons opposées. La distinction est dans `finish_reason` : la
+            # taire fait chercher un défaut de prompt là où il n'y a qu'un
+            # budget trop court. Le message la porte, parce que c'est lui qui
+            # remonte jusqu'au rapport ; les détails, eux, restent en logs.
+            if response.truncated:
+                raise UpstreamError(
+                    f"Réponse du modèle coupée au plafond de {max_tokens} "
+                    "jetons : le JSON est incomplet. Réduisez la taille du lot "
+                    "ou relevez le plafond.",
+                    sample=response.text[-400:],
+                    finish_reason=response.finish_reason,
+                )
             raise UpstreamError(
                 "Le modèle n'a pas renvoyé de JSON exploitable.",
                 sample=response.text[:400],
+                finish_reason=response.finish_reason,
             )
         return payload, response
 

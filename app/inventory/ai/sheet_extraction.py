@@ -181,8 +181,9 @@ inconnu se recopie quand même.
 3. Un champ que tu ne parviens **pas** à lire vaut null. Un champ lisible ne vaut \
 jamais null, même si le reste de la bande est abîmé : chaque champ est relevé \
 pour lui-même, et un seul suffit souvent.
-4. Tu ne devines pas un caractère douteux : tu recopies ta meilleure lecture et \
-tu baisses la confiance.
+4. Tu ne devines pas un caractère douteux : tu recopies ta meilleure lecture. \
+Un champ franchement illisible vaut null — c'est plus utile qu'une invention, \
+car les trois champs se rattrapent l'un l'autre.
 
 Tu réponds exclusivement en JSON valide, sans texte autour."""
 
@@ -191,20 +192,18 @@ Pour information seulement — les feuilles attendues dans ce lot. Cette liste \
 t'aide à lever un doute de lecture ; elle ne te demande **aucune** vérification.
 {candidates}
 
-Pour chacune des {count} bandes fournies, dans l'ordre, renvoie ce JSON :
+Pour chacune des {count} bandes fournies, dans l'ordre, renvoie **un seul objet \
+JSON compact**, sans indentation, sans retour à la ligne et sans commentaire — \
+exactement trois champs par bande :
 
-{{
-  "pages": [
-    {{
-      "page": <numéro de bande dans CE lot, à partir de 1>,
-      "sheet": "<l'identifiant de feuille lu après « feuille », ou null>",
-      "zone": "<le nom de zone lu après « zone », ou null>",
-      "pass": <le numéro lu après « comptage n° » : 1 ou 2, ou null>,
-      "confidence": <nombre entre 0 et 1>,
-      "note": "<la ligne entière telle que tu l'as lue>"
-    }}
-  ]
-}}"""
+{{"pages":[{{"page":<numéro de bande dans CE lot, à partir de 1>,\
+"sheet":"<l'identifiant lu après « feuille », ou null>",\
+"zone":"<le nom de zone lu après « zone », ou null>",\
+"pass":<le numéro lu après « comptage n° » : 1 ou 2, ou null>}}]}}
+
+N'ajoute aucun autre champ : ni commentaire, ni recopie de la ligne entière, ni \
+indice de confiance. Ce que tu écrirais en plus mange le budget de réponse du \
+lot, et une réponse coupée fait perdre le routage de toutes ses pages."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -661,45 +660,64 @@ class SheetExtractor:
 
         routing = PageRouting()
         seen_pages: set[int] = set()
-        for batch, outcome in zip(
-            batches, in_parallel(read, batches, max_workers), strict=True
-        ):
-            if isinstance(outcome, BaseException):
-                # Le lot est perdu, pas la pile : ses pages tombent en non
-                # attribuées avec la raison, et un humain les reprend.
+        # Un lot qui échoue est **coupé en deux et redemandé**, jusqu'à la page
+        # seule. Ce qui rend un lot infaisable — une réponse trop longue, une
+        # bande qui fait dérailler le modèle — disparaît presque toujours à la
+        # moitié ; condamner les douze pages faisait payer à onze pages nettes
+        # le défaut d'une seule, ou d'aucune. Le découpage termine : chaque tour
+        # divise, et une page seule qui échoue encore est le seul cas terminal.
+        pending = batches
+        while pending:
+            retry: list[tuple[int, list[bytes]]] = []
+            for batch, outcome in zip(
+                pending, in_parallel(read, pending, max_workers), strict=True
+            ):
                 offset, strips = batch
-                log.warning("Routage du lot page %d échoué : %s", offset + 1, outcome)
-                for index in range(len(strips)):
-                    seen_pages.add(offset + index)
+                if isinstance(outcome, BaseException):
+                    if len(strips) > 1:
+                        middle = len(strips) // 2
+                        log.warning(
+                            "Routage du lot page %d (%d pages) échoué, "
+                            "on recoupe en deux : %s",
+                            offset + 1, len(strips), outcome,
+                        )
+                        retry.append((offset, strips[:middle]))
+                        retry.append((offset + middle, strips[middle:]))
+                        continue
+                    log.warning("Routage de la page %d échoué : %s", offset + 1, outcome)
+                    seen_pages.add(offset)
                     routing.unrouted.append({
-                        "page": offset + index + 1,
+                        "page": offset + 1,
                         "read": "",
                         "note": f"Routage interrompu : {outcome}",
                     })
-                continue
+                    continue
 
-            offset, payload, tokens = outcome
-            routing.tokens_used += tokens
-            for raw in payload.get("pages") or []:
-                if not isinstance(raw, dict):
-                    continue
-                try:
-                    page = offset + int(raw.get("page") or 0) - 1
-                except (TypeError, ValueError):
-                    continue
-                if not offset <= page < offset + len(batch[1]) or page in seen_pages:
-                    continue
-                seen_pages.add(page)
+                _, payload, tokens = outcome
+                routing.tokens_used += tokens
+                for raw in payload.get("pages") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        page = offset + int(raw.get("page") or 0) - 1
+                    except (TypeError, ValueError):
+                        continue
+                    if not offset <= page < offset + len(strips) or page in seen_pages:
+                        continue
+                    seen_pages.add(page)
 
-                candidate, refusal = _resolve_page(raw, by_token, by_zone_pass)
-                if candidate is None:
-                    routing.unrouted.append({
-                        "page": page + 1,
-                        "read": _as_read(raw),
-                        "note": refusal,
-                    })
-                    continue
-                routing.pages_by_sheet.setdefault(candidate.sheet_id, []).append(page)
+                    candidate, refusal = _resolve_page(raw, by_token, by_zone_pass)
+                    if candidate is None:
+                        routing.unrouted.append({
+                            "page": page + 1,
+                            "read": _as_read(raw),
+                            "note": refusal,
+                        })
+                        continue
+                    routing.pages_by_sheet.setdefault(
+                        candidate.sheet_id, []
+                    ).append(page)
+            pending = retry
 
         for page in range(len(footers)):
             if page not in seen_pages:
@@ -813,9 +831,23 @@ def extraction_tokens(expected_lines: int) -> int:
     return min(_TOKENS_CEILING, _TOKENS_PREAMBLE + _TOKENS_PER_LINE * expected_lines)
 
 
+#: De quoi écrire ``{"page":12,"sheet":"e14f9b93","zone":"ZONE INTÉRIEUR
+#: MÉTROLOGIE","pass":1}`` — un nom de zone long, accentué, qui se découpe mal —
+#: avec le double de marge. Un plafond serré ne fait pas économiser : il coupe
+#: la réponse, et un lot coupé perd le routage de *toutes* ses pages.
+_ROUTING_TOKENS_PER_PAGE = 140
+_ROUTING_TOKENS_PREAMBLE = 300
+
+
 def _routing_tokens(pages: int) -> int:
-    """Le routage rend quatre champs par page, pas une transcription."""
-    return min(4096, 200 + 90 * pages)
+    """Le routage rend trois champs courts par page, pas une transcription.
+
+    Sans plafond proportionnel, le lot de douze pages passait sous la limite et
+    revenait tronqué : douze pages non attribuées par appel, pour un pied de
+    page parfaitement lisible. Le plafond suit donc la taille du lot, quelle
+    que soit celle que la configuration choisit.
+    """
+    return _ROUTING_TOKENS_PREAMBLE + _ROUTING_TOKENS_PER_PAGE * pages
 
 
 _SECTION_LABELS = {

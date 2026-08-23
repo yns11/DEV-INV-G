@@ -228,6 +228,14 @@ class PasteRequest(ApiModel):
     text: str = Field(min_length=1)
     dry_run: bool = Field(default=False, alias="dryRun")
     replace: bool = False
+    #: Autoriser l'écriture d'un ensemble amputé.
+    #:
+    #: Les grilles qui **remplacent** ce qui existe — le stock ERP, l'écart
+    #: backflush, une nomenclature en mode remplacement — refusent d'écrire dès
+    #: qu'une ligne est rejetée : les lignes manquantes deviendraient des lignes
+    #: supprimées, et rien ne dirait lesquelles. Ce drapeau lève le refus, se
+    #: voit dans le rapport du lot, et n'est jamais le défaut.
+    allow_partial: bool = Field(default=False, alias="allowPartial")
 
 
 class RowsRequest(ApiModel):
@@ -236,6 +244,14 @@ class RowsRequest(ApiModel):
     rows: list[dict[str, Any]]
     dry_run: bool = Field(default=False, alias="dryRun")
     replace: bool = False
+    #: Autoriser l'écriture d'un ensemble amputé.
+    #:
+    #: Les grilles qui **remplacent** ce qui existe — le stock ERP, l'écart
+    #: backflush, une nomenclature en mode remplacement — refusent d'écrire dès
+    #: qu'une ligne est rejetée : les lignes manquantes deviendraient des lignes
+    #: supprimées, et rien ne dirait lesquelles. Ce drapeau lève le refus, se
+    #: voit dans le rapport du lot, et n'est jamais le défaut.
+    allow_partial: bool = Field(default=False, alias="allowPartial")
 
 
 class StockFlowRunRequest(ApiModel):

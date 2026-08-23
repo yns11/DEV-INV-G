@@ -2529,6 +2529,23 @@ class ImportBatchRepository(_Base):
             (campaign_id, limit),
         )
 
+    def latest_per_target(self, campaign_id: str) -> list[dict[str, Any]]:
+        """Le dernier chargement de chaque grille, et ce qu'il a refusé.
+
+        La question posée à la clôture n'est pas « un chargement a-t-il déjà
+        échoué » — dix rechargements successifs sont le déroulement normal d'une
+        préparation — mais « l'état actuel de cette grille vient-il d'un
+        chargement amputé ». Seul le dernier compte : celui d'avant a été
+        remplacé, ses rejets avec.
+        """
+        return self._fetch_all(
+            "SELECT DISTINCT ON (target) target, rows_rejected, rows_accepted, "
+            "filename, imported_at "
+            "FROM import_batch WHERE campaign_id = %s "
+            "ORDER BY target, imported_at DESC",
+            (campaign_id,),
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Scan jobs

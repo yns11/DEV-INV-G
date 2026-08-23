@@ -36,6 +36,7 @@ from .enums import (
     ZoneStatus,
     legacy_section_alias,
 )
+from .imports import PartialWriteRefusal, refuse_partial_write
 from .models import (
     AdjustmentLine,
     ArbitrationLine,
@@ -119,6 +120,8 @@ __all__ = [
     "compute_kpis", "is_material", "pareto",
     # controls
     "run_all_controls", "summarise",
+    # imports
+    "PartialWriteRefusal", "refuse_partial_write",
     # workflow
     "CAMPAIGN_TRANSITIONS", "Editable", "arbitration_required",
     "assert_campaign_transition",

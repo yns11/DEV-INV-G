@@ -94,6 +94,19 @@ READ_WRITE = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_postgres(monkeypatch):
+    """Le shell du développeur n'a pas son mot à dire ici.
+
+    `_lakebase_conninfo` consulte l'environnement en premier — c'est sa règle,
+    et elle est testée plus bas, ce test-là reposant les variables lui-même.
+    Les autres portent sur ce que la fonction *déduit* quand rien n'est fourni.
+    """
+    from conftest import forget_ambient_postgres
+
+    forget_ambient_postgres(monkeypatch)
+
+
 class TestFindingTheDatabase:
     def test_the_endpoint_is_deduced_from_the_branch(self):
         client = FakeClient(READ_WRITE)

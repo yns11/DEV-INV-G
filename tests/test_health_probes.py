@@ -27,6 +27,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_postgres(monkeypatch):
+    """Ces contrôles décrivent un conteneur *sans* base.
+
+    Un PostgreSQL local exporté dans le shell rendrait `lakebase_configured`
+    vrai, et « la sonde refuse le trafic faute de base » cesserait de décrire
+    quoi que ce soit. Les contrôles qui veulent une base en bon état la
+    simulent explicitement.
+    """
+    from conftest import forget_ambient_postgres
+
+    forget_ambient_postgres(monkeypatch)
+
+
 @pytest.fixture
 def client(monkeypatch) -> Any:
     """Une application montée sans base derrière."""

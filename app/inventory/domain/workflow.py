@@ -225,6 +225,9 @@ def campaign_transition_blockers(
     zone_statuses: Iterable[ZoneStatus] = (),
     book_stock_frozen: bool = False,
     blocking_controls: Sequence[ControlFinding] = (),
+    unexplained_material: int = 0,
+    rejected_imports: Sequence[tuple[str, int]] = (),
+    publication_done: bool = True,
 ) -> list[ControlFinding]:
     """Business preconditions that must hold before *target* can be entered.
 
@@ -279,6 +282,60 @@ def campaign_transition_blockers(
                     ),
                     entity_type="zone",
                     context={"open": len(open_zones)},
+                )
+            )
+
+    if target is CampaignStatus.CLOSED:
+        # La clôture est le seul geste irréversible du parcours : après elle,
+        # plus rien ne se corrige. Elle n'exigeait pourtant rien de particulier
+        # — le paramètre `blocking_controls` existait, personne ne le
+        # remplissait — si bien qu'une campagne se clôturait avec ses écarts
+        # matériels sans explication et ses imports amputés.
+        if unexplained_material:
+            blockers.append(
+                ControlFinding(
+                    code="MATERIAL_VARIANCES_UNEXPLAINED",
+                    severity=ControlSeverity.BLOCKER,
+                    message=(
+                        f"{unexplained_material} écart(s) matériel(s) n'ont ni "
+                        "cause assignée ni acceptation explicite. Clôturer "
+                        "figerait un écart que personne n'a expliqué, et c'est "
+                        "précisément ce qu'un contrôle demandera six mois plus "
+                        "tard."
+                    ),
+                    entity_type="variance_analysis",
+                    context={"unexplained": unexplained_material},
+                )
+            )
+        partial = [(t, n) for t, n in rejected_imports if n > 0]
+        if partial:
+            detail = ", ".join(f"{t} ({n} ligne(s))" for t, n in partial[:5])
+            blockers.append(
+                ControlFinding(
+                    code="IMPORTS_WITH_REJECTS",
+                    severity=ControlSeverity.BLOCKER,
+                    message=(
+                        f"{len(partial)} chargement(s) ont laissé des lignes "
+                        f"refusées : {detail}. Rechargez le fichier corrigé, ou "
+                        "assumez le manque en le documentant — mais pas en "
+                        "clôturant par-dessus."
+                    ),
+                    entity_type="import_batch",
+                    context={"targets": [t for t, _ in partial]},
+                )
+            )
+        if not publication_done:
+            blockers.append(
+                ControlFinding(
+                    code="PUBLICATION_NOT_DONE",
+                    severity=ControlSeverity.BLOCKER,
+                    message=(
+                        "L'archive Delta de cette campagne n'a pas été publiée. "
+                        "Clôturer maintenant scellerait un dossier dont la copie "
+                        "opposable n'existe pas : la base opérationnelle est "
+                        "vivante, l'archive est ce qui reste."
+                    ),
+                    entity_type="campaign",
                 )
             )
 

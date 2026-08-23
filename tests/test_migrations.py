@@ -45,6 +45,7 @@ SHIPPED = {
     "017_zone_closure": "67ae24533ced",
     "018_campaign_scoped_keys": "1d70d899edc1",
     "019_sheet_evidence_fingerprint": "9477b2463139",
+    "020_audit_truncate_guard": "7ddfcb890f32",
 }
 
 

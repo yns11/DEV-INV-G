@@ -400,12 +400,27 @@ class CampaignService:
             journal_statuses = [j.status for j in ctx.journals.list(campaign_id)]
             zone_statuses = list(self._zone_statuses(campaign).values())
 
+        # Les faits que seule la clôture consulte. Ils coûtent chacun une
+        # requête et un calcul d'écarts : les rassembler pour un passage en
+        # comptage reviendrait à payer l'analyse complète à chaque clic sur le
+        # panneau « ce qui manque pour avancer ».
+        unexplained = 0
+        rejected_imports: list[tuple[str, int]] = []
+        if target is CampaignStatus.CLOSED:
+            unexplained = self._unexplained_material(campaign)
+            rejected_imports = [
+                (str(b["target"]), int(b["rows_rejected"] or 0))
+                for b in ctx.imports.latest_per_target(campaign_id)
+            ]
+
         blockers = campaign_transition_blockers(
             campaign.status,
             target,
             journal_statuses=journal_statuses,
             zone_statuses=zone_statuses,
             book_stock_frozen=campaign.book_stock_frozen_at is not None,
+            unexplained_material=unexplained,
+            rejected_imports=rejected_imports,
         )
         return {
             "current": str(campaign.status),
@@ -485,6 +500,34 @@ class CampaignService:
         return ctx.campaigns.list_thresholds(campaign_id)
 
     # --------------------------------------------------------------- helpers
+
+    def _unexplained_material(self, campaign: Campaign) -> int:
+        """Combien d'écarts matériels n'ont ni cause assignée ni acceptation.
+
+        « Matériel » est la définition du domaine — les seuils de la campagne,
+        par type d'article — et non un jugement porté ici. Un écart accepté
+        explicitement compte comme expliqué : accepter un résiduel après examen
+        *est* une décision, tracée et signée, et l'exiger en plus d'une cause
+        rendrait la clôture impossible sur les écarts qui n'ont pas d'autre
+        explication que « c'est du bruit, et on l'assume ».
+        """
+        from ..domain.variance import is_material
+        from .analysis_service import AnalysisService
+
+        lines = AnalysisService(self.ctx).variances(campaign)
+        thresholds = {t.item_type: t for t in campaign.thresholds}
+        explained = {
+            a.item_number
+            for a in self.ctx.analysis.list_analyses(campaign.id)
+            if a.cause_code or a.accepted
+        }
+        return sum(
+            1
+            for line in lines
+            if line.item_number not in explained
+            and (gate := thresholds.get(line.item_type)) is not None
+            and is_material(line, gate)
+        )
 
     def _zone_statuses(self, campaign: Campaign) -> dict[str, Any]:
         ctx = self.ctx

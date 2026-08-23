@@ -27,6 +27,7 @@ from ..domain.enums import (
     LocationStatus,
     LocationType,
 )
+from ..domain.imports import refuse_partial_write
 from ..domain.models import (
     Campaign,
     CountJournalLine,
@@ -354,7 +355,12 @@ class ImportService:
         return outcome
 
     def import_boms(
-        self, campaign: Campaign, *, replace: bool = False, **kwargs: Any
+        self,
+        campaign: Campaign,
+        *,
+        replace: bool = False,
+        allow_partial: bool = False,
+        **kwargs: Any,
     ) -> ImportOutcome:
         ctx = self.ctx
         ctx.guard(campaign, "boms")
@@ -369,6 +375,14 @@ class ImportService:
         outcome.rows_rejected += len(errors)
 
         outcome.rows_accepted = len(links)
+        if replace:
+            # Seul le mode remplacement est concerné : un chargement qui
+            # complète n'efface rien, et trois lignes refusées sur quatre mille
+            # y sont trois lignes manquantes, pas trois lignes supprimées.
+            self._refuse_if_partial(
+                outcome, accepted=len(links), allow_partial=allow_partial,
+                what="Cette nomenclature",
+            )
         with ctx.db.transaction() as conn:
             if replace:
                 removed = ctx.referentials.clear_bom(
@@ -473,7 +487,9 @@ class ImportService:
 
     # ------------------------------------------------------------ book stock
 
-    def import_book_stock(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
+    def import_book_stock(
+        self, campaign: Campaign, *, allow_partial: bool = False, **kwargs: Any
+    ) -> ImportOutcome:
         """Load the ERP snapshot and derive the location referential from it.
 
         Three things happen in one transaction, because they only make sense
@@ -560,6 +576,14 @@ class ImportService:
             and location.source is DataSource.SYSTEM
             and location.status is LocationStatus.ACTIVE
         ]
+
+        # Le pire cas du rapport d'audit : un snapshot amputé qui se présente
+        # comme complet. Chaque article manquant produit ensuite un écart de
+        # 100 % contre un stock que l'ERP n'a jamais annoncé nul.
+        self._refuse_if_partial(
+            outcome, accepted=len(lines), allow_partial=allow_partial,
+            what="Le stock ERP",
+        )
 
         batch_id = new_id()
         with ctx.db.transaction() as conn:
@@ -683,6 +707,7 @@ class ImportService:
         *,
         period_start: dt.date | None = None,
         period_end: dt.date | None = None,
+        allow_partial: bool = False,
         **kwargs: Any,
     ) -> ImportOutcome:
         """Freeze the backflush variance of one period onto the campaign.
@@ -718,6 +743,14 @@ class ImportService:
         )
         outcome.errors.extend(errors)
         outcome.rows_rejected += len(errors)
+
+        # `replace` : l'écart de la période remplace le précédent. Un article
+        # refusé disparaît donc de l'écart au lieu d'y manquer, et la
+        # consommation qu'il portait cesse d'exister pour l'analyse.
+        self._refuse_if_partial(
+            outcome, accepted=len(lines), allow_partial=allow_partial,
+            what="L'écart backflush",
+        )
 
         batch_id = new_id()
         with ctx.db.transaction() as conn:
@@ -1138,6 +1171,44 @@ class ImportService:
             filename=kwargs.get("filename") or f"{target}.bin",
         )
         return archived.path if archived else None
+
+    def _refuse_if_partial(
+        self,
+        outcome: ImportOutcome,
+        *,
+        accepted: int,
+        allow_partial: bool,
+        what: str,
+    ) -> None:
+        """Refuse un remplacement amputé, sauf dérogation explicite.
+
+        Appelée **avant** d'ouvrir la transaction : le refus n'a rien à défaire,
+        et une transaction ouverte pour être immédiatement annulée immobilise
+        une connexion du pool pour rien.
+
+        La dérogation, quand elle est prise, est écrite dans le rapport du lot :
+        « 3 997 lignes chargées » ne veut pas dire la même chose selon qu'il y
+        en avait 3 997 ou 4 000, et six mois plus tard c'est cette ligne
+        d'historique qui répond.
+        """
+        refusal = refuse_partial_write(
+            wholesale=True,
+            rejected=outcome.rows_rejected,
+            accepted=accepted,
+            allow_partial=allow_partial,
+            what=what,
+            reasons=tuple(e.message for e in outcome.errors),
+        )
+        if refusal is not None:
+            raise ValidationError(
+                refusal.message,
+                rejected=refusal.rejected,
+                accepted=refusal.accepted,
+                errors=[e.as_dict() for e in outcome.errors[:50]],
+            )
+        if allow_partial and outcome.rows_rejected:
+            outcome.details["partialAccepted"] = True
+            outcome.details["partialRejected"] = outcome.rows_rejected
 
     def _record_batch(
         self,

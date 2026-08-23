@@ -8,6 +8,14 @@ requires-python = ">=3.11"
 testpaths = ["tests"]
 pythonpath = ["app"]
 addopts = "-q --strict-markers --strict-config"
+# `postgres` : contrôles qui ouvrent une vraie base. Ils s'ignorent seuls
+# quand PGHOST est absent — la suite reste exécutable sans rien installer —
+# et c'est le seul endroit où le comportement du moteur se vérifie
+# vraiment : une doublure ne dit rien d'un TRUNCATE ou d'une cascade.
+markers = [
+    "postgres: exige un PostgreSQL joignable (ignoré sinon)",
+    "no_postgres: contrôle de forme, sans base",
+]
 filterwarnings = ["error::DeprecationWarning:inventory.*"]
 
 [tool.ruff]

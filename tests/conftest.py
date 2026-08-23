@@ -13,6 +13,29 @@ if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 
 
+#: Les variables que la plateforme injecte pour Lakebase. Plusieurs contrôles
+#: décrivent un conteneur **sans** base — « la sonde de disponibilité refuse le
+#: trafic », « la fonction déduit l'hôte faute d'environnement ». Lancés depuis
+#: un shell où un PostgreSQL local est exporté, ils lisaient cet environnement-là
+#: et échouaient sur une différence qui n'était pas la leur. C'est arrivé dès
+#: qu'une partie de la suite a eu besoin d'une vraie base.
+POSTGRES_ENV = ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE")
+
+
+def forget_ambient_postgres(monkeypatch) -> None:
+    """Retire de l'environnement ce que le shell du développeur y a mis.
+
+    À appeler depuis une fixture ``autouse`` du module concerné, jamais
+    globalement : les contrôles marqués ``postgres`` ont précisément besoin de
+    ces variables.
+    """
+    for name in POSTGRES_ENV:
+        monkeypatch.delenv(name, raising=False)
+    from inventory.config import get_settings
+
+    get_settings.cache_clear()
+
+
 class FakeTransactions:
     """Une doublure de ``Database`` qui ne retient que l'ouverture et la clôture.
 

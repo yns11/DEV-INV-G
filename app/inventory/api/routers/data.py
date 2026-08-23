@@ -29,7 +29,29 @@ from ..uploads import read_upload
 
 router = APIRouter(tags=["données"])
 
+#: Les grilles dont l'écriture **remplace** l'ensemble existant. Un rejet y
+#: transforme une ligne manquante en ligne supprimée, ce que le service refuse
+#: sans dérogation explicite. « boms » n'y figure pas : il ne remplace que
+#: lorsqu'on le lui demande, et le service reçoit alors `replace`.
+WHOLESALE_TARGETS = ("book_stock", "backflush")
+
 Importer = Annotated[ImportService, Depends(import_service)]
+
+def _write_options(target: str, *, replace: bool, allow_partial: bool) -> dict:
+    """Les options d'écriture que ce chargement accepte.
+
+    Passer `allow_partial` à un import qui ne remplace rien serait accepté par
+    Python et sans effet, ce qui est pire qu'une erreur : le drapeau
+    apparaîtrait dans l'interface sans jamais rien changer. Il n'est donc
+    transmis qu'aux grilles pour lesquelles il veut dire quelque chose.
+    """
+    options: dict = {}
+    if target == "boms":
+        options["replace"] = replace
+    if target in WHOLESALE_TARGETS or (target == "boms" and replace):
+        options["allow_partial"] = allow_partial
+    return options
+
 
 #: Import targets and the service method that handles each. Declaring the map
 #: here keeps the routes thin and makes an unsupported target a clean 422.
@@ -82,6 +104,7 @@ async def import_file(
     file: Annotated[UploadFile, File()],
     sheet: Annotated[str | None, Form()] = None,
     replace: Annotated[bool, Form()] = False,
+    allow_partial: Annotated[bool, Form(alias="allowPartial")] = False,
     dry_run: Annotated[bool, Form(alias="dryRun")] = False,
     borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
     borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
@@ -105,7 +128,7 @@ async def import_file(
         return importer.preview(target, **kwargs)
 
     duplicate = importer.check_duplicate(campaign.id, target, **kwargs)
-    extra = {"replace": replace} if target == "boms" else {}
+    extra = _write_options(target, replace=replace, allow_partial=allow_partial)
     outcome = getattr(importer, method)(campaign, **kwargs, **extra)
     result = outcome.as_dict()
     if duplicate:
@@ -138,7 +161,9 @@ def import_paste(
     }
     if payload.dry_run:
         return importer.preview(target, **kwargs)
-    extra = {"replace": payload.replace} if target == "boms" else {}
+    extra = _write_options(
+        target, replace=payload.replace, allow_partial=payload.allow_partial
+    )
     return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
 
 
@@ -227,6 +252,7 @@ def import_erp(
     importer: Importer,
     dry_run: Annotated[bool, Query(alias="dryRun")] = False,
     replace: Annotated[bool, Query()] = False,
+    allow_partial: Annotated[bool, Query(alias="allowPartial")] = False,
     borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
     borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
     snapshot_date: Annotated[dt.date | None, Query(alias="dateSnapshot")] = None,
@@ -251,7 +277,7 @@ def import_erp(
     }
     if dry_run:
         return importer.preview(target, **kwargs)
-    extra = {"replace": replace} if target == "boms" else {}
+    extra = _write_options(target, replace=replace, allow_partial=allow_partial)
     return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
 
 
@@ -274,7 +300,9 @@ def import_rows(
     }
     if payload.dry_run:
         return importer.preview(target, **kwargs)
-    extra = {"replace": payload.replace} if target == "boms" else {}
+    extra = _write_options(
+        target, replace=payload.replace, allow_partial=payload.allow_partial
+    )
     return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
 
 

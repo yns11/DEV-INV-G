@@ -1,2 +1,6 @@
 node_modules/
 dist/
+
+# Playwright : traces et captures des échecs, régénérées à chaque exécution.
+test-results/
+playwright-report/

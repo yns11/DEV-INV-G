@@ -649,6 +649,30 @@ class GenericService:
                 after={"lines": written, "replace": replace},
                 conn=conn,
             )
+
+        # La comparaison entre les deux passages se recalcule ici, là où les
+        # quantités changent.
+        #
+        # Elle ne se calculait qu'à la fermeture d'une zone. Entre-temps l'onglet
+        # Arbitrages affirmait « les deux équipes ont trouvé les mêmes
+        # quantités » — sur une zone où un désaccord attendait — et l'indicateur
+        # « Arbitrages en attente » restait à zéro. L'écart n'apparaissait qu'au
+        # refus de la clôture, c'est-à-dire au moment où l'on croyait avoir fini.
+        #
+        # Hors transaction : un arbitrage manqué se rattrape à la fermeture, qui
+        # recalcule de toute façon, alors qu'un échec de recalcul ne doit jamais
+        # faire perdre des quantités relevées à la main.
+        if zone is not None and zone.passes > 1:
+            try:
+                self.refresh_arbitrations(campaign, zone.id)
+            except Exception:
+                # Journalisé, jamais tu : l'échec ne remonte pas à l'écran
+                # parce que la saisie, elle, est enregistrée — annoncer un
+                # échec ferait ressaisir des quantités déjà en base.
+                log.exception(
+                    "Rafraîchissement des arbitrages impossible sur la zone %s",
+                    zone.code,
+                )
         return written
 
     def list_all_lines(

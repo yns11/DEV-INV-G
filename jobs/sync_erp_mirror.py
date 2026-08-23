@@ -234,14 +234,26 @@ def main() -> int:
 
     with connection as conn:
         conn.execute(f"SET search_path TO {args.pg_schema}, public")
-        _assert_mirror_shape(conn, "erp_base_article", ITEM_COLUMNS)
-        _assert_mirror_shape(conn, "erp_bom", BOM_COLUMNS)
+        # La forme du miroir est vérifiée *et* retenue : ses types servent à
+        # copier à NULL une colonne que la source ne publierait pas.
+        shapes = {
+            "erp_base_article": _assert_mirror_shape(
+                conn, "erp_base_article", ITEM_COLUMNS
+            ),
+            "erp_bom": _assert_mirror_shape(conn, "erp_bom", BOM_COLUMNS),
+        }
         if not args.skip_backflush:
-            _assert_mirror_shape(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
+            shapes["erp_ecart_backflush"] = _assert_mirror_shape(
+                conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS
+            )
         if not args.skip_movements:
-            _assert_mirror_shape(conn, "erp_mouvements", MOVEMENT_COLUMNS)
+            shapes["erp_mouvements"] = _assert_mirror_shape(
+                conn, "erp_mouvements", MOVEMENT_COLUMNS
+            )
         if not args.skip_stock:
-            _assert_mirror_shape(conn, "erp_stock_snapshot", STOCK_COLUMNS)
+            shapes["erp_stock_snapshot"] = _assert_mirror_shape(
+                conn, "erp_stock_snapshot", STOCK_COLUMNS
+            )
 
         # Chaque table est *préparée* dans sa table d'attente, hors
         # transaction : c'est la partie longue, et la tenir dans la transaction
@@ -252,7 +264,10 @@ def main() -> int:
         def prepare(
             fqn: str, table: str, columns: tuple[str, ...], **kwargs: Any
         ) -> int:
-            frame = _frame(spark, fqn, columns, limit=args.limit, **kwargs)
+            frame = _frame(
+                spark, fqn, columns, limit=args.limit,
+                types=shapes.get(table, {}), **kwargs,
+            )
             return _stage(
                 conn, frame, table, columns,
                 jdbc=jdbc, driver_side=args.driver_side,
@@ -386,13 +401,14 @@ def _frame(
     where: str = "",
     limit: int = 0,
     unique_on: str = "",
+    types: dict[str, str] | None = None,
 ) -> Any:
     """La projection à copier — voir :mod:`mirror`. Rien n'est lu ici."""
     from mirror import frame_of
 
     return frame_of(
         spark, fqn, columns, where=where, limit=limit, unique_on=unique_on,
-        warn=log.warning,
+        types=types, warn=log.warning,
     )
 
 
@@ -450,7 +466,9 @@ def _lakebase_conninfo(args: Any, client: Any = None) -> str:
     return conninfo(args, client)
 
 
-def _assert_mirror_shape(conn: Any, table: str, columns: tuple[str, ...]) -> None:
+def _assert_mirror_shape(
+    conn: Any, table: str, columns: tuple[str, ...]
+) -> dict[str, str]:
     """Refuse to start unless the mirror has the columns about to be written.
 
     The mirror's tables belong to the application, which creates and migrates
@@ -461,7 +479,7 @@ def _assert_mirror_shape(conn: Any, table: str, columns: tuple[str, ...]) -> Non
     into an immediate, self-explanatory stop.
     """
     rows = conn.execute(
-        "SELECT column_name FROM information_schema.columns "
+        "SELECT column_name, data_type FROM information_schema.columns "
         "WHERE table_name = %s",
         (table,),
     ).fetchall()
@@ -480,6 +498,11 @@ def _assert_mirror_shape(conn: Any, table: str, columns: tuple[str, ...]) -> Non
             "et laissez-la démarrer une fois, puis relancez cette "
             "synchronisation."
         )
+    # Les types, pour la copie à NULL d'une colonne que la source ne publie
+    # pas : ils sont déjà lus ici, les redemander serait une seconde vérité.
+    from mirror import spark_type
+
+    return {str(r[0]).lower(): spark_type(str(r[1])) for r in rows}
 
 
 def _connection_advice(exc: Exception) -> str:

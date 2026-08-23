@@ -318,7 +318,8 @@ def assert_mirror_shape(conn, table, columns):
     L'interroger d'abord transforme cela en un arrêt immédiat et explicite.
     """
     rows = conn.execute(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_name = %s",
         (table,),
     ).fetchall()
     present = {str(r[0]).lower() for r in rows}
@@ -336,18 +337,29 @@ def assert_mirror_shape(conn, table, columns):
             "l'application : redéployez-la, laissez-la démarrer une fois, puis "
             "relancez cette synchronisation."
         )
+    # Les types sont rendus avec la vérification : ils servent à copier à NULL,
+    # **avec le bon type**, une colonne que la source ne publie pas. Un NULL de
+    # type chaîne dans une colonne numérique est refusé par la base.
+    from mirror import spark_type
+
+    return {str(r[0]).lower(): spark_type(str(r[1])) for r in rows}
 
 
+shapes = {}
 with psycopg.connect(conninfo) as check:
     check.execute(f"SET search_path TO {conf['pg_schema']}, public")
-    assert_mirror_shape(check, "erp_base_article", ITEM_COLUMNS)
-    assert_mirror_shape(check, "erp_bom", BOM_COLUMNS)
+    shapes["erp_base_article"] = assert_mirror_shape(
+        check, "erp_base_article", ITEM_COLUMNS)
+    shapes["erp_bom"] = assert_mirror_shape(check, "erp_bom", BOM_COLUMNS)
     if with_backflush:
-        assert_mirror_shape(check, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
+        shapes["erp_ecart_backflush"] = assert_mirror_shape(
+            check, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
     if with_movements:
-        assert_mirror_shape(check, "erp_mouvements", MOVEMENT_COLUMNS)
+        shapes["erp_mouvements"] = assert_mirror_shape(
+            check, "erp_mouvements", MOVEMENT_COLUMNS)
     if with_stock:
-        assert_mirror_shape(check, "erp_stock_snapshot", STOCK_COLUMNS)
+        shapes["erp_stock_snapshot"] = assert_mirror_shape(
+            check, "erp_stock_snapshot", STOCK_COLUMNS)
 print("Miroir conforme.")
 # COMMAND ----------
 
@@ -397,6 +409,7 @@ def prepare(fqn, columns, table, unique_on="", where=""):
     """
     frame = frame_of(
         spark, fqn, columns, where=where, limit=limit, unique_on=unique_on,
+        types=shapes.get(table, {}),
         warn=lambda message: print(f"  {message}"),
     )
     return stage(

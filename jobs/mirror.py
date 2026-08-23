@@ -39,7 +39,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-__all__ = ["BATCH", "frame_of", "stage", "swap"]
+__all__ = ["BATCH", "frame_of", "spark_type", "stage", "swap"]
 
 #: Lignes par lot d'insertion, sur le chemin de repli.
 BATCH = 5_000
@@ -53,6 +53,34 @@ BATCH = 5_000
 WRITE_PARTITIONS = 8
 
 
+#: Comment un type PostgreSQL se dit en SQL Spark.
+#:
+#: Sert au seul endroit où le type compte : une colonne absente de la source
+#: est copiée à NULL, et ce NULL doit avoir le type de la colonne du miroir.
+#: Un NULL de type chaîne dans une colonne numérique est refusé par la base — à
+#: la dernière instruction, une fois toute la lecture faite.
+SPARK_TYPES = {
+    "numeric": "DECIMAL(18,6)",
+    "integer": "INT",
+    "bigint": "BIGINT",
+    "smallint": "SMALLINT",
+    "double precision": "DOUBLE",
+    "real": "FLOAT",
+    "boolean": "BOOLEAN",
+    "date": "DATE",
+    "timestamp with time zone": "TIMESTAMP",
+    "timestamp without time zone": "TIMESTAMP",
+}
+
+#: Le type d'une colonne dont le miroir ne dit rien.
+DEFAULT_TYPE = "STRING"
+
+
+def spark_type(postgres_type: str) -> str:
+    """Le type Spark correspondant, ou la chaîne à défaut."""
+    return SPARK_TYPES.get(postgres_type.strip().lower(), DEFAULT_TYPE)
+
+
 def frame_of(
     spark: Any,
     fqn: str,
@@ -61,6 +89,7 @@ def frame_of(
     where: str = "",
     limit: int = 0,
     unique_on: str = "",
+    types: dict[str, str] | None = None,
     warn: Any = None,
 ) -> Any:
     """La projection à copier, **sans la lire**.
@@ -83,14 +112,30 @@ def frame_of(
     if missing:
         warn(f"{fqn} : colonnes absentes, copiées à NULL — {', '.join(missing)}")
 
+    # Le NULL prend le type de la colonne du miroir : sans cela, une colonne
+    # numérique que la source cesse de publier fait échouer l'insertion, et
+    # c'est précisément la situation que la copie à NULL existe pour traverser.
+    shape = {k.lower(): v for k, v in (types or {}).items()}
     projection = ", ".join(
-        c if c.lower() in available else f"CAST(NULL AS STRING) AS {c}"
+        c if c.lower() in available
+        else f"CAST(NULL AS {shape.get(c.lower(), DEFAULT_TYPE)}) AS {c}"
         for c in columns
     )
     clause = f" WHERE {where}" if where else ""
     query = f"SELECT {projection} FROM {fqn}{clause}"
     if unique_on and unique_on.lower() in available:
-        order = ", ".join(columns)
+        # L'ordre ne porte que sur les colonnes **réellement présentes**.
+        #
+        # Une colonne absente est projetée en `CAST(NULL AS STRING) AS <nom>` :
+        # la nommer dans la fenêtre reviendrait à référencer un alias de la même
+        # liste de sélection, ce qu'aucun des deux moteurs ne résout — la requête
+        # échoue au lieu de copier. Et elle ne départagerait rien de toute façon,
+        # puisqu'elle vaut la même constante sur toutes les lignes.
+        #
+        # Le cas se produit dès qu'une colonne du contrat n'est pas encore
+        # publiée par la plateforme, c'est-à-dire précisément quand la copie à
+        # NULL est censée sauver la mise.
+        order = ", ".join(c for c in columns if c.lower() in available)
         query = (
             f"SELECT {', '.join(columns)} FROM ("
             f"  SELECT {projection}, ROW_NUMBER() OVER ("

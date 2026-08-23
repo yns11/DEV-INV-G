@@ -92,3 +92,39 @@ def test_rows_without_a_reference_are_filtered_out(path: Path) -> None:
         f"{path.name} copie les mouvements sans écarter les lignes sans "
         "référence : l'insertion échouera sur la contrainte de clé primaire."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Le type d'une colonne absente, des deux côtés
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("path", [CLI, NOTEBOOK], ids=["cli", "notebook"])
+def test_both_read_the_column_types_with_the_names(path: Path) -> None:
+    """Une colonne que la source cesse de publier est copiée à NULL — et ce
+    NULL doit porter le type de la colonne du miroir.
+
+    Un NULL de type chaîne dans une colonne numérique est refusé par la base, à
+    la dernière instruction, une fois toute la lecture faite. C'est précisément
+    la situation que la copie à NULL existe pour traverser.
+    """
+    assert "column_name, data_type" in path.read_text()
+
+
+@pytest.mark.parametrize("path", [CLI, NOTEBOOK], ids=["cli", "notebook"])
+def test_both_translate_the_types_through_the_shared_module(path: Path) -> None:
+    """Deux traductions PostgreSQL → Spark finiraient par ne plus s'accorder ;
+    c'est exactement ainsi que les deux jobs avaient divergé."""
+    source = path.read_text()
+    assert "from mirror import spark_type" in source
+    assert "spark_type(str(r[1]))" in source
+
+
+@pytest.mark.parametrize("path", [CLI, NOTEBOOK], ids=["cli", "notebook"])
+def test_both_hand_the_types_to_the_reader(path: Path) -> None:
+    """Les lire sans les transmettre ne servirait à rien, et rien ne le dirait :
+    la copie continuerait de fonctionner tant qu'aucune colonne ne manque.
+
+    C'est la forme relevée du miroir qui doit voyager, pas n'importe quel
+    paramètre nommé `types` — les fonctions relais en portent un aussi.
+    """
+    assert "types=shapes" in path.read_text()

@@ -6,6 +6,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
+import { ClosureChecklistView } from '../components/ClosureChecklist'
 import { api, download, downloads } from '../lib/api'
 import type {
   AssignableCause,
@@ -78,7 +79,9 @@ export function Analysis({ view }: { view: AnalysisView }) {
         />
       )}
       {view === 'variances' && <VariancesTab campaignId={campaignId} overview={overview} />}
-      {view === 'controls' && <ControlsTab campaignId={campaignId} />}
+      {view === 'controls' && (
+        <ControlsTab campaignId={campaignId} overview={overview} />
+      )}
       {view === 'adjustments' && (
         <AdjustmentsTab campaignId={campaignId} overview={overview} />
       )}
@@ -1470,15 +1473,23 @@ function AdjustmentsTab({
 // Controls & summary
 // --------------------------------------------------------------------------- //
 
-function ControlsTab({ campaignId }: { campaignId: string }) {
+function ControlsTab({
+  campaignId,
+  overview,
+}: {
+  campaignId: string
+  overview: Overview
+}) {
   const query = useQuery({
     queryKey: ['controls', campaignId],
     queryFn: () => api.controls(campaignId),
   })
 
   return (
-    <AsyncBoundary query={query} skeleton={<Skeleton height={280} />}>
-      {(data) => (
+    <div className="stack" style={{ gap: 'var(--space-4)' }}>
+      <ClosurePanel campaignId={campaignId} overview={overview} />
+      <AsyncBoundary query={query} skeleton={<Skeleton height={280} />}>
+        {(data) => (
         <div className="stack">
           <div className="grid grid--kpi">
             {(['BLOCKER', 'WARNING', 'INFO'] as const).map((severity) => (
@@ -1549,8 +1560,45 @@ function ControlsTab({ campaignId }: { campaignId: string }) {
             />
           </Card>
         </div>
-      )}
-    </AsyncBoundary>
+        )}
+      </AsyncBoundary>
+    </div>
+  )
+}
+
+/**
+ * La liste de contrôle de clôture, sur l'écran des contrôles.
+ *
+ * En phase d'analyse seulement : plus tôt, les journaux et les zones y
+ * figureraient comme bloquants alors que la phase ne les a pas encore exigés,
+ * et une liste rouge sur une campagne parfaitement normale apprend à ignorer
+ * la liste.
+ */
+function ClosurePanel({
+  campaignId,
+  overview,
+}: {
+  campaignId: string
+  overview: Overview
+}) {
+  const inAnalysis = overview.campaign.status === 'ANALYSIS'
+  const query = useQuery({
+    queryKey: ['closure-checklist', campaignId],
+    queryFn: () => api.closureChecklist(campaignId),
+    enabled: inAnalysis,
+  })
+  if (!inAnalysis) return null
+  return (
+    <Card
+      title="Avant de clôturer"
+      message="Clôturer est irréversible. Ce qui suit se prépare pendant l’analyse, pas au moment de cliquer."
+    >
+      <ClosureChecklistView
+        campaignId={campaignId}
+        data={query.data}
+        pending={query.isPending}
+      />
+    </Card>
   )
 }
 

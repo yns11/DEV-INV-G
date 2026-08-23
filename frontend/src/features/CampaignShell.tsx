@@ -27,6 +27,7 @@ import {
   signedNum,
   label as toLabel,
 } from '../lib/format'
+import { ClosureChecklistView } from '../components/ClosureChecklist'
 import { useFocusMode } from '../lib/focus'
 import { UTILITIES, labelOf, sectionFor } from '../lib/navigation'
 import {
@@ -452,6 +453,15 @@ function TransitionModal({
     queryFn: () => api.transitionReadiness(campaignId, target),
   })
 
+  // La clôture est le seul geste irréversible : elle mérite l'état des lieux
+  // complet plutôt que la seule liste de ce qui manque. Les autres transitions
+  // gardent la liste courte — il n'y a rien à préparer pour entrer en comptage.
+  const checklist = useQuery({
+    queryKey: ['closure-checklist', campaignId],
+    queryFn: () => api.closureChecklist(campaignId),
+    enabled: target === 'CLOSED',
+  })
+
   const mutation = useMutation({
     mutationFn: () => api.transition(campaignId, target),
     onSuccess: () => {
@@ -489,18 +499,27 @@ function TransitionModal({
       <div className="stack">
         {readiness.isPending && <Skeleton count={3} />}
 
-        {blockers.length > 0 && (
-          <Alert tone="danger" title={`${blockers.length} point(s) bloquant(s)`}>
-            <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
-              {blockers.map((blocker, index) => (
-                <li key={index}>{blocker.message}</li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-
-        {ready && blockers.length === 0 && (
-          <Alert tone="success" title="Prérequis remplis" />
+        {target === 'CLOSED' ? (
+          <ClosureChecklistView
+            campaignId={campaignId}
+            data={checklist.data}
+            pending={checklist.isPending}
+          />
+        ) : (
+          <>
+            {blockers.length > 0 && (
+              <Alert tone="danger" title={`${blockers.length} point(s) bloquant(s)`}>
+                <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
+                  {blockers.map((blocker, index) => (
+                    <li key={index}>{blocker.message}</li>
+                  ))}
+                </ul>
+              </Alert>
+            )}
+            {ready && blockers.length === 0 && (
+              <Alert tone="success" title="Prérequis remplis" />
+            )}
+          </>
         )}
 
         {freezes.length > 0 && (

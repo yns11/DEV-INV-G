@@ -9,6 +9,7 @@
  */
 
 import type {
+  ClosureChecklist,
   CampaignPage,
   AggregateRow,
   Analytics,
@@ -238,6 +239,11 @@ export const api = {
     request<void>(`/campaigns/${id}`, { method: 'DELETE' }),
   transitionReadiness: (id: string, target: string) =>
     request<TransitionReadiness>(`/campaigns/${id}/transition-readiness${qs({ target })}`),
+  // Lisible pendant toute la phase d'analyse, et pas seulement dans la fenêtre
+  // qui clôture : découvrir trois points bloquants au moment de cliquer, un
+  // vendredi soir, est exactement ce qu'on évite.
+  closureChecklist: (id: string) =>
+    request<ClosureChecklist>(`/campaigns/${id}/closure-checklist`),
   transition: (id: string, target: string) =>
     request<Campaign>(`/campaigns/${id}/transition`, {
       method: 'POST',

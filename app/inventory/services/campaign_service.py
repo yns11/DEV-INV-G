@@ -448,6 +448,68 @@ class CampaignService:
             "blockers": [b.model_dump(mode="json") for b in blockers],
         }
 
+    def closure_checklist(self, campaign_id: str) -> dict[str, Any]:
+        """L'état des lieux du dossier avant le geste irréversible.
+
+        Ce qui bloque n'est **pas recalculé** : les entrées bloquantes viennent
+        de :meth:`transition_readiness`, donc de la même fonction que le refus.
+        Les rejouer autrement serait la façon dont l'écran finit par annoncer
+        « prêt » sur une campagne que la clôture refuse.
+        """
+        from ..domain.closure import closure_checklist as build
+
+        ctx = self.ctx
+        campaign = ctx.campaigns.get(campaign_id)
+        readiness = self.transition_readiness(campaign_id, CampaignStatus.CLOSED)
+        blockers = campaign_transition_blockers(
+            campaign.status,
+            CampaignStatus.CLOSED,
+            unexplained_material=self._unexplained_material(campaign),
+            rejected_imports=[
+                (str(b["target"]), int(b["rows_rejected"] or 0))
+                for b in ctx.imports.latest_per_target(campaign_id)
+            ],
+            publication_done=campaign.published_at is not None,
+        )
+
+        analyses = ctx.analysis.list_analyses(campaign_id)
+        run = ctx.consolidation.current_run(campaign_id)
+        last_change = ctx.sheets.last_line_change(campaign_id)
+        items = build(
+            blockers=blockers,
+            accepted_without_comment=sum(
+                1 for a in analyses if a.accepted and not a.comment.strip()
+            ),
+            ai_suggestions_untouched=sum(
+                1 for a in analyses
+                if a.ai_suggested_cause and not a.cause_code and not a.accepted
+            ),
+            # Une consolidation absente ne compte pas comme périmée : elle
+            # n'existe pas, et c'est un autre point — celui de la publication.
+            sheets_changed_after_consolidation=bool(
+                run and last_change and last_change > run["run_at"]
+            ),
+            book_stock_frozen=campaign.book_stock_frozen_at is not None,
+            journals_pending=sum(
+                1 for j in ctx.journals.list(campaign_id)
+                if j.status not in (JournalStatus.POSTED, JournalStatus.BOOK_ENFORCED)
+            ),
+            zones_open=sum(
+                1 for status in self._zone_statuses(campaign).values()
+                if str(status) != "DONE"
+            ),
+        )
+        return {
+            "ready": readiness["ready"],
+            "allowed": readiness["allowed"],
+            "items": [item.as_dict() for item in items],
+            "counts": {
+                "blocking": sum(1 for i in items if str(i.state) == "BLOCKING"),
+                "attention": sum(1 for i in items if str(i.state) == "ATTENTION"),
+                "done": sum(1 for i in items if str(i.state) == "DONE"),
+            },
+        }
+
     def transition(self, campaign_id: str, target: CampaignStatus) -> Campaign:
         """Move the campaign forward, freezing what the new phase freezes."""
         ctx = self.ctx

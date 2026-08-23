@@ -118,6 +118,22 @@ def transition_readiness(
     return service.transition_readiness(campaign.id, target)
 
 
+@router.get(
+    "/{campaign_id}/closure-checklist",
+    summary="Liste de contrôle avant clôture",
+)
+def closure_checklist(campaign: CampaignDep, service: Service) -> dict[str, Any]:
+    """L'état des lieux du dossier, avant le seul geste irréversible.
+
+    Trois tons : ce qui bloque, ce qui mérite un regard, ce qui est fait. Le
+    premier vient de la même fonction que le refus — l'écran et le serveur ne
+    peuvent donc pas diverger. Lisible pendant toute la phase d'analyse, et pas
+    seulement dans la fenêtre qui clôture : découvrir trois points bloquants au
+    moment de cliquer, un vendredi soir, est exactement ce qu'on évite ici.
+    """
+    return service.closure_checklist(campaign.id)
+
+
 @router.post("/{campaign_id}/transition", summary="Changer le statut de la campagne")
 def transition(
     campaign: CampaignDep, payload: TransitionRequest, service: Service

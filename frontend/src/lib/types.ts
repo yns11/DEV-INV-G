@@ -814,6 +814,31 @@ export interface TransitionReadiness {
   blockers: Finding[]
 }
 
+/**
+ * Un point de la liste de contrôle de clôture.
+ *
+ * Trois tons, et l'ordre de lecture est celui-là : ce qui arrête, ce qui
+ * mérite un regard, ce qui est fait. `where` est le fragment de route qui
+ * résout le point — sans lui, « rechargez le fichier corrigé » laisse
+ * chercher l'écran.
+ */
+export type ChecklistState = 'BLOCKING' | 'ATTENTION' | 'DONE'
+
+export interface ChecklistItem {
+  code: string
+  label: string
+  state: ChecklistState
+  detail: string
+  where: string | null
+}
+
+export interface ClosureChecklist {
+  ready: boolean
+  allowed: boolean
+  items: ChecklistItem[]
+  counts: { blocking: number; attention: number; done: number }
+}
+
 export interface Health {
   status: string
   ready: boolean

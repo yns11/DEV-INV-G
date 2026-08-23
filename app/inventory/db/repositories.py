@@ -1566,6 +1566,21 @@ class SheetRepository(_Base):
         )
         return int(rows[0]["n"]) if rows else 0
 
+    def last_line_change(self, campaign_id: str) -> Any:
+        """Quand une ligne de feuille a bougé pour la dernière fois.
+
+        Comparée à la date de la consolidation enregistrée, elle répond à
+        « les quantités consolidées sont-elles encore celles des feuilles ? ».
+        Les lignes supprimées comptent : une suppression change le total autant
+        qu'une correction.
+        """
+        row = self._fetch_one(
+            "SELECT max(updated_at) AS at FROM count_sheet_line "
+            "WHERE campaign_id = %s",
+            (campaign_id,),
+        )
+        return (row or {}).get("at")
+
     def lines_by_sheet(self, campaign_id: str) -> dict[str, list[CountSheetLine]]:
         rows = self._fetch_all(
             f"SELECT {self._SHEET_LINE_COLUMNS} FROM count_sheet_line "

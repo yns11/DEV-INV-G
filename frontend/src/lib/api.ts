@@ -89,6 +89,21 @@ const BASE = '/api'
  */
 export const GRID_ROW_CEILING = 20_000
 
+/**
+ * Une tranche de liste, et le nombre de lignes qu'elle ne montre pas.
+ *
+ * `total` est la partie qui compte : sans lui, une liste tronquée est
+ * indistinguable d'une liste complète, et l'écran ne peut pas dire qu'il en
+ * manque. Les trois référentiels — articles, nomenclatures, lignes de feuilles
+ * — rendent désormais cette même forme.
+ */
+export type Page<T = Record<string, unknown>> = {
+  total: number
+  offset: number
+  limit: number
+  rows: T[]
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
     ...init,
@@ -250,14 +265,21 @@ export const api = {
       search?: string
       counted?: boolean
     } = {},
-  ) =>
-    request<{ total: number; offset: number; limit: number; rows: Array<Record<string, unknown>> }>(
-      `/campaigns/${id}/items${qs(params)}`,
-    ),
+  ) => request<Page>(`/campaigns/${id}/items${qs(params)}`),
   // No ceiling here: the endpoint returns the whole structure, which is what
   // a nomenclature read half-way would make unusable anyway.
-  boms: (id: string, params: { parent?: string; counted?: boolean } = {}) =>
-    request<Array<Record<string, unknown>>>(`/campaigns/${id}/boms${qs(params)}`),
+  // Paginé comme les articles. Une nomenclature complète se compte en dizaines
+  // de milliers de liens ; la lire entière pour en afficher trente était le
+  // seul appel capable de tenir une seconde à lui tout seul.
+  boms: (
+    id: string,
+    params: {
+      parent?: string
+      counted?: boolean
+      limit?: number
+      offset?: number
+    } = {},
+  ) => request<Page>(`/campaigns/${id}/boms${qs(params)}`),
   // Editing one line rather than re-importing the file. A referential arrives
   // with a designation missing here and a type wrong there; before this the
   // only remedy was to redo the whole load, so people stopped correcting.
@@ -282,10 +304,13 @@ export const api = {
       `/campaigns/${id}/boms/activation`,
       { method: 'POST', body: JSON.stringify({ links, active }) },
     ),
-  sheetLines: (id: string, zoneId?: string) =>
-    request<Array<Record<string, unknown>>>(
-      `/campaigns/${id}/generic/lines${qs({ zoneId })}`,
-    ),
+  // Paginé : une campagne de deux cents zones à trois cents lignes en fait
+  // soixante mille, et c'est la liste qu'on ouvre pour en corriger une.
+  sheetLines: (
+    id: string,
+    zoneId?: string,
+    params: { limit?: number; offset?: number } = {},
+  ) => request<Page>(`/campaigns/${id}/generic/lines${qs({ zoneId, ...params })}`),
   deleteSheetLines: (id: string, lineIds: string[]) =>
     request<{ deleted: number }>(`/campaigns/${id}/generic/lines/delete`, {
       method: 'POST',

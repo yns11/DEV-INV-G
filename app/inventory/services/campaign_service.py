@@ -495,6 +495,47 @@ class CampaignService:
 
     # ------------------------------------------------------------ thresholds
 
+    def thresholds(self, campaign: Campaign) -> list[Thresholds]:
+        """Les seuils en vigueur sur cette campagne."""
+        return self.ctx.campaigns.list_thresholds(campaign.id)
+
+    def audit_trail(
+        self,
+        campaign: Campaign,
+        *,
+        entity_type: str | None = None,
+        actor: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[Any]:
+        """Le journal d'audit de la campagne, filtré et paginé."""
+        return self.ctx.audit.list(
+            campaign.id,
+            entity_type=entity_type,
+            actor=actor,
+            limit=limit,
+            offset=offset,
+        )
+
+    def import_history(
+        self, campaign: Campaign, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Les chargements de la campagne, sans le chemin du volume.
+
+        L'écran a seulement besoin de savoir s'il y a une pièce à proposer ; la
+        route de téléchargement résout elle-même le chemin à partir de
+        l'identifiant du lot. Le retirer **ici** plutôt qu'à l'affichage est ce
+        qui garantit qu'aucun autre appelant ne le fera sortir.
+        """
+        return [
+            {
+                **{k: v for k, v in row.items() if k != "storage_path"},
+                "id": str(row["id"]),
+                "archived": row["storage_path"] is not None,
+            }
+            for row in self.ctx.imports.list(campaign.id, limit=limit)
+        ]
+
     def update_thresholds(
         self, campaign_id: str, thresholds: list[Thresholds]
     ) -> list[Thresholds]:

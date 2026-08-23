@@ -6,11 +6,8 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 
-from ...db import new_id
-from ...domain.enums import AuditAction
-from ...domain.models import AdjustmentLine
 from ...services import AnalysisService
-from ..deps import CampaignDep, Ctx, analysis_service
+from ..deps import CampaignDep, analysis_service
 from ..schemas import AdjustmentRowRequest, AnalysisRequest
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/analysis", tags=["analyse"])
@@ -178,8 +175,8 @@ def compare(
 
 
 @router.get("/causes", summary="Référentiel des causes standard")
-def causes(campaign: CampaignDep, ctx: Ctx) -> list[dict[str, Any]]:
-    return [c.model_dump(mode="json") for c in ctx.analysis.list_causes()]
+def causes(campaign: CampaignDep, service: Service) -> list[dict[str, Any]]:
+    return [c.model_dump(mode="json") for c in service.causes()]
 
 
 @router.get("/cause-split", summary="Répartition des écarts par cause")
@@ -243,7 +240,7 @@ def explain(
 @router.get("/adjustments", summary="Mouvements et ajustements")
 def list_adjustments(
     campaign: CampaignDep,
-    ctx: Ctx,
+    service: Service,
     limit: Annotated[int, Query(ge=1, le=50_000)] = 1000,
 ) -> list[dict[str, Any]]:
     return [
@@ -252,56 +249,21 @@ def list_adjustments(
             "qty": float(a.qty),
             "value": float(a.value),
         }
-        for a in ctx.adjustments.list(campaign.id, limit=limit)
+        for a in service.adjustments(campaign, limit=limit)
     ]
 
 
 @router.put("/adjustments", summary="Créer ou modifier des ajustements")
 def upsert_adjustments(
-    campaign: CampaignDep, rows: list[AdjustmentRowRequest], ctx: Ctx
+    campaign: CampaignDep, rows: list[AdjustmentRowRequest], service: Service
 ) -> dict[str, int]:
-    ctx.guard(campaign, "adjustments")
-    lines = [
-        AdjustmentLine(
-            id=row.id or new_id(),
-            campaign_id=campaign.id,
-            item_number=row.item_number,
-            warehouse_id=row.warehouse_id,
-            location_id=row.location_id,
-            kind=row.kind,
-            qty=row.qty,
-            unit=row.unit,
-            value=row.value,
-            journal_number=row.journal_number,
-            physical_date=row.physical_date,
-            reason_code=row.reason_code,
-            comment=row.comment,
-            source="MANUAL",
-        )
-        for row in rows
-    ]
-    written = ctx.adjustments.upsert(lines, actor=ctx.actor)
-    ctx.record(
-        campaign_id=campaign.id,
-        action=AuditAction.UPDATE,
-        entity_type="adjustment_line",
-        summary=f"{len(lines)} ajustement(s) enregistré(s) manuellement",
-        after={"count": len(lines)},
-    )
-    return {"written": written}
+    """Créer ou modifier des ajustements saisis à la main."""
+    return service.upsert_adjustments(campaign, rows)
 
 
 @router.delete("/adjustments/{line_id}", summary="Supprimer un ajustement")
 def delete_adjustment(
-    campaign: CampaignDep, line_id: str, ctx: Ctx
+    campaign: CampaignDep, line_id: str, service: Service
 ) -> dict[str, bool]:
-    ctx.guard(campaign, "adjustments")
-    ctx.adjustments.delete(campaign.id, line_id, actor=ctx.actor)
-    ctx.record(
-        campaign_id=campaign.id,
-        action=AuditAction.DELETE,
-        entity_type="adjustment_line",
-        entity_id=line_id,
-        summary="Suppression logique d'un ajustement",
-    )
+    service.delete_adjustment(campaign, line_id)
     return {"deleted": True}

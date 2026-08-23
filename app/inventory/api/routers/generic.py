@@ -6,7 +6,6 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
-from ...domain.controls import group_findings
 from ...errors import ValidationError
 from ...services import GenericService, ScanJobService
 from ..deps import (
@@ -16,6 +15,7 @@ from ..deps import (
     resolve_perimeter,
     scan_job_service,
 )
+from ..paging import MAX_PAGE, page
 from ..schemas import (
     ArbitrationDecisionRequest,
     ReclassifyRequest,
@@ -138,7 +138,9 @@ def list_all_lines(
     ctx: Ctx,
     service: Service,
     zone_id: Annotated[str | None, Query(alias="zoneId")] = None,
-) -> list[dict[str, Any]]:
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 5000,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
     """Every counting-sheet line, flat, with its zone and pass.
 
     The zone-by-zone screens answer "what is on this sheet?"; this one answers
@@ -146,8 +148,13 @@ def list_all_lines(
     line was typed into the wrong zone or a whole family has to be added to
     fifteen sheets at once. Same lines, one list, so a correction is one edit
     instead of fifteen navigations.
+
+    Paginé, et porteur du total : une campagne de deux cents zones à trois
+    cents lignes en fait soixante mille, et c'est la liste qu'on ouvre pour en
+    corriger une.
     """
-    return service.list_all_lines(campaign, zone_id=zone_id)
+    rows = service.list_all_lines(campaign, zone_id=zone_id)
+    return page(rows, offset=offset, limit=limit, render=lambda row: row)
 
 
 @router.post("/lines/delete", summary="Supprimer un lot de lignes")
@@ -409,17 +416,7 @@ def preview_consolidation(campaign: CampaignDep, service: Service) -> dict[str, 
     This is the live view during counting: it shows what the GENERIQUE journal
     would contain right now, and which zones are still missing.
     """
-    result = service.consolidate(campaign, preview=True)
-    items = service.ctx.referentials.items_by_number(campaign.id)
-    return {
-        "lines": [service.line_payload(line, items) for line in result.lines],
-        "totalQty": float(result.total_qty),
-        "zonesIncluded": result.zones_included,
-        "zonesSkipped": result.zones_skipped,
-        "findings": [f.model_dump(mode="json") for f in result.findings],
-        "groups": [g.to_summary() for g in group_findings(result.findings)],
-        "blocking": len(result.blocking),
-    }
+    return service.preview_consolidation(campaign)
 
 
 @router.post("/consolidation", summary="Consolider et alimenter le journal GENERIQUE")

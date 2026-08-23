@@ -15,10 +15,12 @@ from ..services import (
     AnalysisService,
     CampaignService,
     CountingService,
+    EvidenceService,
     GenericService,
     ImportService,
     ManagerService,
     Perimeter,
+    ReferentialService,
     ReportService,
     ScanJobService,
     ServiceContext,
@@ -35,10 +37,12 @@ __all__ = [
     "get_campaign",
     "campaign_service",
     "counting_service",
+    "evidence_service",
     "generic_service",
     "analysis_service",
     "import_service",
     "manager_service",
+    "referential_service",
     "report_service",
     "scan_job_service",
     "resolve_perimeter",
@@ -142,6 +146,14 @@ def import_service(ctx: Ctx) -> ImportService:
 
 def manager_service(ctx: Ctx) -> ManagerService:
     return ManagerService(ctx)
+
+
+def referential_service(ctx: Ctx) -> ReferentialService:
+    return ReferentialService(ctx)
+
+
+def evidence_service(ctx: Ctx) -> EvidenceService:
+    return EvidenceService(ctx)
 
 
 def resolve_perimeter(

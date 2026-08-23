@@ -1,9 +1,10 @@
 """Exclusions posées sur un lot, et filtre « articles stockés / comptés ».
 
-Les deux tiennent dans des fonctions de routage qui ne dépendent que du
-contexte : un contexte factice suffit, comme partout ailleurs dans cette suite.
-Ce qui est vérifié ici n'est pas le câblage HTTP mais les décisions — ce qui est
-écrit, ce qui ne l'est pas, et ce qui est refusé.
+Les deux sont désormais des méthodes de service, appelées ici directement. Ce
+qui est vérifié n'est pas le câblage HTTP mais les décisions : ce qui est écrit,
+ce qui ne l'est pas, ce qui est refusé. Ces contrôles passaient auparavant par
+une fonction de routage — avec un contrat Pydantic à construire pour poser deux
+références et une exclusion, pour une règle qui tient en trois lignes.
 """
 
 from __future__ import annotations
@@ -17,11 +18,11 @@ import pytest
 from pydantic import ValidationError as PydanticValidationError
 
 import inventory
-from inventory.api.routers import data
 from inventory.api.schemas import ItemExclusionsRequest
 from inventory.domain.enums import ExclusionScope
 from inventory.domain.models import BomLink, Item, in_perimeter
 from inventory.errors import ValidationError
+from inventory.services.referential_service import ReferentialService
 
 CAMPAIGN = cast(Any, SimpleNamespace(id="camp-1"))
 
@@ -76,7 +77,16 @@ def context(
     )
 
 
+def service(ctx: Any) -> ReferentialService:
+    return ReferentialService(ctx)
+
+
 def request(numbers: list[str], scopes: list[str]) -> ItemExclusionsRequest:
+    """Le contrat d'entrée, pour le seul contrôle qui porte encore sur lui.
+
+    Ce que la porte HTTP doit refuser — un périmètre d'exclusion inventé — se
+    vérifie là où il est refusé. Les règles, elles, s'appellent directement.
+    """
     return ItemExclusionsRequest.model_validate(
         {"itemNumbers": numbers, "exclusions": scopes}
     )
@@ -115,7 +125,7 @@ class TestTheExclusionSetIsNormalised:
 class TestSettingTheExclusionOfABatch:
     def test_every_selected_article_is_written(self):
         ctx = context([item("P-1"), item("P-2")])
-        result = data.set_item_exclusions(CAMPAIGN, request(["P-1", "P-2"], ["ALL"]), ctx)
+        result = service(ctx).set_item_exclusions(CAMPAIGN, ["P-1", "P-2"], ["ALL"])
 
         assert result["updated"] == 2
         assert {i.item_number for i in ctx.referentials.written} == {"P-1", "P-2"}
@@ -126,40 +136,38 @@ class TestSettingTheExclusionOfABatch:
     def test_an_article_already_in_that_state_is_not_rewritten(self):
         """Réécrire pour rien ferait avancer row_version et polluerait l'audit."""
         ctx = context([item("P-1", exclusions=["ALL"]), item("P-2")])
-        result = data.set_item_exclusions(CAMPAIGN, request(["P-1", "P-2"], ["ALL"]), ctx)
+        result = service(ctx).set_item_exclusions(CAMPAIGN, ["P-1", "P-2"], ["ALL"])
 
         assert (result["updated"], result["unchanged"]) == (1, 1)
         assert [i.item_number for i in ctx.referentials.written] == ["P-2"]
 
     def test_an_empty_selection_of_scopes_puts_the_batch_back_in_scope(self):
         ctx = context([item("P-1", exclusions=["GENERIC"])])
-        result = data.set_item_exclusions(CAMPAIGN, request(["P-1"], []), ctx)
+        result = service(ctx).set_item_exclusions(CAMPAIGN, ["P-1"], [])
 
         assert result["updated"] == 1
         assert ctx.referentials.written[0].exclusions == set()
 
     def test_the_batch_is_normalised_like_a_single_edit(self):
         ctx = context([item("P-1")])
-        data.set_item_exclusions(CAMPAIGN, request(["P-1"], ["ALL", "GENERIC"]), ctx)
+        service(ctx).set_item_exclusions(CAMPAIGN, ["P-1"], ["ALL", "GENERIC"])
         assert ctx.referentials.written[0].exclusions == {ExclusionScope.ALL}
 
     def test_references_are_matched_regardless_of_case_and_spacing(self):
         ctx = context([item("P-1")])
-        result = data.set_item_exclusions(CAMPAIGN, request([" p-1 "], ["BOM"]), ctx)
+        result = service(ctx).set_item_exclusions(CAMPAIGN, [" p-1 "], ["BOM"])
         assert result["updated"] == 1
 
     def test_the_same_reference_twice_counts_once(self):
         ctx = context([item("P-1")])
-        result = data.set_item_exclusions(
-            CAMPAIGN, request(["P-1", "P-1"], ["BOM"]), ctx
-        )
+        result = service(ctx).set_item_exclusions(CAMPAIGN, ["P-1", "P-1"], ["BOM"])
         assert (result["updated"], result["unchanged"]) == (1, 0)
 
     def test_an_unknown_reference_stops_the_whole_batch(self):
         """La sélection a été faite sur un écran : un inconnu = un désaccord."""
         ctx = context([item("P-1")])
         with pytest.raises(ValidationError) as caught:
-            data.set_item_exclusions(CAMPAIGN, request(["P-1", "P-9"], ["ALL"]), ctx)
+            service(ctx).set_item_exclusions(CAMPAIGN, ["P-1", "P-9"], ["ALL"])
 
         assert "P-9" in str(caught.value)
         assert ctx.referentials.written == []
@@ -167,12 +175,12 @@ class TestSettingTheExclusionOfABatch:
     def test_a_frozen_referential_refuses_the_batch(self):
         ctx = context([item("P-1")], frozen=True)
         with pytest.raises(ValidationError):
-            data.set_item_exclusions(CAMPAIGN, request(["P-1"], ["ALL"]), ctx)
+            service(ctx).set_item_exclusions(CAMPAIGN, ["P-1"], ["ALL"])
         assert ctx.referentials.written == []
 
     def test_the_batch_lands_in_the_audit_trail_with_its_references(self):
         ctx = context([item("P-1"), item("P-2")])
-        data.set_item_exclusions(CAMPAIGN, request(["P-1", "P-2"], ["GENERIC"]), ctx)
+        service(ctx).set_item_exclusions(CAMPAIGN, ["P-1", "P-2"], ["GENERIC"])
 
         (event,) = ctx.events
         assert "2 article(s)" in event["summary"]
@@ -181,7 +189,7 @@ class TestSettingTheExclusionOfABatch:
 
     def test_a_batch_that_changes_nothing_writes_nothing_at_all(self):
         ctx = context([item("P-1", exclusions=["BOM"])])
-        result = data.set_item_exclusions(CAMPAIGN, request(["P-1"], ["BOM"]), ctx)
+        result = service(ctx).set_item_exclusions(CAMPAIGN, ["P-1"], ["BOM"])
 
         assert (result["updated"], ctx.events) == (0, [])
 
@@ -191,29 +199,29 @@ class TestTheStockedOrCountedFilter:
 
     def test_without_the_filter_the_whole_referential_is_returned(self):
         ctx = context([item("P-1"), item("P-2")], on_sheets={"P-1"})
-        assert data.list_items(CAMPAIGN, ctx)["total"] == 2
+        assert len(service(ctx).list_items(CAMPAIGN)) == 2
 
     def test_a_reference_on_a_generique_sheet_is_kept(self):
         ctx = context([item("P-1"), item("P-2")], on_sheets={"P-1"})
-        page = data.list_items(CAMPAIGN, ctx, counted=True)
-        assert [r["item_number"] for r in page["rows"]] == ["P-1"]
+        kept = service(ctx).list_items(CAMPAIGN, counted=True)
+        assert [i.item_number for i in kept] == ["P-1"]
 
     def test_a_reference_on_a_counting_journal_is_kept_too(self):
         """Le stock n'est pas tout en B06VRAC : les deux sources s'unissent."""
         ctx = context([item("P-1"), item("P-2")], on_journals={"P-2"})
-        page = data.list_items(CAMPAIGN, ctx, counted=True)
-        assert [r["item_number"] for r in page["rows"]] == ["P-2"]
+        kept = service(ctx).list_items(CAMPAIGN, counted=True)
+        assert [i.item_number for i in kept] == ["P-2"]
 
     def test_the_total_reflects_the_filter_so_paging_stays_honest(self):
         ctx = context([item(f"P-{n}") for n in range(10)], on_sheets={"P-3"})
-        assert data.list_items(CAMPAIGN, ctx, counted=True)["total"] == 1
+        assert len(service(ctx).list_items(CAMPAIGN, counted=True)) == 1
 
     def test_the_filter_and_the_search_box_compose(self):
         ctx = context(
             [item("P-1"), item("P-2"), item("Q-1")], on_sheets={"P-1", "Q-1"}
         )
-        page = data.list_items(CAMPAIGN, ctx, search="P-", counted=True)
-        assert [r["item_number"] for r in page["rows"]] == ["P-1"]
+        kept = service(ctx).list_items(CAMPAIGN, search="P-", counted=True)
+        assert [i.item_number for i in kept] == ["P-1"]
 
 
 class TestTheStockedFilterOnBills:
@@ -225,23 +233,26 @@ class TestTheStockedFilterOnBills:
     def test_an_edge_whose_assembly_is_counted_is_kept(self):
         """Il sera éclaté : sa structure est ce qui produit la quantité."""
         ctx = context(links=[self.link("A", "C")], on_sheets={"A"})
-        assert len(data.list_boms(CAMPAIGN, ctx, counted=True)) == 1
+        links, _ = service(ctx).list_bom_links(CAMPAIGN, counted=True)
+        assert len(links) == 1
 
     def test_an_edge_whose_component_is_counted_is_kept(self):
         """Un qty_per faux au-dessus d'un composant compté est invisible sinon."""
         ctx = context(links=[self.link("A", "C")], on_journals={"C"})
-        assert len(data.list_boms(CAMPAIGN, ctx, counted=True)) == 1
+        links, _ = service(ctx).list_bom_links(CAMPAIGN, counted=True)
+        assert len(links) == 1
 
     def test_an_edge_touching_nothing_stocked_falls_out(self):
         ctx = context(links=[self.link("A", "C")], on_sheets={"Z"})
-        assert data.list_boms(CAMPAIGN, ctx, counted=True) == []
+        links, _ = service(ctx).list_bom_links(CAMPAIGN, counted=True)
+        assert links == []
 
     def test_the_filter_composes_with_the_parent_filter(self):
         ctx = context(
             links=[self.link("A", "C"), self.link("B", "C")], on_sheets={"C"}
         )
-        kept = data.list_boms(CAMPAIGN, ctx, parent="A", counted=True)
-        assert [l["parent_item"] for l in kept] == ["A"]
+        kept, _ = service(ctx).list_bom_links(CAMPAIGN, parent="A", counted=True)
+        assert [l.parent_item for l in kept] == ["A"]
 
 
 class TestWhatTheErpMayWriteOn:

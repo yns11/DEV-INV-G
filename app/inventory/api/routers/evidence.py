@@ -10,15 +10,17 @@ adresse que rien n'oblige à rester celle qu'on a écrite.
 from __future__ import annotations
 
 import mimetypes
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from ...errors import NotFoundError
-from ..deps import CampaignDep, Ctx
+from ...services import EvidenceService
+from ..deps import CampaignDep, evidence_service
 from ..downloads import attachment
 
 router = APIRouter(prefix="/campaigns/{campaign_id}", tags=["pièces justificatives"])
+
+Evidence = Annotated[EvidenceService, Depends(evidence_service)]
 
 
 def _guess_type(filename: str) -> str:
@@ -31,41 +33,14 @@ def _guess_type(filename: str) -> str:
 
 
 @router.get("/imports/{batch_id}/evidence", summary="Fichier d'origine d'un chargement")
-def import_evidence(campaign: CampaignDep, batch_id: str, ctx: Ctx) -> Any:
-    """Le fichier tel qu'il a été reçu, avant toute interprétation.
-
-    C'est ce qui permet de rejouer un chargement contesté : les lignes en base
-    sont le résultat d'une lecture, celui-ci en est la source.
-    """
-    row = ctx.imports.evidence_of(campaign.id, batch_id)
-    if row is None:
-        raise NotFoundError(
-            "Ce chargement n'a pas de fichier archivé. Les collages et les "
-            "lectures ERP n'en produisent pas."
-        )
-    filename = row["filename"] or "piece-jointe"
-    return attachment(
-        ctx.evidence.get(row["storage_path"]), filename, _guess_type(filename)
-    )
+def import_evidence(campaign: CampaignDep, batch_id: str, service: Evidence) -> Any:
+    """Le fichier tel qu'il a été reçu, avant toute interprétation."""
+    found = service.of_import(campaign, batch_id)
+    return attachment(found.content, found.filename, _guess_type(found.filename))
 
 
 @router.get("/sheets/{sheet_id}/evidence", summary="Scan d'origine d'une feuille")
-def sheet_evidence(campaign: CampaignDep, sheet_id: str, ctx: Ctx) -> Any:
-    """Le scan qui a produit les quantités lues par l'IA.
-
-    Une valeur extraite d'une image se défend en montrant l'image. Quand la
-    feuille vient d'un scan groupé, c'est la pile entière qui est renvoyée :
-    c'est bien ce document-là qui la justifie.
-    """
-    sheet = ctx.sheets.get_sheet(sheet_id)
-    if sheet.campaign_id != campaign.id:
-        raise NotFoundError("Feuille introuvable dans cette campagne.")
-    if not sheet.evidence_path:
-        raise NotFoundError(
-            "Cette feuille n'a pas de scan archivé. Ses quantités ont été "
-            "saisies à la main, ou lues avant la mise en service de l'archive."
-        )
-    filename = sheet.evidence_path.rsplit("/", 1)[-1]
-    return attachment(
-        ctx.evidence.get(sheet.evidence_path), filename, _guess_type(filename)
-    )
+def sheet_evidence(campaign: CampaignDep, sheet_id: str, service: Evidence) -> Any:
+    """Le scan qui a produit les quantités lues par l'IA."""
+    found = service.of_sheet(campaign, sheet_id)
+    return attachment(found.content, found.filename, _guess_type(found.filename))

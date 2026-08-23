@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from ...domain.enums import CampaignStatus
 from ...domain.models import CampaignConfig, Thresholds
 from ...services import CampaignService
-from ..deps import CampaignDep, Ctx, campaign_service
+from ..deps import CampaignDep, campaign_service
 from ..schemas import (
     CloneCampaignRequest,
     CreateCampaignRequest,
@@ -126,8 +126,8 @@ def transition(
 
 
 @router.get("/{campaign_id}/thresholds", summary="Seuils de matérialité")
-def get_thresholds(campaign: CampaignDep, ctx: Ctx) -> list[dict[str, Any]]:
-    return [t.model_dump(mode="json") for t in ctx.campaigns.list_thresholds(campaign.id)]
+def get_thresholds(campaign: CampaignDep, service: Service) -> list[dict[str, Any]]:
+    return [t.model_dump(mode="json") for t in service.thresholds(campaign)]
 
 
 @router.put("/{campaign_id}/thresholds", summary="Mettre à jour les seuils")
@@ -143,14 +143,14 @@ def update_thresholds(
 @router.get("/{campaign_id}/audit", summary="Journal d'audit")
 def audit_trail(
     campaign: CampaignDep,
-    ctx: Ctx,
+    service: Service,
     entity_type: Annotated[str | None, Query(alias="entityType")] = None,
     actor: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
-    events = ctx.audit.list(
-        campaign.id, entity_type=entity_type, actor=actor, limit=limit, offset=offset
+    events = service.audit_trail(
+        campaign, entity_type=entity_type, actor=actor, limit=limit, offset=offset
     )
     return [e.model_dump(mode="json") for e in events]
 
@@ -158,17 +158,7 @@ def audit_trail(
 @router.get("/{campaign_id}/imports", summary="Historique des imports")
 def import_history(
     campaign: CampaignDep,
-    ctx: Ctx,
+    service: Service,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[dict[str, Any]]:
-    # Le chemin du volume ne sort pas : l'écran a seulement besoin de savoir
-    # s'il y a une pièce à proposer, et la route de téléchargement le résout
-    # elle-même à partir de l'identifiant du lot.
-    return [
-        {
-            **{k: v for k, v in row.items() if k != "storage_path"},
-            "id": str(row["id"]),
-            "archived": row["storage_path"] is not None,
-        }
-        for row in ctx.imports.list(campaign.id, limit=limit)
-    ]
+    return service.import_history(campaign, limit=limit)

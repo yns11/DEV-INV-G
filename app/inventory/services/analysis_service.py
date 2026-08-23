@@ -12,6 +12,7 @@ defensible six months later.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -28,7 +29,12 @@ from ..domain.controls import (
     summarise,
 )
 from ..domain.enums import AuditAction, JournalStatus
-from ..domain.models import Campaign, VarianceAnalysis, VarianceLine
+from ..domain.models import (
+    AdjustmentLine,
+    Campaign,
+    VarianceAnalysis,
+    VarianceLine,
+)
 from ..domain.variance import (
     CountedQty,
     KpiBlock,
@@ -1003,6 +1009,71 @@ class AnalysisService:
             after=analysis.model_dump(mode="json"),
         )
         return analysis
+
+    def causes(self) -> list[Any]:
+        """Le référentiel des causes standard, commun à toutes les campagnes."""
+        return self.ctx.analysis.list_causes()
+
+    def adjustments(self, campaign: Campaign, *, limit: int = 1000) -> list[Any]:
+        """Les mouvements et ajustements saisis sur la campagne."""
+        return self.ctx.adjustments.list(campaign.id, limit=limit)
+
+    def upsert_adjustments(
+        self, campaign: Campaign, rows: Sequence[Any]
+    ) -> dict[str, int]:
+        """Enregistrer des ajustements saisis à la main.
+
+        ``source="MANUAL"`` est posé ici et nulle part ailleurs : c'est ce qui
+        distingue une ligne tapée par quelqu'un d'une ligne venue d'un
+        chargement, et laisser l'appelant le choisir reviendrait à permettre à
+        une saisie de se faire passer pour une lecture ERP.
+
+        Un identifiant absent en fait une création : la grille édite et crée
+        dans la même vue, et exiger deux appels obligerait l'écran à savoir
+        lesquelles de ses lignes existent déjà.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "adjustments")
+        lines = [
+            AdjustmentLine(
+                id=row.id or new_id(),
+                campaign_id=campaign.id,
+                item_number=row.item_number,
+                warehouse_id=row.warehouse_id,
+                location_id=row.location_id,
+                kind=row.kind,
+                qty=row.qty,
+                unit=row.unit,
+                value=row.value,
+                journal_number=row.journal_number,
+                physical_date=row.physical_date,
+                reason_code=row.reason_code,
+                comment=row.comment,
+                source="MANUAL",
+            )
+            for row in rows
+        ]
+        written = ctx.adjustments.upsert(lines, actor=ctx.actor)
+        ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.UPDATE,
+            entity_type="adjustment_line",
+            summary=f"{len(lines)} ajustement(s) enregistré(s) manuellement",
+            after={"count": len(lines)},
+        )
+        return {"written": written}
+
+    def delete_adjustment(self, campaign: Campaign, line_id: str) -> None:
+        ctx = self.ctx
+        ctx.guard(campaign, "adjustments")
+        ctx.adjustments.delete(campaign.id, line_id, actor=ctx.actor)
+        ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.DELETE,
+            entity_type="adjustment_line",
+            entity_id=line_id,
+            summary="Suppression logique d'un ajustement",
+        )
 
     def cause_split(self, campaign: Campaign) -> dict[str, Any]:
         """Variance value broken down by assigned root cause.

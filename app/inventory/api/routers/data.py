@@ -12,11 +12,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
-from ...domain.enums import ExclusionScope
-from ...errors import NotFoundError, ValidationError
+from ...errors import ValidationError
 from ...ingest import get_contract, list_contracts
-from ...services import ImportService
-from ..deps import CampaignDep, Ctx, import_service
+from ...services import ImportService, ReferentialService
+from ..deps import CampaignDep, import_service, referential_service
+from ..paging import MAX_PAGE, page
 from ..schemas import (
     BomActivationRequest,
     BomLinkPatch,
@@ -36,6 +36,7 @@ router = APIRouter(tags=["données"])
 WHOLESALE_TARGETS = ("book_stock", "backflush")
 
 Importer = Annotated[ImportService, Depends(import_service)]
+Referentials = Annotated[ReferentialService, Depends(referential_service)]
 
 def _write_options(target: str, *, replace: bool, allow_partial: bool) -> dict:
     """Les options d'écriture que ce chargement accepte.
@@ -316,28 +317,32 @@ def import_rows(
 
 # --------------------------------------------------------------------------- #
 # Referential reads
+#
+# Ces routes traduisent, elles ne décident pas. Lire les paramètres, borner une
+# page, rendre en JSON : le reste — la garde de phase, la comparaison avec
+# l'existant, l'écriture, l'audit — appartient à ReferentialService, où une
+# règle se vérifie sans construire une application HTTP.
 # --------------------------------------------------------------------------- #
 
-def _stocked_item_numbers(ctx: Any, campaign_id: str) -> set[str]:
-    """Articles the campaign actually expects to see: sheets ∪ journals.
+def _item_json(item: Any) -> dict[str, Any]:
+    """Un article, dans la forme que la grille attend.
 
-    The referential holds the whole catalogue — tens of thousands of references,
-    most of which no site has held for years. What is being counted is a much
-    smaller set, and it is the only one worth reading a designation or a
-    bill-of-materials edge for. The two sources are unioned rather than picked
-    between because the split is a matter of storage, not of interest: a
-    reference on a GENERIQUE sheet and one on a journal line are both stocked.
+    Deux traductions, et toutes deux de sérialisation : un ensemble d'énumérés
+    devient une liste triée pour que la réponse soit stable d'un appel à
+    l'autre, et un ``Decimal`` devient un nombre parce que JSON n'en a pas.
     """
-    return ctx.sheets.listed_item_numbers(campaign_id) | ctx.journals.listed_item_numbers(
-        campaign_id
-    )
+    return {
+        **item.model_dump(mode="json"),
+        "exclusions": sorted(str(e) for e in item.exclusions),
+        "stdPrice": float(item.std_price),
+    }
 
 
 @router.get("/campaigns/{campaign_id}/items", summary="Référentiel articles")
 def list_items(
     campaign: CampaignDep,
-    ctx: Ctx,
-    limit: Annotated[int, Query(ge=1, le=20_000)] = 1000,
+    service: Referentials,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 1000,
     offset: Annotated[int, Query(ge=0)] = 0,
     search: Annotated[str | None, Query()] = None,
     counted: Annotated[bool, Query()] = False,
@@ -345,95 +350,23 @@ def list_items(
     """The campaign's articles, filtered server-side.
 
     ``counted=true`` keeps only the references that appear on a GENERIQUE
-    counting sheet or in a counting journal. Filtered here rather than in the
-    browser so that ``total`` means what it says and the paging stays honest.
+    counting sheet or in a counting journal.
     """
-    items = ctx.referentials.list_items(campaign.id)
-    if counted:
-        stocked = _stocked_item_numbers(ctx, campaign.id)
-        items = [i for i in items if i.item_number in stocked]
-    if search:
-        needle = search.strip().upper()
-        items = [
-            i for i in items
-            if needle in i.item_number or needle in i.name.upper()
-            or needle in i.search_name.upper()
-        ]
-    total = len(items)
-    page = items[offset : offset + limit]
-    return {
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "rows": [
-            {
-                **i.model_dump(mode="json"),
-                "exclusions": sorted(str(e) for e in i.exclusions),
-                "stdPrice": float(i.std_price),
-            }
-            for i in page
-        ],
-    }
+    items = service.list_items(campaign, search=search, counted=counted)
+    return page(items, offset=offset, limit=limit, render=_item_json)
 
 
 @router.patch(
     "/campaigns/{campaign_id}/items/{item_number}", summary="Modifier un article"
 )
 def update_item(
-    campaign: CampaignDep, item_number: str, payload: ItemPatch, ctx: Ctx
+    campaign: CampaignDep, item_number: str, payload: ItemPatch, service: Referentials
 ) -> dict[str, Any]:
-    """Correct one article without reloading the referential.
-
-    A referential arrives from the ERP with a designation missing here, a type
-    wrong there. Before this, the only remedy was to re-import the whole file —
-    so a one-character fix meant redoing the load, and people stopped fixing
-    things. The edit goes through the same freeze and sequencing guard as the
-    import, and lands in the audit trail with what it replaced.
-    """
-    ctx.guard(campaign, "items")
-    current = ctx.referentials.get_item(campaign.id, item_number)
-    if current is None:
-        raise NotFoundError(f"Article « {item_number} » introuvable.")
-
-    changes = payload.model_dump(exclude_none=True)
-    if not changes:
-        raise ValidationError("Aucune modification transmise.")
-    # `model_copy` does not re-validate, so the set has to arrive already
-    # normalised — otherwise a `{ALL, GENERIC}` sent by a client would be stored
-    # verbatim and read back as something the picker cannot represent.
-    if "exclusions" in changes:
-        changes["exclusions"] = ExclusionScope.normalise(changes["exclusions"])
-    updated = current.model_copy(update=changes)
-
-    ctx.referentials.upsert_items([updated], actor=ctx.actor)
-    ctx.record(
-        campaign_id=campaign.id,
-        action="UPDATE",
-        entity_type="item",
-        entity_id=item_number,
-        summary=f"Modification de l'article {item_number}",
-        before={k: str(getattr(current, k)) for k in changes},
-        after={k: str(getattr(updated, k)) for k in changes},
+    """Correct one article without reloading the referential."""
+    updated = service.update_item(
+        campaign, item_number, payload.model_dump(exclude_none=True)
     )
-    return {
-        **updated.model_dump(mode="json"),
-        "exclusions": sorted(str(e) for e in updated.exclusions),
-        "stdPrice": float(updated.std_price),
-    }
-
-
-#: How an exclusion reads in the audit trail and in error messages.
-_EXCLUSION_LABELS = {
-    ExclusionScope.GENERIC: "hors GENERIQUE",
-    ExclusionScope.BOM: "ignoré en nomenclature",
-    ExclusionScope.ALL: "hors périmètre",
-}
-
-
-def _describe(scopes: set[ExclusionScope]) -> str:
-    if not scopes:
-        return "aucune exclusion"
-    return ", ".join(_EXCLUSION_LABELS[s] for s in sorted(scopes, key=str))
+    return _item_json(updated)
 
 
 @router.post(
@@ -441,120 +374,52 @@ def _describe(scopes: set[ExclusionScope]) -> str:
     summary="Exclure ou réintégrer un lot d'articles",
 )
 def set_item_exclusions(
-    campaign: CampaignDep, payload: ItemExclusionsRequest, ctx: Ctx
+    campaign: CampaignDep, payload: ItemExclusionsRequest, service: Referentials
 ) -> dict[str, Any]:
-    """Apply one exclusion to a whole selection.
-
-    Exclusions come in families, not one reference at a time: a programme that
-    left the site, an after-sales range counted elsewhere, packaging nobody
-    weighs. Doing it line by line through the edit modal is what made people
-    give up half-way and leave a referential that is only half true — which is
-    worse than one that excludes nothing, because the gaps are invisible.
-
-    An unknown reference stops the whole batch rather than being skipped: a
-    selection is made against what is on screen, so a reference the server does
-    not know means the two disagree, and silently applying the rest would hide
-    it.
-    """
-    ctx.guard(campaign, "items")
-    wanted = ExclusionScope.normalise(payload.exclusions)
-    numbers = list(
-        dict.fromkeys(n.strip().upper() for n in payload.item_numbers if n.strip())
+    """Apply one exclusion to a whole selection."""
+    return service.set_item_exclusions(
+        campaign, payload.item_numbers, payload.exclusions
     )
-    if not numbers:
-        raise ValidationError("Aucun article transmis.")
-
-    known = ctx.referentials.items_by_number(campaign.id)
-    missing = [n for n in numbers if n not in known]
-    if missing:
-        raise ValidationError(
-            f"{len(missing)} article(s) hors référentiel, dont "
-            f"« {missing[0]} ». Rechargez la liste avant de recommencer.",
-            missing=missing[:20],
-        )
-
-    changed = [
-        known[n].model_copy(update={"exclusions": set(wanted)})
-        for n in numbers
-        if known[n].exclusions != wanted
-    ]
-    if changed:
-        ctx.referentials.upsert_items(changed, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action="UPDATE",
-            entity_type="item",
-            entity_id="",
-            summary=f"{len(changed)} article(s) : {_describe(wanted)}",
-            after={
-                "exclusions": ",".join(sorted(str(e) for e in wanted)),
-                # The references themselves, so the trail answers "which ones?"
-                # without replaying the selection — truncated, because a batch
-                # can carry the whole catalogue and an audit row is read by a
-                # human.
-                "itemNumbers": ", ".join(i.item_number for i in changed[:50])
-                + (" …" if len(changed) > 50 else ""),
-            },
-        )
-    return {
-        "updated": len(changed),
-        "unchanged": len(numbers) - len(changed),
-        "exclusions": sorted(str(e) for e in wanted),
-    }
 
 
 @router.delete(
     "/campaigns/{campaign_id}/items/{item_number}", summary="Supprimer un article"
 )
-def delete_item(campaign: CampaignDep, item_number: str, ctx: Ctx) -> dict[str, bool]:
-    ctx.guard(campaign, "items")
-    ctx.referentials.delete_item(campaign.id, item_number, actor=ctx.actor)
-    ctx.record(
-        campaign_id=campaign.id,
-        action="DELETE",
-        entity_type="item",
-        entity_id=item_number,
-        summary=f"Suppression logique de l'article {item_number}",
-    )
+def delete_item(
+    campaign: CampaignDep, item_number: str, service: Referentials
+) -> dict[str, bool]:
+    service.delete_item(campaign, item_number)
     return {"deleted": True}
 
 
 @router.get("/campaigns/{campaign_id}/boms", summary="Nomenclatures")
 def list_boms(
     campaign: CampaignDep,
-    ctx: Ctx,
+    service: Referentials,
     parent: Annotated[str | None, Query()] = None,
     counted: Annotated[bool, Query()] = False,
-) -> list[dict[str, Any]]:
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 5000,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
     """Every edge, or only the ones a counted reference is on either side of.
 
-    An edge is kept when **either** end is stocked, not only the parent: an
-    assembly found on a sheet is kept because it will be exploded, and a
-    component found on one is kept because a wrong ``qty_per`` above it is
-    exactly what would make its counted quantity unexplainable.
+    Paginé, et porteur du total : une nomenclature complète se compte en
+    dizaines de milliers de liens, et la renvoyer entière pour en afficher
+    trente était le seul appel de l'application capable de tenir une seconde à
+    lui tout seul.
     """
-    links = ctx.referentials.list_bom_links(campaign.id)
-    if parent:
-        needle = parent.strip().upper()
-        links = [l for l in links if l.parent_item == needle]
-    if counted:
-        stocked = _stocked_item_numbers(ctx, campaign.id)
-        links = [
-            l for l in links
-            if l.parent_item in stocked or l.child_item in stocked
-        ]
-    # Les désignations viennent avec : une nomenclature lue en références seules
-    # oblige à ouvrir le référentiel à chaque ligne pour savoir de quoi on parle.
-    items = ctx.referentials.items_by_number(campaign.id)
-    return [
-        {
+    links, items = service.list_bom_links(campaign, parent=parent, counted=counted)
+    return page(
+        links,
+        offset=offset,
+        limit=limit,
+        render=lambda l: {
             **l.model_dump(mode="json"),
             "qtyPer": float(l.qty_per),
             "parentName": items[l.parent_item].name if l.parent_item in items else "",
             "childName": items[l.child_item].name if l.child_item in items else "",
-        }
-        for l in links
-    ]
+        },
+    )
 
 
 @router.post(
@@ -562,76 +427,22 @@ def list_boms(
     summary="Activer ou désactiver un lot de liens",
 )
 def set_bom_activation(
-    campaign: CampaignDep, payload: BomActivationRequest, ctx: Ctx
+    campaign: CampaignDep, payload: BomActivationRequest, service: Referentials
 ) -> dict[str, Any]:
-    """Put a batch of bill-of-materials edges in force, or retire them.
-
-    A version change arrives as a set — a whole assembly's recipe is replaced,
-    not one edge of it — so this is the operation, and doing it link by link is
-    how half a version ends up in force and the other half retired.
-    """
-    ctx.guard(campaign, "boms")
-    wanted = {(l.parent_item, l.child_item) for l in payload.links}
-    known = {(l.parent_item, l.child_item): l for l in ctx.referentials.list_bom_links(campaign.id)}
-    missing = sorted(wanted - set(known))
-    if missing:
-        raise ValidationError(
-            f"{len(missing)} lien(s) introuvables, dont "
-            f"« {missing[0][0]} → {missing[0][1]} ». Rechargez la liste.",
-            missing=[f"{p} → {c}" for p, c in missing[:20]],
-        )
-
-    changed = [
-        known[key].model_copy(update={"active": payload.active})
-        for key in sorted(wanted)
-        if known[key].active != payload.active
-    ]
-    if changed:
-        ctx.referentials.upsert_bom_links(changed, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action="UPDATE",
-            entity_type="bom_link",
-            summary=(
-                f"{len(changed)} lien(s) "
-                f"{'remis en vigueur' if payload.active else 'retirés'}"
-            ),
-            after={"active": str(payload.active)},
-        )
-    return {"updated": len(changed), "unchanged": len(wanted) - len(changed)}
+    """Put a batch of bill-of-materials edges in force, or retire them."""
+    return service.set_bom_activation(campaign, payload.links, payload.active)
 
 
 @router.patch("/campaigns/{campaign_id}/boms", summary="Modifier un lien de nomenclature")
 def update_bom_link(
-    campaign: CampaignDep, payload: BomLinkPatch, ctx: Ctx
+    campaign: CampaignDep, payload: BomLinkPatch, service: Referentials
 ) -> dict[str, Any]:
-    """Correct the quantity or unit of one edge.
-
-    A wrong ``qty_per`` is invisible until consolidation explodes an assembly
-    and produces a component count nobody can explain. Fixing it should cost one
-    field, not a re-import of the whole structure.
-    """
-    ctx.guard(campaign, "boms")
-    parent = payload.parent_item.strip().upper()
-    child = payload.child_item.strip().upper()
-    current = ctx.referentials.get_bom_link(campaign.id, parent, child)
-    if current is None:
-        raise NotFoundError(f"Lien « {parent} → {child} » introuvable.")
-
-    changes = payload.model_dump(exclude_none=True, exclude={"parent_item", "child_item"})
-    if not changes:
-        raise ValidationError("Aucune modification transmise.")
-    updated = current.model_copy(update=changes)
-
-    ctx.referentials.upsert_bom_links([updated], actor=ctx.actor)
-    ctx.record(
-        campaign_id=campaign.id,
-        action="UPDATE",
-        entity_type="bom_link",
-        entity_id=f"{parent}/{child}",
-        summary=f"Modification du lien {parent} → {child}",
-        before={k: str(getattr(current, k)) for k in changes},
-        after={k: str(getattr(updated, k)) for k in changes},
+    """Correct the quantity or unit of one edge."""
+    updated = service.update_bom_link(
+        campaign,
+        payload.parent_item,
+        payload.child_item,
+        payload.model_dump(exclude_none=True, exclude={"parent_item", "child_item"}),
     )
     return {**updated.model_dump(mode="json"), "qtyPer": float(updated.qty_per)}
 
@@ -639,81 +450,41 @@ def update_bom_link(
 @router.delete("/campaigns/{campaign_id}/boms", summary="Supprimer un lien")
 def delete_bom_link(
     campaign: CampaignDep,
-    ctx: Ctx,
+    service: Referentials,
     parent: Annotated[str, Query(min_length=1)],
     child: Annotated[str, Query(min_length=1)],
 ) -> dict[str, bool]:
-    ctx.guard(campaign, "boms")
-    parent_key, child_key = parent.strip().upper(), child.strip().upper()
-    removed = ctx.referentials.delete_bom_link(
-        campaign.id, parent_key, child_key, actor=ctx.actor
-    )
-    if not removed:
-        raise NotFoundError(f"Lien « {parent_key} → {child_key} » introuvable.")
-    ctx.record(
-        campaign_id=campaign.id,
-        action="DELETE",
-        entity_type="bom_link",
-        entity_id=f"{parent_key}/{child_key}",
-        summary=f"Suppression du lien {parent_key} → {child_key}",
-    )
+    service.delete_bom_link(campaign, parent, child)
     return {"deleted": True}
 
 
 @router.get("/campaigns/{campaign_id}/bom-health", summary="Santé des nomenclatures")
-def bom_health(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
+def bom_health(campaign: CampaignDep, service: Referentials) -> dict[str, Any]:
     """Cycles, orphan links and assemblies without a structure.
 
     Surfaced as its own endpoint because a BOM defect discovered on the day of
     the inventory costs a whole afternoon; discovered in preparation, it costs
     ten minutes.
     """
-    from ...domain.bom import BomIndex
-    from ...domain.controls import check_referentials, group_findings, summarise
-
-    items = ctx.referentials.items_by_number(campaign.id)
-    links = ctx.referentials.list_bom_links(campaign.id)
-    index = BomIndex(links)
-    findings = check_referentials(items=items, bom_links=links, bom_index=index)
-    return {
-        "linkCount": len(index),
-        "parentCount": len(index.parents),
-        "cycles": [" → ".join(c) for c in index.find_cycles()],
-        "summary": summarise(findings),
-        "groups": [g.to_summary() for g in group_findings(findings)],
-        "findings": [f.model_dump(mode="json") for f in findings],
-    }
+    return service.bom_health(campaign)
 
 
 @router.get("/campaigns/{campaign_id}/book-stock", summary="Stock ERP")
 def book_stock(
     campaign: CampaignDep,
-    ctx: Ctx,
-    limit: Annotated[int, Query(ge=1, le=20_000)] = 1000,
+    service: Referentials,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 1000,
     offset: Annotated[int, Query(ge=0)] = 0,
     top: Annotated[int | None, Query(ge=1, le=1000)] = None,
 ) -> dict[str, Any]:
-    """The ERP snapshot, and what the biggest lines of it weigh.
-
-    ``top=25`` keeps the twenty-five most valuable article / warehouse /
-    location triples. Stock value is concentrated — a handful of lines usually
-    carry most of it — and those are the ones worth counting twice and checking
-    first. ``topShare`` says how much of the total they actually represent, so
-    the claim is measured rather than assumed.
-    """
-    lines = ctx.book_stock.list(campaign.id)
-    total_value = sum(float(l.value) for l in lines)
-    top_share: float | None = None
-    if top is not None:
-        lines = sorted(lines, key=lambda l: abs(float(l.value)), reverse=True)[:top]
-        kept = sum(float(l.value) for l in lines)
-        top_share = kept / total_value if total_value else 0.0
+    """The ERP snapshot, and what the biggest lines of it weigh."""
+    view = service.book_stock(campaign, top=top)
     return {
-        "total": len(lines),
-        "totalValue": total_value,
+        "total": len(view.lines),
+        "totalValue": view.total_value,
         # Part de la valeur portée par les lignes retenues. `null` sans filtre :
         # « 100 % » se lirait comme un résultat alors que c'est une tautologie.
-        "topShare": top_share,
+        "topShare": view.top_share,
         "frozenAt": campaign.book_stock_frozen_at.isoformat()
         if campaign.book_stock_frozen_at else None,
         "rows": [
@@ -723,7 +494,7 @@ def book_stock(
                 "unitCost": float(l.unit_cost),
                 "value": float(l.value),
             }
-            for l in lines[offset : offset + limit]
+            for l in view.lines[offset : offset + limit]
         ],
     }
 
@@ -734,20 +505,17 @@ def freeze_book_stock(campaign: CampaignDep, importer: Importer) -> dict[str, An
 
 
 @router.get("/campaigns/{campaign_id}/locations", summary="Entrepôts et emplacements")
-def list_locations(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
-    locations = ctx.referentials.list_locations(campaign.id)
-    journals = {j.key: j for j in ctx.journals.list(campaign.id)}
+def list_locations(campaign: CampaignDep, service: Referentials) -> dict[str, Any]:
+    warehouses, locations = service.locations(campaign)
     return {
-        "warehouses": [
-            w.model_dump(mode="json") for w in ctx.referentials.list_warehouses(campaign.id)
-        ],
+        "warehouses": [w.model_dump(mode="json") for w in warehouses],
         "locations": [
             {
-                **l.model_dump(mode="json"),
-                "hasJournal": l.key in journals,
-                "journalStatus": str(journals[l.key].status) if l.key in journals else None,
+                **view.location.model_dump(mode="json"),
+                "hasJournal": view.journal is not None,
+                "journalStatus": str(view.journal.status) if view.journal else None,
             }
-            for l in locations
+            for view in locations
         ],
     }
 

@@ -22,6 +22,7 @@ from ..domain.consolidation import (
     build_arbitration_lines,
     consolidate_generic,
 )
+from ..domain.controls import group_findings
 from ..domain.enums import (
     AuditAction,
     CampaignStatus,
@@ -1607,6 +1608,31 @@ class GenericService:
                 line.qty * items[line.item_number].std_price
             ) if known else 0.0,
             "hasWip": line.has_wip,
+        }
+
+    def preview_consolidation(self, campaign: Campaign) -> dict[str, Any]:
+        """La consolidation telle qu'elle serait, zones inachevées comprises.
+
+        C'est la vue vivante pendant le comptage : ce que le journal GENERIQUE
+        contiendrait maintenant, et quelles zones manquent encore. Rien n'est
+        enregistré.
+
+        Le rendu est ici et non dans la route parce qu'il a besoin du
+        référentiel : la route allait le chercher à travers ``service.ctx``,
+        c'est-à-dire en contournant le service pour atteindre ses dépôts. Une
+        route qui sait faire cela sait tout faire, et la couche ne veut plus
+        rien dire.
+        """
+        result = self.consolidate(campaign, preview=True)
+        items = self.ctx.referentials.items_by_number(campaign.id)
+        return {
+            "lines": [self.line_payload(line, items) for line in result.lines],
+            "totalQty": float(result.total_qty),
+            "zonesIncluded": result.zones_included,
+            "zonesSkipped": result.zones_skipped,
+            "findings": [f.model_dump(mode="json") for f in result.findings],
+            "groups": [g.to_summary() for g in group_findings(result.findings)],
+            "blocking": len(result.blocking),
         }
 
     def current_consolidation(self, campaign: Campaign) -> dict[str, Any]:

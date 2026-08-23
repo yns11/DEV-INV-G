@@ -691,7 +691,11 @@ function BomsTab({
   })
   const links = useQuery({
     queryKey: ['boms', campaignId, counted],
-    queryFn: () => api.boms(campaignId, { counted: counted || undefined }),
+    queryFn: () =>
+      api.boms(campaignId, {
+        limit: GRID_ROW_CEILING,
+        counted: counted || undefined,
+      }),
   })
 
   const refresh = () => {
@@ -736,8 +740,8 @@ function BomsTab({
   // grain : une ligne par assemblage, pas par lien — c'est la liste de ce que
   // l'usine sait encore construire, et elle se lit en dizaines quand les liens
   // se comptent en milliers.
-  const { visibleLinks, parentRows, counts } = useMemo(() => {
-    const rows = links.data ?? []
+  const { visibleLinks, parentRows, counts, hidden } = useMemo(() => {
+    const rows = links.data?.rows ?? []
     const active = rows.filter((r) => r.active !== false)
     const byParent = new Map<string, { parent: string; name: string; children: number }>()
     for (const row of active) {
@@ -757,6 +761,10 @@ function BomsTab({
       visibleLinks: bomView === 'active' ? active : rows,
       parentRows: parents,
       counts: { all: rows.length, active: active.length, parents: parents.length },
+      // Les comptes des pastilles portent sur ce qui est chargé ; celui-ci
+      // porte sur ce qui existe. Les confondre ferait dire « 20 000 liens » à
+      // une nomenclature qui en a soixante mille.
+      hidden: Math.max(0, (links.data?.total ?? rows.length) - rows.length),
     }
   }, [links.data, bomView])
 
@@ -944,11 +952,12 @@ function BomsTab({
                 </div>
               }
               footer={
-                counted ? (
-                  <span>
-                    Liens dont l’assemblage ou le composant est stocké ou compté.
-                  </span>
-                ) : null
+                <span>
+                  {counted &&
+                    'Liens dont l’assemblage ou le composant est stocké ou compté. '}
+                  {hidden > 0 &&
+                    `${hidden.toLocaleString('fr-FR')} lien(s) non chargé(s) — filtrez sur un assemblage ou exportez.`}
+                </span>
               }
             />
           )}
@@ -1429,7 +1438,8 @@ function SheetLinesView({
 
   const query = useQuery({
     queryKey: ['sheet-lines', campaignId, zoneId],
-    queryFn: () => api.sheetLines(campaignId, zoneId || undefined),
+    queryFn: () =>
+      api.sheetLines(campaignId, zoneId || undefined, { limit: GRID_ROW_CEILING }),
   })
 
   const refresh = () => {
@@ -1526,7 +1536,12 @@ function SheetLinesView({
     onError: (error) => showError(error, 'Enregistrement impossible'),
   })
 
-  const rows = draft ?? query.data ?? []
+  const rows = draft ?? query.data?.rows ?? []
+  //: Ce que le plafond laisse dehors. Compté sur la page reçue et non sur
+  //: `rows`, qui porte le brouillon en cours d'édition : une ligne ajoutée à
+  //: la main ferait sinon baisser le nombre de lignes « non chargées ».
+  const loaded = query.data?.rows.length ?? 0
+  const hidden = Math.max(0, (query.data?.total ?? loaded) - loaded)
   const columns: Column[] = [
     { key: 'zoneCode', label: 'Zone', width: 160, editable: false },
     { key: 'passNo', label: 'Comptage', numeric: true, width: 100, editable: false },
@@ -1637,8 +1652,10 @@ function SheetLinesView({
             }
             footer={
               <span>
-                {rows.length.toLocaleString('fr-FR')} ligne(s)
+                {(draft ? rows.length : (query.data?.total ?? 0)).toLocaleString('fr-FR')} ligne(s)
                 {zoneId ? ' sur cette zone' : ' sur toute la campagne'}
+                {hidden > 0 &&
+                  ` — ${loaded.toLocaleString('fr-FR')} affichées, filtrez sur une zone pour voir les autres`}
               </span>
             }
           />

@@ -390,10 +390,10 @@ class TestTheServicePassesItOn:
 @pytest.mark.no_postgres
 class TestTheBrowserSendsIt:
     def source(self, relative: str) -> str:
-        from pathlib import Path
+        """L'écran entier, ses onglets compris — voir ``conftest``."""
+        from conftest import screen_source
 
-        root = Path(__file__).resolve().parent.parent
-        return (root / "frontend" / "src" / relative).read_text()
+        return screen_source(relative)
 
     def test_the_client_accepts_a_version(self):
         assert "expectedVersion?: number," in self.source("lib/api.ts")

@@ -73,7 +73,7 @@ def imported_names(name: str) -> set[str]:
     """
     found: set[str] = set()
     for node in ast.walk(ast.parse(source(name))):
-        if isinstance(node, ast.ImportFrom) or isinstance(node, ast.Import):
+        if isinstance(node, ast.ImportFrom | ast.Import):
             found.update(alias.name for alias in node.names)
     return found
 

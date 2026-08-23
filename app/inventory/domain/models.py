@@ -94,6 +94,11 @@ class DomainModel(BaseModel):
         str_strip_whitespace=True,
         frozen=False,
         populate_by_name=True,
+        # Un champ à valeur par défaut est *toujours* présent dans un
+        # `model_dump`. Sans ce drapeau, le schéma de réponse le déclare
+        # facultatif, et le client généré doit le tester à chaque lecture
+        # alors qu'il ne manque jamais.
+        json_schema_serialization_defaults_required=True,
     )
 
 

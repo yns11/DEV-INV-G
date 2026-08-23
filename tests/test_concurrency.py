@@ -325,7 +325,13 @@ class TestTheServicePassesItOn:
             sheets=SimpleNamespace(
                 get_sheet=lambda sid: sheet,
                 list_zones=lambda cid: [
-                    SimpleNamespace(id="zone-1", code="Z1", allow_negative=False)
+                    # `passes` comme sur le vrai modèle : un comptage unique,
+                    # donc rien à comparer entre deux passages. La doublure qui
+                    # l'omettait laissait le service lever sur un attribut
+                    # absent — un défaut de la doublure, pas du code livré.
+                    SimpleNamespace(
+                        id="zone-1", code="Z1", allow_negative=False, passes=1
+                    )
                 ],
                 list_sheet_lines=lambda sid: [],
                 bump_sheet=lambda *a, **kw: calls.append(
@@ -384,10 +390,10 @@ class TestTheServicePassesItOn:
 @pytest.mark.no_postgres
 class TestTheBrowserSendsIt:
     def source(self, relative: str) -> str:
-        from pathlib import Path
+        """L'écran entier, ses onglets compris — voir ``conftest``."""
+        from conftest import screen_source
 
-        root = Path(__file__).resolve().parent.parent
-        return (root / "frontend" / "src" / relative).read_text()
+        return screen_source(relative)
 
     def test_the_client_accepts_a_version(self):
         assert "expectedVersion?: number," in self.source("lib/api.ts")

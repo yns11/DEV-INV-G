@@ -37,7 +37,9 @@ def code_of(relative: str) -> str:
     Les commentaires y citent `window.confirm` pour expliquer ce qui change ;
     les lire comme du code ferait échouer le contrôle sur sa propre explication.
     """
-    text = (SRC / relative).read_text()
+    from conftest import screen_source
+
+    text = screen_source(relative)
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
     return "\n".join(
         line for line in text.splitlines() if not line.lstrip().startswith(("//", "*"))

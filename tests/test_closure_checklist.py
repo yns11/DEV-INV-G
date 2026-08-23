@@ -395,7 +395,10 @@ class TestTheServiceGathersTheFacts:
 # --------------------------------------------------------------------------- #
 
 def frontend(relative: str) -> str:
-    return (ROOT / "frontend" / "src" / relative).read_text()
+    """L'écran entier, ses onglets compris — voir ``conftest``."""
+    from conftest import screen_source
+
+    return screen_source(relative)
 
 
 class TestTheScreenReadsItBeforeTheClick:

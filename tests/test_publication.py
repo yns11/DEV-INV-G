@@ -234,13 +234,26 @@ class TestOneImplementationTwoCallers:
     l'endroit où le défaut a été constaté, et pas à son jumeau.
     """
 
-    def test_the_shared_module_exists_and_exports_one_entry_point(self):
+    def test_the_shared_module_exposes_the_connection_in_both_forms(self):
+        """``conninfo`` pour psycopg, ``jdbc_of`` pour les exécuteurs.
+
+        Deux formes, une seule découverte : redécouvrir l'hôte pour l'écriture
+        distribuée ferait exactement ce que ce module existe pour empêcher —
+        deux versions d'une même résolution, dont une périmée.
+        """
         tree = ast.parse(SHARED.read_text())
         exported = [
-            node for node in tree.body
+            node.name for node in tree.body
             if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
         ]
-        assert [f.name for f in exported] == ["conninfo"]
+        assert exported == ["conninfo", "jdbc_of"]
+
+    def test_the_jdbc_form_is_derived_and_not_rediscovered(self):
+        """Elle prend la chaîne déjà construite, pas les arguments du job."""
+        source = SHARED.read_text()
+        block = source[source.index("def jdbc_of(") :][:900]
+        assert "conninfo_string" in block
+        assert "WorkspaceClient" not in block
 
     @pytest.mark.parametrize("job", [JOB, SYNC], ids=["publish", "sync"])
     def test_both_jobs_import_it(self, job):

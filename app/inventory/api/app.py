@@ -32,6 +32,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from ..config import get_settings
 from ..errors import InventoryError
 from ..metrics import REGISTRY
+from .responses import HealthResponse, MeResponse, MetricsResponse
 from .routers import (
     analysis,
     assistant,
@@ -365,7 +366,12 @@ def create_app() -> FastAPI:
             "startupError": getattr(app.state, "startup_error", None),
         }
 
-    @app.get("/api/health", tags=["système"], summary="Diagnostic complet")
+    @app.get(
+        "/api/health",
+        tags=["système"],
+        summary="Diagnostic complet",
+        responses={200: {"model": HealthResponse}},
+    )
     def health() -> dict[str, Any]:
         """Tout ce qu'on peut savoir de ce conteneur, en une réponse.
 
@@ -410,7 +416,12 @@ def create_app() -> FastAPI:
             "migrations": _migration_state(settings),
         }
 
-    @app.get("/api/metrics", tags=["système"], summary="Métriques d'exploitation")
+    @app.get(
+        "/api/metrics",
+        tags=["système"],
+        summary="Métriques d'exploitation",
+        responses={200: {"model": MetricsResponse}},
+    )
     def metrics(hours: Annotated[int, Query(ge=1, le=168)] = 24) -> dict[str, Any]:
         """Ce qu'un exploitant vient mesurer quand la journée se passe mal.
 
@@ -474,7 +485,12 @@ def create_app() -> FastAPI:
             log.warning("Lecture d'exploitation impossible: %s", exc)
             return {"error": str(exc)}
 
-    @app.get("/api/me", tags=["système"], summary="Utilisateur connecté")
+    @app.get(
+        "/api/me",
+        tags=["système"],
+        summary="Utilisateur connecté",
+        responses={200: {"model": MeResponse}},
+    )
     def me(request: Request) -> dict[str, Any]:
         """Who the app thinks you are, and where that came from.
 

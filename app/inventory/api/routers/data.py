@@ -17,6 +17,7 @@ from ...ingest import get_contract, list_contracts
 from ...services import ImportService, ReferentialService
 from ..deps import CampaignDep, import_service, referential_service
 from ..paging import MAX_PAGE, page
+from ..responses import GridContractResponse
 from ..schemas import (
     BomActivationRequest,
     BomLinkPatch,
@@ -72,7 +73,10 @@ _TARGETS = {
 # Contracts
 # --------------------------------------------------------------------------- #
 
-@router.get("/contracts", summary="Contrats de colonnes des grilles")
+@router.get(
+    "/contracts", summary="Contrats de colonnes des grilles",
+    responses={200: {"model": list[GridContractResponse]}},
+)
 def contracts() -> list[dict[str, Any]]:
     """The column contract of every importable grid.
 
@@ -82,7 +86,10 @@ def contracts() -> list[dict[str, Any]]:
     return list_contracts()
 
 
-@router.get("/contracts/{contract_key}", summary="Contrat d'une grille")
+@router.get(
+    "/contracts/{contract_key}", summary="Contrat d'une grille",
+    responses={200: {"model": GridContractResponse}},
+)
 def contract(contract_key: str) -> dict[str, Any]:
     try:
         return get_contract(contract_key).as_dict()

@@ -101,12 +101,6 @@ STOCK_COLUMNS = (
     "snapshot_date",
 )
 
-#: Nombre de lignes envoyées par ordre d'insertion. Assez grand pour que le
-#: référentiel entier passe en quelques dizaines d'allers-retours, assez petit
-#: pour ne pas construire une requête de plusieurs mégaoctets.
-BATCH = 5_000
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -137,6 +131,17 @@ def main() -> int:
         help="Ne synchronise que les articles et les nomenclatures.",
     )
     parser.add_argument("--stock-table", default="stock_snapshot")
+    parser.add_argument(
+        "--driver-side",
+        action="store_true",
+        help=(
+            "Faire transiter la copie par le driver plutôt que par les "
+            "exécuteurs. Repli pour un environnement où les exécuteurs ne "
+            "joignent pas Lakebase : la mémoire reste bornée (lecture en flux, "
+            "partition par partition) mais la bande passante est celle d'une "
+            "seule machine."
+        ),
+    )
     parser.add_argument(
         "--skip-stock", action="store_true",
         help="Ne synchronise pas le snapshot de stock.",
@@ -215,6 +220,7 @@ def main() -> int:
     )
 
     import psycopg
+    from lakebase import jdbc_of
 
     # La connexion et la vérification de forme passent avant la lecture. Chaque
     # échec rencontré jusqu'ici — variables absentes, droits manquants, colonne
@@ -228,19 +234,49 @@ def main() -> int:
 
     with connection as conn:
         conn.execute(f"SET search_path TO {args.pg_schema}, public")
-        _assert_mirror_shape(conn, "erp_base_article", ITEM_COLUMNS)
-        _assert_mirror_shape(conn, "erp_bom", BOM_COLUMNS)
+        # La forme du miroir est vérifiée *et* retenue : ses types servent à
+        # copier à NULL une colonne que la source ne publierait pas.
+        shapes = {
+            "erp_base_article": _assert_mirror_shape(
+                conn, "erp_base_article", ITEM_COLUMNS
+            ),
+            "erp_bom": _assert_mirror_shape(conn, "erp_bom", BOM_COLUMNS),
+        }
         if not args.skip_backflush:
-            _assert_mirror_shape(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
+            shapes["erp_ecart_backflush"] = _assert_mirror_shape(
+                conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS
+            )
         if not args.skip_movements:
-            _assert_mirror_shape(conn, "erp_mouvements", MOVEMENT_COLUMNS)
+            shapes["erp_mouvements"] = _assert_mirror_shape(
+                conn, "erp_mouvements", MOVEMENT_COLUMNS
+            )
         if not args.skip_stock:
-            _assert_mirror_shape(conn, "erp_stock_snapshot", STOCK_COLUMNS)
+            shapes["erp_stock_snapshot"] = _assert_mirror_shape(
+                conn, "erp_stock_snapshot", STOCK_COLUMNS
+            )
 
-        items = _read(spark, items_fqn, ITEM_COLUMNS, limit=args.limit,
-                      unique_on="item_id")
-        boms = _read(spark, bom_fqn, BOM_COLUMNS, limit=args.limit)
-        log.info("Lu %d articles et %d liens de nomenclature", len(items), len(boms))
+        # Chaque table est *préparée* dans sa table d'attente, hors
+        # transaction : c'est la partie longue, et la tenir dans la transaction
+        # de substitution garderait un verrou ouvert pendant toute la lecture.
+        # Le nombre de lignes écrites revient de la base, jamais du driver.
+        jdbc = None if args.driver_side else jdbc_of(_lakebase_conninfo(args))
+
+        def prepare(
+            fqn: str, table: str, columns: tuple[str, ...], **kwargs: Any
+        ) -> int:
+            frame = _frame(
+                spark, fqn, columns, limit=args.limit,
+                types=shapes.get(table, {}), **kwargs,
+            )
+            return _stage(
+                conn, frame, table, columns,
+                jdbc=jdbc, driver_side=args.driver_side,
+            )
+
+        items = prepare(items_fqn, "erp_base_article", ITEM_COLUMNS,
+                        unique_on="item_id")
+        boms = prepare(bom_fqn, "erp_bom", BOM_COLUMNS)
+        log.info("Préparé %d articles et %d liens de nomenclature", items, boms)
 
         # Écraser un référentiel valide par un vide fait disparaître la
         # possibilité même de lancer une campagne. Un ERP qui ne renvoie rien
@@ -258,21 +294,21 @@ def main() -> int:
                 )
                 return 1
 
-        # L'écart backflush est lu après le référentiel, et son échec n'annule
-        # pas ce dernier : un pipeline gold indisponible ne doit pas priver
-        # l'application de ses articles. Le miroir garde alors sa copie
+        # L'écart backflush est préparé après le référentiel, et son échec
+        # n'annule pas ce dernier : un pipeline gold indisponible ne doit pas
+        # priver l'application de ses articles. Le miroir garde alors sa copie
         # précédente, dont la fraîcheur est affichée à l'écran.
-        backflush: list[tuple] = []
+        backflush = 0
         if not args.skip_backflush:
             try:
-                backflush = _read(
-                    spark, backflush_fqn, BACKFLUSH_COLUMNS, limit=args.limit,
+                backflush = prepare(
+                    backflush_fqn, "erp_ecart_backflush", BACKFLUSH_COLUMNS,
                     where=(
                         f"semaine_debut >= DATE '{args.backflush_since}'"
                         if args.backflush_since else ""
                     ),
                 )
-                log.info("Lu %d ligne(s) d'écart backflush", len(backflush))
+                log.info("Préparé %d ligne(s) d'écart backflush", backflush)
             except Exception as exc:
                 log.error(
                     "Écart backflush (%s) illisible, miroir laissé intact : %s",
@@ -282,14 +318,14 @@ def main() -> int:
 
         # Même règle : les mouvements indisponibles ne privent pas
         # l'application de son référentiel, et le miroir garde sa copie.
-        movements: list[tuple] = []
+        movements = 0
         if not args.skip_movements:
             try:
-                movements = _read(
-                    spark, movements_fqn, MOVEMENT_COLUMNS, limit=args.limit,
+                movements = prepare(
+                    movements_fqn, "erp_mouvements", MOVEMENT_COLUMNS,
                     where=movements_where,
                 )
-                log.info("Lu %d ligne(s) de mouvement de stock", len(movements))
+                log.info("Préparé %d ligne(s) de mouvement de stock", movements)
                 _report_orphans(spark, movements_fqn, args.movements_since)
             except Exception as exc:
                 log.error(
@@ -301,17 +337,17 @@ def main() -> int:
         # Même règle encore. La photo la plus récente seulement : la source est
         # partitionnée par jour et en garde l'historique, dont l'application n'a
         # que faire — elle compare un comptage à *un* état du système.
-        stock: list[tuple] = []
+        stock = 0
         if not args.skip_stock:
             try:
-                stock = _read(
-                    spark, stock_fqn, STOCK_COLUMNS, limit=args.limit,
+                stock = prepare(
+                    stock_fqn, "erp_stock_snapshot", STOCK_COLUMNS,
                     where=(
                         f"snapshot_date = (SELECT max(snapshot_date) "
                         f"FROM {stock_fqn})"
                     ),
                 )
-                log.info("Lu %d ligne(s) de stock physique", len(stock))
+                log.info("Préparé %d ligne(s) de stock physique", stock)
             except Exception as exc:
                 log.error(
                     "Snapshot de stock (%s) illisible, miroir laissé intact : %s",
@@ -320,27 +356,26 @@ def main() -> int:
                 args.skip_stock = True
 
         try:
-            _swap(conn, "erp_base_article", ITEM_COLUMNS, items,
-                  unique_on="item_id")
-            _swap(conn, "erp_bom", BOM_COLUMNS, boms)
+            _swap(conn, "erp_base_article", ITEM_COLUMNS, unique_on="item_id")
+            _swap(conn, "erp_bom", BOM_COLUMNS)
             # Même règle que pour les deux autres : une lecture vide est une
             # anomalie, pas une mise à jour. On garde la copie précédente.
             if backflush:
-                _swap(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS, backflush)
+                _swap(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
             elif not args.skip_backflush:
                 log.error(
                     "La table %s n'a renvoyé aucune ligne — miroir de l'écart "
                     "backflush laissé intact", backflush_fqn,
                 )
             if movements:
-                _swap(conn, "erp_mouvements", MOVEMENT_COLUMNS, movements)
+                _swap(conn, "erp_mouvements", MOVEMENT_COLUMNS)
             elif not args.skip_movements:
                 log.error(
                     "La table %s n'a renvoyé aucune ligne — miroir des "
                     "mouvements laissé intact", movements_fqn,
                 )
             if stock:
-                _swap(conn, "erp_stock_snapshot", STOCK_COLUMNS, stock)
+                _swap(conn, "erp_stock_snapshot", STOCK_COLUMNS)
             elif not args.skip_stock:
                 log.error(
                     "La table %s n'a renvoyé aucune ligne — miroir du stock "
@@ -353,67 +388,28 @@ def main() -> int:
     log.info(
         "Miroir ERP synchronisé (%d articles, %d liens, %d lignes d'écart, "
         "%d mouvements, %d lignes de stock)",
-        len(items), len(boms), len(backflush), len(movements), len(stock),
+        items, boms, backflush, movements, stock,
     )
     return 0
 
 
-def _read(
+def _frame(
     spark: Any,
     fqn: str,
     columns: tuple[str, ...],
     *,
-    limit: int,
-    unique_on: str = "",
     where: str = "",
-) -> list[tuple]:
-    """Les colonnes demandées, celles qui manquent renvoyées à NULL.
+    limit: int = 0,
+    unique_on: str = "",
+    types: dict[str, str] | None = None,
+) -> Any:
+    """La projection à copier — voir :mod:`mirror`. Rien n'est lu ici."""
+    from mirror import frame_of
 
-    Une colonne absente de la table silver ne doit pas arrêter la
-    synchronisation : ``statut`` n'existait pas avant que la table porte toutes
-    les versions, et l'application traite son absence comme « en vigueur ».
-
-    ``unique_on`` déduplique à la source. La table des articles a livré deux
-    lignes pour le même ``item_id`` — le programme y est calculé en cascade, et
-    une remontée de nomenclature peut faire éventail — ce qui violait la clé
-    primaire du miroir en fin de chargement. Cette clé n'est pas une contrainte
-    de confort : un article y est une ligne, et l'application lit le miroir en
-    supposant exactement cela. On déduplique donc plutôt que de la lever, de
-    façon déterministe pour que deux exécutions donnent le même miroir, et le
-    nombre de lignes écartées est journalisé — c'est une anomalie de la source,
-    pas une routine.
-    """
-    available = {f.name.lower() for f in spark.table(fqn).schema.fields}
-    missing = [c for c in columns if c.lower() not in available]
-    if missing:
-        log.warning("%s : colonnes absentes, copiées à NULL — %s", fqn, ", ".join(missing))
-
-    projection = ", ".join(
-        c if c.lower() in available else f"CAST(NULL AS STRING) AS {c}" for c in columns
+    return frame_of(
+        spark, fqn, columns, where=where, limit=limit, unique_on=unique_on,
+        types=types, warn=log.warning,
     )
-    clause = f" WHERE {where}" if where else ""
-    query = f"SELECT {projection} FROM {fqn}{clause}"
-    if unique_on and unique_on.lower() in available:
-        order = ", ".join(columns)
-        query = (
-            f"SELECT {', '.join(columns)} FROM ("
-            f"  SELECT {projection}, ROW_NUMBER() OVER ("
-            f"    PARTITION BY {unique_on} ORDER BY {order}"
-            f"  ) AS _rang FROM {fqn}{clause}"
-            f") WHERE _rang = 1"
-        )
-    if limit:
-        query += f" LIMIT {int(limit)}"
-
-    rows = [tuple(row) for row in spark.sql(query).collect()]
-    if unique_on:
-        total = spark.table(fqn).count()
-        if total > len(rows):
-            log.warning(
-                "%s : %d ligne(s) en double sur %s, une seule conservée par clé",
-                fqn, total - len(rows), unique_on,
-            )
-    return rows
 
 
 def _report_orphans(spark: Any, fqn: str, since: str) -> None:
@@ -437,50 +433,24 @@ def _report_orphans(spark: Any, fqn: str, since: str) -> None:
         )
 
 
-def _swap(
-    conn: Any,
-    table: str,
-    columns: tuple[str, ...],
-    rows: list[tuple],
-    *,
-    unique_on: str = "",
-) -> None:
-    """Remplit une table temporaire puis substitue, dans une seule transaction.
+def _stage(conn: Any, frame: Any, table: str, columns: tuple[str, ...],
+           *, jdbc: tuple[str, dict[str, str]] | None, driver_side: bool) -> int:
+    """Remplit la table d'attente — voir :mod:`mirror`."""
+    from mirror import stage
 
-    Le ``TRUNCATE`` et l'``INSERT`` partagent la transaction ouverte par le
-    contexte appelant : à aucun moment l'application ne voit un miroir vide ou
-    à moitié rempli.
-
-    ``unique_on`` filtre une dernière fois à l'insertion. La déduplication a
-    déjà eu lieu à la lecture, mais c'est ici que l'échec coûte le plus cher :
-    il survient après le chargement complet, sur la dernière instruction. Deux
-    mots de SQL rendent la violation impossible plutôt que rare.
-    """
-    staging = f"{table}_staging"
-    names = ", ".join(columns)
-    placeholders = ", ".join(["%s"] * len(columns))
-    distinct = f"DISTINCT ON ({unique_on}) " if unique_on else ""
-
-    conn.execute(f"CREATE TEMP TABLE {staging} (LIKE {table} INCLUDING DEFAULTS) "
-                 "ON COMMIT DROP")
-    with conn.cursor() as cur:
-        for start in range(0, len(rows), BATCH):
-            cur.executemany(
-                f"INSERT INTO {staging} ({names}) VALUES ({placeholders})",
-                rows[start:start + BATCH],
-            )
-    before = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-    conn.execute(f"TRUNCATE {table}")
-    conn.execute(
-        f"INSERT INTO {table} ({names}, synced_at) "
-        f"SELECT {distinct}{names}, now() FROM {staging}"
-        + (f" ORDER BY {unique_on}, {names}" if unique_on else "")
+    url, properties = jdbc or ("", {})
+    return stage(
+        conn, frame, table, columns,
+        jdbc_url=url, jdbc_properties=properties, driver_side=driver_side,
     )
-    after = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-    # Le remplacement est intégral, pas un ajout : le dire en chiffres évite
-    # d'avoir à le déduire. Une référence retirée de l'ERP doit disparaître du
-    # miroir, et rien à l'écran ne le montrait.
-    log.info("%s : %d ligne(s) supprimée(s), %d écrite(s)", table, before, after)
+
+
+def _swap(conn: Any, table: str, columns: tuple[str, ...],
+          *, unique_on: str = "") -> None:
+    """Substitue la table d'attente au miroir — voir :mod:`mirror`."""
+    from mirror import swap
+
+    swap(conn, table, columns, unique_on=unique_on, say=log.info)
 
 
 def _lakebase_conninfo(args: Any, client: Any = None) -> str:
@@ -496,7 +466,9 @@ def _lakebase_conninfo(args: Any, client: Any = None) -> str:
     return conninfo(args, client)
 
 
-def _assert_mirror_shape(conn: Any, table: str, columns: tuple[str, ...]) -> None:
+def _assert_mirror_shape(
+    conn: Any, table: str, columns: tuple[str, ...]
+) -> dict[str, str]:
     """Refuse to start unless the mirror has the columns about to be written.
 
     The mirror's tables belong to the application, which creates and migrates
@@ -507,7 +479,7 @@ def _assert_mirror_shape(conn: Any, table: str, columns: tuple[str, ...]) -> Non
     into an immediate, self-explanatory stop.
     """
     rows = conn.execute(
-        "SELECT column_name FROM information_schema.columns "
+        "SELECT column_name, data_type FROM information_schema.columns "
         "WHERE table_name = %s",
         (table,),
     ).fetchall()
@@ -526,6 +498,11 @@ def _assert_mirror_shape(conn: Any, table: str, columns: tuple[str, ...]) -> Non
             "et laissez-la démarrer une fois, puis relancez cette "
             "synchronisation."
         )
+    # Les types, pour la copie à NULL d'une colonne que la source ne publie
+    # pas : ils sont déjà lus ici, les redemander serait une seconde vérité.
+    from mirror import spark_type
+
+    return {str(r[0]).lower(): spark_type(str(r[1])) for r in rows}
 
 
 def _connection_advice(exc: Exception) -> str:

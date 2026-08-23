@@ -126,7 +126,6 @@ STOCK_COLUMNS = (
     "snapshot_date",
 )
 
-BATCH = 5_000
 
 conf = {name: dbutils.widgets.get(name).strip() for name in (
     "pg_host", "pg_password", "pg_user", "pg_database", "pg_schema",
@@ -291,6 +290,20 @@ except Exception as exc:
         ) from exc
     raise RuntimeError(f"Connexion à Lakebase impossible : {message}") from exc
 
+# La même connexion, dans la forme que Spark attend. Les exécuteurs
+# n'utilisent pas psycopg : ils écrivent par JDBC, chacun sa partition, sans
+# que rien ne converge vers le driver. Traduite depuis la chaîne déjà
+# construite plutôt que redécouverte — deux découvertes finissent par diverger.
+jdbc_url = (
+    f"jdbc:postgresql://{conf['pg_host']}:5432/{conf['pg_database']}"
+    "?sslmode=require"
+)
+jdbc_properties = {
+    "user": user,
+    "password": password,
+    "driver": "org.postgresql.Driver",
+}
+
 print("Connecté.")
 
 # COMMAND ----------
@@ -305,7 +318,8 @@ def assert_mirror_shape(conn, table, columns):
     L'interroger d'abord transforme cela en un arrêt immédiat et explicite.
     """
     rows = conn.execute(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_name = %s",
         (table,),
     ).fetchall()
     present = {str(r[0]).lower() for r in rows}
@@ -323,18 +337,29 @@ def assert_mirror_shape(conn, table, columns):
             "l'application : redéployez-la, laissez-la démarrer une fois, puis "
             "relancez cette synchronisation."
         )
+    # Les types sont rendus avec la vérification : ils servent à copier à NULL,
+    # **avec le bon type**, une colonne que la source ne publie pas. Un NULL de
+    # type chaîne dans une colonne numérique est refusé par la base.
+    from mirror import spark_type
+
+    return {str(r[0]).lower(): spark_type(str(r[1])) for r in rows}
 
 
+shapes = {}
 with psycopg.connect(conninfo) as check:
     check.execute(f"SET search_path TO {conf['pg_schema']}, public")
-    assert_mirror_shape(check, "erp_base_article", ITEM_COLUMNS)
-    assert_mirror_shape(check, "erp_bom", BOM_COLUMNS)
+    shapes["erp_base_article"] = assert_mirror_shape(
+        check, "erp_base_article", ITEM_COLUMNS)
+    shapes["erp_bom"] = assert_mirror_shape(check, "erp_bom", BOM_COLUMNS)
     if with_backflush:
-        assert_mirror_shape(check, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
+        shapes["erp_ecart_backflush"] = assert_mirror_shape(
+            check, "erp_ecart_backflush", BACKFLUSH_COLUMNS)
     if with_movements:
-        assert_mirror_shape(check, "erp_mouvements", MOVEMENT_COLUMNS)
+        shapes["erp_mouvements"] = assert_mirror_shape(
+            check, "erp_mouvements", MOVEMENT_COLUMNS)
     if with_stock:
-        assert_mirror_shape(check, "erp_stock_snapshot", STOCK_COLUMNS)
+        shapes["erp_stock_snapshot"] = assert_mirror_shape(
+            check, "erp_stock_snapshot", STOCK_COLUMNS)
 print("Miroir conforme.")
 # COMMAND ----------
 
@@ -346,64 +371,72 @@ print("Miroir conforme.")
 
 # COMMAND ----------
 
-def read(fqn, columns, unique_on="", where=""):
-    """Les colonnes demandées, celles qui manquent copiées à NULL.
+# Le module partagé, importé plutôt que recopié. Les deux synchronisations
+# avaient divergé une fois — la reprise des mouvements n'était passée que par
+# ici — et la copie est justement la partie qu'on ne veut pas voir diverger
+# deux fois. Le dossier du notebook est mis sur le chemin d'import : c'est le
+# mécanisme des fichiers dans un dépôt Databricks, le même qui permet au job en
+# ligne de commande d'importer « lakebase ».
+import os
+import sys
 
-    `unique_on` déduplique à la source, de façon déterministe : la table des
-    articles a déjà livré deux lignes pour un même `item_id`, ce qui violait la
-    clé primaire du miroir en fin de chargement. Le nombre de lignes écartées
-    est affiché — c'est une anomalie, pas une routine.
+_here = os.path.dirname(os.path.abspath(
+    dbutils.notebook.entry_point.getDbutils().notebook()
+    .getContext().notebookPath().get()
+)) if "dbutils" in dir() else os.getcwd()
+for _candidate in (_here, os.getcwd(), "/Workspace" + _here):
+    if os.path.exists(os.path.join(_candidate, "mirror.py")):
+        sys.path.insert(0, _candidate)
+        break
+
+try:
+    from mirror import frame_of, stage, swap
+except ImportError as exc:  # pragma: no cover - dépend de l'espace de travail
+    raise RuntimeError(
+        "« mirror.py » introuvable à côté de ce notebook. Il porte la copie "
+        "partagée par les deux synchronisations ; déployez le dossier « jobs » "
+        "entier, ou activez les fichiers dans le dépôt."
+    ) from exc
+
+
+def prepare(fqn, columns, table, unique_on="", where=""):
+    """Prépare une table dans son attente, et rend le nombre de lignes.
+
+    Rien ne transite par le driver : chaque exécuteur écrit sa partition par
+    JDBC. Le nombre revient de la base — l'appelant en a besoin *avant* la
+    substitution, une source qui ne renvoie rien étant une anomalie et non une
+    mise à jour.
     """
-    available = {f.name.lower() for f in spark.table(fqn).schema.fields}
-    missing = [c for c in columns if c.lower() not in available]
-    if missing:
-        print(f"  {fqn} : absentes, copiées à NULL — {', '.join(missing)}")
-
-    projection = ", ".join(
-        c if c.lower() in available else f"CAST(NULL AS STRING) AS {c}"
-        for c in columns
+    frame = frame_of(
+        spark, fqn, columns, where=where, limit=limit, unique_on=unique_on,
+        types=shapes.get(table, {}),
+        warn=lambda message: print(f"  {message}"),
     )
-    clause = f" WHERE {where}" if where else ""
-    query = f"SELECT {projection} FROM {fqn}{clause}"
-    if unique_on and unique_on.lower() in available:
-        query = (
-            f"SELECT {', '.join(columns)} FROM ("
-            f"  SELECT {projection}, ROW_NUMBER() OVER ("
-            f"    PARTITION BY {unique_on} ORDER BY {', '.join(columns)}"
-            f"  ) AS _rang FROM {fqn}{clause}"
-            f") WHERE _rang = 1"
-        )
-    if limit:
-        query += f" LIMIT {limit}"
-
-    rows = [tuple(row) for row in spark.sql(query).collect()]
-    if unique_on and not limit:
-        total = spark.table(fqn).count()
-        if total > len(rows):
-            print(f"  {fqn} : {total - len(rows)} ligne(s) en double sur "
-                  f"{unique_on}, une seule conservée par clé")
-    return rows
+    return stage(
+        connection, frame, table, columns,
+        jdbc_url=jdbc_url, jdbc_properties=jdbc_properties,
+    )
 
 
-items = read(items_fqn, ITEM_COLUMNS, unique_on="item_id")
-boms = read(bom_fqn, BOM_COLUMNS)
-print(f"\n{len(items)} articles, {len(boms)} liens de nomenclature")
+items = prepare(items_fqn, ITEM_COLUMNS, "erp_base_article", unique_on="item_id")
+boms = prepare(bom_fqn, BOM_COLUMNS, "erp_bom")
+print(f"\n{items} articles, {boms} liens de nomenclature")
 
 # L'écart backflush est lu après le référentiel, et son échec n'annule pas ce
 # dernier : un pipeline gold indisponible ne doit pas priver l'application de
 # ses articles. Le miroir garde alors sa copie précédente, dont la fraîcheur est
 # affichée à l'écran de l'application.
-backflush = []
+backflush = 0
 if with_backflush:
     try:
-        backflush = read(
-            backflush_fqn, BACKFLUSH_COLUMNS,
+        backflush = prepare(
+            backflush_fqn, BACKFLUSH_COLUMNS, "erp_ecart_backflush",
             where=(
                 f"semaine_debut >= DATE '{backflush_since}'"
                 if backflush_since else ""
             ),
         )
-        print(f"{len(backflush)} ligne(s) d'écart backflush")
+        print(f"{backflush} ligne(s) d'écart backflush")
     except Exception as exc:
         print(f"\n⚠ {backflush_fqn} illisible, miroir de l'écart laissé "
               f"intact : {type(exc).__name__} — {exc}")
@@ -411,11 +444,14 @@ if with_backflush:
 
 # Même règle que pour le backflush : indisponible, il ne prive pas l'application
 # de son référentiel et le miroir garde sa copie précédente.
-movements = []
+movements = 0
 if with_movements:
     try:
-        movements = read(movements_fqn, MOVEMENT_COLUMNS, where=movements_where)
-        print(f"{len(movements)} ligne(s) de mouvement de stock")
+        movements = prepare(
+            movements_fqn, MOVEMENT_COLUMNS, "erp_mouvements",
+            where=movements_where,
+        )
+        print(f"{movements} ligne(s) de mouvement de stock")
         orphelines = spark.sql(
             f"SELECT count(*), coalesce(sum(reception + expedition + production "
             f"+ conso_theorique + consommation + rebut), 0) FROM {movements_fqn} "
@@ -436,17 +472,21 @@ if with_movements:
 # Même règle encore. La photo la plus récente seulement : la source est
 # partitionnée par jour et en garde l'historique, dont l'application n'a que
 # faire — elle compare un comptage à *un* état du système.
-stock = []
+stock = 0
 if with_stock:
     try:
-        stock = read(
-            stock_fqn, STOCK_COLUMNS,
+        stock = prepare(
+            stock_fqn, STOCK_COLUMNS, "erp_stock_snapshot",
             where=(
                 f"snapshot_date = (SELECT max(snapshot_date) FROM {stock_fqn})"
             ),
         )
-        jour = stock[0][5] if stock else "—"
-        print(f"{len(stock)} ligne(s) de stock physique, au {jour}")
+        # La date du snapshot vient de la base, pas d'une ligne gardée en
+        # mémoire : plus rien ne transite par le driver.
+        jour = connection.execute(
+            "SELECT max(snapshot_date) FROM erp_stock_snapshot_staging"
+        ).fetchone()[0] if stock else "—"
+        print(f"{stock} ligne(s) de stock physique, au {jour}")
     except Exception as exc:
         print(f"\n⚠ {stock_fqn} illisible, miroir du stock laissé "
               f"intact : {type(exc).__name__} — {exc}")
@@ -471,60 +511,32 @@ for label, fqn, loaded in (("articles", items_fqn, items),
 
 # COMMAND ----------
 
-def swap(conn, table, columns, rows, unique_on=""):
-    """`unique_on` filtre une dernière fois à l'insertion.
-
-    La lecture a déjà dédupliqué, mais c'est ici qu'un échec coûte le plus
-    cher : après le chargement complet, sur la dernière instruction.
-    """
-    staging = f"{table}_staging"
-    names = ", ".join(columns)
-    placeholders = ", ".join(["%s"] * len(columns))
-    distinct = f"DISTINCT ON ({unique_on}) " if unique_on else ""
-    order = f" ORDER BY {unique_on}, {names}" if unique_on else ""
-
-    conn.execute(
-        f"CREATE TEMP TABLE {staging} (LIKE {table} INCLUDING DEFAULTS) "
-        "ON COMMIT DROP"
-    )
-    with conn.cursor() as cur:
-        for start in range(0, len(rows), BATCH):
-            cur.executemany(
-                f"INSERT INTO {staging} ({names}) VALUES ({placeholders})",
-                rows[start:start + BATCH],
-            )
-    before = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-    conn.execute(f"TRUNCATE {table}")
-    conn.execute(
-        f"INSERT INTO {table} ({names}, synced_at) "
-        f"SELECT {distinct}{names}, now() FROM {staging}{order}"
-    )
-    after = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-    # Le remplacement est intégral : le dire en chiffres évite de le déduire.
-    print(f"  {table} : {before} ligne(s) supprimée(s), {after} écrite(s)")
+def _say(message):
+    """Le notebook parle par `print` ; le module ignore lequel des deux l'appelle."""
+    print(f"  {message}")
 
 
 with connection as conn:
     conn.execute(f"SET search_path TO {conf['pg_schema']}, public")
     try:
-        swap(conn, "erp_base_article", ITEM_COLUMNS, items, unique_on="item_id")
-        swap(conn, "erp_bom", BOM_COLUMNS, boms)
+        swap(conn, "erp_base_article", ITEM_COLUMNS, unique_on="item_id", say=_say)
+        swap(conn, "erp_bom", BOM_COLUMNS, say=_say)
         # Une lecture vide garde la copie précédente, sans interrompre le
         # reste : le référentiel, lui, est passé.
         if with_backflush and backflush:
-            swap(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS, backflush)
+            swap(conn, "erp_ecart_backflush", BACKFLUSH_COLUMNS, say=_say)
         elif with_backflush:
             print(f"  erp_ecart_backflush : {backflush_fqn} n'a renvoyé aucune "
                   "ligne sur la période — miroir laissé intact")
         # Pas de `unique_on` : le grain déclaré de la source *est* la clé du
         # miroir, et un DISTINCT masquerait une source non conforme.
         if with_movements and movements:
-            swap(conn, "erp_mouvements", MOVEMENT_COLUMNS, movements)
+            swap(conn, "erp_mouvements", MOVEMENT_COLUMNS, say=_say)
         elif with_movements:
             print(f"  erp_mouvements : {movements_fqn} n'a renvoyé aucune ligne "
                   "sur la période — miroir laissé intact")
         if with_stock and stock:
-            swap(conn, "erp_stock_snapshot", STOCK_COLUMNS, stock)
+            swap(conn, "erp_stock_snapshot", STOCK_COLUMNS, say=_say)
         elif with_stock:
             print(f"  erp_stock_snapshot : {stock_fqn} n'a renvoyé aucune ligne "
                   "— miroir du stock laissé intact")
@@ -539,11 +551,10 @@ with connection as conn:
         raise
     conn.commit()
 
-print(f"\nMiroir synchronisé : {len(items)} articles, {len(boms)} liens"
-      + (f", {len(backflush)} ligne(s) d'écart backflush" if backflush else "")
-      + (f", {len(movements)} ligne(s) de mouvement" if movements else "")
-      + (f", {len(stock)} ligne(s) de stock physique au {stock[0][5]}"
-         if stock else "")
+print(f"\nMiroir synchronisé : {items} articles, {boms} liens"
+      + (f", {backflush} ligne(s) d'écart backflush" if backflush else "")
+      + (f", {movements} ligne(s) de mouvement" if movements else "")
+      + (f", {stock} ligne(s) de stock physique" if stock else "")
       + ".")
 
 # COMMAND ----------

@@ -30,7 +30,7 @@ from typing import Any
 
 log = logging.getLogger("lakebase")
 
-__all__ = ["conninfo"]
+__all__ = ["conninfo", "jdbc_of"]
 
 
 def conninfo(args: Any, client: Any = None) -> str:
@@ -95,6 +95,32 @@ def _lakebase_conninfo(args: Any, client: Any = None) -> str:
         f"host={host} port={port} dbname={database} user={user} "
         f"password={password} sslmode={sslmode}"
     )
+
+
+def jdbc_of(conninfo_string: str) -> tuple[str, dict[str, str]]:
+    """La même connexion, dans la forme que Spark attend.
+
+    Les exécuteurs n'utilisent pas psycopg : ils écrivent par JDBC. Plutôt que
+    de découvrir l'hôte deux fois — et de risquer que les deux découvertes
+    divergent, ce qui est précisément ce qui avait rendu la publication non
+    déployable — on traduit la chaîne déjà construite.
+
+    Le mot de passe est un jeton OAuth de courte durée. Il voyage jusqu'aux
+    exécuteurs, comme pour toute écriture JDBC depuis Spark ; c'est le mode de
+    fonctionnement normal, et sa durée de vie est ce qui borne le risque.
+    """
+    parts = dict(
+        piece.split("=", 1) for piece in conninfo_string.split() if "=" in piece
+    )
+    url = (
+        f"jdbc:postgresql://{parts['host']}:{parts.get('port', '5432')}"
+        f"/{parts['dbname']}?sslmode={parts.get('sslmode', 'require')}"
+    )
+    return url, {
+        "user": parts["user"],
+        "password": parts.get("password", ""),
+        "driver": "org.postgresql.Driver",
+    }
 
 
 def _workspace_client() -> Any:

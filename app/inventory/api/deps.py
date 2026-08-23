@@ -13,7 +13,9 @@ from ..domain.models import Campaign
 from ..errors import UnauthenticatedError
 from ..services import (
     AnalysisService,
+    BoardService,
     CampaignService,
+    ConsolidationService,
     CountingService,
     EvidenceService,
     GenericService,
@@ -35,6 +37,7 @@ __all__ = [
     "get_current_user",
     "get_context",
     "get_campaign",
+    "board_service",
     "campaign_service",
     "counting_service",
     "evidence_service",
@@ -136,6 +139,10 @@ def generic_service(ctx: Ctx) -> GenericService:
     return GenericService(ctx)
 
 
+def consolidation_service(ctx: Ctx) -> ConsolidationService:
+    return ConsolidationService(ctx)
+
+
 def analysis_service(ctx: Ctx) -> AnalysisService:
     return AnalysisService(ctx)
 
@@ -146,6 +153,10 @@ def import_service(ctx: Ctx) -> ImportService:
 
 def manager_service(ctx: Ctx) -> ManagerService:
     return ManagerService(ctx)
+
+
+def board_service(ctx: Ctx) -> BoardService:
+    return BoardService(ctx)
 
 
 def referential_service(ctx: Ctx) -> ReferentialService:

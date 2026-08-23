@@ -227,12 +227,73 @@ class TestTheBillOfMaterialsIsPaged:
         assert got["total"] == 1
 
 
+class TestTheSheetLinesEndpointSurvivesARealSheet:
+    """La liste des lignes rendait 500 dès qu'une campagne avait une feuille.
+
+    Le service lisait ``sheet.status``, un champ que la migration 017 a retiré
+    en remplaçant le cycle de vie par feuille par la fermeture de zone. La
+    colonne n'existe plus en base, le modèle non plus, et personne ne lisait la
+    clé produite : elle survivait parce qu'aucun contrôle n'avait jamais rendu
+    une ligne à partir d'une vraie feuille.
+    """
+
+    def service(self):
+        from types import SimpleNamespace
+        from typing import cast
+
+        from inventory.domain.enums import CountSection, DataSource, SheetPass
+        from inventory.domain.models import CountSheet, CountSheetLine
+        from inventory.services.generic_service import GenericService
+
+        sheet = CountSheet(
+            id="sheet-1", campaign_id="camp-1", zone_id="zone-1",
+            pass_no=SheetPass.PASS_1,
+        )
+        line = CountSheetLine(
+            id="line-1", sheet_id="sheet-1", campaign_id="camp-1",
+            item_number="P-1", section=CountSection.LINE_SIDE,
+            source=DataSource.MANUAL, display_order=0,
+        )
+        ctx = cast(Any, SimpleNamespace(
+            sheets=SimpleNamespace(
+                list_zones=lambda cid: [
+                    SimpleNamespace(id="zone-1", code="Z01", label="Zone 1")
+                ],
+                list_sheets=lambda cid: [sheet],
+                lines_by_sheet=lambda cid: {"sheet-1": [line]},
+            ),
+            referentials=SimpleNamespace(items_by_number=lambda cid: {}),
+        ))
+        return GenericService(ctx), cast(Any, SimpleNamespace(id="camp-1"))
+
+    def test_a_line_is_rendered_without_raising(self):
+        service, campaign = self.service()
+        (row,) = service.list_all_lines(campaign)
+        assert row["zoneCode"] == "Z01"
+
+    def test_the_line_carries_what_leads_back_to_the_paper(self):
+        """Sans la zone et le comptage, la liste est un tas de références et
+        corriger l'une d'elles demande de deviner d'où elle vient."""
+        service, campaign = self.service()
+        (row,) = service.list_all_lines(campaign)
+        assert (row["zoneCode"], row["passNo"]) == ("Z01", 1)
+
+    def test_it_carries_no_key_the_model_cannot_produce(self):
+        """`sheetStatus` était lu par personne et levait pour tout le monde."""
+        service, campaign = self.service()
+        (row,) = service.list_all_lines(campaign)
+        assert "sheetStatus" not in row
+
+
 # --------------------------------------------------------------------------- #
 # Ce que le navigateur en fait
 # --------------------------------------------------------------------------- #
 
 def frontend(relative: str) -> str:
-    return (ROOT / "frontend" / "src" / relative).read_text()
+    """L'écran entier, ses onglets compris — voir ``conftest``."""
+    from conftest import screen_source
+
+    return screen_source(relative)
 
 
 class TestTheClientAsksForAPage:

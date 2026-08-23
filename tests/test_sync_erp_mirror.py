@@ -478,8 +478,7 @@ class TestTheFinalInsertCannotViolateTheKey:
 
     def statements_for(self, **kwargs) -> str:
         conn = self.RecordingConn()
-        sync._swap(conn, "erp_base_article", ("item_id", "item_name"),
-                   [("A", "x"), ("A", "y")], **kwargs)
+        sync._swap(conn, "erp_base_article", ("item_id", "item_name"), **kwargs)
         return "\n".join(conn.statements)
 
     def test_the_article_load_keeps_one_row_per_key(self):
@@ -515,14 +514,23 @@ class TestTheMirrorIsCheckedBeforeAnythingIsRead:
     """
 
     class Catalogue:
-        def __init__(self, columns: list[str]) -> None:
+        """Le catalogue, avec les deux colonnes que la requête demande.
+
+        `information_schema` rend le nom **et** le type : le type sert à copier
+        à NULL une colonne que la source ne publie pas, avec le bon type. Une
+        doublure qui n'en rendrait qu'un ferait échouer le code livré sur un
+        index absent.
+        """
+
+        def __init__(self, columns: list[str], kind: str = "text") -> None:
             self._columns = columns
+            self._kind = kind
 
         def execute(self, statement: str, params: Any = None) -> Any:
             class Result:
                 def __init__(self, rows): self._rows = rows
                 def fetchall(self): return self._rows
-            return Result([(c,) for c in self._columns])
+            return Result([(c, self._kind) for c in self._columns])
 
     def test_a_missing_column_names_itself_and_the_remedy(self):
         conn = self.Catalogue(["parent_itemid", "child_itemid"])
@@ -537,11 +545,26 @@ class TestTheMirrorIsCheckedBeforeAnythingIsRead:
 
     def test_a_mirror_in_step_passes_quietly(self):
         conn = self.Catalogue(["parent_itemid", "statut", "synced_at"])
-        assert sync._assert_mirror_shape(conn, "erp_bom", ("parent_itemid", "statut")) is None
+        shape = sync._assert_mirror_shape(
+            conn, "erp_bom", ("parent_itemid", "statut")
+        )
+        assert shape == {
+            "parent_itemid": "STRING", "statut": "STRING", "synced_at": "STRING",
+        }
 
     def test_the_comparison_ignores_case(self):
         conn = self.Catalogue(["PARENT_ITEMID", "STATUT"])
-        assert sync._assert_mirror_shape(conn, "erp_bom", ("parent_itemid", "statut")) is None
+        shape = sync._assert_mirror_shape(
+            conn, "erp_bom", ("parent_itemid", "statut")
+        )
+        assert set(shape) == {"parent_itemid", "statut"}
+
+    def test_the_types_travel_so_a_missing_column_keeps_its_own(self):
+        """Un NULL de type chaîne dans une colonne numérique est refusé par la
+        base, à la dernière instruction — une fois toute la lecture faite."""
+        conn = self.Catalogue(["std_cost_price"], kind="numeric")
+        shape = sync._assert_mirror_shape(conn, "erp_bom", ("std_cost_price",))
+        assert shape["std_cost_price"] == "DECIMAL(18,6)"
 
 
 class TestTheMirrorIsReplacedNotAppended:
@@ -556,11 +579,11 @@ class TestTheMirrorIsReplacedNotAppended:
 
     def test_the_table_is_emptied_before_being_written(self):
         conn = TestTheFinalInsertCannotViolateTheKey.RecordingConn()
-        sync._swap(conn, "erp_bom", ("parent_itemid",), [("A",)])
+        sync._swap(conn, "erp_bom", ("parent_itemid",))
         assert "TRUNCATE erp_bom" in conn.statements
 
     def test_the_rows_are_counted_on_both_sides_of_the_replacement(self):
         conn = TestTheFinalInsertCannotViolateTheKey.RecordingConn()
-        sync._swap(conn, "erp_bom", ("parent_itemid",), [("A",)])
+        sync._swap(conn, "erp_bom", ("parent_itemid",))
         counts = [s for s in conn.statements if s.startswith("SELECT count(*)")]
         assert len(counts) == 2, "avant et après, sinon le chiffre ne veut rien dire"

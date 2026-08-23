@@ -120,3 +120,30 @@ def with_access(ctx, *, managers=()):
     # test la seule chose qu'on veut y voir tenir.
     ctx.guard = lambda campaign, aspect: ServiceContext.guard(ctx, campaign, aspect)
     return ctx
+
+
+#: La racine du frontend, pour les contrôles qui lisent ce que l'écran écrit.
+FRONTEND = Path(__file__).resolve().parent.parent / "frontend" / "src"
+
+
+def screen_source(relative: str) -> str:
+    """Le source d'un écran, **ses onglets compris**.
+
+    Trois écrans — préparation, compil, analyse — sont découpés en un module
+    par onglet : `Preparation.tsx` et ses `preparation.*.tsx`. Un contrôle qui
+    chercherait une phrase dans le seul fichier d'aiguillage la manquerait, non
+    parce qu'elle a disparu mais parce qu'elle a déménagé.
+
+    Ce qui est vérifié est ce que l'écran **fait**, pas dans quel fichier il
+    l'écrit. Lire l'écran entier vaut donc mieux que pointer un fichier — et
+    survivra au prochain découpage.
+    """
+    path = FRONTEND / relative
+    parts = [path.read_text(encoding="utf-8")]
+    prefix = path.stem[0].lower() + path.stem[1:] + "."
+    parts += [
+        sibling.read_text(encoding="utf-8")
+        for sibling in sorted(path.parent.glob(f"{prefix}*.tsx"))
+        if not sibling.name.endswith(".test.tsx")
+    ]
+    return "\n".join(parts)

@@ -23,14 +23,15 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from ..config import get_settings
 from ..errors import InventoryError
+from ..metrics import REGISTRY
 from .routers import (
     analysis,
     assistant,
@@ -181,6 +182,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 # --------------------------------------------------------------------------- #
+# Metrics
+# --------------------------------------------------------------------------- #
+
+def _route_of(request: Request) -> str:
+    """Le gabarit de la route, jamais le chemin appelé.
+
+    ``/campaigns/{campaign_id}/items`` est une série ; le chemin brut en ferait
+    une par campagne, et le registre grossirait avec l'usage. Une requête qui
+    n'a atteint aucune route — un 404, un scan de vulnérabilité — n'a pas de
+    gabarit : la ranger sous un seul nom est ce qui empêche mille chemins
+    inventés de créer mille séries.
+    """
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    return path if isinstance(path, str) else "(inconnue)"
+
+
+# --------------------------------------------------------------------------- #
 # Factory
 # --------------------------------------------------------------------------- #
 
@@ -222,6 +241,9 @@ def create_app() -> FastAPI:
         duration = (time.perf_counter() - started) * 1000
         response.headers["x-request-id"] = request_id
         if request.url.path.startswith("/api"):
+            REGISTRY.observe(
+                request.method, _route_of(request), response.status_code, duration
+            )
             log.info(
                 "%s %s → %s",
                 request.method,
@@ -388,6 +410,70 @@ def create_app() -> FastAPI:
             "migrations": _migration_state(settings),
         }
 
+    @app.get("/api/metrics", tags=["système"], summary="Métriques d'exploitation")
+    def metrics(hours: Annotated[int, Query(ge=1, le=168)] = 24) -> dict[str, Any]:
+        """Ce qu'un exploitant vient mesurer quand la journée se passe mal.
+
+        Quatre familles, et rien d'autre. Les **requêtes**, agrégées par
+        gabarit de route : combien, combien en erreur, et combien de
+        millisecondes au p95 — la seule façon de répondre à « qu'est-ce qui est
+        lent » sans exporter des heures de journaux. Le **pool** de connexions,
+        dont l'épuisement se manifestait jusqu'ici par des requêtes qui
+        attendent quinze secondes puis échouent, sans que rien ne nomme la
+        cause. Le **miroir ERP**, dont la fraîcheur décide si les écarts
+        affichés veulent dire quelque chose. Les **chargements et les scans**
+        récents, parce qu'un contrat mal accordé rejette quelques lignes à
+        chaque fichier sans que personne n'ouvre le rapport.
+
+        Répond toujours 200, comme ``/api/health`` : une page qu'on vient lire
+        *parce que* quelque chose ne va pas ne doit pas être la deuxième chose
+        qui ne marche pas. Chaque bloc porte donc son propre message d'erreur
+        plutôt que de faire échouer la réponse entière.
+
+        **JSON, et non le format d'exposition Prometheus.** Rien ne scrute ce
+        conteneur : les applications Databricks n'exposent pas de cible de
+        collecte, et ces compteurs vivent le temps du processus. Une seconde
+        sérialisation, que personne n'analyserait, coûterait un format de plus
+        à tenir à jour.
+        """
+        return {
+            "version": app.version,
+            "env": settings.env,
+            "http": REGISTRY.snapshot(),
+            "pool": _pool_state(),
+            "erpMirror": _ops_block(lambda repo: repo.erp_freshness()),
+            "imports": _ops_block(lambda repo: repo.import_volumes(hours=hours)),
+            "scanJobs": _ops_block(lambda repo: repo.scan_jobs(hours=hours)),
+        }
+
+    def _pool_state() -> dict[str, Any]:
+        """Les compteurs du pool psycopg, ou pourquoi il n'y en a pas.
+
+        ``requests_waiting`` durablement non nul est le signe qu'on cherche :
+        le pool est trop petit, ou une requête ne rend pas sa connexion.
+        """
+        from ..db import get_database
+
+        if not settings.lakebase_configured:
+            return {"error": "Lakebase non configuré."}
+        try:
+            return dict(get_database(settings).stats)
+        except Exception as exc:  # pragma: no cover - infrastructure dependent
+            return {"error": str(exc)}
+
+    def _ops_block(read: Any) -> Any:
+        """Un bloc de la réponse, ou son erreur, jamais une réponse en échec."""
+        from ..db import get_database
+        from ..db.repositories import OperationsRepository
+
+        if not settings.lakebase_configured:
+            return {"error": "Lakebase non configuré."}
+        try:
+            return read(OperationsRepository(get_database(settings)))
+        except Exception as exc:  # pragma: no cover - infrastructure dependent
+            log.warning("Lecture d'exploitation impossible: %s", exc)
+            return {"error": str(exc)}
+
     @app.get("/api/me", tags=["système"], summary="Utilisateur connecté")
     def me(request: Request) -> dict[str, Any]:
         """Who the app thinks you are, and where that came from.
@@ -467,6 +553,7 @@ databricks apps deploy -t prod --profile PROD</pre>
     L'API reste utilisable en attendant&nbsp;:
     <a href="/api/health">/api/health</a> ·
     <a href="/api/health/ready">/api/health/ready</a> ·
+    <a href="/api/metrics">/api/metrics</a> ·
     <a href="/api/docs">/api/docs</a></p>
 </main></html>
 """

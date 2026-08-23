@@ -26,11 +26,18 @@ from __future__ import annotations
 
 import logging
 import os
+from types import SimpleNamespace
 from typing import Any
 
 log = logging.getLogger("lakebase")
 
 __all__ = ["conninfo", "jdbc_of"]
+
+#: Les chemins REST de l'API Lakebase Autoscaling, tels que le SDK 0.81 les
+#: appelle lui-même. Ils ne dépendent d'aucune version : seule la façade typée
+#: en dépend.
+ENDPOINTS_PATH = "/api/2.0/postgres/{parent}/endpoints"
+CREDENTIALS_PATH = "/api/2.0/postgres/credentials"
 
 
 def conninfo(args: Any, client: Any = None) -> str:
@@ -70,17 +77,16 @@ def _lakebase_conninfo(args: Any, client: Any = None) -> str:
         client = client or _workspace_client()
         log.info("SDK Databricks %s", _sdk_version())
         user = user or _current_identity(client)
-        api = getattr(client, "postgres", None)
+        api = _postgres_api(client)
 
         name = args.lakebase_endpoint
         if not host:
             if api is None:
                 raise RuntimeError(
-                    "Hôte Lakebase inconnu, et le SDK de cet environnement ne "
-                    f"connaît pas l'API Lakebase Autoscaling (version "
-                    f"{_sdk_version()}, w.postgres apparaît en 0.81). Sa version "
-                    "est figée par le runtime serverless : passez --pg-host, "
-                    "relevé dans la console Lakebase."
+                    "Hôte Lakebase inconnu : ni l'API typée « w.postgres » "
+                    f"(SDK {_sdk_version()}, elle apparaît en 0.81), ni le "
+                    "client HTTP du SDK ne sont disponibles pour la découvrir. "
+                    "Passez --pg-host, relevé dans la console Lakebase."
                 )
             found, resolved_host = _read_write_endpoint(api, args.branch)
             name = name or found
@@ -129,6 +135,90 @@ def _workspace_client() -> Any:
     return WorkspaceClient()
 
 
+def _postgres_api(client: Any) -> Any:
+    """L'API Lakebase : typée si le SDK la connaît, appelée en direct sinon.
+
+    ``w.postgres`` n'existe qu'à partir de databricks-sdk 0.81, et **la version
+    du SDK ne peut pas être relevée dans un job** : elle figure dans les
+    contraintes immuables du runtime serverless, si bien qu'en demander une
+    autre fait échouer l'installation entière. Le runtime de ce workspace
+    apporte la 0.49, et la publication s'arrêtait donc là — sur une API absente,
+    en demandant à l'exploitant de relever un hôte à la main.
+
+    Or ce que la 0.81 fait de plus n'est pas un accès privilégié : ce sont deux
+    appels HTTP. ``api_client`` les émet depuis n'importe quelle version, avec
+    la même authentification. La découverte redevient donc automatique.
+    """
+    typed = getattr(client, "postgres", None)
+    if typed is not None:
+        return typed
+
+    http = getattr(client, "api_client", None)
+    if http is None:
+        return None
+    log.info("API Lakebase appelée en direct : le SDK présent ne l'expose pas")
+    return _RestPostgres(http)
+
+
+class _RestPostgres:
+    """L'API Lakebase Autoscaling sans sa façade typée.
+
+    Les objets rendus imitent ceux du SDK — ``endpoint.status.hosts.host``,
+    ``credential.token`` — pour que le reste de ce module ignore par où il est
+    passé. C'est ce qui permet aux deux chemins d'être vérifiés par les mêmes
+    contrôles.
+    """
+
+    def __init__(self, http: Any) -> None:
+        self._http = http
+
+    def list_endpoints(self, parent: str) -> list[Any]:
+        """Les endpoints d'une branche, pagination comprise.
+
+        Ne jamais s'arrêter à la première page : un projet qui a des répliques
+        de lecture peut très bien porter l'endpoint en écriture sur la seconde,
+        et la synchronisation échouerait alors sur « aucun endpoint en
+        écriture » alors qu'il y en a un.
+        """
+        query: dict[str, Any] = {}
+        found: list[Any] = []
+        while True:
+            page = self._http.do(
+                "GET",
+                ENDPOINTS_PATH.format(parent=parent),
+                query=query,
+                headers={"Accept": "application/json"},
+            )
+            found += [_as_object(item) for item in page.get("endpoints", [])]
+            token = page.get("next_page_token")
+            if not token:
+                return found
+            query["page_token"] = token
+
+    def generate_database_credential(self, endpoint: str) -> Any:
+        """Le credential dédié, celui-là même que demande l'application."""
+        return _as_object(
+            self._http.do(
+                "POST",
+                CREDENTIALS_PATH,
+                body={"endpoint": endpoint},
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+            )
+        )
+
+
+def _as_object(value: Any) -> Any:
+    """Un JSON en objet, pour que les deux chemins se lisent de la même façon."""
+    if isinstance(value, dict):
+        return SimpleNamespace(**{key: _as_object(v) for key, v in value.items()})
+    if isinstance(value, list):
+        return [_as_object(item) for item in value]
+    return value
+
+
 def _sdk_version() -> str:
     """La version du SDK, dans le journal du job.
 
@@ -148,17 +238,16 @@ def _sdk_version() -> str:
 def _password(client: Any, api: Any, endpoint: str) -> str:
     """Le mot de passe Postgres, par ordre de préférence décroissante.
 
-    Le credential dédié de ``w.postgres`` est le meilleur : il porte sur un
-    endpoint précis et expire vite. Mais cette API n'existe qu'à partir de
-    databricks-sdk 0.81, et **la version du SDK ne peut pas être relevée dans un
-    job** : elle figure dans les contraintes immuables du runtime serverless, si
-    bien qu'en demander une autre fait échouer l'installation entière — c'est ce
-    qui est arrivé.
+    Le credential dédié est le meilleur : il porte sur un endpoint précis et
+    expire vite. Il ne dépend plus de la version du SDK — voir
+    :func:`_postgres_api`, qui appelle l'API en direct quand la façade typée
+    manque — mais il dépend encore de connaître l'endpoint : un ``--pg-host``
+    passé à la main donne un hôte sans nommer la ressource.
 
-    Le repli est le jeton OAuth de l'identité qui exécute le job, que Lakebase
-    accepte comme mot de passe. Moins ciblé, disponible partout. Un job qui
-    refuserait de tourner faute d'une dépendance impossible à satisfaire ne
-    serait utile à personne.
+    Le repli est alors le jeton OAuth de l'identité qui exécute le job, que
+    Lakebase accepte comme mot de passe. Moins ciblé, disponible partout. Un job
+    qui refuserait de tourner faute d'un nom de ressource ne serait utile à
+    personne.
     """
     if api is not None and endpoint:
         return _mint(api, endpoint)
@@ -177,9 +266,9 @@ def _password(client: Any, api: Any, endpoint: str) -> str:
 
     raise RuntimeError(
         "Aucun moyen d'authentifier la connexion Lakebase : ni credential "
-        f"dédié (SDK {_sdk_version()}, w.postgres apparaît en 0.81, et sa "
-        "version est figée par le runtime), ni jeton OAuth. Exportez "
-        "PGPASSWORD depuis un secret scope."
+        f"dédié (SDK {_sdk_version()} ; il en faut un endpoint nommé, que "
+        "--lakebase-endpoint fournit), ni jeton OAuth. Exportez PGPASSWORD "
+        "depuis un secret scope."
     )
 
 

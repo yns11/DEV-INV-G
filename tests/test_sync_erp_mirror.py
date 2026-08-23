@@ -12,6 +12,7 @@ la plateforme et ce qu'il en déduit, sans workspace.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,11 @@ def load_job() -> Any:
 
 
 sync = load_job()
+
+#: Le module partagé par les deux jobs. Il est importable parce que le job vient
+#: de mettre « jobs/ » sur le chemin — le même geste qu'en production, et c'est
+#: bien ce module-là que le job importera.
+lakebase = importlib.import_module("lakebase")
 
 
 class Args:
@@ -405,6 +411,144 @@ class TestTheEscapeHatches:
         )
         assert "host=direct.example" in conninfo
         assert "password=depuis-un-secret-scope" in conninfo
+
+
+class HttpSdk:
+    """Un SDK sans ``w.postgres``, mais avec son client HTTP.
+
+    C'est le SDK que le runtime serverless apporte réellement : la 0.49, qui
+    ignore l'API Lakebase Autoscaling mais sait parfaitement émettre une requête
+    authentifiée. Les réponses reproduisent la forme documentée de l'API.
+    """
+
+    def __init__(self, pages: list[dict] | None = None, token: str = "rest-tok") -> None:
+        self.pages = pages if pages is not None else [{
+            "endpoints": [
+                {
+                    "name": "projects/p/branches/b/endpoints/replica",
+                    "status": {
+                        "endpoint_type": "ENDPOINT_TYPE_READ_ONLY",
+                        "hosts": {"host": "ro.example"},
+                    },
+                },
+                {
+                    "name": "projects/p/branches/b/endpoints/primary",
+                    "status": {
+                        "endpoint_type": "ENDPOINT_TYPE_READ_WRITE",
+                        "hosts": {"host": "rw.example"},
+                    },
+                },
+            ]
+        }]
+        self._token = token
+        self.calls: list[tuple] = []
+        self.api_client = self
+        self.current_user = type("C", (), {
+            "me": lambda s: type("U", (), {"user_name": "u@example.com"})()
+        })()
+
+    def do(self, method: str, path: str, **kwargs: Any) -> dict:
+        self.calls.append((method, path, kwargs))
+        if path == lakebase.CREDENTIALS_PATH:
+            return {"token": self._token, "expire_time": "2026-08-24T00:00:00Z"}
+        index = 0
+        page_token = (kwargs.get("query") or {}).get("page_token")
+        if page_token is not None:
+            index = int(page_token)
+        page = dict(self.pages[index])
+        if index + 1 < len(self.pages):
+            page["next_page_token"] = str(index + 1)
+        return page
+
+
+class TestTheApiWithoutItsTypedFacade:
+    """Le runtime fige la version du SDK, pas l'API qui est derrière.
+
+    ``w.postgres`` n'apparaît qu'en databricks-sdk 0.81 et la version ne peut
+    pas être relevée dans un job : elle figure dans les contraintes immuables du
+    runtime serverless, si bien qu'en demander une autre fait échouer
+    l'installation entière. La publication s'arrêtait donc là, en demandant à
+    l'exploitant de relever un hôte à la main.
+
+    Or ce que la 0.81 fait de plus, ce sont deux appels HTTP. Le SDK présent
+    sait les émettre.
+    """
+
+    def test_l_hote_est_decouvert_sans_la_facade_typee(self):
+        """Plus de « passez --pg-host » : la découverte redevient automatique."""
+        client = HttpSdk()
+        assert "host=rw.example" in sync._lakebase_conninfo(Args(), client)
+
+    def test_l_appel_suit_le_chemin_documente(self):
+        client = HttpSdk()
+        sync._lakebase_conninfo(Args(), client)
+
+        method, path, _ = client.calls[0]
+        assert method == "GET"
+        assert path == "/api/2.0/postgres/projects/inventaire/branches/production/endpoints"
+
+    def test_un_endpoint_en_lecture_seule_n_est_pas_plus_choisi_ici(self):
+        """La règle vit dans un seul endroit ; les deux chemins la subissent."""
+        client = HttpSdk(pages=[{"endpoints": [{
+            "name": "projects/p/branches/b/endpoints/replica",
+            "status": {
+                "endpoint_type": "ENDPOINT_TYPE_READ_ONLY",
+                "hosts": {"host": "ro.example"},
+            },
+        }]}])
+        with pytest.raises(RuntimeError, match="écriture"):
+            sync._lakebase_conninfo(Args(), client)
+
+    def test_la_pagination_est_suivie(self):
+        """L'endpoint en écriture peut être sur la seconde page.
+
+        S'arrêter à la première ferait échouer le job sur « aucun endpoint en
+        écriture » alors qu'il y en a un — l'erreur la plus trompeuse possible.
+        """
+        client = HttpSdk(pages=[
+            {"endpoints": [{
+                "name": "projects/p/branches/b/endpoints/replica",
+                "status": {
+                    "endpoint_type": "ENDPOINT_TYPE_READ_ONLY",
+                    "hosts": {"host": "ro.example"},
+                },
+            }]},
+            {"endpoints": [{
+                "name": "projects/p/branches/b/endpoints/primary",
+                "status": {
+                    "endpoint_type": "ENDPOINT_TYPE_READ_WRITE",
+                    "hosts": {"host": "page2.example"},
+                },
+            }]},
+        ])
+        assert "host=page2.example" in sync._lakebase_conninfo(Args(), client)
+
+    def test_le_credential_dedie_est_demande_pour_cet_endpoint(self):
+        """Le jeton OAuth de l'identité n'est plus le seul recours."""
+        client = HttpSdk()
+        conninfo = sync._lakebase_conninfo(Args(), client)
+
+        posts = [c for c in client.calls if c[0] == "POST"]
+        assert len(posts) == 1
+        assert posts[0][1] == "/api/2.0/postgres/credentials"
+        assert posts[0][2]["body"] == {
+            "endpoint": "projects/p/branches/b/endpoints/primary"
+        }
+        assert "password=rest-tok" in conninfo
+
+    def test_la_facade_typee_reste_preferee_quand_elle_existe(self):
+        """Rien n'est appelé en direct sur un SDK qui expose l'API."""
+        class TypedAndHttp(FakeClient):
+            def __init__(self) -> None:
+                super().__init__(READ_WRITE)
+                self.http_calls: list[tuple] = []
+                self.api_client = type("H", (), {
+                    "do": lambda s, *a, **k: self.http_calls.append(a)
+                })()
+
+        client = TypedAndHttp()
+        sync._lakebase_conninfo(Args(), client)
+        assert client.http_calls == []
 
 
 class TestAuthenticatingWithTheSdkThatIsThere:

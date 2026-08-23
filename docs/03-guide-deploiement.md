@@ -330,7 +330,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1888 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 1894 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -863,9 +863,8 @@ databricks postgres list-projects --profile PROD
 databricks postgres list-endpoints projects/inventaire/branches/production --profile PROD
 ```
 
-- Elle répond → l'identité a bien l'accès ; c'est le SDK de l'environnement du
-  job qui ne connaît pas l'API. Voir juste en dessous : il ne peut pas être
-  relevé, passez `--pg-host`.
+- Elle répond → l'identité a bien l'accès ; c'est un refus côté job, et la cause
+  exacte figure dans son journal.
 - Elle échoue → c'est l'accès au projet Lakebase, ou le chemin de branche.
   Corrigez `lakebase_project` / `lakebase_branch`, ou contournez avec
   `--pg-host`, lu dans la console Lakebase.
@@ -875,16 +874,25 @@ n'existe qu'à partir de `databricks-sdk` 0.81, mais `databricks-sdk` figure dan
 `immutable-package-constraints.txt` du runtime serverless : en déclarer une autre
 version fait échouer l'installation de **tout** l'environnement, et le job ne
 démarre pas — l'environnement n'accepte d'ailleurs que des versions exactes,
-jamais de bornes. Le job s'accommode donc de ce qui est présent :
+jamais de bornes. Le runtime de ce workspace apporte la 0.49, et la publication
+s'est arrêtée là au premier lancement.
+
+Ce que la 0.81 apporte n'est pourtant pas un accès privilégié : ce sont deux
+appels HTTP, `GET /api/2.0/postgres/{branche}/endpoints` et
+`POST /api/2.0/postgres/credentials`. Le client HTTP du SDK les émet depuis
+n'importe quelle version, avec la même authentification — c'est ce que le job
+fait quand la façade typée manque. La découverte ne dépend donc plus de la
+version :
 
 | Ce que le SDK offre | Hôte | Mot de passe |
 |---|---|---|
 | `w.postgres` (≥ 0.81) | déduit de `--branch` | credential dédié à l'endpoint |
-| version plus ancienne | **`--pg-host` requis** | jeton OAuth de l'identité du job |
-| — | `--pg-host` | `PGPASSWORD` d'un secret scope |
+| version plus ancienne | déduit de `--branch`, en appelant l'API en direct | credential dédié à l'endpoint |
+| ni l'un ni l'autre | **`--pg-host` requis** | jeton OAuth, ou `PGPASSWORD` d'un secret scope |
 
-L'hôte se relève une fois dans la console Lakebase (le projet → l'endpoint en
-écriture) ; il ne change pas. C'est la même valeur que le `PGHOST` de l'App.
+L'hôte reste relevable à la main dans la console Lakebase (le projet →
+l'endpoint en écriture) en dernier recours ; il ne change pas, et c'est la même
+valeur que le `PGHOST` de l'App.
 
 Le job journalise la version du SDK qu'il utilise et reporte la cause exacte de
 chaque refus : ces trois pannes se ressemblaient à l'écran.
@@ -1180,6 +1188,7 @@ l'historique des imports nomme.
 | L'app démarre puis s'arrête | Dépassement des 10 min de démarrage | Épinglez les versions, réduisez les dépendances |
 | **Pas d'espace disque** pendant le build | Quota du conteneur atteint | Supprimez `frontend/node_modules` et les caches, relancez |
 | `NameError: name '__file__' is not defined` au lancement d'un job | Le calcul serverless n'*importe* pas le fichier : il l'exécute par `exec(compile(source, chemin, "exec"))`, dans un espace de noms où ce global n'existe pas | Corrigé : les deux jobs déduisent leur répertoire du chemin de compilation (`co_filename`), et ne l'ajoutent au chemin d'import qu'après avoir vérifié que `lakebase.py` s'y trouve |
+| `Hôte Lakebase inconnu, et le SDK … ne connaît pas l'API Lakebase Autoscaling` | Le runtime serverless fige `databricks-sdk` (0.49 ici) ; `w.postgres` n'apparaît qu'en 0.81 et la version ne peut pas être relevée | Corrigé : le job appelle l'API Lakebase en direct (`GET /api/2.0/postgres/{branche}/endpoints`) quand la façade typée manque. La découverte ne dépend plus de la version du SDK ; `--pg-host` reste le dernier recours |
 
 ### 8.1 Commandes de diagnostic
 

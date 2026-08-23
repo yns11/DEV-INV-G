@@ -160,15 +160,34 @@ class CampaignRepository(_Base):
         "engine_version, created_by, created_at, updated_at, row_version"
     )
 
-    def list(self, *, include_closed: bool = True, limit: int = 100) -> list[Campaign]:
+    def list(
+        self, *, include_closed: bool = True, limit: int = 100, offset: int = 0
+    ) -> tuple[list[Campaign], int]:
+        """Une page de campagnes, et combien il y en a en tout.
+
+        Le total n'est pas décoratif : la liste était bornée à cent sans le
+        dire, si bien qu'après quelques années d'inventaires trimestriels les
+        plus anciennes cessaient simplement d'apparaître. Aucun message, aucun
+        bouton — elles n'existaient plus pour qui regardait l'écran, alors
+        qu'elles étaient toujours en base.
+
+        Pagination par décalage plutôt que par curseur : cette liste s'allonge
+        de quelques lignes par an et se trie sur une date de comptage stable.
+        La dérive qu'un curseur évite — une ligne insérée entre deux pages —
+        suppose des écritures concurrentes fréquentes, ce qui n'est pas le cas
+        ici, et coûterait un encodage de curseur que personne ne lirait.
+        """
         clause = "" if include_closed else "AND status <> 'CLOSED'"
+        total = self._fetch_one(
+            f"SELECT count(*) AS n FROM campaign WHERE deleted_at IS NULL {clause}"
+        )
         rows = self._fetch_all(
             f"SELECT {self._COLUMNS} FROM campaign "
             f"WHERE deleted_at IS NULL {clause} "
-            "ORDER BY count_date DESC, created_at DESC LIMIT %s",
-            (limit,),
+            "ORDER BY count_date DESC, created_at DESC LIMIT %s OFFSET %s",
+            (limit, offset),
         )
-        return [self._to_model(r) for r in rows]
+        return [self._to_model(r) for r in rows], int(total["n"]) if total else 0
 
     def get(self, campaign_id: str) -> Campaign:
         row = self._fetch_one(

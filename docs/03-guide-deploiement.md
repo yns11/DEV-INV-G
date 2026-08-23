@@ -326,7 +326,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1131 tests, ~16 s, aucune base requise
+make test      # 1308 tests, ~17 s ; 8 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -528,6 +528,34 @@ curl -s -w "\nready:%{http_code}\n"           "$URL/api/health/ready"
 
 ### 4.6 Déployer le job de publication
 
+> **Repartitionnement des tables d'archive.** Les tables Delta sont désormais
+> partitionnées par `campaign_id` et non plus par `campaign_code`. Un code
+> métier se réutilise — l'application ne supprime que logiquement — si bien
+> qu'une campagne « INV-2026-06 » créée après le retrait d'une homonyme
+> écrasait l'archive de la première.
+>
+> `sql/00_unity_catalog.sql` utilise `CREATE TABLE IF NOT EXISTS` : un
+> déploiement neuf obtient le bon partitionnement, **une installation existante
+> garde l'ancien**. Pour la reprendre, sauvegardez les tables, supprimez-les et
+> rejouez le script :
+>
+> ```sql
+> CREATE TABLE inventory.book_stock_snapshot_sauvegarde
+>   DEEP CLONE inventory.book_stock_snapshot;   -- et ainsi de suite
+> DROP TABLE inventory.book_stock_snapshot;
+> -- puis `make uc`, et republier chaque campagne
+> ```
+>
+> Republier est sans risque : chaque écriture est un `replaceWhere` sur
+> l'identifiant de la campagne.
+
+> **La table `publication`.** Elle est écrite en dernier par le job, et par rien
+> d'autre. Une campagne y figure si et seulement si son archive est complète :
+> Delta n'offrant pas de transaction couvrant plusieurs tables, c'est ce qui
+> empêche une publication interrompue de se faire passer pour aboutie. Le job
+> repose ensuite l'horodatage sur `campaign.published_at` dans Lakebase, que la
+> clôture consulte.
+
 ```bash
 databricks bundle deploy -t prod --profile PROD
 databricks bundle run inventory_publish_campaign -t prod --profile PROD \
@@ -605,6 +633,7 @@ Onglet **Environment**, ajoutez :
 | `INV_SCAN_LLM_ENDPOINT` | *(vide)* — voir §8.2 bis |
 | `INV_SCAN_MAX_WORKERS` | `4` |
 | `INV_SCAN_MAX_PAGES` | `250` |
+| `INV_SCAN_MAX_PIXELS` | `40000000` |
 | `INV_SCAN_ROUTING_BATCH` | `12` |
 | `INV_SCAN_DPI` | `150` |
 | `INV_ERP_SCHEMA` | `emotors_data_champions.silver_erp_ye` |
@@ -666,6 +695,7 @@ point de départ à mesurer, pas un réglage.
 | `INV_SCAN_LLM_ENDPOINT` | *(vide)* | L'endpoint qui lit les scans. Vide, c'est `INV_LLM_ENDPOINT` — le comportement d'avant |
 | `INV_SCAN_MAX_WORKERS` | `4` | Combien de feuilles sont lues en même temps |
 | `INV_SCAN_MAX_PAGES` | `250` | Le plafond d'une pile. Au-delà : refus explicite, jamais troncature |
+| `INV_SCAN_MAX_PIXELS` | `40000000` | Le plafond d'**une page rendue**. `render()` alloue son bitmap hors de portée de la garde anti-bombe de PIL : un PDF de quelques kilo-octets peut déclarer une page de deux cents pouces de côté, soit 900 Mpx à 150 dpi. Au-delà du plafond la résolution est **réduite**, pas la page refusée — un MediaBox démesuré est presque toujours un artefact de scanner, et une feuille reste lisible à cent dpi. Un A4 à 600 dpi tient dans la valeur par défaut |
 | `INV_SCAN_ROUTING_BATCH` | `12` | Combien de pieds de page partent dans un même appel de routage |
 | `INV_SCAN_DPI` | `150` | Résolution de rastérisation |
 

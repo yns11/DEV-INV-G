@@ -26,8 +26,25 @@ Service = Annotated[CampaignService, Depends(campaign_service)]
 def list_campaigns(
     service: Service,
     include_closed: Annotated[bool, Query(alias="includeClosed")] = True,
-) -> list[dict[str, Any]]:
-    return [c.model_dump(mode="json") for c in service.list(include_closed=include_closed)]
+    limit: Annotated[int | None, Query(ge=1, le=500)] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    """Une page de campagnes, et combien il y en a en tout.
+
+    La réponse portait un tableau nu, borné à cent sans le dire : après
+    quelques années d'inventaires, les plus anciennes disparaissaient de
+    l'écran sans qu'aucun message ne l'annonce. ``total`` est ce qui permet à
+    l'interface de proposer les suivantes plutôt que de faire comme si elles
+    n'existaient pas.
+    """
+    campaigns, total = service.list(
+        include_closed=include_closed, limit=limit, offset=offset
+    )
+    return {
+        "items": [c.model_dump(mode="json") for c in campaigns],
+        "total": total,
+        "offset": offset,
+    }
 
 
 @router.post("", status_code=201, summary="Créer une campagne")

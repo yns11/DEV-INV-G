@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
-import type { Campaign, CampaignStatus } from '../lib/types'
+import type { Campaign, CampaignPage, CampaignStatus } from '../lib/types'
 import {
   CAMPAIGN_STATUS_LABELS,
   date as fmtDate,
@@ -41,6 +41,15 @@ import {
 type Display = 'cards' | 'list'
 
 const DISPLAY_KEY = 'campagnes-inventaire.campaigns.display'
+
+/**
+ * Combien de campagnes une page en rend.
+ *
+ * Cent tenaient dans l'écran des années durant ; ce qui manquait n'était pas
+ * une borne plus haute mais de savoir qu'il y en avait davantage.
+ */
+const PAGE = 100
+
 
 function readDisplay(): Display {
   try {
@@ -87,10 +96,21 @@ export function CampaignsPage() {
   const [deleting, setDeleting] = useState<Campaign | null>(null)
   const [display, setDisplayState] = useState<Display>(readDisplay)
   const [filters, setFilters] = useState<Filters>(NO_FILTER)
+  // Le serveur borne la page. `limit` monte quand l'utilisateur demande la
+  // suite : sans cela, les campagnes au-delà de la centième n'existaient plus
+  // pour qui regardait l'écran, alors qu'elles étaient toujours en base.
+  const [limit, setLimit] = useState(PAGE)
   const query = useQuery({
-    queryKey: ['campaigns'],
-    queryFn: () => api.listCampaigns(true),
+    queryKey: ['campaigns', limit],
+    queryFn: () => api.listCampaigns(true, limit),
+    // Garder la page précédente pendant que la suivante arrive : sans cela,
+    // demander « les plus anciennes » vide la liste le temps de la requête.
+    placeholderData: (previous: CampaignPage | undefined) => previous,
   })
+  const page = query.data
+  const loaded = page?.items ?? []
+  const known = page?.total ?? 0
+  const hidden = Math.max(0, known - loaded.length)
   const me = useQuery({ queryKey: ['me'], queryFn: api.me })
   const actor = me.data?.actor ?? ''
 
@@ -104,13 +124,13 @@ export function CampaignsPage() {
   }
 
   const owners = useMemo(
-    () => [...new Set((query.data ?? []).map((c) => c.created_by).filter(Boolean))].sort(),
-    [query.data],
+    () => [...new Set(loaded.map((c) => c.created_by).filter(Boolean))].sort(),
+    [loaded],
   )
 
   const shown = useMemo(
-    () => (query.data ?? []).filter((c) => matches(c, filters, actor)),
-    [query.data, filters, actor],
+    () => loaded.filter((c) => matches(c, filters, actor)),
+    [loaded, filters, actor],
   )
   const grouped = useMemo(
     () => ({
@@ -121,7 +141,7 @@ export function CampaignsPage() {
   )
 
   const filtering = JSON.stringify(filters) !== JSON.stringify(NO_FILTER)
-  const total = query.data?.length ?? 0
+  const total = loaded.length
 
   return (
     <div className="stack" style={{ gap: 'var(--space-5)' }}>
@@ -142,7 +162,7 @@ export function CampaignsPage() {
       <AsyncBoundary
         query={query}
         skeleton={<TableSkeleton rows={4} cols={5} />}
-        isEmpty={(rows) => rows.length === 0}
+        isEmpty={(page) => page.total === 0}
         empty={
           <Card>
             <EmptyState
@@ -169,6 +189,9 @@ export function CampaignsPage() {
               onDisplayChange={setDisplay}
               shown={shown.length}
               total={total}
+              hidden={hidden}
+              onLoadMore={() => setLimit((current) => current + PAGE)}
+              loading={query.isFetching}
             />
 
             {shown.length === 0 ? (
@@ -230,6 +253,9 @@ function CampaignFilters({
   onDisplayChange,
   shown,
   total,
+  hidden,
+  onLoadMore,
+  loading,
 }: {
   filters: Filters
   onChange: (filters: Filters) => void
@@ -238,6 +264,10 @@ function CampaignFilters({
   onDisplayChange: (display: Display) => void
   shown: number
   total: number
+  /** Campagnes existantes que cette page n'a pas encore chargées. */
+  hidden: number
+  onLoadMore: () => void
+  loading: boolean
 }) {
   const set = <K extends keyof Filters>(key: K, value: Filters[K]) =>
     onChange({ ...filters, [key]: value })
@@ -326,7 +356,19 @@ function CampaignFilters({
         <span className="spacer" />
         <span className="subtle num">
           {shown} / {total} campagne(s)
+          {hidden > 0 && ` — ${hidden} plus ancienne(s) non chargée(s)`}
         </span>
+        {hidden > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onLoadMore}
+            disabled={loading}
+            title={`Charger les ${Math.min(hidden, PAGE)} suivantes.`}
+          >
+            Charger les plus anciennes
+          </Button>
+        )}
         <div className="row" style={{ gap: 0 }}>
           <Button
             variant={display === 'cards' ? 'primary' : 'ghost'}

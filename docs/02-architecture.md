@@ -48,7 +48,7 @@ inventory.domain     règles métier pures — n'importe aucun driver, aucun fra
 **`inventory.domain` n'importe rien du reste.** C'est ce qui permet de tester
 l'intégralité des règles métier — éclatement BOM, consolidation, écarts,
 contrôles, machine à états, matrice d'impression — en une fraction de seconde
-sans base de données. La suite compte 1131 tests ; c'est la propriété que le
+sans base de données. La suite compte 1308 tests ; c'est la propriété que le
 classeur Excel n'avait pas.
 
 Dernier arrivé dans cette couche : `domain/printing.py`, qui décide lequel des
@@ -169,6 +169,38 @@ transaction par feuille, pas une pour la pile. Le rapport nomme les feuilles
 traitées une à une, et trente feuilles ne doivent pas perdre les vingt-neuf qui
 ont abouti parce que la trentième a échoué.
 
+### Un chargement qui remplace n'écrit pas un ensemble amputé
+
+Un import produit des lignes acceptées et des lignes rejetées. Écrire les
+premières malgré les secondes est anodin pour un chargement qui **complète** —
+trois lignes refusées sur quatre mille sont trois lignes manquantes, visibles
+dans le rapport, que le prochain fichier apportera.
+
+C'est tout autre chose pour un chargement qui **remplace**. Le snapshot de stock
+ERP, l'écart backflush et une nomenclature chargée en mode remplacement effacent
+l'ensemble précédent avant d'écrire le nouveau : les trois lignes refusées
+deviennent trois lignes *supprimées*, la nomenclature passe de 4 000 liens à
+3 997, et plus rien ne dit lesquels ont disparu. L'éclatement du WIP se fait
+ensuite contre une nomenclature incomplète.
+
+Ces trois-là refusent donc d'écrire dès qu'une ligne est rejetée. La dérogation
+existe — `allowPartial` — se voit dans le rapport du lot, et n'est pas le défaut.
+
+### La clôture exige ce qu'elle promet
+
+Le parcours contrôlait sérieusement l'entrée en analyse et ne demandait rien
+pour la clôture, qui est pourtant le seul geste irréversible. Trois exigences
+s'y ajoutent :
+
+| Bloqueur | Pourquoi |
+|---|---|
+| `MATERIAL_VARIANCES_UNEXPLAINED` | Un écart matériel sans cause ni acceptation explicite est un écart que personne n'a expliqué — et c'est la première chose qu'un contrôle demande |
+| `IMPORTS_WITH_REJECTS` | Une grille encore sur un chargement à rejets fige un référentiel amputé |
+| `PUBLICATION_NOT_DONE` | La base opérationnelle est vivante ; l'archive est ce qui reste |
+
+Ces faits coûtent un calcul d'écarts : ils ne sont consultés qu'à la clôture,
+pas à chaque affichage du panneau « ce qui manque pour avancer ».
+
 ### Une lecture ERP n'est jamais coupée en silence
 
 `LIMIT n` ramène `n` lignes que la source en ait `n` ou dix mille, et rien dans
@@ -197,6 +229,14 @@ proposée à l'écran, où la troncature *est* l'intention.
   barrière d'identité — propriétaire ou gestionnaire déclaré — ne protégeait
   alors rien. En environnement local, et là seulement, l'identité `local@dev`
   tient lieu de proxy.
+- **La trace d'audit ne se réécrit ni ne se vide.** Deux règles PostgreSQL
+  neutralisent `UPDATE` et `DELETE` depuis l'origine. Elles ne couvraient pas
+  `TRUNCATE`, qui ne passe pas par la réécriture de requête : un trigger
+  `BEFORE TRUNCATE` le refuse désormais (migration 020). La suppression physique
+  d'une campagne échouait déjà, mais sur un message d'intégrité référentielle
+  illisible ; `ON DELETE RESTRICT` le dit franchement. Aucune de ces protections
+  ne tient devant le propriétaire du schéma : la réponse à cette menace-là est
+  l'archive Delta, hors de cette base.
 - **La campagne de l'URL est celle qui est écrite.** La permission se vérifie
   sur la campagne de l'URL, les identifiants arrivent dans le corps : chaque
   écriture porte donc `WHERE campaign_id = ? AND id = ?`, et des clés étrangères
@@ -217,6 +257,8 @@ proposée à l'écran, où la troncature *est* l'intention.
 | Proxy : 120 s par requête | Budget de 100 s côté app ; les traitements lourds sont bornés et paginés |
 | 6 Go de RAM, 2 vCPU | Lecture des `.xlsx` en flux, écriture `constant_memory`, pool de 8 connexions, `n_jobs=1` sur scikit-learn |
 | 10 Mo par fichier | Bundle SPA de 109 Ko compressé, aucun `node_modules` dans la charge utile |
+| Un endpoint `async` tourne sur la boucle | FastAPI n'exécute dans un pool de fils que les endpoints `def`. Les cinq endpoints qui reçoivent un fichier renvoient leur travail synchrone au pool (`offload`) : un import de deux cent mille lignes ou une question à l'assistant y immobilisaient l'application entière |
+| Une page PDF au MediaBox démesuré | `render()` alloue son bitmap hors de portée de la garde anti-bombe de PIL. Une page de deux cents pouces produit 900 Mpx à 150 dpi ; la résolution est réduite pour tenir sous `INV_SCAN_MAX_PIXELS`, plutôt que la page refusée |
 | Téléversements non bornés | Lecture par tranches d'1 Mio, interrompue dès le plafond `INV_MAX_UPLOAD_BYTES` franchi. Le refus coûte une tranche, pas un fichier — il arrivait auparavant après que tout avait été chargé en mémoire, et seulement sur la route d'import |
 | Pas d'accès root | Uniquement des roues PyPI ; pas de Poppler, donc les PDF scannés sont découpés page par page en PDF, pas rasterisés |
 | Système de fichiers éphémère | Aucun état sur disque ; les preuves vont dans un volume UC |

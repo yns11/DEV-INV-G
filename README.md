@@ -134,7 +134,7 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      1131 tests, ~16 s, sans base de données
+tests/                      1308 tests, ~17 s ; 8 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -159,7 +159,7 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 1131 tests, ~16 s, aucune base requise
+make test            # 1308 tests, ~17 s ; 8 ignorés sans PostgreSQL
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000

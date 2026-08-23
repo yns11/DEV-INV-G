@@ -75,6 +75,19 @@ class Settings(BaseSettings):
     )
     #: Résolution de rastérisation des pages scannées.
     scan_dpi: int = Field(default=150, ge=72, le=400, alias="INV_SCAN_DPI")
+    #: Plafond de pixels d'**une** page rendue.
+    #:
+    #: `render(scale=dpi/72)` alloue le bitmap lui-même, hors de portée de la
+    #: garde anti-bombe de PIL. Une page dont le PDF déclare un MediaBox de deux
+    #: cents pouces de côté produit, à 150 dpi, un bitmap de 30 000 × 30 000 —
+    #: neuf cents mégaoctets pour une seule page, sur un conteneur qui en a six
+    #: mille et les partage. Un A4 à 600 dpi tient dans 35 mégapixels ; au-delà,
+    #: la résolution est réduite plutôt que la page refusée, parce qu'un
+    #: MediaBox démesuré est le plus souvent un artefact de scanner et non une
+    #: attaque.
+    scan_max_pixels: int = Field(
+        default=40_000_000, ge=1_000_000, alias="INV_SCAN_MAX_PIXELS"
+    )
     #: How the campaign assistant is framed (see :mod:`inventory.ai.assistant`).
     #: A runtime setting rather than a code decision, so tightening or loosening
     #: it costs no deployment.

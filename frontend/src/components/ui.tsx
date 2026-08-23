@@ -661,6 +661,90 @@ export function Modal({
 }
 
 // --------------------------------------------------------------------------- //
+// Confirmation d'une suppression
+// --------------------------------------------------------------------------- //
+
+/**
+ * Demande confirmation avant de supprimer, en nommant ce qui part.
+ *
+ * Les suppressions passaient par `window.confirm`, qui pose trois problèmes et
+ * pas seulement d'apparence.
+ *
+ * D'abord il **bloque le fil du navigateur** : rien ne se rafraîchit tant que la
+ * boîte est ouverte, et le bouton qui l'a déclenchée reste enfoncé.
+ *
+ * Ensuite il n'accepte que du texte brut, ce qui pousse à résumer. « Supprimer
+ * 40 ligne(s) de feuille ? » ne dit pas lesquelles, ni si elles reviendront.
+ *
+ * Enfin, et surtout, il ne distingue pas le réversible de l'irréversible. Une
+ * zone supprimée emporte ses feuilles et les lignes pré-imprimées qu'on a mis
+ * une matinée à corriger ; un lien de nomenclature se recharge en dix secondes.
+ * Les deux posaient la même question, avec le même bouton, au même endroit.
+ *
+ * @param what        Ce qui disparaît, nommé — « la zone Z1 », « 40 lignes ».
+ * @param consequences Ce qui part avec, une phrase par élément. Vide quand rien
+ *                     ne suit : la liste vide est une information, pas un oubli.
+ * @param reversible  Vrai quand le geste se rattrape en rechargeant la source.
+ */
+export function ConfirmDelete({
+  what,
+  consequences = [],
+  reversible = false,
+  pending = false,
+  onConfirm,
+  onClose,
+}: {
+  what: string
+  consequences?: string[]
+  reversible?: boolean
+  pending?: boolean
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  return (
+    <Modal
+      title={`Supprimer ${what} ?`}
+      onClose={onClose}
+      width={520}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={pending}>
+            Annuler
+          </Button>
+          <Button variant="danger" onClick={onConfirm} disabled={pending}>
+            {pending ? 'Suppression…' : `Supprimer ${what}`}
+          </Button>
+        </>
+      }
+    >
+      <div className="stack" style={{ gap: 'var(--space-3)' }}>
+        {consequences.length > 0 ? (
+          <div>
+            <p className="subtle">Ce qui part avec :</p>
+            <ul className="stack" style={{ gap: 'var(--space-1)' }}>
+              {consequences.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="subtle">Rien d’autre ne disparaît avec.</p>
+        )}
+        <Alert
+          tone={reversible ? 'info' : 'warning'}
+          title={reversible ? 'Rattrapable' : 'Sans retour depuis l’application'}
+        >
+          {reversible
+            ? 'Rechargez la source pour revenir à l’état actuel.'
+            : 'Rien dans l’écran ne défait ce geste : ce qui est saisi à la main ' +
+              'devra être ressaisi.'}
+        </Alert>
+      </div>
+    </Modal>
+  )
+}
+
+// --------------------------------------------------------------------------- //
 // Toasts
 // --------------------------------------------------------------------------- //
 

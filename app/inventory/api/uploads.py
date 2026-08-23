@@ -13,19 +13,38 @@ dommage, et le dommage touchait aussi les requêtes des voisins.
 
 Ce module lit par tranches et s'arrête **dès** que le plafond est franchi. Le
 refus coûte alors la taille d'une tranche, pas celle du fichier.
+
+Il porte aussi :func:`offload`, pour la moitié suivante du problème
+--------------------------------------------------------------------
+Un endpoint qui reçoit un fichier doit être ``async`` : la lecture du corps de
+la requête l'est. Mais FastAPI n'exécute dans un pool de fils que les endpoints
+déclarés ``def`` ; un endpoint ``async`` tourne **sur la boucle**, et tout ce
+qu'il appelle de synchrone la bloque.
+
+Or ce qui suit la lecture n'a rien de court : un import de deux cent mille
+lignes, un appel au modèle de vision, une question à l'assistant. Pendant ces
+secondes — parfois cette minute — l'unique boucle d'Uvicorn ne servait plus
+personne. Le jour de l'inventaire, dix personnes travaillent en parallèle :
+l'une chargeait son export, les neuf autres voyaient l'application figée, et
+rien dans les journaux ne le disait.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
+
+from starlette.concurrency import run_in_threadpool
 
 from ..config import get_settings
 from ..errors import ValidationError
 
 log = logging.getLogger(__name__)
 
-__all__ = ["read_upload"]
+__all__ = ["offload", "read_upload"]
+
+T = TypeVar("T")
 
 #: Taille d'une tranche de lecture. Assez grande pour que le surcoût d'appels
 #: reste négligeable sur un fichier de plusieurs mégaoctets, assez petite pour
@@ -80,3 +99,17 @@ async def read_upload(
             )
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+async def offload(work: Callable[[], T]) -> T:
+    """Exécute *work* dans un fil, pour ne pas immobiliser la boucle.
+
+    À utiliser dans tout endpoint ``async`` dès que l'appel suivant est
+    synchrone et non instantané — une écriture en base, une lecture de fichier,
+    un aller-retour vers un modèle. C'est ce que FastAPI fait de lui-même pour
+    un endpoint ``def`` ; un endpoint ``async`` doit le demander.
+
+    Les exceptions traversent intactes : la garde de domaine lève toujours son
+    ``ValidationError``, et le gestionnaire d'erreurs le voit comme avant.
+    """
+    return await run_in_threadpool(work)

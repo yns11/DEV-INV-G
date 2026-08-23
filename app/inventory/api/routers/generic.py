@@ -27,7 +27,7 @@ from ..schemas import (
     ZonePassesRequest,
     ZoneRequest,
 )
-from ..uploads import read_upload
+from ..uploads import offload, read_upload
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/generic", tags=["GENERIQUE"])
 
@@ -252,13 +252,15 @@ async def extract_scan(
     payload = await read_upload(file, what="Le scan")
     if not payload:
         raise ValidationError("Le fichier reçu est vide.")
-    return jobs.queue(
+    # Endpoint `async` : `queue` écrit en base, et une écriture tenue sur la
+    # boucle bloque tout le monde le temps d'un aller-retour Lakebase.
+    return await offload(lambda: jobs.queue(
         campaign,
         sheet_id=sheet_id,
         payload=payload,
         filename=file.filename or "scan",
         content_type=content_type,
-    )
+    ))
 
 
 @router.get(
@@ -309,13 +311,13 @@ async def extract_multi_scan(
     payload = await read_upload(file, what="Le scan")
     if not payload:
         raise ValidationError("Le fichier reçu est vide.")
-    return jobs.queue(
+    return await offload(lambda: jobs.queue(
         campaign,
         payload=payload,
         filename=file.filename or "scan",
         content_type=content_type,
         overwrite_reviewed=overwrite_reviewed,
-    )
+    ))
 
 
 @router.get("/scan/jobs", summary="Les scans déposés sur cette campagne")

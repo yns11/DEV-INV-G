@@ -25,6 +25,13 @@ export type DataSource =
   | 'ERP_IMPORT' | 'FILE_IMPORT' | 'MANUAL' | 'SCAN_AI'
   | 'CONSOLIDATION' | 'ARBITRATION' | 'SYSTEM'
 
+/** Une page de campagnes, avec de quoi savoir si elle en cache d'autres. */
+export interface CampaignPage {
+  items: Campaign[]
+  total: number
+  offset: number
+}
+
 export interface Campaign {
   id: string
   code: string

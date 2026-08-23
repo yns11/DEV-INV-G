@@ -50,8 +50,20 @@ class CampaignService:
 
     # ------------------------------------------------------------------ read
 
-    def list(self, *, include_closed: bool = True) -> list[Campaign]:
-        return self.ctx.campaigns.list(include_closed=include_closed)
+    #: Combien de campagnes une page en rend. Cent tenaient dans l'écran des
+    #: années durant ; ce qui manquait n'était pas une borne plus haute mais de
+    #: savoir qu'il y en avait davantage.
+    PAGE = 100
+
+    def list(
+        self, *, include_closed: bool = True, limit: int | None = None, offset: int = 0
+    ) -> tuple[list[Campaign], int]:
+        """Une page de campagnes, et le total. Voir le dépôt pour le pourquoi."""
+        return self.ctx.campaigns.list(
+            include_closed=include_closed,
+            limit=self.PAGE if limit is None else max(1, min(limit, 500)),
+            offset=max(0, offset),
+        )
 
     def get(self, campaign_id: str) -> Campaign:
         return self.ctx.campaigns.get(campaign_id)

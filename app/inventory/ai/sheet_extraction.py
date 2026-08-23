@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -973,8 +974,32 @@ def _clean_time(value: Any) -> str | None:
     return text or None
 
 
+def safe_scale(width_pt: float, height_pt: float, *, dpi: int, ceiling: int) -> float:
+    """L'échelle de rendu, réduite si la page produirait un bitmap démesuré.
+
+    ``render(scale=...)`` alloue son bitmap lui-même : la garde anti-bombe de
+    PIL ne le voit pas. Une page dont le PDF déclare deux cents pouces de côté
+    donne, à 150 dpi, trente mille pixels par côté — neuf cents mégaoctets pour
+    une page, sur un conteneur qui en a six mille et les partage entre tous.
+
+    Réduire plutôt que refuser : un MediaBox démesuré est presque toujours un
+    artefact de scanner, et une feuille de comptage rendue à cent dpi au lieu de
+    cent cinquante reste lisible. Refuser priverait l'utilisateur de sa lecture
+    pour un défaut qui n'est pas le sien.
+    """
+    wanted = dpi / 72
+    pixels = (width_pt * wanted) * (height_pt * wanted)
+    if pixels <= ceiling or pixels <= 0:
+        return wanted
+    return wanted * math.sqrt(ceiling / pixels)
+
+
 def render_pdf_pages(
-    payload: bytes, *, max_pages: int = 12, dpi: int = 150
+    payload: bytes,
+    *,
+    max_pages: int = 12,
+    dpi: int = 150,
+    max_pixels: int | None = None,
 ) -> list[bytes]:
     """Rasterise a scanned PDF into one PNG per page for the vision model.
 
@@ -1003,9 +1028,14 @@ def render_pdf_pages(
     :param dpi: 150 keeps a handwritten quantity legible while staying well
         under the per-request payload budget; 300 doubles the bytes for no
         measurable gain on the counting sheets this reads.
+    :param max_pixels: plafond de pixels par page rendue. Une page qui le
+        dépasserait est rendue moins finement — voir :func:`safe_scale`.
     """
     import pypdfium2
 
+    from ..config import get_settings
+
+    ceiling = max_pixels or get_settings().scan_max_pixels
     document = pypdfium2.PdfDocument(payload)
     try:
         total = len(document)
@@ -1013,7 +1043,16 @@ def render_pdf_pages(
             log.warning("Scan truncated at %d pages (document has %d)", max_pages, total)
         pages: list[bytes] = []
         for index in range(min(total, max_pages)):
-            image = document[index].render(scale=dpi / 72, grayscale=True).to_pil()
+            page = document[index]
+            width, height = page.get_size()
+            scale = safe_scale(width, height, dpi=dpi, ceiling=ceiling)
+            if scale < dpi / 72:
+                log.warning(
+                    "Page %d rendue à %.0f dpi au lieu de %d : le document la "
+                    "déclare à %.0f × %.0f points, ce qui dépasserait %d pixels.",
+                    index + 1, scale * 72, dpi, width, height, ceiling,
+                )
+            image = page.render(scale=scale, grayscale=True).to_pil()
             pages.append(_png(image))
         return pages
     finally:

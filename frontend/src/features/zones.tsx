@@ -18,6 +18,7 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDelete,
   EmptyState,
   Field,
   Icons,
@@ -251,22 +252,26 @@ export function ZonesAdminGrid({
     onError: (error) => showError(error, 'Suppression impossible'),
   })
 
-  const confirmRemove = (zones: Zone[]) => {
+  // Ce que la suppression emporte, énoncé avant qu'on la déclenche. Une zone
+  // supprimée part avec ses feuilles et les lignes qu'on a mis une matinée à
+  // corriger : `window.confirm` posait cette question-là comme il posait
+  // n'importe quelle autre.
+  const [removing, setRemoving] = useState<Zone[] | null>(null)
+  const removalConsequences = (zones: Zone[]) => {
+    const sheets = zones.reduce((n, z) => n + z.sheets.length, 0)
     const lines = zones.reduce((n, z) => n + (z.sheets[0]?.lineCount ?? 0), 0)
-    const what =
-      zones.length === 1
-        ? `la zone ${zones[0]!.code}`
-        : `${zones.length} zones`
-    if (
-      window.confirm(
-        `Supprimer ${what} ?\n\n` +
-          (lines
-            ? `${lines} ligne(s) pré-imprimée(s) partiront avec les feuilles.`
-            : 'Aucune ligne pré-imprimée ne sera perdue.'),
-      )
-    ) {
-      remove.mutate(zones.map((z) => z.id))
+    const consequences = [`${sheets} feuille(s) de comptage`]
+    if (lines) {
+      consequences.push(`${lines} ligne(s) pré-imprimée(s)`)
     }
+    const counted = zones.filter((z) => (z.sheets[0]?.countedLines ?? 0) > 0)
+    if (counted.length) {
+      consequences.push(
+        `des quantités déjà saisies sur ${counted.length} zone(s) : ` +
+          counted.map((z) => z.code).join(', '),
+      )
+    }
+    return consequences
   }
 
   const assign = useMutation({
@@ -365,7 +370,7 @@ export function ZonesAdminGrid({
                 icon={<Icons.trash size={13} />}
                 disabled={remove.isPending}
                 title={`Supprimer la zone ${row.code} et ses feuilles`}
-                onClick={() => confirmRemove([row])}
+                onClick={() => setRemoving([row])}
               />
             ),
           } satisfies Column<Zone>,
@@ -461,7 +466,7 @@ export function ZonesAdminGrid({
                         icon={<Icons.trash size={13} />}
                         disabled={remove.isPending}
                         onClick={() =>
-                          confirmRemove(zones.filter((z) => selected.has(z.id)))
+                          setRemoving(zones.filter((z) => selected.has(z.id)))
                         }
                       >
                         Supprimer ({selected.size})
@@ -545,6 +550,22 @@ export function ZonesAdminGrid({
           campaignId={campaignId}
           managers={managers}
           onClose={() => setCreating(false)}
+        />
+      )}
+      {removing && (
+        <ConfirmDelete
+          what={
+            removing.length === 1
+              ? `la zone ${removing[0]!.code}`
+              : `${removing.length} zones`
+          }
+          consequences={removalConsequences(removing)}
+          pending={remove.isPending}
+          onClose={() => setRemoving(null)}
+          onConfirm={() => {
+            remove.mutate(removing.map((z) => z.id))
+            setRemoving(null)
+          }}
         />
       )}
     </Card>

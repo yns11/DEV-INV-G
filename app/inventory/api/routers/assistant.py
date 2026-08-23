@@ -30,7 +30,7 @@ from ...services.assistant_service import (
     AssistantService,
 )
 from ..deps import CampaignDep, Ctx
-from ..uploads import read_upload
+from ..uploads import offload, read_upload
 
 log = logging.getLogger(__name__)
 
@@ -115,13 +115,16 @@ async def ask_with_files(
                 payload=payload,
             ))
 
-    return service.ask(
+    # Endpoint `async` : `ask` interroge un modèle, ce qui dure des dizaines de
+    # secondes. Tenu sur la boucle, il fige l'application entière pendant que
+    # quelqu'un pose une question.
+    return await offload(lambda: service.ask(
         campaign,
         question=question,
         history=_parse_history(history),
         attachments=attachments,
         profile=profile,
-    )
+    ))
 
 
 @router.get("/context", summary="Ce que le modèle voit de la campagne")

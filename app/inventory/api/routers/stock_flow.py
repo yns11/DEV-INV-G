@@ -16,7 +16,7 @@ from ...errors import ValidationError
 from ...services import ImportService, StockFlowService
 from ..deps import CampaignDep, Ctx, import_service
 from ..schemas import PasteRequest, RowsRequest, StockFlowRunRequest
-from ..uploads import read_upload
+from ..uploads import offload, read_upload
 
 router = APIRouter(
     prefix="/campaigns/{campaign_id}/stock-flow", tags=["réconciliation"]
@@ -167,9 +167,13 @@ async def load_file(
         "mode": "file", "payload": payload,
         "filename": file.filename or "", "sheet": sheet,
     }
+    # Endpoint `async` : ce qui suit est synchrone et doit quitter la boucle.
     if dry_run:
-        return importer.preview("stock_flow", **kwargs)
-    return service.load_inputs(campaign, run_id, _kind(kind), **kwargs).as_dict()
+        return await offload(lambda: importer.preview("stock_flow", **kwargs))
+    outcome = await offload(
+        lambda: service.load_inputs(campaign, run_id, _kind(kind), **kwargs)
+    )
+    return outcome.as_dict()
 
 
 @router.post(

@@ -25,7 +25,7 @@ from ..schemas import (
     PasteRequest,
     RowsRequest,
 )
-from ..uploads import read_upload
+from ..uploads import offload, read_upload
 
 router = APIRouter(tags=["données"])
 
@@ -124,12 +124,20 @@ async def import_file(
         **_period(target, borne_debut, borne_fin),
     }
 
+    # `offload` : cet endpoint est `async` parce que la lecture du fichier
+    # l'est, et FastAPI n'exécute dans un pool de fils que les endpoints `def`.
+    # Un import de deux cent mille lignes tenu sur la boucle immobilise
+    # l'application entière le temps qu'il dure.
     if dry_run:
-        return importer.preview(target, **kwargs)
+        return await offload(lambda: importer.preview(target, **kwargs))
 
-    duplicate = importer.check_duplicate(campaign.id, target, **kwargs)
+    duplicate = await offload(
+        lambda: importer.check_duplicate(campaign.id, target, **kwargs)
+    )
     extra = _write_options(target, replace=replace, allow_partial=allow_partial)
-    outcome = getattr(importer, method)(campaign, **kwargs, **extra)
+    outcome = await offload(
+        lambda: getattr(importer, method)(campaign, **kwargs, **extra)
+    )
     result = outcome.as_dict()
     if duplicate:
         result["duplicateOf"] = {

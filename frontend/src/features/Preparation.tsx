@@ -29,6 +29,7 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDelete,
   EmptyState,
   Field,
   Icons,
@@ -675,6 +676,12 @@ function BomsTab({
   const showError = useErrorToast()
   const [editing, setEditing] = useState<Record<string, unknown> | null>(null)
   const [counted, setCounted] = useState(false)
+  //: Le lien dont la suppression est en attente de confirmation. Un lien de
+  //: nomenclature se recharge depuis l'ERP en dix secondes : le dialogue le dit
+  //: plutôt que de poser la même question que pour une zone entière.
+  const [removingLink, setRemovingLink] = useState<
+    { parent: string; child: string } | null
+  >(null)
   const editable = overview.permissions.boms
   const [selectedLinks, setSelectedLinks] = useState<Set<string>>(new Set())
   const [bomView, setBomView] = useState<BomView>('all')
@@ -806,18 +813,12 @@ function BomsTab({
             size="sm"
             title={editable ? 'Supprimer ce lien' : 'Nomenclatures gelées'}
             disabled={!editable || remove.isPending}
-            onClick={() => {
-              if (
-                window.confirm(
-                  `Supprimer le lien ${row.parent_item} → ${row.child_item} ?`,
-                )
-              ) {
-                remove.mutate({
-                  parent: String(row.parent_item),
-                  child: String(row.child_item),
-                })
-              }
-            }}
+            onClick={() =>
+              setRemovingLink({
+                parent: String(row.parent_item),
+                child: String(row.child_item),
+              })
+            }
           >
             <Icons.trash size={14} />
           </Button>
@@ -961,6 +962,22 @@ function BomsTab({
           row={editing}
           onSaved={refresh}
           onClose={() => setEditing(null)}
+        />
+      )}
+      {removingLink && (
+        <ConfirmDelete
+          what={`le lien ${removingLink.parent} → ${removingLink.child}`}
+          consequences={[
+            'Ce composant cessera d’être éclaté sous cet assemblage lors ' +
+              'de la consolidation.',
+          ]}
+          reversible
+          pending={remove.isPending}
+          onClose={() => setRemovingLink(null)}
+          onConfirm={() => {
+            remove.mutate(removingLink)
+            setRemovingLink(null)
+          }}
         />
       )}
     </div>
@@ -1405,6 +1422,10 @@ function SheetLinesView({
   const showError = useErrorToast()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [draft, setDraft] = useState<Record<string, unknown>[] | null>(null)
+  //: Vrai quand la suppression de la sélection attend confirmation. Ces lignes
+  //: sont le travail de préparation — une liste qu'on a élaguée article par
+  //: article — et le fichier d'origine ne les rendra pas telles quelles.
+  const [removingLines, setRemovingLines] = useState(false)
 
   const query = useQuery({
     queryKey: ['sheet-lines', campaignId, zoneId],
@@ -1592,15 +1613,7 @@ function SheetLinesView({
                     variant="ghost"
                     icon={<Icons.trash size={13} />}
                     disabled={remove.isPending}
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `Supprimer ${selected.size} ligne(s) de feuille ?`,
-                        )
-                      ) {
-                        deleteSelection()
-                      }
-                    }}
+                    onClick={() => setRemovingLines(true)}
                   >
                     Supprimer la sélection
                   </Button>
@@ -1631,6 +1644,21 @@ function SheetLinesView({
           />
         )}
       </AsyncBoundary>
+      {removingLines && (
+        <ConfirmDelete
+          what={`${selected.size} ligne(s) de feuille`}
+          consequences={[
+            'Ces articles ne seront plus imprimés sur les feuilles de la zone.',
+            'Les quantités déjà saisies sur ces lignes partent avec elles.',
+          ]}
+          pending={remove.isPending}
+          onClose={() => setRemovingLines(false)}
+          onConfirm={() => {
+            deleteSelection()
+            setRemovingLines(false)
+          }}
+        />
+      )}
     </Card>
   )
 }

@@ -9,6 +9,7 @@
  */
 
 import type {
+  CampaignPage,
   AggregateRow,
   Analytics,
   Arbitration,
@@ -189,8 +190,16 @@ export const api = {
   contracts: () => request<GridContract[]>('/contracts'),
 
   // -------------------------------------------------------------- campaigns
-  listCampaigns: (includeClosed = true) =>
-    request<Campaign[]>(`/campaigns${qs({ includeClosed })}`),
+  /**
+   * Une page de campagnes, et combien il y en a en tout.
+   *
+   * La réponse était un tableau nu, borné à cent côté serveur sans le dire :
+   * après quelques années d'inventaires, les plus anciennes disparaissaient de
+   * l'écran sans qu'aucun message ne l'annonce. `total` est ce qui permet de
+   * proposer les suivantes plutôt que de faire comme si elles n'existaient pas.
+   */
+  listCampaigns: (includeClosed = true, limit?: number) =>
+    request<CampaignPage>(`/campaigns${qs({ includeClosed, limit })}`),
   getCampaign: (id: string) => request<Campaign>(`/campaigns/${id}`),
   overview: (id: string) => request<Overview>(`/campaigns/${id}/overview`),
   createCampaign: (body: {

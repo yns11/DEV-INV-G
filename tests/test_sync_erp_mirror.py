@@ -478,8 +478,7 @@ class TestTheFinalInsertCannotViolateTheKey:
 
     def statements_for(self, **kwargs) -> str:
         conn = self.RecordingConn()
-        sync._swap(conn, "erp_base_article", ("item_id", "item_name"),
-                   [("A", "x"), ("A", "y")], **kwargs)
+        sync._swap(conn, "erp_base_article", ("item_id", "item_name"), **kwargs)
         return "\n".join(conn.statements)
 
     def test_the_article_load_keeps_one_row_per_key(self):
@@ -556,11 +555,11 @@ class TestTheMirrorIsReplacedNotAppended:
 
     def test_the_table_is_emptied_before_being_written(self):
         conn = TestTheFinalInsertCannotViolateTheKey.RecordingConn()
-        sync._swap(conn, "erp_bom", ("parent_itemid",), [("A",)])
+        sync._swap(conn, "erp_bom", ("parent_itemid",))
         assert "TRUNCATE erp_bom" in conn.statements
 
     def test_the_rows_are_counted_on_both_sides_of_the_replacement(self):
         conn = TestTheFinalInsertCannotViolateTheKey.RecordingConn()
-        sync._swap(conn, "erp_bom", ("parent_itemid",), [("A",)])
+        sync._swap(conn, "erp_bom", ("parent_itemid",))
         counts = [s for s in conn.statements if s.startswith("SELECT count(*)")]
         assert len(counts) == 2, "avant et après, sinon le chiffre ne veut rien dire"

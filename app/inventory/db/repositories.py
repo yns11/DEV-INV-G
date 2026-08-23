@@ -155,7 +155,8 @@ class CampaignRepository(_Base):
 
     _COLUMNS = (
         "id, code, label, count_date, status, config, referentials_frozen_at, "
-        "book_stock_frozen_at, counting_frozen_at, closed_at, cloned_from_code, "
+        "book_stock_frozen_at, counting_frozen_at, closed_at, published_at, "
+        "cloned_from_code, "
         "engine_version, created_by, created_at, updated_at, row_version"
     )
 
@@ -224,7 +225,7 @@ class CampaignRepository(_Base):
         for column, value in (timestamps or {}).items():
             if column not in {
                 "referentials_frozen_at", "book_stock_frozen_at",
-                "counting_frozen_at", "closed_at",
+                "counting_frozen_at", "closed_at", "published_at",
             }:
                 raise ValueError(f"unexpected freeze column {column!r}")
             sets.append(f"{column} = %s")
@@ -330,6 +331,7 @@ class CampaignRepository(_Base):
             book_stock_frozen_at=row["book_stock_frozen_at"],
             counting_frozen_at=row["counting_frozen_at"],
             closed_at=row["closed_at"],
+            published_at=row["published_at"],
             cloned_from_code=row["cloned_from_code"],
             engine_version=row["engine_version"],
             created_by=row["created_by"],

@@ -173,6 +173,13 @@ resources:
               - ${var.uc_schema}
               - "--campaign-code"
               - "{{job.parameters.campaign_code}}"
+              # Un job n'est pas une App : aucune ressource ne lui est attachée
+              # et il ne reçoit donc ni PGHOST ni PGUSER. Il déduit l'endpoint
+              # de la branche, construite depuis les mêmes variables que la
+              # ressource `postgres` de l'App — les deux ne peuvent pas diverger.
+              # Sans ces deux lignes, ce job s'arrêtait au premier lancement.
+              - "--branch"
+              - projects/${var.lakebase_project}/branches/${var.lakebase_branch}
           environment_key: serverless_env
       parameters:
         - name: campaign_code

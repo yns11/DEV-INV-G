@@ -267,6 +267,10 @@ class Campaign(DomainModel):
     #: Set when counting is closed (entering ANALYSIS).
     counting_frozen_at: dt.datetime | None = None
     closed_at: dt.datetime | None = None
+    #: Fin de la dernière publication Delta réussie, posée par le job après
+    #: son manifeste. ``None`` = jamais archivée, et la clôture le refuse : la
+    #: base opérationnelle est vivante, l'archive est ce qui reste.
+    published_at: dt.datetime | None = None
 
     created_by: str
     created_at: dt.datetime

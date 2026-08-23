@@ -138,11 +138,15 @@ class TestTheseChecksBelongToClosureOnly:
 # Ce que le service compte réellement
 # --------------------------------------------------------------------------- #
 
-def campaign() -> Campaign:
+PUBLISHED = dt.datetime(2026, 9, 2, tzinfo=dt.UTC)
+
+
+def campaign(*, published: bool = True) -> Campaign:
     return Campaign(
         id="camp-1", code="INV-2026", label="Inventaire",
         count_date="2026-09-01", status=ANALYSIS,
         created_by="chef@usine", created_at=dt.datetime(2026, 9, 1, tzinfo=dt.UTC),
+        published_at=PUBLISHED if published else None,
         thresholds=[
             Thresholds(
                 item_type=ItemType.COMPONENT,
@@ -165,12 +169,12 @@ def variance(item: str, *, unit_cost: str, counted: str = "150") -> VarianceLine
     )
 
 
-def service(*, variances, analyses, batches):
+def service(*, variances, analyses, batches, published: bool = True):
     from inventory.services.campaign_service import CampaignService
 
     ctx = cast(Any, SimpleNamespace(actor="chef@usine", request_id="req-1"))
     with_transactions(ctx)
-    ctx.campaigns = SimpleNamespace(get=lambda cid: campaign())
+    ctx.campaigns = SimpleNamespace(get=lambda cid: campaign(published=published))
     ctx.journals = SimpleNamespace(list=lambda cid: [])
     ctx.sheets = SimpleNamespace(
         list_zones=lambda cid: [], list_sheets=lambda cid: [],
@@ -285,6 +289,61 @@ class TestOnlyTheLatestLoadOfEachGridCounts:
         )
         blockers = svc.transition_readiness("camp-1", CLOSED)["blockers"]
         assert [b["code"] for b in blockers] == ["IMPORTS_WITH_REJECTS"]
+
+
+class TestTheArchiveMustExistBeforeTheSeal:
+    """La base opérationnelle est vivante ; l'archive est ce qui reste.
+
+    Le job de publication écrit dans Delta, l'application lit Lakebase : les
+    deux ne se parlaient pas, et rien côté application ne savait répondre à
+    « l'archive existe-t-elle ». Le job pose désormais l'horodatage sur la
+    campagne, après son manifeste Delta et jamais avant.
+    """
+
+    def test_a_campaign_never_published_cannot_close(self):
+        svc = service(variances=[], analyses=[], batches=[], published=False)
+        blockers = svc.transition_readiness("camp-1", CLOSED)["blockers"]
+        assert [b["code"] for b in blockers] == ["PUBLICATION_NOT_DONE"]
+
+    def test_a_published_campaign_closes(self):
+        svc = service(variances=[], analyses=[], batches=[], published=True)
+        assert svc.transition_readiness("camp-1", CLOSED)["blockers"] == []
+
+    def test_it_is_not_asked_of_an_earlier_transition(self):
+        """Publier avant d'avoir compté n'aurait aucun sens."""
+        svc = service(variances=[], analyses=[], batches=[], published=False)
+        blockers = svc.transition_readiness("camp-1", ANALYSIS)["blockers"]
+        assert "PUBLICATION_NOT_DONE" not in [b["code"] for b in blockers]
+
+
+class TestTheJobClosesTheLoop:
+    """L'horodatage n'a de valeur que si une seule chose le pose, et en dernier."""
+
+    def source(self) -> str:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        return (root / "jobs" / "publish_campaign_to_delta.py").read_text()
+
+    def test_the_job_writes_it_back_to_lakebase(self):
+        assert "SET published_at = %(at)s" in self.source()
+
+    def test_it_happens_after_the_delta_manifest(self):
+        """Avant, il déclarerait archivée une campagne qui ne l'est pas encore."""
+        source = self.source()
+        assert source.index('"publication",') < source.index("SET published_at")
+
+    def test_nothing_else_in_the_application_sets_it(self):
+        """Une campagne ne se déclare pas publiée elle-même."""
+        from pathlib import Path
+
+        app = Path(__file__).resolve().parent.parent / "app"
+        offenders = [
+            path.name
+            for path in app.rglob("*.py")
+            if "published_at =" in path.read_text()
+        ]
+        assert offenders == [], offenders
 
 
 class TestTheCostOfTheCheck:

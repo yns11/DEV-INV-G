@@ -19,6 +19,34 @@ Every table is rewritten for the published campaign only, inside a
 ``replaceWhere`` on the campaign partition. Re-running the job produces the same
 result; it never appends duplicates. A campaign can therefore be republished
 after a correction without any manual clean-up.
+
+La partition est l'identifiant, jamais le code
+----------------------------------------------
+Les tables étaient partitionnées par ``campaign_code``. Or un code est une
+valeur métier : il se réutilise, et l'application ne supprime que logiquement.
+Créer une campagne « INV-2026-06 » après en avoir retiré une du même nom faisait
+donc écraser l'archive de la première par les données de la seconde, en silence
+et sans recours — l'archive étant précisément ce qui reste quand la base
+opérationnelle a évolué. ``campaign_id`` est un UUID, immuable et jamais
+réattribué : c'est lui qui porte la partition et le prédicat de remplacement.
+Le code reste une colonne, pour qu'un humain s'y retrouve.
+
+Ce que la publication garantit, et ce qu'elle ne garantit pas
+--------------------------------------------------------------
+Les tables sont écrites l'une après l'autre. Une panne au milieu laisse donc
+quelques tables à la nouvelle version et les autres à l'ancienne — Delta n'offre
+pas de transaction couvrant plusieurs tables.
+
+Ce qui est garanti, c'est qu'une publication incomplète ne se **fait pas passer**
+pour complète. La table ``publication`` est écrite en dernier, avec le décompte
+de chaque table ; rien d'autre ne la met à jour. Une campagne est publiée si, et
+seulement si, elle y figure. Une exécution interrompue ne laisse aucune ligne de
+manifeste, et la reprise réécrit chaque table par-dessus la précédente puisque
+tout passe par ``replaceWhere`` sur le même identifiant.
+
+Ce n'est pas l'écriture en zone de transit décrite par l'audit — elle
+supposerait de doubler chaque table — mais elle en donne la propriété qui compte
+au lecteur : ne jamais lire pour complet un dossier qui ne l'est pas.
 """
 
 from __future__ import annotations
@@ -28,6 +56,7 @@ import datetime as dt
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 logging.basicConfig(
@@ -35,6 +64,11 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
     stream=sys.stdout,
 )
+# Un `spark_python_task` matérialise le fichier sur le driver ; son voisin
+# `lakebase.py` est là, mais le répertoire n'est pas toujours sur le chemin
+# d'import selon la façon dont le job est lancé.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 log = logging.getLogger("publish")
 
 
@@ -116,6 +150,20 @@ def main() -> int:
                                                             "emotors_data_champions"))
     parser.add_argument("--schema", default=os.environ.get("INV_UC_SCHEMA", "inventory"))
     parser.add_argument("--campaign-code", required=True)
+    # Ce qu'un job doit recevoir pour joindre Lakebase : la branche, d'où tout
+    # le reste se déduit. Les mêmes noms que le job de synchronisation, parce
+    # que c'est le même module qui les lit.
+    parser.add_argument(
+        "--branch",
+        default=os.environ.get("INV_LAKEBASE_BRANCH", ""),
+        help="Branche Lakebase, ex. projects/<projet>/branches/<branche>",
+    )
+    parser.add_argument("--lakebase-endpoint", default="",
+                        help="Endpoint en écriture, déduit de la branche sinon")
+    parser.add_argument("--pg-host", default="", help="Court-circuite la découverte")
+    parser.add_argument("--pg-database", default=os.environ.get("PGDATABASE",
+                                                                "databricks_postgres"))
+    parser.add_argument("--pg-user", default="", help="Identité du job sinon")
     args = parser.parse_args()
 
     code = args.campaign_code.strip().upper()
@@ -130,7 +178,7 @@ def main() -> int:
     spark = SparkSession.builder.getOrCreate()
     published_at = dt.datetime.now(dt.UTC)
 
-    conninfo = _lakebase_conninfo()
+    conninfo = _lakebase_conninfo(args)
     log.info("Publishing campaign %s to %s.%s", code, args.catalog, args.schema)
 
     with psycopg.connect(conninfo, row_factory=dict_row) as conn, conn.cursor() as cur:
@@ -143,6 +191,9 @@ def main() -> int:
         count_date = campaign["count_date"]
 
         published: dict[str, int] = {}
+        # Le prédicat porte l'identifiant, pas le code : un code se réutilise,
+        # un UUID non. Voir l'en-tête du module.
+        campaign_slice = f"campaign_id = '{_escape(campaign_id)}'"
 
         # ---- the campaign row itself -------------------------------------
         _write(
@@ -151,11 +202,11 @@ def main() -> int:
             "campaign",
             [{**campaign, "published_at": published_at}],
             partition_column=None,
-            replace_predicate=f"code = '{_escape(code)}'",
+            replace_predicate=campaign_slice,
         )
         published["campaign"] = 1
 
-        # ---- everything partitioned by campaign_code ----------------------
+        # ---- everything partitioned by campaign_id ------------------------
         for table, query in QUERIES.items():
             if table == "campaign":
                 continue
@@ -175,15 +226,68 @@ def main() -> int:
                 args,
                 table,
                 enriched,
-                partition_column="campaign_code",
-                replace_predicate=f"campaign_code = '{_escape(code)}'",
+                partition_column="campaign_id",
+                replace_predicate=campaign_slice,
             )
             published[table] = len(enriched)
+
+        # ---- le manifeste, écrit en dernier -------------------------------
+        #
+        # C'est lui qui rend la publication visible. Tant qu'il n'est pas écrit,
+        # la campagne n'est pas publiée — quelles que soient les tables déjà
+        # remplies. Une exécution interrompue ne laisse donc pas un dossier
+        # à moitié rempli qui se présente comme complet.
+        _write(
+            spark,
+            args,
+            "publication",
+            [manifest(campaign_id, code, published_at, published)],
+            partition_column=None,
+            replace_predicate=campaign_slice,
+        )
+
+        # ---- et l'application l'apprend -----------------------------------
+        #
+        # Le job écrit dans Delta, l'application lit Lakebase : les deux ne se
+        # parlaient pas, si bien qu'une campagne pouvait être clôturée sans la
+        # moindre preuve que son archive existe. Cette écriture, sur la
+        # connexion déjà ouverte, est ce que la clôture consultera.
+        #
+        # Après le manifeste, et jamais avant : c'est lui qui fait foi.
+        cur.execute(
+            "UPDATE inventory.campaign SET published_at = %(at)s WHERE id = %(id)s",
+            {"at": published_at, "id": campaign_id},
+        )
+        conn.commit()
 
     for table, count in published.items():
         log.info("  %-22s %8d row(s)", table, count)
     log.info("Campaign %s published successfully.", code)
     return 0
+
+
+def manifest(
+    campaign_id: str,
+    code: str,
+    published_at: dt.datetime,
+    published: dict[str, int],
+) -> dict[str, Any]:
+    """La ligne qui déclare la publication complète.
+
+    ``row_counts`` porte le décompte table par table : c'est ce qui permet de
+    répondre à « l'archive est-elle fidèle » sans relire les neuf tables, et de
+    voir tout de suite qu'une campagne archivée avec zéro ligne de comptage est
+    une anomalie plutôt qu'une campagne vide.
+    """
+    return {
+        "campaign_id": campaign_id,
+        "campaign_code": code,
+        "published_at": published_at,
+        "engine_version": os.environ.get("INV_ENGINE_VERSION", ""),
+        "table_count": len(published),
+        "row_total": sum(published.values()),
+        "row_counts": dict(sorted(published.items())),
+    }
 
 
 def _write(
@@ -247,37 +351,23 @@ def _write(
     )
 
 
-def _lakebase_conninfo() -> str:
-    """Build the Lakebase connection string from the injected environment.
+def _lakebase_conninfo(args: argparse.Namespace) -> str:
+    """Chaîne de connexion Lakebase — voir :mod:`lakebase`.
 
-    In a job context the credentials come from the job's own identity; the same
-    environment variable names are used as in the app so there is one contract.
+    Ce job attendait ``PGHOST`` / ``PGDATABASE`` / ``PGUSER`` dans son
+    environnement, comme l'application. Un job n'est pas une App et n'a pas de
+    ressource attachée : il ne les recevait donc jamais, et s'arrêtait au
+    premier lancement sur un message que rien dans le bundle n'aurait pu
+    satisfaire. Son repli appelait de surcroît
+    ``w.database.generate_database_credential`` — l'API du palier
+    *provisionné* — sur un projet Lakebase Autoscaling.
+
+    Le job de synchronisation avait déjà été corrigé ; celui-ci ne l'était pas.
+    Les deux importent maintenant la même découverte d'endpoint.
     """
-    host = os.environ.get("PGHOST")
-    database = os.environ.get("PGDATABASE")
-    user = os.environ.get("PGUSER")
-    password = os.environ.get("PGPASSWORD")
+    from lakebase import conninfo
 
-    if not all((host, database, user)):
-        raise RuntimeError(
-            "PGHOST, PGDATABASE and PGUSER must be set. Attach the Lakebase "
-            "database to the job, or export them from a secret scope."
-        )
-    if not password:
-        # Same OAuth-token-as-password mechanism as the app.
-        from databricks.sdk import WorkspaceClient
-
-        credential = WorkspaceClient().database.generate_database_credential(
-            request_id="publish-campaign", instance_names=[host or ""]
-        )
-        password = getattr(credential, "token", "")
-
-    port = os.environ.get("PGPORT", "5432")
-    sslmode = os.environ.get("PGSSLMODE", "require")
-    return (
-        f"host={host} port={port} dbname={database} user={user} "
-        f"password={password} sslmode={sslmode}"
-    )
+    return conninfo(args)
 
 
 def _escape(value: str) -> str:

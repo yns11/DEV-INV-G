@@ -406,7 +406,12 @@ class CampaignService:
         # panneau « ce qui manque pour avancer ».
         unexplained = 0
         rejected_imports: list[tuple[str, int]] = []
+        publication_done = True
         if target is CampaignStatus.CLOSED:
+            # Posé par le job de publication après son manifeste Delta. Le lire
+            # ici évite de faire dépendre la clôture d'un entrepôt SQL éveillé,
+            # pour une réponse qui ne change qu'une fois par campagne.
+            publication_done = campaign.published_at is not None
             unexplained = self._unexplained_material(campaign)
             rejected_imports = [
                 (str(b["target"]), int(b["rows_rejected"] or 0))
@@ -421,6 +426,7 @@ class CampaignService:
             book_stock_frozen=campaign.book_stock_frozen_at is not None,
             unexplained_material=unexplained,
             rejected_imports=rejected_imports,
+            publication_done=publication_done,
         )
         return {
             "current": str(campaign.status),

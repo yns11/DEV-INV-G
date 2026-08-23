@@ -1613,6 +1613,49 @@ class SheetRepository(_Base):
             conn=conn,
         )
 
+    def bump_sheet(
+        self,
+        campaign_id: str,
+        sheet_id: str,
+        *,
+        expected_version: int,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Prend la feuille pour soi, ou refuse parce qu'elle a bougé.
+
+        L'enregistrement d'une feuille **remplace** ses lignes. Deux personnes
+        qui l'ouvrent au même moment pendant l'encodage — ce qui arrive tous les
+        jours d'inventaire, une qui saisit, l'autre qui vérifie — écrivaient
+        chacune l'ensemble qu'elle avait sous les yeux, et la seconde à cliquer
+        gagnait. Rien ne le disait : les quantités de la première disparaissaient
+        sans message, sans conflit, sans trace.
+
+        L'``UPDATE`` conditionné sur ``row_version`` est ce qui transforme cette
+        course en refus. Il est atomique par construction : PostgreSQL sérialise
+        deux mises à jour de la même ligne, donc exactement une des deux voit la
+        version attendue.
+
+        Il doit être exécuté **dans la transaction qui écrit** — d'où ``conn``.
+        Le prendre à part laisserait une fenêtre entre la prise et le
+        remplacement, c'est-à-dire exactement la course qu'il ferme.
+        """
+        touched = self._execute(
+            "UPDATE count_sheet SET row_version = row_version + 1, "
+            "updated_by = %s, updated_at = now() "
+            "WHERE campaign_id = %s AND id = %s AND row_version = %s",
+            (actor, campaign_id, sheet_id, expected_version),
+            conn=conn,
+        )
+        if touched == 0:
+            raise ConflictError(
+                "Cette feuille a été modifiée par quelqu'un d'autre pendant que "
+                "vous la remplissiez. Rechargez-la : enregistrer maintenant "
+                "effacerait ce que l'autre personne vient d'y saisir.",
+                sheetId=sheet_id,
+                expectedVersion=expected_version,
+            )
+
     def replace_sheet_lines(
         self, sheet_id: str, lines: Sequence[CountSheetLine], *, actor: str,
         conn: psycopg.Connection | None = None,

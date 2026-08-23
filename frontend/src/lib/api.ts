@@ -523,10 +523,19 @@ export const api = {
       `/campaigns/${id}/generic/zones/${zoneId}/closure`,
       { method: 'POST', body: JSON.stringify({ closed }) },
     ),
-  saveSheetLines: (id: string, sheetId: string, lines: unknown[], replace = false) =>
+  // `expectedVersion` est la version de la feuille telle que l'écran l'a lue.
+  // Un enregistrement qui remplace écrase l'ensemble : sans elle, deux
+  // personnes sur la même feuille s'effacent l'une l'autre sans un mot.
+  saveSheetLines: (
+    id: string,
+    sheetId: string,
+    lines: unknown[],
+    replace = false,
+    expectedVersion?: number,
+  ) =>
     request<{ written: number }>(`/campaigns/${id}/generic/sheets/${sheetId}/lines`, {
       method: 'PUT',
-      body: JSON.stringify({ lines, replace }),
+      body: JSON.stringify({ lines, replace, expectedVersion }),
     }),
   deleteSheetLine: (id: string, lineId: string) =>
     request<{ deleted: boolean }>(`/campaigns/${id}/generic/lines/${lineId}`, {

@@ -209,7 +209,13 @@ def upsert_sheet_lines(
         }
         for line in payload.lines
     ]
-    written = service.upsert_sheet_lines(campaign, sheet_id, rows, replace=payload.replace)
+    written = service.upsert_sheet_lines(
+            campaign,
+            sheet_id,
+            rows,
+            replace=payload.replace,
+            expected_version=payload.expected_version,
+        )
     return {"written": written}
 
 

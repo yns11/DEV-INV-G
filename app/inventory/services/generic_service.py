@@ -546,6 +546,7 @@ class GenericService:
         rows: Sequence[dict[str, Any]],
         *,
         replace: bool = False,
+        expected_version: int | None = None,
     ) -> int:
         """Create or update the lines of a sheet from grid edits or a paste.
 
@@ -556,6 +557,13 @@ class GenericService:
         count itself, and it only opens when counting does. Guarding both under
         the stricter of the two is what made the preparation screen refuse to let
         anyone touch a list they were still building.
+
+        ``expected_version`` est la version que l'écran avait sous les yeux. Un
+        remplacement écrase l'ensemble : sans elle, deux personnes sur la même
+        feuille s'effacent l'une l'autre en silence. Facultative parce que tous
+        les appelants ne l'ont pas — une extraction IA écrit une feuille qu'elle
+        vient de lire, et rien d'autre ne la touche — mais l'écran, lui, la
+        transmet toujours.
         """
         ctx = self.ctx
         ctx.guard(campaign, "count_sheets")
@@ -613,6 +621,17 @@ class GenericService:
 
         with ctx.db.transaction() as conn:
             if replace:
+                # Le verrou est pris *dans* la transaction qui écrit. Le prendre
+                # avant laisserait une fenêtre entre la prise et le
+                # remplacement — c'est-à-dire exactement la course qu'il ferme.
+                if expected_version is not None:
+                    ctx.sheets.bump_sheet(
+                        campaign.id,
+                        sheet_id,
+                        expected_version=expected_version,
+                        actor=ctx.actor,
+                        conn=conn,
+                    )
                 written = ctx.sheets.replace_sheet_lines(
                     sheet_id, lines, actor=ctx.actor, conn=conn
                 )

@@ -374,6 +374,13 @@ class SheetLineRow(ApiModel):
 class SheetLinesRequest(ApiModel):
     lines: list[SheetLineRow]
     replace: bool = False
+    #: La version de la feuille que l'écran avait sous les yeux.
+    #:
+    #: Facultative parce que tous les appelants ne l'ont pas — un collage depuis
+    #: Excel n'ajoute que des lignes, une extraction IA écrit une feuille qu'elle
+    #: vient de lire. L'écran de saisie, lui, la transmet toujours : c'est là que
+    #: deux personnes se retrouvent sur la même feuille.
+    expected_version: int | None = Field(default=None, alias="expectedVersion")
 
 
 class SheetLineDeleteRequest(ApiModel):

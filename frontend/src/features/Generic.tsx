@@ -782,6 +782,9 @@ function SheetModal({
           displayOrder: index,
         })),
         true,
+        // La version lue à l'ouverture. Le serveur refuse si la feuille a bougé
+        // entre-temps, plutôt que d'effacer ce que l'autre vient d'y saisir.
+        Number(query.data?.sheet?.row_version) || undefined,
       ),
     onSuccess: (result) => {
       void queryClient.invalidateQueries()

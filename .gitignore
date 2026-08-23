@@ -40,3 +40,7 @@ Thumbs.db
 tmp/
 scratch/
 *.log
+
+# Fichier intermédiaire de `npm run generate:api` : le client généré
+# (`src/lib/schema.d.ts`) est ce qui est versionné, pas le schéma brut.
+frontend/openapi.json

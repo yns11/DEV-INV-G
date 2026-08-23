@@ -1,10 +1,20 @@
 /**
- * Wire types shared with the FastAPI backend.
+ * Les formes échangées avec le backend FastAPI.
  *
- * Hand-written rather than generated, because the surface is small and stable
- * and a hand-written type can carry the documentation that matters (what a KPI
- * actually means, why two reliability figures exist).
+ * Une partie est désormais **générée** depuis l'OpenAPI (`schema.d.ts`, produit
+ * par `npm run generate:api`) et seulement ré-exportée ici sous le nom que
+ * l'interface emploie. Ces formes-là ne peuvent plus dériver : renommer un
+ * champ côté serveur fait échouer `tsc`, là où la déclaration recopiée à la
+ * main restait valide et l'écran affichait `undefined`.
+ *
+ * Le reste est encore écrit à la main, faute d'être déclaré côté serveur — les
+ * routes concernées annoncent `dict[str, Any]`, et l'OpenAPI n'en dit rien.
+ * Chacune migrera en déclarant sa réponse dans `api/responses.py`.
  */
+
+import type { components } from './schema'
+
+type Schemas = components['schemas']
 
 export type CampaignStatus = 'PREPARATION' | 'COUNTING' | 'ANALYSIS' | 'CLOSED'
 export type JournalStatus = 'PENDING' | 'IN_PROGRESS' | 'POSTED' | 'BOOK_ENFORCED'
@@ -26,28 +36,9 @@ export type DataSource =
   | 'CONSOLIDATION' | 'ARBITRATION' | 'SYSTEM'
 
 /** Une page de campagnes, avec de quoi savoir si elle en cache d'autres. */
-export interface CampaignPage {
-  items: Campaign[]
-  total: number
-  offset: number
-}
+export type CampaignPage = Schemas['CampaignPage']
 
-export interface Campaign {
-  id: string
-  code: string
-  label: string
-  count_date: string
-  status: CampaignStatus
-  config: CampaignConfig
-  referentials_frozen_at: string | null
-  book_stock_frozen_at: string | null
-  counting_frozen_at: string | null
-  closed_at: string | null
-  cloned_from_code: string | null
-  engine_version: string
-  created_by: string
-  created_at: string
-}
+export type Campaign = Schemas['Campaign']
 
 export interface CampaignConfig {
   generic_warehouse: string
@@ -109,37 +100,7 @@ export interface Access {
   owner: string
 }
 
-export interface Overview {
-  campaign: Campaign
-  permissions: Permissions
-  access: Access
-  perimeter: PerimeterSummary
-  journalProgress: {
-    total: number
-    complete: number
-    running: number
-    pending: number
-    ratio: number | null
-  }
-  genericProgress: {
-    zones: number
-    done: number
-    ratio: number | null
-    byStatus: Record<string, number>
-    pendingArbitrations: number
-  }
-  counts: { items: number; bookStockLines: number }
-  /**
-   * Which steps are open, and why the others are not.
-   *
-   * Computed by the same function the API guard uses, so the interface can grey
-   * out a step with the exact sentence a write would have been refused with.
-   */
-  sequence: {
-    unlocked: Record<string, boolean>
-    blockedBy: Record<string, string>
-  }
-}
+export type Overview = Schemas['OverviewResponse']
 
 /**
  * Whether the referential can be read straight from the ERP.
@@ -161,11 +122,7 @@ export interface ErpSource {
   mirror: Record<string, { rows: number | null; syncedAt: string | null; stale: boolean | null }> | null
 }
 
-export interface Threshold {
-  item_type: ItemType
-  value_abs_eur: string | number
-  qty_relative: string | number | null
-}
+export type Threshold = Schemas['Thresholds']
 
 /**
  * Headline campaign figures.
@@ -663,15 +620,7 @@ export interface FieldSpec {
   width: number
 }
 
-export interface GridContract {
-  key: string
-  title: string
-  description: string
-  hint: string
-  naturalKey: string[]
-  fields: FieldSpec[]
-  examples: Array<Record<string, unknown>>
-}
+export type GridContract = Schemas['GridContractResponse']
 
 export interface ImportResult {
   target: string
@@ -849,35 +798,13 @@ export interface WorkQueue {
   where: string
 }
 
-export interface WorkQueues {
-  focus: boolean
-  queues: WorkQueue[]
-  waiting: number
-}
+export type WorkQueues = Schemas['WorkQueuesResponse']
 
-export interface ClosureChecklist {
-  ready: boolean
-  allowed: boolean
-  items: ChecklistItem[]
-  counts: { blocking: number; attention: number; done: number }
-}
+export type ClosureChecklist = Schemas['ClosureChecklistResponse']
 
-export interface Health {
-  status: string
-  ready: boolean
-  version: string
-  env: string
-  lakebaseConfigured: boolean
-  warehouseConfigured: boolean
-  llmEndpoint: string
-  startupError: string | null
-}
+export type Health = Schemas['HealthResponse']
 
-export interface Me {
-  actor: string
-  authenticated: boolean
-  source: string
-}
+export type Me = Schemas['MeResponse']
 
 /**
  * The campaign assistant.

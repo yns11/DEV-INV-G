@@ -7,9 +7,16 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query
 
 from ...domain.enums import CampaignStatus
-from ...domain.models import CampaignConfig, Thresholds
+from ...domain.models import Campaign, CampaignConfig, Thresholds
 from ...services import BoardService, CampaignService
 from ..deps import CampaignDep, board_service, campaign_service
+from ..responses import (
+    CampaignPage,
+    ClosureChecklistResponse,
+    DeletedResponse,
+    OverviewResponse,
+    WorkQueuesResponse,
+)
 from ..schemas import (
     CloneCampaignRequest,
     CreateCampaignRequest,
@@ -23,7 +30,10 @@ Service = Annotated[CampaignService, Depends(campaign_service)]
 Board = Annotated[BoardService, Depends(board_service)]
 
 
-@router.get("", summary="Lister les campagnes")
+@router.get(
+    "", summary="Lister les campagnes",
+    responses={200: {"model": CampaignPage}},
+)
 def list_campaigns(
     service: Service,
     include_closed: Annotated[bool, Query(alias="includeClosed")] = True,
@@ -48,7 +58,10 @@ def list_campaigns(
     }
 
 
-@router.post("", status_code=201, summary="Créer une campagne")
+@router.post(
+    "", status_code=201, summary="Créer une campagne",
+    responses={201: {"model": Campaign}},
+)
 def create_campaign(payload: CreateCampaignRequest, service: Service) -> dict[str, Any]:
     campaign = service.create(
         code=payload.code,
@@ -64,7 +77,10 @@ def create_campaign(payload: CreateCampaignRequest, service: Service) -> dict[st
     return campaign.model_dump(mode="json")
 
 
-@router.post("/clone", status_code=201, summary="Dupliquer une campagne")
+@router.post(
+    "/clone", status_code=201, summary="Dupliquer une campagne",
+    responses={201: {"model": Campaign}},
+)
 def clone_campaign(payload: CloneCampaignRequest, service: Service) -> dict[str, Any]:
     """Start a campaign from a previous one's referentials.
 
@@ -82,12 +98,18 @@ def clone_campaign(payload: CloneCampaignRequest, service: Service) -> dict[str,
     return campaign.model_dump(mode="json")
 
 
-@router.get("/{campaign_id}", summary="Détail d'une campagne")
+@router.get(
+    "/{campaign_id}", summary="Détail d'une campagne",
+    responses={200: {"model": Campaign}},
+)
 def get_campaign(campaign: CampaignDep) -> dict[str, Any]:
     return campaign.model_dump(mode="json")
 
 
-@router.delete("/{campaign_id}", summary="Supprimer une campagne")
+@router.delete(
+    "/{campaign_id}", summary="Supprimer une campagne",
+    responses={200: {"model": DeletedResponse}},
+)
 def delete_campaign(campaign: CampaignDep, service: Service) -> dict[str, bool]:
     """Logical deletion, reserved to the campaign's author.
 
@@ -98,7 +120,10 @@ def delete_campaign(campaign: CampaignDep, service: Service) -> dict[str, bool]:
     return {"deleted": True}
 
 
-@router.get("/{campaign_id}/overview", summary="Tableau de bord de la campagne")
+@router.get(
+    "/{campaign_id}/overview", summary="Tableau de bord de la campagne",
+    responses={200: {"model": OverviewResponse}},
+)
 def overview(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     """Header data for every screen: status, permissions and both progress bars."""
     data = service.overview(campaign.id)
@@ -119,7 +144,10 @@ def transition_readiness(
     return service.transition_readiness(campaign.id, target)
 
 
-@router.get("/{campaign_id}/work-queues", summary="Files de travail du jour")
+@router.get(
+    "/{campaign_id}/work-queues", summary="Files de travail du jour",
+    responses={200: {"model": WorkQueuesResponse}},
+)
 def work_queues(
     campaign: CampaignDep,
     board: Board,
@@ -141,6 +169,7 @@ def work_queues(
 @router.get(
     "/{campaign_id}/closure-checklist",
     summary="Liste de contrôle avant clôture",
+    responses={200: {"model": ClosureChecklistResponse}},
 )
 def closure_checklist(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     """L'état des lieux du dossier, avant le seul geste irréversible.
@@ -154,19 +183,28 @@ def closure_checklist(campaign: CampaignDep, service: Service) -> dict[str, Any]
     return service.closure_checklist(campaign.id)
 
 
-@router.post("/{campaign_id}/transition", summary="Changer le statut de la campagne")
+@router.post(
+    "/{campaign_id}/transition", summary="Changer le statut de la campagne",
+    responses={200: {"model": Campaign}},
+)
 def transition(
     campaign: CampaignDep, payload: TransitionRequest, service: Service
 ) -> dict[str, Any]:
     return service.transition(campaign.id, payload.target).model_dump(mode="json")
 
 
-@router.get("/{campaign_id}/thresholds", summary="Seuils de matérialité")
+@router.get(
+    "/{campaign_id}/thresholds", summary="Seuils de matérialité",
+    responses={200: {"model": list[Thresholds]}},
+)
 def get_thresholds(campaign: CampaignDep, service: Service) -> list[dict[str, Any]]:
     return [t.model_dump(mode="json") for t in service.thresholds(campaign)]
 
 
-@router.put("/{campaign_id}/thresholds", summary="Mettre à jour les seuils")
+@router.put(
+    "/{campaign_id}/thresholds", summary="Mettre à jour les seuils",
+    responses={200: {"model": list[Thresholds]}},
+)
 def update_thresholds(
     campaign: CampaignDep, payload: UpdateThresholdsRequest, service: Service
 ) -> list[dict[str, Any]]:

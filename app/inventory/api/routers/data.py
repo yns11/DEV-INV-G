@@ -7,19 +7,52 @@ and ``.../paste`` and ``.../rows`` accept the same target with JSON bodies.
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from ...errors import ValidationError
 from ...ingest import get_contract, list_contracts
-from ...services import ImportService
-from ..deps import CampaignDep, Ctx, import_service
-from ..schemas import PasteRequest, RowsRequest
+from ...services import ImportService, ReferentialService
+from ..deps import CampaignDep, import_service, referential_service
+from ..paging import MAX_PAGE, page
+from ..schemas import (
+    BomActivationRequest,
+    BomLinkPatch,
+    ItemExclusionsRequest,
+    ItemPatch,
+    PasteRequest,
+    RowsRequest,
+)
+from ..uploads import offload, read_upload
 
 router = APIRouter(tags=["données"])
 
+#: Les grilles dont l'écriture **remplace** l'ensemble existant. Un rejet y
+#: transforme une ligne manquante en ligne supprimée, ce que le service refuse
+#: sans dérogation explicite. « boms » n'y figure pas : il ne remplace que
+#: lorsqu'on le lui demande, et le service reçoit alors `replace`.
+WHOLESALE_TARGETS = ("book_stock", "backflush")
+
 Importer = Annotated[ImportService, Depends(import_service)]
+Referentials = Annotated[ReferentialService, Depends(referential_service)]
+
+def _write_options(target: str, *, replace: bool, allow_partial: bool) -> dict:
+    """Les options d'écriture que ce chargement accepte.
+
+    Passer `allow_partial` à un import qui ne remplace rien serait accepté par
+    Python et sans effet, ce qui est pire qu'une erreur : le drapeau
+    apparaîtrait dans l'interface sans jamais rien changer. Il n'est donc
+    transmis qu'aux grilles pour lesquelles il veut dire quelque chose.
+    """
+    options: dict = {}
+    if target == "boms":
+        options["replace"] = replace
+    if target in WHOLESALE_TARGETS or (target == "boms" and replace):
+        options["allow_partial"] = allow_partial
+    return options
+
 
 #: Import targets and the service method that handles each. Declaring the map
 #: here keeps the routes thin and makes an unsupported target a clean 422.
@@ -30,6 +63,7 @@ _TARGETS = {
     "count_journal_lines": "import_journal_lines",
     "count_sheets": "import_count_sheets",
     "adjustments": "import_adjustments",
+    "backflush": "import_backflush",
     "locations": "import_locations",
 }
 
@@ -71,7 +105,10 @@ async def import_file(
     file: Annotated[UploadFile, File()],
     sheet: Annotated[str | None, Form()] = None,
     replace: Annotated[bool, Form()] = False,
+    allow_partial: Annotated[bool, Form(alias="allowPartial")] = False,
     dry_run: Annotated[bool, Form(alias="dryRun")] = False,
+    borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
+    borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
 ) -> dict[str, Any]:
     """Upload a ``.xlsx`` / ``.csv`` into a grid.
 
@@ -79,20 +116,29 @@ async def import_file(
     *would* happen, which is how a user checks a file before committing to it.
     """
     method = _resolve(target)
-    payload = await file.read()
+    payload = await read_upload(file)
     kwargs: dict[str, Any] = {
         "mode": "file",
         "payload": payload,
         "filename": file.filename or "",
         "sheet": sheet,
+        **_period(target, borne_debut, borne_fin),
     }
 
+    # `offload` : cet endpoint est `async` parce que la lecture du fichier
+    # l'est, et FastAPI n'exécute dans un pool de fils que les endpoints `def`.
+    # Un import de deux cent mille lignes tenu sur la boucle immobilise
+    # l'application entière le temps qu'il dure.
     if dry_run:
-        return importer.preview(target, **kwargs)
+        return await offload(lambda: importer.preview(target, **kwargs))
 
-    duplicate = importer.check_duplicate(campaign.id, target, **kwargs)
-    extra = {"replace": replace} if target == "boms" else {}
-    outcome = getattr(importer, method)(campaign, **kwargs, **extra)
+    duplicate = await offload(
+        lambda: importer.check_duplicate(campaign.id, target, **kwargs)
+    )
+    extra = _write_options(target, replace=replace, allow_partial=allow_partial)
+    outcome = await offload(
+        lambda: getattr(importer, method)(campaign, **kwargs, **extra)
+    )
     result = outcome.as_dict()
     if duplicate:
         result["duplicateOf"] = {
@@ -109,21 +155,51 @@ async def import_file(
     summary="Importer un collage depuis Excel",
 )
 def import_paste(
-    campaign: CampaignDep, target: str, payload: PasteRequest, importer: Importer
+    campaign: CampaignDep,
+    target: str,
+    payload: PasteRequest,
+    importer: Importer,
+    borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
+    borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
 ) -> dict[str, Any]:
     """Accept a Ctrl-C / Ctrl-V block pasted into a grid cell."""
     method = _resolve(target)
-    kwargs: dict[str, Any] = {"mode": "paste", "text": payload.text}
+    kwargs: dict[str, Any] = {
+        "mode": "paste", "text": payload.text,
+        **_period(target, borne_debut, borne_fin),
+    }
     if payload.dry_run:
         return importer.preview(target, **kwargs)
-    extra = {"replace": payload.replace} if target == "boms" else {}
+    extra = _write_options(
+        target, replace=payload.replace, allow_partial=payload.allow_partial
+    )
     return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
 
 
-#: The two grids the ERP is authoritative for. Book stock deliberately stays a
-#: file: it is a snapshot taken at a precise instant, and reading it live would
-#: give a picture of "now" rather than of the moment the count began.
-ERP_TARGETS = ("items", "boms")
+#: The grids the ERP is authoritative for. Book stock deliberately stays a file:
+#: it is a snapshot taken at a precise instant, and reading it live would give a
+#: picture of "now" rather than of the moment the count began.
+ERP_TARGETS = ("items", "boms", "book_stock", "backflush")
+
+#: Grids read from a *fact* table, which therefore need a period. A referential
+#: has a state; a fact table has a history, and one cannot be read without
+#: saying over what.
+PERIOD_TARGETS = ("backflush",)
+
+
+def _period(
+    target: str, start: dt.date | None, end: dt.date | None
+) -> dict[str, Any]:
+    """The period arguments, only for the grids that take one.
+
+    Passed as query parameters on all four input modes rather than added to the
+    JSON bodies: the bounds qualify *the read*, not the payload, and a file
+    upload has no body to put them in anyway. One shape for the four routes
+    beats three that would drift.
+    """
+    if target not in PERIOD_TARGETS:
+        return {}
+    return {"period_start": start, "period_end": end}
 
 
 @router.get("/erp/source", summary="État de la source ERP")
@@ -134,21 +210,45 @@ def erp_source() -> dict[str, Any]:
     that can only fail is worse than no button.
     """
     from ...config import get_settings
-    from ...ingest.erp import erp_available
+    from ...ingest.erp import (
+        MIRROR_BOM_TABLE,
+        MIRROR_ITEMS_TABLE,
+        erp_available,
+        mirror_state,
+        reading_from_mirror,
+        unavailable_reason,
+    )
 
     settings = get_settings()
+    mirrored = reading_from_mirror()
     return {
         "available": erp_available(),
-        "reason": (
-            None
-            if erp_available()
-            else "Aucun entrepôt SQL n'est attaché à l'application."
+        "reason": unavailable_reason(),
+        "source": settings.erp_source,
+        "tables": (
+            {"items": MIRROR_ITEMS_TABLE, "boms": MIRROR_BOM_TABLE}
+            if mirrored
+            else {"items": settings.erp_items_fqn, "boms": settings.erp_bom_fqn}
         ),
-        "tables": {
-            "items": settings.erp_items_fqn,
-            "boms": settings.erp_bom_fqn,
-        },
+        # How old the copy is. Absent when reading the ERP live, where the
+        # question does not arise.
+        "mirror": mirror_state() if mirrored and erp_available() else None,
     }
+
+
+@router.get("/erp/stock-dates", summary="Dates de snapshot de stock disponibles")
+def erp_stock_dates() -> dict[str, Any]:
+    """Les photos de stock que la source propose, la plus récente d'abord.
+
+    Séparé de ``/erp/source`` parce que celui-ci est lu au chargement de chaque
+    écran d'import, alors que cette liste n'intéresse que le Stock ERP — et
+    qu'elle coûte une requête à la source.
+    """
+    from ...ingest.erp import ErpReader, erp_available
+
+    if not erp_available():
+        return {"dates": []}
+    return {"dates": [d.isoformat() for d in ErpReader().stock_dates()]}
 
 
 @router.post(
@@ -161,7 +261,10 @@ def import_erp(
     importer: Importer,
     dry_run: Annotated[bool, Query(alias="dryRun")] = False,
     replace: Annotated[bool, Query()] = False,
-    approved_only: Annotated[bool, Query(alias="approvedOnly")] = False,
+    allow_partial: Annotated[bool, Query(alias="allowPartial")] = False,
+    borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
+    borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
+    snapshot_date: Annotated[dt.date | None, Query(alias="dateSnapshot")] = None,
 ) -> dict[str, Any]:
     """Read the referential straight from the ERP silver tables.
 
@@ -176,10 +279,14 @@ def import_erp(
             allowed=list(ERP_TARGETS),
         )
     method = _resolve(target)
-    kwargs: dict[str, Any] = {"mode": "erp", "approved_only": approved_only}
+    kwargs: dict[str, Any] = {
+        "mode": "erp",
+        **_period(target, borne_debut, borne_fin),
+        **({"snapshot_date": snapshot_date} if target == "book_stock" else {}),
+    }
     if dry_run:
         return importer.preview(target, **kwargs)
-    extra = {"replace": replace} if target == "boms" else {}
+    extra = _write_options(target, replace=replace, allow_partial=allow_partial)
     return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
 
 
@@ -188,118 +295,196 @@ def import_erp(
     summary="Enregistrer des lignes saisies dans la grille",
 )
 def import_rows(
-    campaign: CampaignDep, target: str, payload: RowsRequest, importer: Importer
+    campaign: CampaignDep,
+    target: str,
+    payload: RowsRequest,
+    importer: Importer,
+    borne_debut: Annotated[dt.date | None, Query(alias="borneDebut")] = None,
+    borne_fin: Annotated[dt.date | None, Query(alias="borneFin")] = None,
 ) -> dict[str, Any]:
     method = _resolve(target)
-    kwargs: dict[str, Any] = {"mode": "rows", "rows": payload.rows}
+    kwargs: dict[str, Any] = {
+        "mode": "rows", "rows": payload.rows,
+        **_period(target, borne_debut, borne_fin),
+    }
     if payload.dry_run:
         return importer.preview(target, **kwargs)
-    extra = {"replace": payload.replace} if target == "boms" else {}
+    extra = _write_options(
+        target, replace=payload.replace, allow_partial=payload.allow_partial
+    )
     return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
 
 
 # --------------------------------------------------------------------------- #
 # Referential reads
+#
+# Ces routes traduisent, elles ne décident pas. Lire les paramètres, borner une
+# page, rendre en JSON : le reste — la garde de phase, la comparaison avec
+# l'existant, l'écriture, l'audit — appartient à ReferentialService, où une
+# règle se vérifie sans construire une application HTTP.
 # --------------------------------------------------------------------------- #
+
+def _item_json(item: Any) -> dict[str, Any]:
+    """Un article, dans la forme que la grille attend.
+
+    Deux traductions, et toutes deux de sérialisation : un ensemble d'énumérés
+    devient une liste triée pour que la réponse soit stable d'un appel à
+    l'autre, et un ``Decimal`` devient un nombre parce que JSON n'en a pas.
+    """
+    return {
+        **item.model_dump(mode="json"),
+        "exclusions": sorted(str(e) for e in item.exclusions),
+        "stdPrice": float(item.std_price),
+    }
+
 
 @router.get("/campaigns/{campaign_id}/items", summary="Référentiel articles")
 def list_items(
     campaign: CampaignDep,
-    ctx: Ctx,
-    limit: Annotated[int, Query(ge=1, le=20_000)] = 1000,
+    service: Referentials,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 1000,
     offset: Annotated[int, Query(ge=0)] = 0,
     search: Annotated[str | None, Query()] = None,
+    counted: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
-    items = ctx.referentials.list_items(campaign.id)
-    if search:
-        needle = search.strip().upper()
-        items = [
-            i for i in items
-            if needle in i.item_number or needle in i.name.upper()
-            or needle in i.search_name.upper()
-        ]
-    total = len(items)
-    page = items[offset : offset + limit]
-    return {
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "rows": [
-            {
-                **i.model_dump(mode="json"),
-                "exclusions": sorted(str(e) for e in i.exclusions),
-                "stdPrice": float(i.std_price),
-            }
-            for i in page
-        ],
-    }
+    """The campaign's articles, filtered server-side.
+
+    ``counted=true`` keeps only the references that appear on a GENERIQUE
+    counting sheet or in a counting journal.
+    """
+    items = service.list_items(campaign, search=search, counted=counted)
+    return page(items, offset=offset, limit=limit, render=_item_json)
+
+
+@router.patch(
+    "/campaigns/{campaign_id}/items/{item_number}", summary="Modifier un article"
+)
+def update_item(
+    campaign: CampaignDep, item_number: str, payload: ItemPatch, service: Referentials
+) -> dict[str, Any]:
+    """Correct one article without reloading the referential."""
+    updated = service.update_item(
+        campaign, item_number, payload.model_dump(exclude_none=True)
+    )
+    return _item_json(updated)
+
+
+@router.post(
+    "/campaigns/{campaign_id}/items/exclusions",
+    summary="Exclure ou réintégrer un lot d'articles",
+)
+def set_item_exclusions(
+    campaign: CampaignDep, payload: ItemExclusionsRequest, service: Referentials
+) -> dict[str, Any]:
+    """Apply one exclusion to a whole selection."""
+    return service.set_item_exclusions(
+        campaign, payload.item_numbers, payload.exclusions
+    )
 
 
 @router.delete(
     "/campaigns/{campaign_id}/items/{item_number}", summary="Supprimer un article"
 )
-def delete_item(campaign: CampaignDep, item_number: str, ctx: Ctx) -> dict[str, bool]:
-    ctx.guard(campaign, "items")
-    ctx.referentials.delete_item(campaign.id, item_number, actor=ctx.actor)
-    ctx.record(
-        campaign_id=campaign.id,
-        action="DELETE",
-        entity_type="item",
-        entity_id=item_number,
-        summary=f"Suppression logique de l'article {item_number}",
-    )
+def delete_item(
+    campaign: CampaignDep, item_number: str, service: Referentials
+) -> dict[str, bool]:
+    service.delete_item(campaign, item_number)
     return {"deleted": True}
 
 
 @router.get("/campaigns/{campaign_id}/boms", summary="Nomenclatures")
 def list_boms(
     campaign: CampaignDep,
-    ctx: Ctx,
+    service: Referentials,
     parent: Annotated[str | None, Query()] = None,
-) -> list[dict[str, Any]]:
-    links = ctx.referentials.list_bom_links(campaign.id)
-    if parent:
-        needle = parent.strip().upper()
-        links = [l for l in links if l.parent_item == needle]
-    return [
-        {**l.model_dump(mode="json"), "qtyPer": float(l.qty_per)} for l in links
-    ]
+    counted: Annotated[bool, Query()] = False,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 5000,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    """Every edge, or only the ones a counted reference is on either side of.
+
+    Paginé, et porteur du total : une nomenclature complète se compte en
+    dizaines de milliers de liens, et la renvoyer entière pour en afficher
+    trente était le seul appel de l'application capable de tenir une seconde à
+    lui tout seul.
+    """
+    links, items = service.list_bom_links(campaign, parent=parent, counted=counted)
+    return page(
+        links,
+        offset=offset,
+        limit=limit,
+        render=lambda l: {
+            **l.model_dump(mode="json"),
+            "qtyPer": float(l.qty_per),
+            "parentName": items[l.parent_item].name if l.parent_item in items else "",
+            "childName": items[l.child_item].name if l.child_item in items else "",
+        },
+    )
+
+
+@router.post(
+    "/campaigns/{campaign_id}/boms/activation",
+    summary="Activer ou désactiver un lot de liens",
+)
+def set_bom_activation(
+    campaign: CampaignDep, payload: BomActivationRequest, service: Referentials
+) -> dict[str, Any]:
+    """Put a batch of bill-of-materials edges in force, or retire them."""
+    return service.set_bom_activation(campaign, payload.links, payload.active)
+
+
+@router.patch("/campaigns/{campaign_id}/boms", summary="Modifier un lien de nomenclature")
+def update_bom_link(
+    campaign: CampaignDep, payload: BomLinkPatch, service: Referentials
+) -> dict[str, Any]:
+    """Correct the quantity or unit of one edge."""
+    updated = service.update_bom_link(
+        campaign,
+        payload.parent_item,
+        payload.child_item,
+        payload.model_dump(exclude_none=True, exclude={"parent_item", "child_item"}),
+    )
+    return {**updated.model_dump(mode="json"), "qtyPer": float(updated.qty_per)}
+
+
+@router.delete("/campaigns/{campaign_id}/boms", summary="Supprimer un lien")
+def delete_bom_link(
+    campaign: CampaignDep,
+    service: Referentials,
+    parent: Annotated[str, Query(min_length=1)],
+    child: Annotated[str, Query(min_length=1)],
+) -> dict[str, bool]:
+    service.delete_bom_link(campaign, parent, child)
+    return {"deleted": True}
 
 
 @router.get("/campaigns/{campaign_id}/bom-health", summary="Santé des nomenclatures")
-def bom_health(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
+def bom_health(campaign: CampaignDep, service: Referentials) -> dict[str, Any]:
     """Cycles, orphan links and assemblies without a structure.
 
     Surfaced as its own endpoint because a BOM defect discovered on the day of
     the inventory costs a whole afternoon; discovered in preparation, it costs
     ten minutes.
     """
-    from ...domain.bom import BomIndex
-    from ...domain.controls import check_referentials, summarise
-
-    items = ctx.referentials.items_by_number(campaign.id)
-    links = ctx.referentials.list_bom_links(campaign.id)
-    index = BomIndex(links)
-    findings = check_referentials(items=items, bom_links=links, bom_index=index)
-    return {
-        "linkCount": len(index),
-        "parentCount": len(index.parents),
-        "cycles": [" → ".join(c) for c in index.find_cycles()],
-        "summary": summarise(findings),
-        "findings": [f.model_dump(mode="json") for f in findings],
-    }
+    return service.bom_health(campaign)
 
 
-@router.get("/campaigns/{campaign_id}/book-stock", summary="Stock livre")
+@router.get("/campaigns/{campaign_id}/book-stock", summary="Stock ERP")
 def book_stock(
     campaign: CampaignDep,
-    ctx: Ctx,
-    limit: Annotated[int, Query(ge=1, le=20_000)] = 1000,
+    service: Referentials,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 1000,
     offset: Annotated[int, Query(ge=0)] = 0,
+    top: Annotated[int | None, Query(ge=1, le=1000)] = None,
 ) -> dict[str, Any]:
-    lines = ctx.book_stock.list(campaign.id)
+    """The ERP snapshot, and what the biggest lines of it weigh."""
+    view = service.book_stock(campaign, top=top)
     return {
-        "total": len(lines),
+        "total": len(view.lines),
+        "totalValue": view.total_value,
+        # Part de la valeur portée par les lignes retenues. `null` sans filtre :
+        # « 100 % » se lirait comme un résultat alors que c'est une tautologie.
+        "topShare": view.top_share,
         "frozenAt": campaign.book_stock_frozen_at.isoformat()
         if campaign.book_stock_frozen_at else None,
         "rows": [
@@ -309,31 +494,28 @@ def book_stock(
                 "unitCost": float(l.unit_cost),
                 "value": float(l.value),
             }
-            for l in lines[offset : offset + limit]
+            for l in view.lines[offset : offset + limit]
         ],
     }
 
 
-@router.post("/campaigns/{campaign_id}/book-stock/freeze", summary="Geler le stock livre")
+@router.post("/campaigns/{campaign_id}/book-stock/freeze", summary="Geler le stock ERP")
 def freeze_book_stock(campaign: CampaignDep, importer: Importer) -> dict[str, Any]:
     return importer.freeze_book_stock(campaign).model_dump(mode="json")
 
 
 @router.get("/campaigns/{campaign_id}/locations", summary="Entrepôts et emplacements")
-def list_locations(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
-    locations = ctx.referentials.list_locations(campaign.id)
-    journals = {j.key: j for j in ctx.journals.list(campaign.id)}
+def list_locations(campaign: CampaignDep, service: Referentials) -> dict[str, Any]:
+    warehouses, locations = service.locations(campaign)
     return {
-        "warehouses": [
-            w.model_dump(mode="json") for w in ctx.referentials.list_warehouses(campaign.id)
-        ],
+        "warehouses": [w.model_dump(mode="json") for w in warehouses],
         "locations": [
             {
-                **l.model_dump(mode="json"),
-                "hasJournal": l.key in journals,
-                "journalStatus": str(journals[l.key].status) if l.key in journals else None,
+                **view.location.model_dump(mode="json"),
+                "hasJournal": view.journal is not None,
+                "journalStatus": str(view.journal.status) if view.journal else None,
             }
-            for l in locations
+            for view in locations
         ],
     }
 

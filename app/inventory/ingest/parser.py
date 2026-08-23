@@ -271,7 +271,11 @@ def parse_rows(
         if row_failed:
             continue
 
-        if contract.natural_key:
+        # A grid may declare that only some rows are subject to the duplicate
+        # check — see ``GridContract.duplicate_scope``. Rows outside it are
+        # loaded like any other; they are simply not expected to be unique.
+        in_scope = contract.duplicate_scope is None or contract.duplicate_scope(clean)
+        if contract.natural_key and in_scope:
             key = "|".join(str(clean.get(k, "")).upper() for k in contract.natural_key)
             previous = seen_keys.get(key)
             if previous is not None:

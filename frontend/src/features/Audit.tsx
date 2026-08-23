@@ -9,10 +9,24 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { api } from '../lib/api'
+import { api, download, downloads } from '../lib/api'
 import type { Overview } from '../lib/types'
-import { AUDIT_ACTION_LABELS, dateTime, label as toLabel, relativeTime } from '../lib/format'
-import { AsyncBoundary, Badge, Card, EmptyState, Skeleton, Tabs } from '../components/ui'
+import {
+  AUDIT_ACTION_LABELS,
+  DASH,
+  dateTime,
+  label as toLabel,
+  relativeTime,
+} from '../lib/format'
+import {
+  AsyncBoundary,
+  Badge,
+  Card,
+  EmptyState,
+  Icons,
+  Skeleton,
+  ViewTabs,
+} from '../components/ui'
 import { DataGrid, type Column } from '../components/DataGrid'
 
 type Tab = 'events' | 'imports'
@@ -36,7 +50,7 @@ export function Audit() {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
-      <Tabs<Tab>
+      <ViewTabs<Tab>
         value={tab}
         onChange={setTab}
         tabs={[
@@ -55,6 +69,39 @@ function Events({ campaignId }: { campaignId: string }) {
     queryFn: () => api.audit(campaignId, { limit: 500 }),
   })
 
+  // Une grille et non un tableau écrit à la main : c'est ce qui donne au journal
+  // la recherche, le tri et l'export que l'historique des imports avait déjà.
+  // C'est aussi celui des deux qu'on transmet — « qui a validé cet écart, et
+  // quand » est une question qui se pose en réunion, pas devant l'écran.
+  const columns: Column[] = [
+    {
+      key: 'at',
+      label: 'Horodatage',
+      width: 190,
+      render: (row) => (
+        <div>
+          <div className="num">{dateTime(String(row.at))}</div>
+          <div className="subtle">{relativeTime(String(row.at))}</div>
+        </div>
+      ),
+      value: (row) => String(row.at),
+    },
+    { key: 'actor', label: 'Auteur', width: 210 },
+    {
+      key: 'action',
+      label: 'Action',
+      width: 165,
+      render: (row) => (
+        <Badge tone={ACTION_TONE[String(row.action)] ?? 'neutral'}>
+          {toLabel(AUDIT_ACTION_LABELS, String(row.action))}
+        </Badge>
+      ),
+      value: (row) => String(row.action),
+    },
+    { key: 'entity_type', label: 'Entité', width: 160 },
+    { key: 'summary', label: 'Résumé', width: 420 },
+  ]
+
   return (
     <Card
       title="Journal d’audit"
@@ -68,37 +115,16 @@ function Events({ campaignId }: { campaignId: string }) {
         empty={<EmptyState title="Aucun évènement" />}
       >
         {(rows) => (
-          <div className="table-wrap" style={{ maxHeight: 680 }}>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th style={{ width: 175 }}>Horodatage</th>
-                  <th style={{ width: 210 }}>Auteur</th>
-                  <th style={{ width: 165 }}>Action</th>
-                  <th style={{ width: 160 }}>Entité</th>
-                  <th>Résumé</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((event) => (
-                  <tr key={event.id}>
-                    <td>
-                      <div className="num">{dateTime(event.at)}</div>
-                      <div className="subtle">{relativeTime(event.at)}</div>
-                    </td>
-                    <td className="truncate">{event.actor}</td>
-                    <td>
-                      <Badge tone={ACTION_TONE[event.action] ?? 'neutral'}>
-                        {toLabel(AUDIT_ACTION_LABELS, event.action)}
-                      </Badge>
-                    </td>
-                    <td className="mono subtle">{event.entity_type}</td>
-                    <td>{event.summary}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataGrid
+            columns={columns}
+            rows={rows as unknown as Array<Record<string, unknown>>}
+            exportTitle="Journal d’audit"
+            campaignId={campaignId}
+            getRowId={(row, index) => String(row.id ?? index)}
+            searchPlaceholder="Filtrer par auteur, action, résumé…"
+            maxHeight={660}
+            initialSort={{ key: 'at', direction: 'desc' }}
+          />
         )}
       </AsyncBoundary>
     </Card>
@@ -120,7 +146,30 @@ function Imports({ campaignId }: { campaignId: string }) {
       value: (row) => String(row.imported_at),
     },
     { key: 'target', label: 'Cible', width: 200 },
-    { key: 'filename', label: 'Fichier', width: 260 },
+    {
+      key: 'filename',
+      label: 'Fichier',
+      width: 260,
+      // Le nom devient le lien quand l'original a été conservé. Un chargement
+      // par collage ou une lecture ERP n'a pas de fichier d'origine : son nom
+      // reste du texte, ce qui dit la différence sans avoir à l'écrire.
+      render: (row) =>
+        row.archived ? (
+          <button
+            className="drill filelink"
+            title="Télécharger le fichier tel qu'il a été reçu"
+            onClick={() =>
+              void download(downloads.importEvidence(campaignId, String(row.id)))
+            }
+          >
+            <Icons.download size={12} />
+            {String(row.filename || 'pièce jointe')}
+          </button>
+        ) : (
+          <span>{String(row.filename || DASH)}</span>
+        ),
+      value: (row) => String(row.filename ?? ''),
+    },
     {
       key: 'rows_received',
       label: 'Reçues',
@@ -168,6 +217,8 @@ function Imports({ campaignId }: { campaignId: string }) {
           <DataGrid
             columns={columns}
             rows={rows}
+            exportTitle="Historique des imports"
+            campaignId={campaignId}
             getRowId={(row, index) => String(row.id ?? index)}
             searchPlaceholder="Filtrer les imports…"
             maxHeight={620}

@@ -26,16 +26,26 @@ no extra dependency, and the caller's own credentials govern what is readable.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
+import re
 from collections.abc import Iterator, Sequence
+from enum import StrEnum
 from typing import Any
 
 from ..config import get_settings
+from ..domain.enums import FlowKind
 from ..errors import UpstreamError, ValidationError
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ErpReader", "ERP_ITEM_TYPES", "erp_available"]
+__all__ = [
+    "ErpReader", "ERP_ITEM_TYPES", "erp_available", "unavailable_reason",
+    "reading_from_mirror", "mirror_state", "validate_period",
+    "ITEM_COLUMNS", "BACKFLUSH_COLUMNS",
+    "MIRROR_ITEMS_TABLE", "MIRROR_BOM_TABLE", "MIRROR_BACKFLUSH_TABLE",
+    "MIRROR_MOVEMENTS_TABLE", "MOVEMENT_COLUMNS",
+]
 
 #: ERP functional group → the campaign's article type. Packaging never appears:
 #: the silver table already excludes ``EMBLG``, as does the data dictionary.
@@ -43,7 +53,10 @@ ERP_ITEM_TYPES = {
     "COMPO": "COMPONENT",       # composant acheté ou fabriqué
     "PFINI": "FINISHED",        # produit fini
     "PSMFI": "SEMI_FINISHED",   # sous-ensemble
-    "APVPR": "COMPONENT",       # appro prototype — un composant, plus tôt
+    "PVENDU": "FINISHED",       # référence de vente (P-00, fini ou semi-fini)
+    "PPROTO": "COMPONENT",      # prototype : traité comme un composant, comme
+                                # l'était l'appro prototype avant son propre groupe
+    "APVPR": "COMPONENT",       # après-vente
 }
 
 #: Groups that are not physical stock. Left UNKNOWN rather than guessed: a
@@ -57,14 +70,210 @@ _COMMON_PROGRAMME = "COMMUN"
 #: referential read that has not answered in 50 s will not answer in 119.
 _STATEMENT_TIMEOUT = "50s"
 
+#: The article columns, in the order :func:`_item_row` unpacks them. Declared
+#: once because two transports now read them — Unity Catalog and the local
+#: mirror — and a column added to one query but not the other would shift every
+#: field of the tuple by one, silently loading prices into unit codes.
+ITEM_COLUMNS = (
+    "item_id", "item_name", "item_description", "search_name", "name_alias",
+    "categorie", "programme", "item_group_id", "item_group_label",
+    "std_cost_price", "std_price_unit", "std_unit",
+)
+
+#: Same contract for a bill-of-materials link. The parent designation is joined
+#: in from the article table, hence the aliases.
+#:
+#: ``statut`` decides whether the link is exploded. Every version of a recipe is
+#: read — retired ones included — because an assembly whose only recipe is out
+#: of force *has* a structure, and reporting it as having none produced a page
+#: of alerts nobody could act on.
+_BOM_SELECT = (
+    "b.parent_itemid", "p.item_name AS parent_name", "b.child_itemid",
+    "b.child_qty", "b.child_unitid", "b.statut",
+)
+
+#: Mirror tables, in the application's own Lakebase schema (migration 005).
+MIRROR_ITEMS_TABLE = "erp_base_article"
+MIRROR_BOM_TABLE = "erp_bom"
+MIRROR_BACKFLUSH_TABLE = "erp_ecart_backflush"
+#: Every stock flow at article × day grain (migration 012) — a faithful copy of
+#: the silver table, column names included.
+MIRROR_MOVEMENTS_TABLE = "erp_mouvements"
+#: Le snapshot de stock (migration 013), copie fidèle de la table silver.
+MIRROR_STOCK_TABLE = "erp_stock_snapshot"
+
+#: Le snapshot quotidien du stock physique, dans l'ordre où le job le copie.
+#: Une ligne par article × entrepôt × emplacement, pour un jour donné.
+STOCK_COLUMNS = (
+    "item_id", "entrepot", "emplacement", "stock_physique", "unite",
+    "snapshot_date",
+)
+
+#: Combien de dates de snapshot l'écran propose au choix. La source garde son
+#: historique ; une liste de trois cents dates rendrait introuvables les cinq
+#: qui intéressent quelqu'un le jour d'un inventaire.
+STOCK_DATES_SHOWN = 30
+
+_MIRROR_EMPTY = (
+    "Le miroir ERP est vide : le job « Synchronisation du miroir ERP » n'a pas "
+    "encore alimenté la copie locale. Lancez-le, ou chargez un fichier."
+)
+
+#: Columns the backflush mirror carries, in the order the sync job copies them.
+#: Only what the application reads: the gold table holds a score of others that
+#: would cost storage here for nothing.
+BACKFLUSH_COLUMNS = (
+    "semaine_debut", "parent_itemid", "child_itemid", "child_name", "child_unite",
+    "qty_parent_produite", "conso_theorique", "conso_reelle", "ecart_brut",
+    "loaded_at",
+)
+
+#: Columns the movements table carries, in the order the sync job copies them.
+#: The mirror is a faithful copy, so this one tuple describes both.
+MOVEMENT_COLUMNS = (
+    "reference", "date_mouvement", "reception", "expedition", "production",
+    "conso_theorique", "consommation", "rebut",
+)
+
+#: Which column of that table each loaded step reads. The whole of what used to
+#: be three bronze queries — a packing-slip aggregation, another one, and a join
+#: against the stock dimensions to recognise the scrap bin — is now this mapping.
+_FLOW_COLUMNS = {
+    FlowKind.RECEIPT: "reception",
+    FlowKind.SHIPMENT: "expedition",
+    FlowKind.SCRAP: "rebut",
+}
+
+#: Past this age, the mirror is reported as stale. A referential is not a live
+#: feed — a week-old copy is usually fine — but a campaign counted against a
+#: month-old one has to say so on screen rather than in a log.
+MIRROR_STALE_AFTER_DAYS = 7
+
+
+class _OnWaitTimeout(StrEnum):
+    """What the warehouse does when the wait expires.
+
+    The SDK reads ``.value`` off this argument, so a plain string raises
+    ``'str' object has no attribute 'value'`` at call time — which is exactly
+    what happened in production. Mirrored here rather than imported from
+    ``databricks.sdk.service.sql`` so that the read path stays testable without
+    a workspace: the SDK only ever reads the value.
+    """
+
+    #: Give up rather than leave a statement running that nobody will collect.
+    CANCEL = "CANCEL"
+
+
+def reading_from_mirror() -> bool:
+    """Whether the ERP is read from the local mirror rather than from the ERP."""
+    return get_settings().erp_source == "mirror"
+
 
 def erp_available() -> bool:
     """Whether an ERP read can even be attempted.
 
     Used by the screen to offer the option or explain its absence, rather than
-    presenting a button that will always fail.
+    presenting a button that will always fail. The mirror does not need a
+    warehouse: it is read over the application's own database connection.
     """
-    return bool(get_settings().warehouse_id)
+    settings = get_settings()
+    if settings.erp_source == "mirror":
+        return settings.lakebase_configured
+    return bool(settings.warehouse_id)
+
+
+def unavailable_reason() -> str | None:
+    """Why the button cannot be offered, in the user's terms."""
+    if erp_available():
+        return None
+    if reading_from_mirror():
+        return "La base de l'application n'est pas accessible."
+    return "Aucun entrepôt SQL n'est attaché à l'application."
+
+
+def mirror_state() -> dict[str, Any]:
+    """Row counts and synchronisation dates of the local mirror.
+
+    Shown next to the button so nobody loads a referential without seeing how
+    old it is. Never raises: a screen that cannot say « je ne sais pas » would
+    fail to display at all when the mirror has not been created yet.
+    """
+    state: dict[str, Any] = {}
+    for key, table in (
+        ("items", MIRROR_ITEMS_TABLE),
+        ("boms", MIRROR_BOM_TABLE),
+        ("book_stock", MIRROR_STOCK_TABLE),
+        ("backflush", MIRROR_BACKFLUSH_TABLE),
+        ("movements", MIRROR_MOVEMENTS_TABLE),
+    ):
+        try:
+            from ..db.engine import get_database
+
+            with get_database().cursor() as cur:
+                cur.execute(
+                    f"SELECT count(*) AS rows, max(synced_at) AS synced_at FROM {table}"
+                )
+                row = cur.fetchone() or {}
+        except Exception as exc:  # pragma: no cover — depends on the database
+            log.warning("État du miroir ERP (%s) illisible : %s", table, exc)
+            state[key] = {"rows": None, "syncedAt": None, "stale": None}
+            continue
+
+        synced_at = row.get("synced_at")
+        state[key] = {
+            "rows": int(row.get("rows") or 0),
+            "syncedAt": synced_at.isoformat() if synced_at else None,
+            "stale": _is_stale(synced_at),
+        }
+    return state
+
+
+def _is_stale(synced_at: Any) -> bool:
+    if synced_at is None:
+        return True
+    now = dt.datetime.now(dt.UTC)
+    if synced_at.tzinfo is None:
+        synced_at = synced_at.replace(tzinfo=dt.UTC)
+    return (now - synced_at).days >= MIRROR_STALE_AFTER_DAYS
+
+
+def _probe(limit: int) -> int:
+    """Le plafond réel de la requête : une ligne de plus que ce qui est attendu.
+
+    Un ``LIMIT n`` exact ne dit pas si la source en avait ``n`` ou dix mille : la
+    lecture revient pleine dans les deux cas, et une campagne partait avec un
+    référentiel amputé sans que rien ne l'annonce. Le comptage se faisait alors
+    contre un stock qui ne couvrait pas l'usine, et l'écart qui en sortait
+    n'était l'écart de rien.
+
+    Demander ``n + 1`` transforme la question en réponse : ``n + 1`` lignes
+    reviennent, donc la source en avait strictement plus de ``n``, et c'est un
+    refus. La ligne excédentaire est lue puis jetée — le coût d'une ligne contre
+    celui d'un inventaire faux.
+    """
+    return int(limit) + 1
+
+
+def _assert_complete(
+    rows: list[Sequence[Any]], limit: int | None, source: str
+) -> list[Sequence[Any]]:
+    """Refuse une lecture que le plafond a coupée.
+
+    ``limit is None`` désigne les lectures délibérément bornées — une liste de
+    dates proposée à l'écran, par exemple : là, la troncature *est* l'intention,
+    et la vérifier n'aurait pas de sens.
+    """
+    if limit is None or len(rows) <= limit:
+        return rows
+    raise UpstreamError(
+        f"La lecture de « {source} » dépasse le plafond de {limit:,} lignes "
+        "configuré pour cette source. Le chargement est refusé plutôt que "
+        "tronqué : un référentiel amputé produirait un écart d'inventaire qui "
+        "ne veut rien dire. Relevez le plafond, ou restreignez la lecture."
+        .replace(",", " "),
+        source=source,
+        limit=limit,
+    )
 
 
 class ErpReader:
@@ -76,6 +285,9 @@ class ErpReader:
         self._client = client
         self._settings = get_settings()
         self._warehouse_id = warehouse_id or self._settings.warehouse_id
+        # A caller that hands in a workspace client is reading Unity Catalog by
+        # construction — that is what the client is for.
+        self._from_mirror = client is None and self._settings.erp_source == "mirror"
 
     # ------------------------------------------------------------------ items
 
@@ -86,56 +298,397 @@ class ErpReader:
         arbitrary sample — a partial load whose contents depend on the query
         planner is impossible to reason about the next day.
         """
+        if self._from_mirror:
+            return [_item_row(r) for r in _assert_complete(
+                _mirror_rows(
+                    MIRROR_ITEMS_TABLE, ITEM_COLUMNS, order_by="item_id",
+                    limit=_probe(limit),
+                ),
+                limit, MIRROR_ITEMS_TABLE,
+            )]
         table = self._settings.erp_items_fqn
         rows = self._query(
             f"""
-            SELECT item_id, item_name, item_description, search_name, name_alias,
-                   categorie, programme, item_group_id, item_group_label,
-                   std_cost_price, std_price_unit, std_unit
+            SELECT {", ".join(ITEM_COLUMNS)}
             FROM {table}
             ORDER BY item_id
-            LIMIT {int(limit)}
+            LIMIT {_probe(limit)}
             """,
             source=table,
+            limit=limit,
         )
         return [_item_row(r) for r in rows]
 
     # ------------------------------------------------------------------- boms
 
-    def fetch_bom_links(
-        self, *, limit: int, approved_only: bool = False
-    ) -> list[dict[str, Any]]:
+    def fetch_bom_links(self, *, limit: int) -> list[dict[str, Any]]:
         """The bill of materials, as ``boms`` grid rows.
 
         The parent's designation is joined in rather than left blank: the grid
         shows it, and a second round trip to fetch names the referential already
         holds would be wasted.
 
-        :param approved_only: keep only rows flagged approved in the ERP. Off by
-            default — the silver table already restricts itself to active
-            recipes, and silently dropping every row whose flag is null would
-            look like an empty bill of materials rather than a filter.
+        Every version is returned, in force or not. Filtering here would make
+        an assembly with a retired recipe indistinguishable from one the ERP has
+        no recipe for at all — two situations calling for two different actions.
+        The explosion applies the filter instead, where it belongs.
         """
+        if self._from_mirror:
+            return [_bom_row(r) for r in _assert_complete(
+                _mirror_rows(
+                    f"{MIRROR_BOM_TABLE} b "
+                    f"LEFT JOIN {MIRROR_ITEMS_TABLE} p "
+                    f"ON b.parent_itemid = p.item_id",
+                    _BOM_SELECT,
+                    order_by="b.parent_itemid, b.child_itemid",
+                    limit=_probe(limit),
+                ),
+                limit, MIRROR_BOM_TABLE,
+            )]
         bom, items = self._settings.erp_bom_fqn, self._settings.erp_items_fqn
-        where = "WHERE b.approved = 1" if approved_only else ""
         rows = self._query(
             f"""
-            SELECT b.parent_itemid, p.item_name AS parent_name,
-                   b.child_itemid, b.child_qty, b.child_unitid
+            SELECT {", ".join(_BOM_SELECT)}
             FROM {bom} b
             LEFT JOIN {items} p ON b.parent_itemid = p.item_id
-            {where}
             ORDER BY b.parent_itemid, b.child_itemid
-            LIMIT {int(limit)}
+            LIMIT {_probe(limit)}
             """,
             source=bom,
+            limit=limit,
         )
         return [_bom_row(r) for r in rows]
 
+    # ------------------------------------------------------------ stock ERP
+
+    def stock_dates(self, *, limit: int = STOCK_DATES_SHOWN) -> list[dt.date]:
+        """Les dates de snapshot disponibles, la plus récente d'abord.
+
+        Ce que l'écran propose au choix. La liste est bornée parce que la source
+        garde son historique : offrir trois cents dates ne servirait qu'à rendre
+        introuvables les cinq qui intéressent quelqu'un le jour d'un inventaire.
+
+        Ne lève jamais : la date se choisit *avant* de savoir si la lecture
+        marchera, et un écran incapable d'afficher sa liste vaut moins qu'un
+        écran qui propose la date du jour par défaut.
+
+        **La seule lecture qui a le droit d'être coupée.** Partout ailleurs, un
+        plafond atteint est un refus — un référentiel amputé produit un écart
+        d'inventaire qui ne veut rien dire. Ici le plafond n'est pas une limite
+        technique mais le choix d'affichage énoncé plus haut : `_probe` et sa
+        vérification n'y ont donc pas leur place, et leur absence est délibérée.
+        """
+        try:
+            if self._from_mirror:
+                rows = _mirror_rows(
+                    MIRROR_STOCK_TABLE,
+                    ("snapshot_date",),
+                    order_by="snapshot_date DESC",
+                    limit=limit,
+                    distinct=True,
+                )
+            else:
+                table = self._settings.erp_stock_fqn
+                rows = self._query(
+                    f"""
+                    SELECT DISTINCT snapshot_date FROM {table}
+                    ORDER BY snapshot_date DESC
+                    LIMIT {int(limit)}
+                    """,
+                    source=table,
+                )
+        except Exception as exc:
+            log.warning("Dates de snapshot illisibles : %s", exc)
+            return []
+        return [d for d in (_as_date(r[0]) for r in rows) if d is not None]
+
+    def fetch_book_stock(
+        self, *, limit: int, snapshot_date: dt.date | None = None
+    ) -> list[dict[str, Any]]:
+        """Le stock physique du site, en lignes de la grille ``book_stock``.
+
+        **Un seul jour, jamais l'historique.** La table est un snapshot quotidien
+        partitionné par date : la lire entière donnerait autant de lignes que de
+        jours conservés, et un stock additionné sur trois mois. Deux jours ne se
+        mélangent donc jamais — une campagne compare son comptage à *un* état du
+        système à *un* instant, et un stock composite ne se défendrait devant
+        personne.
+
+        **Quel jour, c'est l'utilisateur qui le dit.** ``snapshot_date`` nomme la
+        photo à charger ; sans elle, la plus récente. Un inventaire ne tombe pas
+        toujours le jour où on le charge : la journée de comptage a commencé
+        samedi matin, la reprise se fait le lundi, et c'est la photo de samedi
+        qui fait foi. Prendre la plus récente d'office rendait ce cas
+        inatteignable, sans le dire.
+        """
+        if self._from_mirror:
+            return [_stock_row(r) for r in _assert_complete(
+                _mirror_rows(
+                MIRROR_STOCK_TABLE,
+                STOCK_COLUMNS,
+                order_by="item_id, entrepot, emplacement",
+                limit=_probe(limit),
+                where=(
+                    f"WHERE snapshot_date = (SELECT max(snapshot_date) "
+                    f"FROM {MIRROR_STOCK_TABLE})"
+                    if snapshot_date is None
+                    else "WHERE snapshot_date = %s"
+                ),
+                params=() if snapshot_date is None else (snapshot_date,),
+                empty_message=(
+                    ""
+                    if snapshot_date is None
+                    else f"Aucun stock au {snapshot_date.isoformat()} dans la "
+                         "source ERP. Choisissez une autre date : la liste ne "
+                         "propose que des jours effectivement publiés."
+                ),
+                ),
+                limit, MIRROR_STOCK_TABLE,
+            )]
+        table = self._settings.erp_stock_fqn
+        # Une `dt.date` ne peut pas porter de guillemet : son interpolation est
+        # sûre par construction, là où l'entrepôt SQL ne prend pas de paramètre.
+        chosen = (
+            f"(SELECT max(snapshot_date) FROM {table})"
+            if snapshot_date is None
+            else f"DATE '{snapshot_date.isoformat()}'"
+        )
+        rows = self._query(
+            f"""
+            SELECT {", ".join(STOCK_COLUMNS)}
+            FROM {table}
+            WHERE snapshot_date = {chosen}
+            ORDER BY item_id, entrepot, emplacement
+            LIMIT {_probe(limit)}
+            """,
+            source=table,
+            limit=limit,
+        )
+        return [_stock_row(r) for r in rows]
+
+    # -------------------------------------------------------------- backflush
+
+    def fetch_backflush(
+        self, *, period_start: dt.date, period_end: dt.date, limit: int
+    ) -> list[dict[str, Any]]:
+        """The backflush variance per component, as ``backflush`` grid rows.
+
+        This is the guide's reference query, and three of its choices are load
+        bearing rather than stylistic:
+
+        * **No filter on** ``type_ecart``. Dropping the lines labelled
+          « Conforme » would remove thousands of small variances whose sum is
+          not small.
+        * **No filter on** ``statut_ligne``. « Hors nomenclature » and « Sans
+          consommation » are the two cases where the system stock drifted most;
+          they are signal, and excluding them removes exactly the evidence.
+        * ``qty_parent_produite`` **is never summed here**. It is repeated on
+          every component line of a parent, so its sum means nothing. The one
+          place it is legitimately totalled — :meth:`fetch_stock_flow` — first
+          collapses it to one value per parent and week.
+
+        Bounds are ISO Mondays, start inclusive and end exclusive, because that
+        is the grain of the fact table: a period cut mid-week would either count
+        a whole week's production against three of its days or drop it entirely.
+        """
+        start, end = _assert_bounds(period_start, period_end)
+        table = self._table()
+        statement = f"""
+            SELECT
+                f.child_itemid                  AS item_number,
+                MAX(f.child_name)               AS name,
+                MAX(f.child_unite)              AS unit,
+                SUM(f.ecart_brut)               AS net_qty,
+                SUM(GREATEST(f.ecart_brut, 0))  AS under_consumed_qty,
+                SUM(GREATEST(-f.ecart_brut, 0)) AS over_consumed_qty,
+                SUM(f.conso_theorique)          AS theoretical_qty,
+                SUM(f.conso_reelle)             AS actual_qty,
+                COUNT(DISTINCT f.parent_itemid) AS parent_count,
+                COUNT(DISTINCT f.semaine_debut) AS week_count,
+                MAX(f.loaded_at)                AS source_loaded_at
+            FROM {table} AS f
+            WHERE f.semaine_debut >= DATE '{start}'
+              AND f.semaine_debut <  DATE '{end}'
+            GROUP BY f.child_itemid
+            ORDER BY f.child_itemid
+            LIMIT {_probe(limit)}
+        """
+        return [
+            _backflush_row(row, start=period_start, end=period_end)
+            for row in self._read(statement, source=table, limit=limit)
+        ]
+
+    def fetch_stock_flow(
+        self, *, period_start: dt.date, period_end: dt.date, limit: int
+    ) -> list[dict[str, Any]]:
+        """Production and theoretical consumption per article, over a period.
+
+        Two columns of the movements table, summed over the window. They used to
+        be derived from the backflush fact table, which repeats a parent's output
+        on every one of its component lines: totalling it meant first collapsing
+        to one row per parent and week, and forgetting to multiplied the output
+        by the size of the bill of materials. The silver table publishes both
+        measures already consolidated, so that whole class of mistake is gone.
+        """
+        start, end = _assert_bounds(period_start, period_end)
+        table = self._movements_table()
+        statement = f"""
+            SELECT reference            AS item_number,
+                   SUM(production)      AS produced_qty,
+                   SUM(conso_theorique) AS consumed_qty
+            FROM {table}
+            {self._window(start, end)}
+            GROUP BY reference
+            HAVING SUM(production) <> 0 OR SUM(conso_theorique) <> 0
+            ORDER BY 1
+            LIMIT {_probe(limit)}
+        """
+        return [
+            _stock_flow_row(row)
+            for row in self._read(statement, source=table, limit=limit)
+        ]
+
+    # ------------------------------------------------------------- mouvements
+
+    def fetch_movements(
+        self,
+        kind: FlowKind,
+        *,
+        period_start: dt.date,
+        period_end: dt.date,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Receipts, shipments or scrap per article, over the period.
+
+        One column of the movements table per step. The silver layer has already
+        done the work the application used to do itself against three bronze
+        tables: the legal entity is filtered, deleted rows are excluded, scrap is
+        recognised by its bin rather than by the journal that moved it, and the
+        packing-slip lines are the ones tied to a purchase or sales order.
+
+        **Bounds are start-inclusive, end-exclusive**, as everywhere else in the
+        comparison: an inclusive end here would count the closing Monday twice.
+
+        Quantities come back **as the ERP signs them** — shipments positive,
+        returns negative, scrap negative. The direction belongs to the step, so
+        the caller takes the absolute value; the signed total is reported
+        separately for the rows that carry information in it.
+        """
+        start, end = _assert_bounds(period_start, period_end)
+        table = self._movements_table()
+        column = _FLOW_COLUMNS[kind]
+        # `HAVING` et non un filtre a posteriori : une ligne de la table porte
+        # les six flux, si bien qu'une référence seulement produite ressort ici
+        # avec zéro réception. La garder gonflerait le compte annoncé — « 3
+        # article(s) lus » pour deux qui en ont — et remplirait la grille de
+        # lignes à zéro qu'il faudrait apprendre à ignorer.
+        statement = f"""
+            SELECT reference AS item_number, SUM({column}) AS qty
+            FROM {table}
+            {self._window(start, end)}
+            GROUP BY reference
+            HAVING SUM({column}) <> 0
+            ORDER BY 1
+            LIMIT {_probe(limit)}
+        """
+        return [
+            _movement_row(row)
+            for row in self._read(statement, source=table, limit=limit)
+        ]
+
+    def fetch_all_flows(
+        self, *, period_start: dt.date, period_end: dt.date, limit: int
+    ) -> list[dict[str, Any]]:
+        """Every flow of the period, one row per article, in one round trip.
+
+        « Tout charger de l'ERP » used to run this table four times — once per
+        step — for figures that all sit on the same row. Four scans, four result
+        sets and four write transactions where one of each does.
+        """
+        start, end = _assert_bounds(period_start, period_end)
+        table = self._movements_table()
+        columns = ("reception", "expedition", "production", "conso_theorique",
+                   "rebut")
+        selected = ", ".join(f"SUM({c}) AS {c}" for c in columns)
+        statement = f"""
+            SELECT reference AS item_number, {selected}
+            FROM {table}
+            {self._window(start, end)}
+            GROUP BY reference
+            HAVING {" OR ".join(f"SUM({c}) <> 0" for c in columns)}
+            ORDER BY 1
+            LIMIT {_probe(limit)}
+        """
+        return [
+            {"item_number": _text(row[0])}
+            | {c: _number(v) for c, v in zip(columns, _pad(row, 6)[1:], strict=True)}
+            for row in self._read(statement, source=table, limit=limit)
+        ]
+
+    def _movements_table(self) -> str:
+        """Where the stock flows are read from, mirror or catalogue."""
+        return (
+            MIRROR_MOVEMENTS_TABLE
+            if self._from_mirror
+            else self._settings.erp_movements_fqn
+        )
+
+    @staticmethod
+    def _window(start: str, end: str) -> str:
+        """The period clause both flow reads share, so they cannot disagree."""
+        return (
+            f"WHERE date_mouvement >= DATE '{start}' "
+            f"AND date_mouvement < DATE '{end}'"
+        )
+
+    def movements_source(self, kind: FlowKind) -> str:
+        """Which table a movement was read from, mirror or catalogue.
+
+        Reported with every read: « zéro ligne » means a period without receipts
+        in the catalogue and, in the mirror, usually a synchronisation job that
+        has not run yet. The name is also what lets somebody re-run the same
+        query by hand. The *kind* no longer changes the answer — one table now
+        carries all of them — but the caller still asks per step, and narrowing
+        the signature would gain nothing.
+        """
+        return self._movements_table()
+
+    def _table(self) -> str:
+        """Where the fact table is read from, mirror or catalogue."""
+        return (
+            MIRROR_BACKFLUSH_TABLE
+            if self._from_mirror
+            else self._settings.erp_backflush_fqn
+        )
+
+    def _read(
+        self, statement: str, *, source: str, limit: int | None = None
+    ) -> list[Sequence[Any]]:
+        """One statement, against whichever transport this reader is bound to.
+
+        The two dialects agree on everything these statements use — ``GREATEST``,
+        ``FULL OUTER JOIN``, ``DATE 'yyyy-mm-dd'``, ordinal ``ORDER BY`` — so the
+        SQL is written once. It is the aggregation that makes this affordable on
+        both: whatever the grain of the source, what comes back is a few thousand
+        rows.
+        """
+        if not self._from_mirror:
+            return self._query(statement, source=source, limit=limit)
+        return _assert_complete(
+            _mirror_statement(statement, source=source), limit, source
+        )
+
     # ---------------------------------------------------------------- transport
 
-    def _query(self, statement: str, *, source: str) -> list[Sequence[Any]]:
-        """Run one statement and return its rows, chunks included."""
+    def _query(
+        self, statement: str, *, source: str, limit: int | None = None
+    ) -> list[Sequence[Any]]:
+        """Run one statement and return its rows, chunks included.
+
+        ``limit`` est le nombre de lignes *attendues* — la requête, elle, en a
+        demandé une de plus. Une lecture qui les ramène toutes est une lecture
+        coupée, et elle est refusée ici plutôt que servie amputée.
+        """
         if not self._warehouse_id:
             raise ValidationError(
                 "Aucun entrepôt SQL n'est attaché à l'application : la lecture "
@@ -149,7 +702,7 @@ class ErpReader:
                 warehouse_id=self._warehouse_id,
                 statement=statement,
                 wait_timeout=_STATEMENT_TIMEOUT,
-                on_wait_timeout="CANCEL",
+                on_wait_timeout=_OnWaitTimeout.CANCEL,
             )
         except Exception as exc:
             log.error("Lecture ERP impossible (%s) : %s", source, exc)
@@ -158,7 +711,179 @@ class ErpReader:
             ) from exc
 
         _assert_succeeded(response, source)
-        return list(_rows_of(response, client))
+        return _assert_complete(list(_rows_of(response, client)), limit, source)
+
+
+def _mirror_rows(
+    source: str,
+    columns: Sequence[str],
+    *,
+    order_by: str,
+    limit: int,
+    #: Clause complète, mot-clé compris — elle est concaténée telle quelle. Les
+    #: valeurs qu'elle compare passent par ``params``, jamais par la chaîne.
+    where: str = "",
+    params: Sequence[Any] = (),
+    distinct: bool = False,
+    #: Ce qui est dit quand la lecture ne ramène rien. Le défaut accuse le job
+    #: de synchronisation, ce qui est juste pour une table vide et faux dès
+    #: qu'un filtre est en jeu : c'est alors le filtre qui ne trouve rien.
+    empty_message: str = "",
+) -> list[Sequence[Any]]:
+    """Rows of the local mirror, in the same shape a warehouse read returns.
+
+    Returning tuples rather than the dictionaries psycopg hands back is what
+    lets both transports share one translation: the mirror is a copy of the ERP,
+    not a second vocabulary.
+    """
+    from ..db.engine import get_database
+
+    names = [c.split(" AS ")[-1].split(".")[-1] for c in columns]
+    try:
+        with get_database().cursor() as cur:
+            cur.execute(
+                f"SELECT {'DISTINCT ' if distinct else ''}{', '.join(columns)} "
+                f"FROM {source} {where} ORDER BY {order_by} LIMIT %s",
+                (*params, int(limit)),
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        log.error("Lecture du miroir ERP impossible (%s) : %s", source, exc)
+        raise UpstreamError(
+            "Lecture du miroir ERP impossible. Le job de synchronisation "
+            f"a-t-il déjà tourné ? ({exc})",
+            cause=str(exc),
+        ) from exc
+
+    if not rows:
+        raise ValidationError(empty_message or _MIRROR_EMPTY)
+    return [[row[name] for name in names] for row in rows]
+
+
+def _mirror_statement(statement: str, *, source: str) -> list[Sequence[Any]]:
+    """Run a read-only statement against the local mirror, returning tuples.
+
+    Tuples rather than the dictionaries psycopg hands back, so the row
+    translation below is shared by both transports — the mirror is a copy of the
+    ERP, not a second vocabulary.
+    """
+    from ..db.engine import get_database
+
+    try:
+        with get_database().cursor() as cur:
+            cur.execute(statement)
+            rows = cur.fetchall()
+    except Exception as exc:
+        log.error("Lecture du miroir impossible (%s) : %s", source, exc)
+        # La table est nommée : le miroir en porte plusieurs, alimentées par le
+        # même job mais pas par la même cellule, et « le miroir est vide » sans
+        # dire lequel envoie chercher au mauvais endroit.
+        raise UpstreamError(
+            f"Lecture du miroir « {source} » impossible. Le job "
+            f"« Synchronisation du miroir ERP » a-t-il déjà tourné ? ({exc})",
+            cause=str(exc),
+        ) from exc
+    # psycopg's dict rows preserve the SELECT order, which is the contract the
+    # translators below rely on.
+    return [tuple(row.values()) for row in rows]
+
+
+def validate_period(start: dt.date, end: dt.date) -> None:
+    """What makes a period readable against the fact table.
+
+    Mondays are required rather than snapped silently: the grain is the ISO
+    week, and a period quietly widened by four days would produce a figure whose
+    header says one thing and whose value means another.
+
+    Exported, and called on *every* input mode rather than only on the ERP read.
+    The first version validated inside the query builder, so a file or a paste
+    carrying a Wednesday sailed through and was stored under bounds the source
+    could never have produced.
+    """
+    for label, value in (("de début", start), ("de fin", end)):
+        if not isinstance(value, dt.date) or isinstance(value, dt.datetime):
+            raise ValidationError(
+                f"La borne {label} doit être une date (lundi ISO)."
+            )
+        if value.weekday() != 0:
+            raise ValidationError(
+                f"La borne {label} ({value:%d/%m/%Y}) n'est pas un lundi. "
+                "L'écart backflush est calculé à la semaine ISO : une borne en "
+                "milieu de semaine compterait une production entière contre "
+                "quelques jours.",
+                borne=value.isoformat(),
+            )
+    if end <= start:
+        raise ValidationError(
+            "La borne de fin doit être postérieure à la borne de début "
+            f"({start:%d/%m/%Y} → {end:%d/%m/%Y}). La fin est exclue : pour une "
+            "seule semaine, prenez le lundi suivant.",
+            debut=start.isoformat(),
+            fin=end.isoformat(),
+        )
+
+
+def _assert_bounds(start: dt.date, end: dt.date) -> tuple[str, str]:
+    """The validated period, rendered as two literals safe to interpolate.
+
+    The bounds reach SQL as text, so this is the gate against injection — hence
+    the type check in :func:`validate_period` rather than a duck-typed
+    ``str()``. A ``datetime.date`` cannot carry a quote, and nothing else gets
+    through.
+    """
+    validate_period(start, end)
+    return start.isoformat(), end.isoformat()
+
+
+def _backflush_row(
+    row: Sequence[Any], *, start: dt.date, end: dt.date
+) -> dict[str, Any]:
+    (item, name, unit, net, under, over, theoretical, actual,
+     parents, weeks, loaded_at) = _pad(row, 11)
+    return {
+        "item_number": _text(item),
+        "name": _text(name),
+        "unit": _text(unit) or "PCE",
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "net_qty": _number(net),
+        "under_consumed_qty": _number(under),
+        "over_consumed_qty": _number(over),
+        "theoretical_qty": _number(theoretical),
+        "actual_qty": _number(actual),
+        "parent_count": int(_number(parents)),
+        "week_count": int(_number(weeks)),
+        "source_loaded_at": (
+            stamp.isoformat() if (stamp := _timestamp(loaded_at)) else ""
+        ),
+    }
+
+
+def _stock_flow_row(row: Sequence[Any]) -> dict[str, Any]:
+    item, produced, consumed = _pad(row, 3)
+    return {
+        "item_number": _text(item),
+        "produced_qty": _number(produced),
+        "consumed_qty": _number(consumed),
+    }
+
+
+def _movement_row(row: Sequence[Any]) -> dict[str, Any]:
+    item, qty = _pad(row, 2)
+    return {"item_number": _text(item), "qty": _number(qty)}
+
+
+def _timestamp(value: Any) -> dt.datetime | None:
+    """A timestamp from either transport: psycopg gives a datetime, the API text."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    try:
+        return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        log.warning("Horodatage de source illisible : %r", value)
+        return None
 
 
 def _workspace_client() -> Any:
@@ -172,9 +897,16 @@ def _workspace_client() -> Any:
 def _assert_succeeded(response: Any, source: str) -> None:
     """Turn a failed statement into the reason, not into an empty result."""
     status = getattr(response, "status", None)
+    # ``state`` is an SDK enum whose ``str()`` is "StatementState.SUCCEEDED";
+    # matching on the suffix reads both that and a plain string.
     state = str(getattr(status, "state", "") or "")
     if state.endswith("SUCCEEDED"):
         return
+    if state.endswith("CANCELED"):
+        raise ValidationError(
+            f"La lecture de « {source} » a dépassé {_STATEMENT_TIMEOUT} et a été "
+            "annulée. Réessayez, ou chargez un fichier si l'entrepôt est froid."
+        )
     error = getattr(status, "error", None)
     message = getattr(error, "message", None) or state or "raison inconnue"
     if "TABLE_OR_VIEW_NOT_FOUND" in message or "not found" in message.lower():
@@ -183,7 +915,59 @@ def _assert_succeeded(response: Any, source: str) -> None:
             "les droits de l'application. Vérifiez son nom et les autorisations "
             "Unity Catalog."
         )
+    if _is_permission_refusal(message):
+        raise ValidationError(_missing_grant_message(message, source))
     raise UpstreamError(f"Lecture de « {source} » refusée : {message}")
+
+
+#: What Unity Catalog says when a privilege is missing, in either of its wordings.
+_PERMISSION_MARKERS = ("INSUFFICIENT_PERMISSIONS", "PERMISSION_DENIED")
+
+#: « User does not have USE CATALOG on Catalog 'emotors_data_champions' ».
+_MISSING_PRIVILEGE = re.compile(
+    r"does not have (?P<privilege>[A-Z][A-Z_ ]*[A-Z]) on "
+    r"(?P<kind>Catalog|Schema|Table|View)\s*'(?P<name>[^']+)'",
+    re.IGNORECASE,
+)
+
+
+def _is_permission_refusal(message: str) -> bool:
+    return any(marker in message.upper() for marker in _PERMISSION_MARKERS)
+
+
+def _missing_grant_message(message: str, source: str) -> str:
+    """A refusal an administrator can act on, rather than a SQLSTATE.
+
+    Unity Catalog names the privilege and the object it is missing on; repeating
+    that back as the ``GRANT`` to run turns a dead end into a one-line fix. It
+    matters more here than elsewhere because the grant is on the *application's*
+    service principal, not on the person reading the screen — the usual reflex,
+    "but I can query that table myself", is true and beside the point.
+    """
+    settings = get_settings()
+    principal = settings.service_principal_id or "<service principal de l'App>"
+
+    found = _MISSING_PRIVILEGE.search(message)
+    if found:
+        privilege = found.group("privilege").upper()
+        kind = found.group("kind").upper()
+        name = found.group("name")
+        grant = f"GRANT {privilege} ON {kind} {name} TO `{principal}`;"
+    else:
+        catalog, schema = source.split(".")[0], ".".join(source.split(".")[:2])
+        grant = (
+            f"GRANT USE CATALOG ON CATALOG {catalog} TO `{principal}`; "
+            f"GRANT USE SCHEMA ON SCHEMA {schema} TO `{principal}`; "
+            f"GRANT SELECT ON TABLE {source} TO `{principal}`;"
+        )
+
+    return (
+        f"L'application n'a pas les droits Unity Catalog pour lire "
+        f"« {source} ». Ce sont les droits du service principal de "
+        f"l'application qui comptent, pas les vôtres. À faire exécuter par un "
+        f"administrateur du catalogue : {grant} — en attendant, chargez un "
+        f"fichier."
+    )
 
 
 def _rows_of(response: Any, client: Any) -> Iterator[Sequence[Any]]:
@@ -208,6 +992,28 @@ def _rows_of(response: Any, client: Any) -> Iterator[Sequence[Any]]:
 # --------------------------------------------------------------------------- #
 # ERP vocabulary → campaign vocabulary
 # --------------------------------------------------------------------------- #
+
+def _stock_row(row: Sequence[Any]) -> dict[str, Any]:
+    """Une ligne du snapshot ERP, traduite en ligne de la grille ``book_stock``.
+
+    Rien à calculer : la table silver publie déjà l'entrepôt, l'emplacement et
+    la quantité physique, entité juridique et lignes supprimées filtrées en
+    amont. Seule l'unité a un repli, la jointure qui la fournit étant volontaire
+    ouverte pour ne pas perdre une ligne de stock faute d'unité déclarée.
+
+    Le coût unitaire n'y est pas : le prix standard vient du référentiel
+    articles, et le lire deux fois de deux endroits produirait deux
+    valorisations du même stock.
+    """
+    item_id, entrepot, emplacement, quantite, unite, _date = _pad(row, 6)
+    return {
+        "item_number": _text(item_id),
+        "warehouse_id": _text(entrepot),
+        "location_id": _text(emplacement),
+        "qty": _number(quantite),
+        "unit": _text(unite) or "PCE",
+    }
+
 
 def _item_row(row: Sequence[Any]) -> dict[str, Any]:
     (item_id, item_name, item_description, search_name, name_alias, categorie,
@@ -239,13 +1045,16 @@ def _item_row(row: Sequence[Any]) -> dict[str, Any]:
 
 
 def _bom_row(row: Sequence[Any]) -> dict[str, Any]:
-    parent, parent_name, child, qty, unit = _pad(row, 5)
+    parent, parent_name, child, qty, unit, statut = _pad(row, 6)
     return {
         "parent_item": _text(parent),
         "parent_name": _text(parent_name),
         "child_item": _text(child),
         "qty_per": _number(qty),
         "unit": _text(unit) or "PCE",
+        # Passed through as the ERP spells it; the mapper decides what counts as
+        # "in force", once, for every input mode.
+        "statut": _text(statut) or "Actif",
     }
 
 
@@ -289,3 +1098,20 @@ def _number(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _as_date(value: Any) -> dt.date | None:
+    """Une date, quel que soit le transport qui l'a apportée.
+
+    Le miroir rend un ``datetime.date``, l'entrepôt SQL une chaîne ISO. Une
+    valeur qui n'est ni l'un ni l'autre est écartée : mieux vaut une date de
+    moins dans la liste qu'une entrée que personne ne peut choisir.
+    """
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    try:
+        return dt.date.fromisoformat(_text(value)[:10])
+    except ValueError:
+        return None

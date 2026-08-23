@@ -11,6 +11,7 @@ which ones were rejected and why. Nothing is ever loaded blind.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import logging
 from collections.abc import Sequence
@@ -26,6 +27,7 @@ from ..domain.enums import (
     LocationStatus,
     LocationType,
 )
+from ..domain.imports import refuse_partial_write
 from ..domain.models import (
     Campaign,
     CountJournalLine,
@@ -43,6 +45,7 @@ from ..ingest import (
     RowError,
     get_contract,
     map_adjustments,
+    map_backflush,
     map_bom_links,
     map_book_stock,
     map_count_sheets,
@@ -53,11 +56,15 @@ from ..ingest import (
     parse_rows,
     parse_tabular_bytes,
 )
+from ..ingest.erp import validate_period
 from .context import ServiceContext, utcnow
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ImportOutcome", "ImportService", "InputMode"]
+__all__ = [
+    "ImportOutcome", "ImportService", "InputMode", "monday_of",
+    "suggested_period",
+]
 
 InputMode = Literal["file", "paste", "rows", "erp"]
 
@@ -76,6 +83,9 @@ class ImportOutcome:
     unknown_columns: list[str] = field(default_factory=list)
     duplicate_keys: list[str] = field(default_factory=list)
     batch_id: str | None = None
+    #: Chemin du fichier archivé dans le volume, quand il a pu l'être. ``None``
+    #: dit « pas de pièce » : collage, lecture ERP, ou archivage indisponible.
+    storage_path: str | None = None
     #: Free-form facts the specific import wants to surface (journals created,
     #: locations discovered, …).
     details: dict[str, Any] = field(default_factory=dict)
@@ -98,6 +108,7 @@ class ImportOutcome:
             "unknownColumns": self.unknown_columns,
             "duplicateKeys": self.duplicate_keys[:50],
             "batchId": self.batch_id,
+            "archived": self.storage_path is not None,
             "details": self.details,
         }
 
@@ -120,7 +131,9 @@ class ImportService:
         sheet: str | None = None,
         text: str | None = None,
         rows: Sequence[dict[str, Any]] | None = None,
-        approved_only: bool = False,
+        period_start: dt.date | None = None,
+        period_end: dt.date | None = None,
+        snapshot_date: dt.date | None = None,
     ) -> tuple[GridContract, ParseResult]:
         """Parse input in any of the supported modes.
 
@@ -137,7 +150,11 @@ class ImportService:
             case "erp":
                 result = parse_rows(
                     contract,
-                    self._read_erp(contract_key, limit=limit, approved_only=approved_only),
+                    self._read_erp(
+                        contract_key, limit=limit,
+                        period_start=period_start, period_end=period_end,
+                        snapshot_date=snapshot_date,
+                    ),
                     max_rows=limit,
                 )
             case "file":
@@ -164,9 +181,25 @@ class ImportService:
         return contract, result
 
     def _read_erp(
-        self, contract_key: str, *, limit: int, approved_only: bool
+        self,
+        contract_key: str,
+        *,
+        limit: int,
+        period_start: dt.date | None = None,
+        period_end: dt.date | None = None,
+        snapshot_date: dt.date | None = None,
     ) -> list[dict[str, Any]]:
-        """Rows from the ERP silver tables, in the grid's shape."""
+        """Rows from the ERP tables, in the grid's shape.
+
+        The two period arguments are only meaningful for the grids that read a
+        *fact* table rather than a referential: a referential has a state, a fact
+        table has a history, and reading the second without bounds would answer
+        a question nobody asked.
+
+        ``snapshot_date`` est de la troisième espèce : le stock n'est ni un état
+        courant ni un historique à parcourir, mais une suite de photos dont on en
+        charge **une**, nommée.
+        """
         from ..ingest.erp import ErpReader
 
         reader = ErpReader()
@@ -174,11 +207,23 @@ class ImportService:
             case "items":
                 return reader.fetch_items(limit=limit)
             case "boms":
-                return reader.fetch_bom_links(limit=limit, approved_only=approved_only)
+                return reader.fetch_bom_links(limit=limit)
+            case "book_stock":
+                # Une photo, celle que l'écran a nommée. Sans date, la plus
+                # récente — c'est le défaut, pas la seule possibilité.
+                return reader.fetch_book_stock(
+                    limit=limit, snapshot_date=snapshot_date
+                )
+            case "backflush":
+                start, end = _require_period(period_start, period_end)
+                return reader.fetch_backflush(
+                    period_start=start, period_end=end, limit=limit
+                )
             case _:
                 raise ValidationError(
                     f"La grille « {contract_key} » n'a pas de source ERP. "
-                    "Seuls les articles et les nomenclatures en ont une."
+                    "Seuls les articles, les nomenclatures et l'écart backflush "
+                    "en ont une."
                 )
 
     def preview(
@@ -203,6 +248,80 @@ class ImportService:
             "sample": [_jsonable(r) for r in result.rows[:limit]],
         }
 
+    def _retire_stale_locations(
+        self,
+        campaign: Campaign,
+        stale: Sequence[LocationKey],
+        *,
+        outcome: ImportOutcome,
+        conn: Any,
+    ) -> tuple[int, set[LocationKey]]:
+        """Close the locations a new ERP snapshot no longer knows about.
+
+        Returns how many journals were removed, and the locations kept back.
+
+        A journal nobody has opened is a leftover and goes with its location. A
+        journal that carries a line, or that somebody has already posted, is
+        *work*: reloading the snapshot is not a decision to throw it away. Those
+        locations stay active and the import says so — an emplacement counted
+        under a snapshot that no longer lists it is exactly the sort of thing
+        that has to be looked at, not cleaned up in silence.
+        """
+        ctx = self.ctx
+        if not stale:
+            return 0, set()
+
+        untouched = ctx.journals.untouched_journal_keys(campaign.id, stale, conn=conn)
+        existing_journals = ctx.journals.journal_keys(campaign.id, stale, conn=conn)
+        kept = {
+            k for k in stale
+            if (k.warehouse_id, k.location_id) in existing_journals - untouched
+        }
+        # GENERIQUE ne porte pas de ligne de journal : son comptage vit dans les
+        # feuilles. Le juger sur ses lignes de journal le déclarerait vierge
+        # alors qu'une zone entière y a été comptée, et le rechargement d'un
+        # snapshot emporterait tout ce travail sans le dire.
+        generic = campaign.config.generic_key
+        if generic in stale and ctx.sheets.count_counted_lines(campaign.id, conn=conn):
+            kept.add(generic)
+        removable = [
+            k for k in stale
+            if (k.warehouse_id, k.location_id) in untouched and k not in kept
+        ]
+
+        removed = ctx.journals.delete_journals_for_locations(
+            campaign.id, removable, conn=conn
+        )
+        # L'emplacement suit son journal : le désactiver alors qu'un comptage y
+        # est encore ouvert le ferait disparaître des écrans où ce comptage doit
+        # rester visible.
+        closing = [k for k in stale if k not in kept]
+        if closing:
+            ctx.referentials.set_location_status(
+                campaign.id, closing, LocationStatus.DISABLED,
+                actor=ctx.actor, conn=conn,
+            )
+
+        outcome.details["locationsRetired"] = len(closing)
+        outcome.details["journalsRemoved"] = removed
+        if kept:
+            outcome.details["locationsKept"] = sorted(
+                f"{k.warehouse_id} / {k.location_id}" for k in kept
+            )[:50]
+            outcome.warnings.append(
+                RowError(
+                    line=0,
+                    column="",
+                    value="",
+                    message=(
+                        f"{len(kept)} emplacement(s) absents du nouveau stock ERP "
+                        "portent déjà un comptage : leur journal est conservé. "
+                        "Vérifiez-les avant la clôture."
+                    ),
+                )
+            )
+        return removed, kept
+
     # -------------------------------------------------------------- importers
 
     def import_items(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
@@ -210,6 +329,7 @@ class ImportService:
         ctx.guard(campaign, "items")
         _, parsed = self.parse("items", **kwargs)
         outcome = _base_outcome("items", parsed)
+        outcome.storage_path = self._archive(campaign, "items", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -235,12 +355,18 @@ class ImportService:
         return outcome
 
     def import_boms(
-        self, campaign: Campaign, *, replace: bool = False, **kwargs: Any
+        self,
+        campaign: Campaign,
+        *,
+        replace: bool = False,
+        allow_partial: bool = False,
+        **kwargs: Any,
     ) -> ImportOutcome:
         ctx = self.ctx
         ctx.guard(campaign, "boms")
         _, parsed = self.parse("boms", **kwargs)
         outcome = _base_outcome("boms", parsed)
+        outcome.storage_path = self._archive(campaign, "boms", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -249,9 +375,19 @@ class ImportService:
         outcome.rows_rejected += len(errors)
 
         outcome.rows_accepted = len(links)
+        if replace:
+            # Seul le mode remplacement est concerné : un chargement qui
+            # complète n'efface rien, et trois lignes refusées sur quatre mille
+            # y sont trois lignes manquantes, pas trois lignes supprimées.
+            self._refuse_if_partial(
+                outcome, accepted=len(links), allow_partial=allow_partial,
+                what="Cette nomenclature",
+            )
         with ctx.db.transaction() as conn:
             if replace:
-                removed = ctx.referentials.clear_bom(campaign.id, actor=ctx.actor)
+                removed = ctx.referentials.clear_bom(
+                    campaign.id, actor=ctx.actor, conn=conn
+                )
                 outcome.details["replacedLinks"] = removed
             ctx.referentials.upsert_bom_links(links, actor=ctx.actor, conn=conn)
             outcome.batch_id = self._record_batch(
@@ -285,6 +421,7 @@ class ImportService:
         ctx.guard(campaign, "adjustments")
         _, parsed = self.parse("adjustments", **kwargs)
         outcome = _base_outcome("adjustments", parsed)
+        outcome.storage_path = self._archive(campaign, "adjustments", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -316,6 +453,7 @@ class ImportService:
         ctx.guard(campaign, "locations")
         _, parsed = self.parse("locations", **kwargs)
         outcome = _base_outcome("locations", parsed)
+        outcome.storage_path = self._archive(campaign, "locations", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -349,7 +487,9 @@ class ImportService:
 
     # ------------------------------------------------------------ book stock
 
-    def import_book_stock(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
+    def import_book_stock(
+        self, campaign: Campaign, *, allow_partial: bool = False, **kwargs: Any
+    ) -> ImportOutcome:
         """Load the ERP snapshot and derive the location referential from it.
 
         Three things happen in one transaction, because they only make sense
@@ -364,13 +504,14 @@ class ImportService:
         ctx.guard(campaign, "book_stock")
         if campaign.book_stock_frozen_at is not None:
             raise ConflictError(
-                "Le stock livre est gelé pour cette campagne. Créez une nouvelle "
+                "Le stock ERP est gelé pour cette campagne. Créez une nouvelle "
                 "campagne si un nouveau snapshot est nécessaire.",
                 frozenAt=campaign.book_stock_frozen_at.isoformat(),
             )
 
         _, parsed = self.parse("book_stock", **kwargs)
         outcome = _base_outcome("book_stock", parsed)
+        outcome.storage_path = self._archive(campaign, "book_stock", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -415,9 +556,41 @@ class ImportService:
                 ),
             )
 
+        # Un snapshot *remplace* le précédent. Les emplacements que seul l'ancien
+        # connaissait n'ont donc plus de raison d'être — et sans cela leurs
+        # journaux restaient dans la liste, s'ajoutant aux nouveaux : la
+        # couverture comptait des emplacements qui n'existent plus, et personne
+        # ne pouvait dire lesquels étaient à compter.
+        #
+        # Seuls les emplacements *nés d'un snapshot* sont retirés. Celui qu'on a
+        # déclaré à la main reste : quelqu'un a décidé qu'il existait, et un
+        # chargement ERP n'est pas un avis sur cette décision.
+        snapshot_keys = {
+            LocationKey(warehouse_id=l.warehouse_id, location_id=l.location_id)
+            for l in lines
+        }
+        stale = [
+            key
+            for key, location in existing.items()
+            if key not in snapshot_keys
+            and location.source is DataSource.SYSTEM
+            and location.status is LocationStatus.ACTIVE
+        ]
+
+        # Le pire cas du rapport d'audit : un snapshot amputé qui se présente
+        # comme complet. Chaque article manquant produit ensuite un écart de
+        # 100 % contre un stock que l'ERP n'a jamais annoncé nul.
+        self._refuse_if_partial(
+            outcome, accepted=len(lines), allow_partial=allow_partial,
+            what="Le stock ERP",
+        )
+
         batch_id = new_id()
         with ctx.db.transaction() as conn:
             ctx.book_stock.replace(campaign.id, lines, batch_id=batch_id, conn=conn)
+            removed, kept = self._retire_stale_locations(
+                campaign, stale, outcome=outcome, conn=conn
+            )
             if warehouses:
                 ctx.referentials.upsert_warehouses(
                     warehouses.values(), actor=ctx.actor, conn=conn
@@ -426,12 +599,13 @@ class ImportService:
                 ctx.referentials.upsert_locations(
                     discovered.values(), actor=ctx.actor, conn=conn
                 )
+            retired = set(stale) - kept
             active_keys = [
                 key
                 for key, location in {
                     **existing, **discovered
                 }.items()
-                if location.status is LocationStatus.ACTIVE
+                if location.status is LocationStatus.ACTIVE and key not in retired
             ]
             created = ctx.journals.ensure_journals(
                 campaign.id,
@@ -448,14 +622,22 @@ class ImportService:
             ctx.imports.create(
                 campaign_id=campaign.id,
                 target="book_stock",
-                filename=kwargs.get("filename", ""),
+                # `_origin_of` plutôt que le nom du fichier : une lecture ERP
+                # n'en a pas, et la colonne restait vide — c'est-à-dire que
+                # l'historique ne disait pas d'où venait le stock, ce qui est
+                # précisément le seul travail de cet historique.
+                filename=self._origin_of("book_stock", kwargs),
                 content_hash=_hash_of(kwargs),
-                storage_path=None,
+                storage_path=outcome.storage_path,
                 rows_received=outcome.rows_received,
                 rows_accepted=len(lines),
                 rows_rejected=outcome.rows_rejected,
                 report=outcome.as_dict(),
                 imported_by=ctx.actor,
+                # Le même identifiant que celui gravé dans les lignes de stock
+                # juste au-dessus : c'est ce qui rend « d'où vient cette
+                # quantité » interrogeable.
+                batch_id=batch_id,
                 conn=conn,
             )
             ctx.record(
@@ -463,28 +645,31 @@ class ImportService:
                 action=AuditAction.IMPORT,
                 entity_type="book_stock",
                 summary=(
-                    f"Stock livre chargé : {len(lines)} lignes, "
+                    f"Stock ERP chargé : {len(lines)} lignes, "
                     f"{len(discovered)} nouvel(s) emplacement(s), "
-                    f"{created} journal(aux) créé(s)."
+                    f"{created} journal(aux) créé(s), "
+                    f"{removed} journal(aux) retiré(s)."
                 ),
                 after={
                     "lines": len(lines),
                     "newLocations": len(discovered),
                     "journalsCreated": created,
+                    "journalsRemoved": removed,
                 },
                 conn=conn,
             )
 
         outcome.batch_id = batch_id
         outcome.rows_accepted = len(lines)
-        outcome.details = {
+        # Fusionner, et non remplacer : le retrait des emplacements périmés a
+        # déjà écrit ce qu'il a fait, et c'est précisément ce que l'utilisateur
+        # doit lire après un rechargement.
+        outcome.details.update({
             "newLocations": len(discovered),
             "totalLocations": len(existing) + len(discovered),
             "journalsCreated": created,
-            "warehouses": sorted(
-                {l.warehouse_id for l in lines}
-            ),
-        }
+            "warehouses": sorted({l.warehouse_id for l in lines}),
+        })
         return outcome
 
     def freeze_book_stock(self, campaign: Campaign) -> Campaign:
@@ -493,7 +678,7 @@ class ImportService:
         ctx.guard(campaign, "book_stock")
         if ctx.book_stock.count(campaign.id) == 0:
             raise ValidationError(
-                "Impossible de geler un stock livre vide : chargez d'abord le "
+                "Impossible de geler un stock ERP vide : chargez d'abord le "
                 "snapshot ERP."
             )
         with ctx.db.transaction() as conn:
@@ -508,10 +693,118 @@ class ImportService:
                 campaign_id=campaign.id,
                 action=AuditAction.FREEZE,
                 entity_type="book_stock",
-                summary="Stock livre gelé",
+                summary="Stock ERP gelé",
                 conn=conn,
             )
+        ctx.forget_progress(campaign.id)
         return ctx.campaigns.get(campaign.id)
+
+    # ------------------------------------------------------------- backflush
+
+    def import_backflush(
+        self,
+        campaign: Campaign,
+        *,
+        period_start: dt.date | None = None,
+        period_end: dt.date | None = None,
+        allow_partial: bool = False,
+        **kwargs: Any,
+    ) -> ImportOutcome:
+        """Freeze the backflush variance of one period onto the campaign.
+
+        Read once and written here rather than queried on every display. The gold
+        table is rebuilt in full every night — a nomenclature correction, a
+        movement booked late, a standard cost updated — so the variance of a week
+        already past can move. Reading live would mean the same campaign consulted
+        a fortnight apart shows two figures, and a residual variance a controller
+        signed off could no longer be reproduced.
+
+        Refreshing stays possible for as long as the campaign is open, and the
+        freeze matrix stops it at closure. Each refresh replaces the whole read:
+        an article whose variance has gone must disappear, not keep an old figure
+        under new bounds.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "backflush")
+
+        start, end = _require_period(period_start, period_end)
+        _, parsed = self.parse(
+            "backflush", period_start=start, period_end=end, **kwargs
+        )
+        outcome = _base_outcome("backflush", parsed)
+        outcome.storage_path = self._archive(campaign, "backflush", kwargs)
+
+        # Même règle que les flux de la comparaison : la table couvre toute
+        # l'usine, et un article exclu du périmètre n'a pas d'écart à porter.
+        items = ctx.referentials.items_in_scope(campaign.id)
+        lines, errors = map_backflush(
+            campaign.id, parsed.rows,
+            period_start=start, period_end=end, items=items,
+        )
+        outcome.errors.extend(errors)
+        outcome.rows_rejected += len(errors)
+
+        # `replace` : l'écart de la période remplace le précédent. Un article
+        # refusé disparaît donc de l'écart au lieu d'y manquer, et la
+        # consommation qu'il portait cesse d'exister pour l'analyse.
+        self._refuse_if_partial(
+            outcome, accepted=len(lines), allow_partial=allow_partial,
+            what="L'écart backflush",
+        )
+
+        batch_id = new_id()
+        with ctx.db.transaction() as conn:
+            written = ctx.backflush.replace(
+                campaign.id, lines, batch_id=batch_id, conn=conn
+            )
+            # Les lignes portaient un identifiant de lot dont aucune ligne
+            # d'`import_batch` n'existait : l'écran d'historique ne montrait pas
+            # ce chargement, et la pièce archivée n'était rattachée à rien.
+            ctx.imports.create(
+                campaign_id=campaign.id,
+                target="backflush",
+                filename=self._origin_of("backflush", kwargs),
+                content_hash=_hash_of(kwargs),
+                storage_path=outcome.storage_path,
+                rows_received=outcome.rows_received,
+                rows_accepted=written,
+                rows_rejected=outcome.rows_rejected,
+                report=outcome.as_dict(),
+                imported_by=ctx.actor,
+                batch_id=batch_id,
+                conn=conn,
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.IMPORT,
+                entity_type="backflush",
+                summary=(
+                    f"Écart backflush figé : {written} article(s), "
+                    f"du {start:%d/%m/%Y} au {end:%d/%m/%Y} (exclu)"
+                ),
+                after={
+                    "items": written,
+                    "periodStart": start.isoformat(),
+                    "periodEnd": end.isoformat(),
+                },
+                conn=conn,
+            )
+
+        outcome.batch_id = batch_id
+        outcome.rows_accepted = written
+        # The two halves are reported separately from the net: forty of
+        # under-consumption against thirty-eight of over-consumption does not
+        # read like two, and the summary is where that distinction survives.
+        outcome.details.update({
+            "periodStart": start.isoformat(),
+            "periodEnd": end.isoformat(),
+            "weeks": (end - start).days // 7,
+            "netQty": float(sum(line.net_qty for line in lines)),
+            "underConsumed": float(sum(line.under_consumed_qty for line in lines)),
+            "overConsumed": float(sum(line.over_consumed_qty for line in lines)),
+            "outOfScope": max(0, len(parsed.rows) - written - len(errors)),
+        })
+        return outcome
 
     # -------------------------------------------------------- count journals
 
@@ -530,6 +823,7 @@ class ImportService:
         ctx.guard(campaign, "count_journals")
         _, parsed = self.parse("count_journal_lines", **kwargs)
         outcome = _base_outcome("count_journal_lines", parsed)
+        outcome.storage_path = self._archive(campaign, "count_journal_lines", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -633,7 +927,7 @@ class ImportService:
             ]
             if fully_posted:
                 ctx.journals.set_status(
-                    fully_posted, JournalStatus.POSTED,
+                    campaign.id, fully_posted, JournalStatus.POSTED,
                     actor=ctx.actor, posted_at=utcnow(), conn=conn,
                 )
             for group in (partially, in_progress):
@@ -644,7 +938,8 @@ class ImportService:
                 ]
                 if running:
                     ctx.journals.set_status(
-                        running, JournalStatus.IN_PROGRESS, actor=ctx.actor, conn=conn
+                        campaign.id, running, JournalStatus.IN_PROGRESS,
+                        actor=ctx.actor, conn=conn,
                     )
 
             outcome.rows_accepted = len(lines)
@@ -704,6 +999,7 @@ class ImportService:
         ctx.guard(campaign, "count_sheets")
         _, parsed = self.parse("count_sheets", **kwargs)
         outcome = _base_outcome("count_sheets", parsed)
+        outcome.storage_path = self._archive(campaign, "count_sheets", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -831,7 +1127,88 @@ class ImportService:
         if kwargs.get("mode") != "erp":
             return kwargs.get("filename", "")
         settings = self.ctx.settings
-        return settings.erp_items_fqn if target == "items" else settings.erp_bom_fqn
+        table = {
+            "items": settings.erp_items_fqn,
+            "book_stock": settings.erp_stock_fqn,
+        }.get(target, settings.erp_bom_fqn)
+        # Pour le stock, la photo chargée compte plus que la table : deux
+        # campagnes lisant la même table à deux jours d'écart ne comparent pas
+        # leur comptage au même état du système.
+        day = kwargs.get("snapshot_date")
+        if target == "book_stock" and day is not None:
+            table = f"{table} au {day.isoformat()}"
+        if settings.erp_source != "mirror":
+            return table
+        # Naming the ERP table alone would claim a live read that did not
+        # happen. Which copy was loaded, and how old it was, is the whole
+        # question six months later.
+        from ..ingest.erp import mirror_state
+
+        synced = (mirror_state().get(target) or {}).get("syncedAt")
+        return f"{table} (miroir du {synced[:10]})" if synced else f"{table} (miroir)"
+
+    def _archive(
+        self, campaign: Campaign, target: str, kwargs: dict[str, Any]
+    ) -> str | None:
+        """Dépose le fichier chargé dans le volume, et renvoie son chemin.
+
+        Appelée **avant** d'ouvrir la transaction : le dépôt part sur le réseau,
+        et tenir une transaction ouverte pendant un aller-retour vers le volume
+        garderait une connexion du pool immobilisée pour une écriture qui ne la
+        concerne pas.
+
+        Seuls les fichiers sont archivés. Un collage n'a pas d'original à
+        conserver — le texte collé est déjà dans les lignes chargées — et une
+        lecture ERP se rejoue par sa requête, que l'historique nomme déjà.
+        """
+        payload = kwargs.get("payload")
+        if not isinstance(payload, bytes):
+            return None
+        archived = self.ctx.evidence.put(
+            payload,
+            campaign_code=campaign.code,
+            kind=target,
+            filename=kwargs.get("filename") or f"{target}.bin",
+        )
+        return archived.path if archived else None
+
+    def _refuse_if_partial(
+        self,
+        outcome: ImportOutcome,
+        *,
+        accepted: int,
+        allow_partial: bool,
+        what: str,
+    ) -> None:
+        """Refuse un remplacement amputé, sauf dérogation explicite.
+
+        Appelée **avant** d'ouvrir la transaction : le refus n'a rien à défaire,
+        et une transaction ouverte pour être immédiatement annulée immobilise
+        une connexion du pool pour rien.
+
+        La dérogation, quand elle est prise, est écrite dans le rapport du lot :
+        « 3 997 lignes chargées » ne veut pas dire la même chose selon qu'il y
+        en avait 3 997 ou 4 000, et six mois plus tard c'est cette ligne
+        d'historique qui répond.
+        """
+        refusal = refuse_partial_write(
+            wholesale=True,
+            rejected=outcome.rows_rejected,
+            accepted=accepted,
+            allow_partial=allow_partial,
+            what=what,
+            reasons=tuple(e.message for e in outcome.errors),
+        )
+        if refusal is not None:
+            raise ValidationError(
+                refusal.message,
+                rejected=refusal.rejected,
+                accepted=refusal.accepted,
+                errors=[e.as_dict() for e in outcome.errors[:50]],
+            )
+        if allow_partial and outcome.rows_rejected:
+            outcome.details["partialAccepted"] = True
+            outcome.details["partialRejected"] = outcome.rows_rejected
 
     def _record_batch(
         self,
@@ -848,12 +1225,12 @@ class ImportService:
         the permanent record of what a file actually loaded, and a zero there
         would make the import history useless.
         """
-        return self.ctx.imports.create(
+        batch_id = self.ctx.imports.create(
             campaign_id=campaign_id,
             target=target,
             filename=self._origin_of(target, kwargs),
             content_hash=_hash_of(kwargs),
-            storage_path=None,
+            storage_path=outcome.storage_path,
             rows_received=outcome.rows_received,
             rows_accepted=outcome.rows_accepted,
             rows_rejected=outcome.rows_rejected,
@@ -861,6 +1238,11 @@ class ImportService:
             imported_by=self.ctx.actor,
             conn=conn,
         )
+        # The counts the sequencing guard reads have just changed: a request
+        # that loads the referential and then creates the sheets must not be
+        # judged on the counts taken before the load.
+        self.ctx.forget_progress(campaign_id)
+        return batch_id
 
     def check_duplicate(
         self, campaign_id: str, target: str, **kwargs: Any
@@ -929,3 +1311,54 @@ def _jsonable(row: dict[str, Any]) -> dict[str, Any]:
         else:
             out[key] = value
     return out
+
+
+def _require_period(
+    start: dt.date | None, end: dt.date | None
+) -> tuple[dt.date, dt.date]:
+    """The two bounds, refused rather than guessed when they are missing.
+
+    A default period would be the worst of both worlds here: the figure would
+    look computed, the header would show bounds nobody chose, and the number
+    would be wrong for every campaign whose period is not the default. The
+    screen proposes a period; it is the user who fixes it.
+    """
+    if start is None or end is None:
+        raise ValidationError(
+            "L'écart backflush se lit sur une période : indiquez la borne de "
+            "début et la borne de fin (des lundis ISO, fin exclue).",
+            borneDebut=start.isoformat() if start else None,
+            borneFin=end.isoformat() if end else None,
+        )
+    # Validated here rather than in the query builder, so a file or a paste is
+    # held to the same rule as an ERP read. It was not, and a Wednesday typed
+    # into the form was stored as a bound the source could never have produced.
+    validate_period(start, end)
+    return start, end
+
+
+def monday_of(day: dt.date) -> dt.date:
+    """The Monday of *day*'s ISO week."""
+    return day - dt.timedelta(days=day.weekday())
+
+
+def suggested_period(
+    count_date: dt.date, *, previous: dt.date | None = None, weeks: int = 13
+) -> tuple[dt.date, dt.date]:
+    """A period the screen can propose, and that a user can override.
+
+    The end is the Monday of the counting week, *excluded*: the week in which the
+    count happens is cut in two by the count itself, and charging a whole week's
+    production against the days that preceded it would overstate the variance on
+    every article produced that week.
+
+    The start is the previous campaign's counting week when there is one — that
+    is the period nobody has looked at yet — and a quarter otherwise, which is
+    long enough to be worth reading and short enough to stay explainable.
+    """
+    end = monday_of(count_date)
+    if previous is not None:
+        start = monday_of(previous)
+        if start < end:
+            return start, end
+    return end - dt.timedelta(weeks=weeks), end

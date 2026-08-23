@@ -42,7 +42,6 @@ def campaign() -> Campaign:
                 item_type=ItemType.COMPONENT,
                 value_abs_eur="1000",
                 qty_relative="0.02",
-                ira_tolerance="0.005",
             )
         ],
     )
@@ -156,7 +155,15 @@ class TestReconciliation:
         assert len(lines) == 1
         assert lines[0].location_id == "L1"
 
-    def test_adjustments_reduce_the_residual(self, campaign):
+    def test_an_adjustment_moves_the_physical_stock_and_the_variance_with_it(
+        self, campaign
+    ):
+        """Un ajustement est un *mouvement de stock*, pas une correction d'écart.
+
+        Posté après le comptage, il change ce qu'il y a sur l'étagère : le
+        comptage seul cesse d'être l'image courante, et c'est le stock physique
+        — compté plus mouvements — que l'écart mesure désormais.
+        """
         lines = build_variances(
             campaign=campaign,
             book_stock=[book("A", "B06", "L1", 100)],
@@ -168,8 +175,22 @@ class TestReconciliation:
             ],
             granularity="item_location",
         )
-        assert lines[0].variance_qty == Decimal("-20.000000")
-        assert lines[0].residual_qty == 0
+        assert lines[0].physical_qty == Decimal("60.000000")
+        assert lines[0].variance_qty == Decimal("-40.000000")
+        # Ce que le comptage seul montrait reste lisible à côté : la différence
+        # entre les deux est exactement ce que l'ajustement a fait.
+        assert lines[0].counted_variance_qty == Decimal("-20.000000")
+
+    def test_without_an_adjustment_the_two_readings_coincide(self, campaign):
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[book("A", "B06", "L1", 100)],
+            counted=[counted("A", "B06", "L1", 80)],
+            items=ITEMS,
+            granularity="item_location",
+        )
+        assert lines[0].physical_qty == lines[0].counted_qty
+        assert lines[0].variance_qty == lines[0].counted_variance_qty
 
     def test_snapshot_cost_wins_over_the_referential_price(self, campaign):
         lines = build_variances(
@@ -227,7 +248,7 @@ class TestKpis:
         assert kpi.net_reliability_value == Decimal("1")
         assert kpi.gross_reliability_value == Decimal("0.9")
 
-    def test_ira_counts_records_within_tolerance(self, campaign):
+    def test_ira_counts_the_records_that_matched_exactly(self, campaign):
         lines = [
             VarianceLine(campaign_id="c", item_number="A",
                          item_type=ItemType.COMPONENT, unit_cost="10",
@@ -239,6 +260,20 @@ class TestKpis:
         kpi = compute_kpis(lines, campaign=campaign)
         assert kpi.accurate_line_count == 1
         assert kpi.ira == Decimal("0.5")
+
+    def test_a_record_off_by_one_is_not_accurate(self, campaign):
+        """There is no tolerance dial any more, and that is the point.
+
+        A configurable tolerance made the indicator agree with whoever set it
+        rather than with the shelf: raise it a little and accuracy improves
+        without a single part moving.
+        """
+        lines = [
+            VarianceLine(campaign_id="c", item_number="A",
+                         item_type=ItemType.COMPONENT, unit_cost="10",
+                         book_qty=1000, counted_qty=999),
+        ]
+        assert compute_kpis(lines, campaign=campaign).accurate_line_count == 0
 
     def test_empty_input_yields_none_rather_than_zero(self):
         kpi = compute_kpis([])

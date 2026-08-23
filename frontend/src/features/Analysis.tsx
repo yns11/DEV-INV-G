@@ -6,7 +6,8 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { api } from '../lib/api'
+import { ClosureChecklistView } from '../components/ClosureChecklist'
+import { api, download, downloads } from '../lib/api'
 import type {
   AssignableCause,
   GridContract,
@@ -14,15 +15,21 @@ import type {
   VarianceRow,
 } from '../lib/types'
 import {
+  DASH,
   ITEM_TYPE_LABELS,
   moneyShort,
-  numShort,
+  qty,
   percent,
   signClass,
   signedMoney,
+  signedNum,
 } from '../lib/format'
 import { CompositionBar, DistributionChart, Pareto, VarianceBars } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
+import { BreakdownModal, DrillCell, type BreakdownAspect } from '../components/BreakdownModal'
+import { FindingGroups } from '../components/Findings'
+import { SubSectionTabs } from '../components/SubSectionTabs'
+import { useSubSection } from '../lib/subsection'
 import { ImportPanel } from '../components/ImportPanel'
 import {
   Alert,
@@ -34,24 +41,28 @@ import {
   Icons,
   Modal,
   Skeleton,
-  Tabs,
   useErrorToast,
   useToast,
 } from '../components/ui'
 
-type Tab = 'variances' | 'analytics' | 'causes' | 'adjustments' | 'controls' | 'summary'
+/** One per navigation entry; `causes` still carries three related views. */
+export type AnalysisView = 'controls' | 'variances' | 'causes' | 'adjustments'
 
-export function Analysis() {
+type CausesTab = 'causes' | 'analytics' | 'summary'
+
+const CAUSES_TABS: CausesTab[] = ['causes', 'analytics', 'summary']
+
+export function Analysis({ view }: { view: AnalysisView }) {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
-  const [tab, setTab] = useState<Tab>('variances')
+  const [causesTab, setCausesTab] = useSubSection<CausesTab>('causes', CAUSES_TABS)
 
   if (!overview.campaign.book_stock_frozen_at) {
     return (
       <Card>
         <EmptyState title="Analyse indisponible" icon={<Icons.lock size={20} />}>
-          Les écarts se calculent à partir du stock livre gelé. Chargez puis gelez le
-          snapshot ERP dans l’onglet Référentiels.
+          Les écarts se calculent à partir du stock ERP gelé. Chargez puis gelez-le
+          dans l’onglet Référentiels.
         </EmptyState>
       </Card>
     )
@@ -59,25 +70,30 @@ export function Analysis() {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
-      <Tabs<Tab>
-        value={tab}
-        onChange={setTab}
-        tabs={[
-          { id: 'variances', label: 'Écarts' },
-          { id: 'analytics', label: 'Analyses & ML' },
-          { id: 'causes', label: 'Causes' },
-          { id: 'adjustments', label: 'Ajustements' },
-          { id: 'controls', label: 'Contrôles' },
-          { id: 'summary', label: 'Synthèse IA' },
-        ]}
-      />
-
-      {tab === 'variances' && <VariancesTab campaignId={campaignId} overview={overview} />}
-      {tab === 'analytics' && <AnalyticsTab campaignId={campaignId} />}
-      {tab === 'causes' && <CausesTab campaignId={campaignId} overview={overview} />}
-      {tab === 'adjustments' && <AdjustmentsTab campaignId={campaignId} overview={overview} />}
-      {tab === 'controls' && <ControlsTab campaignId={campaignId} />}
-      {tab === 'summary' && <SummaryTab campaignId={campaignId} />}
+      {view === 'causes' && (
+        <SubSectionTabs
+          section="causes"
+          overview={overview}
+          value={causesTab}
+          onChange={setCausesTab}
+        />
+      )}
+      {view === 'variances' && <VariancesTab campaignId={campaignId} overview={overview} />}
+      {view === 'controls' && (
+        <ControlsTab campaignId={campaignId} overview={overview} />
+      )}
+      {view === 'adjustments' && (
+        <AdjustmentsTab campaignId={campaignId} overview={overview} />
+      )}
+      {view === 'causes' && causesTab === 'causes' && (
+        <CausesTab campaignId={campaignId} overview={overview} />
+      )}
+      {view === 'causes' && causesTab === 'analytics' && (
+        <AnalyticsTab campaignId={campaignId} />
+      )}
+      {view === 'causes' && causesTab === 'summary' && (
+        <SummaryTab campaignId={campaignId} />
+      )}
     </div>
   )
 }
@@ -105,6 +121,38 @@ function VariancesTab({
   const [granularity, setGranularity] = useState<'item' | 'item_location'>('item')
   const [dimension, setDimension] = useState('item_type')
   const [explain, setExplain] = useState<string | null>(null)
+  const [drill, setDrill] = useState<
+    { itemNumber: string; aspect: BreakdownAspect; warehouseId?: string; locationId?: string } | null
+  >(null)
+  const [exporting, setExporting] = useState<'xlsx' | 'pdf' | null>(null)
+  const showError = useErrorToast()
+
+  // En vue par emplacement, la ligne cliquée en désigne un : décomposer l'article
+  // entier répondrait à une autre question que celle posée.
+  const openDrill = (row: VarianceRow, aspect: BreakdownAspect) =>
+    setDrill({
+      itemNumber: row.itemNumber,
+      aspect,
+      ...(granularity === 'item_location'
+        ? { warehouseId: row.warehouseId, locationId: row.locationId }
+        : {}),
+    })
+
+  const exportAs = async (format: 'xlsx' | 'pdf') => {
+    setExporting(format)
+    try {
+      await download(
+        downloads.variances(campaignId, format, {
+          granularity,
+          materialOnly: materialOnly || undefined,
+        }),
+      )
+    } catch (error) {
+      showError(error, 'Export impossible')
+    } finally {
+      setExporting(null)
+    }
+  }
 
   const variances = useQuery({
     queryKey: ['variances', campaignId, materialOnly, granularity],
@@ -159,16 +207,23 @@ function VariancesTab({
       render: (row) => <Badge tone="neutral">{ITEM_TYPE_LABELS[row.itemType]}</Badge>,
       value: (row) => row.itemType,
     },
+    // Every cell of this row that carries both figures uses the same
+    // arrangement: quantity on the first line, amount on the second. Mixing the
+    // two orders — a quantity heading one column and an amount heading the next
+    // — puts different units at the same height, and the eye reading across a
+    // row cannot tell which is which without checking the header every time.
     {
       key: 'bookQty',
-      label: 'Stock livre',
+      label: 'Stock ERP',
       numeric: true,
       width: 130,
       render: (row) => (
-        <span className="num">
-          {numShort(row.bookQty)}
-          <div className="subtle">{moneyShort(row.bookValue)}</div>
-        </span>
+        <DrillCell
+          disabled={row.bookQty === 0}
+          onOpen={() => openDrill(row, 'book')}
+        >
+          <QtyOverValue qty={qty(row.bookQty)} value={moneyShort(row.bookValue)} />
+        </DrillCell>
       ),
       value: (row) => row.bookQty,
     },
@@ -176,9 +231,37 @@ function VariancesTab({
       key: 'countedQty',
       label: 'Compté',
       numeric: true,
-      width: 120,
-      render: (row) => <span className="num">{numShort(row.countedQty)}</span>,
+      width: 130,
+      render: (row) => (
+        <DrillCell
+          disabled={row.countedQty === 0}
+          onOpen={() => openDrill(row, 'counted')}
+        >
+          <QtyOverValue
+            qty={qty(row.countedQty)}
+            value={moneyShort(row.countedQty * row.unitCost)}
+          />
+        </DrillCell>
+      ),
       value: (row) => row.countedQty,
+    },
+    {
+      key: 'physicalQty',
+      label: 'Physique',
+      numeric: true,
+      width: 130,
+      render: (row) => (
+        <DrillCell
+          disabled={row.physicalQty === 0}
+          onOpen={() => openDrill(row, 'physical')}
+        >
+          <QtyOverValue
+            qty={qty(row.physicalQty)}
+            value={moneyShort(row.physicalValue)}
+          />
+        </DrillCell>
+      ),
+      value: (row) => row.physicalQty,
     },
     {
       key: 'varianceValue',
@@ -187,29 +270,92 @@ function VariancesTab({
       width: 170,
       render: (row) => (
         <div>
-          <strong className={`num ${signClass(row.varianceValue)}`}>
-            {signedMoney(row.varianceValue)}
-          </strong>
-          <div className="subtle num">
-            {numShort(row.varianceQty)} {row.unit}
-          </div>
+          <DrillCell
+            disabled={row.varianceQty === 0}
+            onOpen={() => openDrill(row, 'variance')}
+          >
+            <QtyOverValue
+              qty={signedNum(row.varianceQty)}
+              value={signedMoney(row.varianceValue)}
+              tone={signClass(row.varianceValue)}
+            />
+          </DrillCell>
           <CellBarInline value={row.varianceValue} max={maxAbs} />
         </div>
       ),
       value: (row) => row.varianceValue,
     },
-    {
-      key: 'residualValue',
-      label: 'Résiduel',
-      numeric: true,
-      width: 140,
-      render: (row) => (
-        <span className={`num ${signClass(row.residualValue)}`}>
-          {signedMoney(row.residualValue)}
-        </span>
-      ),
-      value: (row) => row.residualValue,
-    },
+    // Ce que le comptage seul montrait. Sans ajustement il répète l'écart à
+    // l'identique : une colonne de doublons est une colonne qu'on apprend à
+    // sauter, donc une colonne à ne pas afficher.
+    ...(variances.data?.some((row) => row.adjustedQty !== 0)
+      ? [
+          {
+            key: 'countedVarianceValue',
+            label: 'Avant ajust.',
+            numeric: true,
+            width: 140,
+            render: (row: VarianceRow) => (
+              <DrillCell
+                disabled={row.countedVarianceQty === 0}
+                onOpen={() => openDrill(row, 'counted')}
+              >
+                <QtyOverValue
+                  qty={signedNum(row.countedVarianceQty)}
+                  value={signedMoney(row.countedVarianceValue)}
+                  tone={signClass(row.countedVarianceValue)}
+                />
+              </DrillCell>
+            ),
+            value: (row: VarianceRow) => row.countedVarianceValue,
+          } as Column<VarianceRow>,
+        ]
+      : []),
+    // Le backflush n'apparaît que là où il a été mesuré. Une colonne pleine de
+    // tirets sur une campagne qui ne l'a pas chargé serait une colonne à
+    // ignorer, c'est-à-dire une colonne à retirer.
+    ...(variances.data?.some((row) => row.backflushMeasured)
+      ? [
+          {
+            key: 'unexplainedValue',
+            label: 'Inexpliqué',
+            numeric: true,
+            width: 150,
+            render: (row: VarianceRow) =>
+              row.backflushMeasured ? (
+                <DrillCell
+                  disabled={row.backflushShareQty === 0}
+                  onOpen={() => openDrill(row, 'variance')}
+                >
+                  <QtyOverValue
+                    qty={signedNum(row.unexplainedQty)}
+                    value={signedMoney(row.unexplainedValue)}
+                    tone={signClass(row.unexplainedValue)}
+                  />
+                </DrillCell>
+              ) : (
+                <span className="subtle">{DASH}</span>
+              ),
+            value: (row: VarianceRow) => row.unexplainedValue,
+          } as Column<VarianceRow>,
+          {
+            key: 'backflushShareQty',
+            label: 'Part backflush',
+            numeric: true,
+            width: 140,
+            render: (row: VarianceRow) =>
+              row.backflushMeasured ? (
+                <QtyOverValue
+                  qty={signedNum(row.backflushShareQty)}
+                  value={signedMoney(row.backflushShareValue)}
+                />
+              ) : (
+                <span className="subtle">{DASH}</span>
+              ),
+            value: (row: VarianceRow) => row.backflushShareQty,
+          } as Column<VarianceRow>,
+        ]
+      : []),
     {
       key: 'flags',
       label: 'Signalements',
@@ -339,6 +485,28 @@ function VariancesTab({
               <Icons.filter size={12} />
               Au-delà des seuils uniquement
             </button>
+            {/* Les deux boutons emportent la vue telle qu'elle est réglée —
+                granularité et filtre compris. Un export qui ignorerait les
+                réglages produirait un fichier qui ne ressemble pas à l'écran
+                depuis lequel on l'a demandé. */}
+            <Button
+              size="sm"
+              icon={<Icons.download size={13} />}
+              disabled={exporting !== null}
+              onClick={() => void exportAs('xlsx')}
+              title="Quantités, valeurs et écarts en colonnes séparées, stock ERP et stock compté"
+            >
+              {exporting === 'xlsx' ? 'Export…' : 'Excel'}
+            </Button>
+            <Button
+              size="sm"
+              icon={<Icons.printer size={13} />}
+              disabled={exporting !== null}
+              onClick={() => void exportAs('pdf')}
+              title="Le tableau imprimable, plus gros écarts en tête"
+            >
+              {exporting === 'pdf' ? 'Export…' : 'PDF'}
+            </Button>
           </div>
         }
         flush
@@ -350,7 +518,7 @@ function VariancesTab({
             <EmptyState title="Aucun écart" icon={<Icons.check size={20} />}>
               {materialOnly
                 ? 'Aucun écart ne dépasse les seuils de matérialité configurés.'
-                : 'Le stock compté correspond au stock livre.'}
+                : 'Le stock compté correspond au stock ERP.'}
             </EmptyState>
           }
         >
@@ -358,13 +526,15 @@ function VariancesTab({
             <DataGrid
               columns={columns}
               rows={rows}
+              exportTitle="Écarts"
+              campaignId={campaignId}
               getRowId={(row, index) => `${row.itemNumber}-${row.warehouseId}-${row.locationId}-${index}`}
               searchPlaceholder="Filtrer par article, désignation, programme…"
               maxHeight={640}
               initialSort={{ key: 'varianceValue', direction: 'desc' }}
               footer={
                 <span className="subtle">
-                  Périmètre : {overview.campaign.code} · stock livre gelé le{' '}
+                  Périmètre : {overview.campaign.code} · stock ERP gelé le{' '}
                   {new Date(overview.campaign.book_stock_frozen_at!).toLocaleDateString('fr-FR')}
                 </span>
               }
@@ -376,6 +546,40 @@ function VariancesTab({
       {explain && (
         <ExplainModal campaignId={campaignId} itemNumber={explain} onClose={() => setExplain(null)} />
       )}
+      {drill && (
+        <BreakdownModal
+          campaignId={campaignId}
+          itemNumber={drill.itemNumber}
+          aspect={drill.aspect}
+          warehouseId={drill.warehouseId}
+          locationId={drill.locationId}
+          onClose={() => setDrill(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * A quantity over an amount, in that order, everywhere.
+ *
+ * One component rather than the same two lines written per column: the point is
+ * that the arrangement cannot drift, and a shared component is the only version
+ * of "consistent" that survives the next column being added.
+ */
+function QtyOverValue({
+  qty: quantity,
+  value,
+  tone,
+}: {
+  qty: string
+  value: string
+  tone?: string
+}) {
+  return (
+    <div className="num">
+      <strong className={tone}>{quantity}</strong>
+      <div className="subtle">{value}</div>
     </div>
   )
 }
@@ -436,7 +640,7 @@ function ExplainModal({
                         <tr key={index}>
                           <td>{row.zone_code}</td>
                           <td className="mono">{row.parent_item}</td>
-                          <td className="num">{numShort(row.child_qty)}</td>
+                          <td className="num">{qty(row.child_qty)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -461,7 +665,7 @@ function ExplainModal({
                         <tr key={index}>
                           <td>{String(row.date ?? '—')}</td>
                           <td>{String(row.kind)}</td>
-                          <td className="num">{numShort(Number(row.qty))}</td>
+                          <td className="num">{qty(Number(row.qty))}</td>
                           <td className="num">{moneyShort(Number(row.value))}</td>
                         </tr>
                       ))}
@@ -480,6 +684,85 @@ function ExplainModal({
 // --------------------------------------------------------------------------- //
 // Analytics
 // --------------------------------------------------------------------------- //
+
+/**
+ * Les colonnes des deux listes issues du modèle.
+ *
+ * Déclarées ici plutôt qu'en ligne pour que les tableaux restent lisibles, et
+ * surtout parce qu'elles ne dépendent de rien : ce sont les mêmes à chaque
+ * rendu, et les recréer ferait retrier la grille à chaque frappe dans le champ
+ * de recherche.
+ */
+const RECOUNT_COLUMNS: Column[] = [
+  { key: 'item_number', label: 'Article', width: 180 },
+  { key: 'warehouse_id', label: 'Entrepôt', width: 110 },
+  { key: 'location_id', label: 'Emplacement', width: 140 },
+  {
+    key: 'variance_value',
+    label: 'Écart',
+    numeric: true,
+    width: 130,
+    render: (row) => (
+      <span className={`num ${signClass(Number(row.variance_value ?? 0))}`}>
+        {signedMoney(Number(row.variance_value ?? 0))}
+      </span>
+    ),
+    value: (row) => Number(row.variance_value ?? 0),
+  },
+  {
+    key: 'variance_ratio',
+    label: 'Écart relatif',
+    numeric: true,
+    width: 130,
+    render: (row) =>
+      row.variance_ratio === null || row.variance_ratio === undefined
+        ? DASH
+        : percent(Number(row.variance_ratio)),
+    value: (row) => Number(row.variance_ratio ?? 0),
+  },
+  {
+    key: 'p_counting_error',
+    label: 'P(erreur comptage)',
+    numeric: true,
+    width: 170,
+    render: (row) => percent(Number(row.p_counting_error ?? 0)),
+    value: (row) => Number(row.p_counting_error ?? 0),
+  },
+  {
+    key: 'recount_expected_value',
+    label: 'Valeur attendue',
+    numeric: true,
+    width: 160,
+    render: (row) => <strong>{moneyShort(Number(row.recount_expected_value ?? 0))}</strong>,
+    value: (row) => Number(row.recount_expected_value ?? 0),
+  },
+]
+
+const ANOMALY_COLUMNS: Column[] = [
+  { key: 'item_number', label: 'Article', width: 180 },
+  { key: 'warehouse_id', label: 'Entrepôt', width: 110 },
+  { key: 'location_id', label: 'Emplacement', width: 140 },
+  {
+    key: 'variance_value',
+    label: 'Écart',
+    numeric: true,
+    width: 130,
+    render: (row) => (
+      <span className={`num ${signClass(Number(row.variance_value ?? 0))}`}>
+        {signedMoney(Number(row.variance_value ?? 0))}
+      </span>
+    ),
+    value: (row) => Number(row.variance_value ?? 0),
+  },
+  {
+    key: 'anomaly_percentile',
+    label: 'Atypicité',
+    numeric: true,
+    width: 130,
+    render: (row) => percent(Number(row.anomaly_percentile ?? 0)),
+    value: (row) => Number(row.anomaly_percentile ?? 0),
+  },
+]
 
 function AnalyticsTab({ campaignId }: { campaignId: string }) {
   const query = useQuery({
@@ -558,49 +841,41 @@ function AnalyticsTab({ campaignId }: { campaignId: string }) {
               )}
             </div>
 
+            {/* Un graphique se regarde ; une liste se travaille. Chaque bloc
+                d'analyse ouvre donc la sienne — sans quoi on lit « le segment AZ
+                pèse 2,4 M€ » sans jamais pouvoir dire quels articles y sont. */}
+            {data.abcXyz && data.abcXyz.items.length > 0 && (
+              <SegmentedItems
+                campaignId={campaignId}
+                summary={data.abcXyz.summary}
+                items={data.abcXyz.items}
+              />
+            )}
+
+            {data.clusters && data.clusters.items.length > 0 && (
+              <ClusterItems
+                campaignId={campaignId}
+                profiles={data.clusters.profiles}
+                items={data.clusters.items}
+              />
+            )}
+
             {data.recountPriority && data.recountPriority.length > 0 && (
               <Card
                 title="Priorité de recomptage"
-                message="Classement par valeur attendue = |écart €| × probabilité que ce soit une erreur de comptage. Trier par montant seul envoie les équipes recompter des écarts structurels qui ne bougeront pas."
+                message="Classement par écart × probabilité d’une erreur de comptage : le montant seul enverrait recompter des écarts structurels."
                 flush
               >
-                <div className="table-wrap" style={{ maxHeight: 420 }}>
-                  <table className="data">
-                    <thead>
-                      <tr>
-                        <th>Article</th>
-                        <th className="num">Écart</th>
-                        <th className="num">Écart relatif</th>
-                        <th className="num">P(erreur comptage)</th>
-                        <th className="num">Valeur attendue du recomptage</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.recountPriority.slice(0, 25).map((row, index) => (
-                        <tr key={index}>
-                          <td className="mono">
-                            {row.item_number}
-                            {row.location_id && (
-                              <div className="subtle">
-                                {row.warehouse_id} / {row.location_id}
-                              </div>
-                            )}
-                          </td>
-                          <td className={`num ${signClass(row.variance_value)}`}>
-                            {signedMoney(row.variance_value)}
-                          </td>
-                          <td className="num">
-                            {row.variance_ratio === null ? '—' : percent(row.variance_ratio)}
-                          </td>
-                          <td className="num">{percent(row.p_counting_error)}</td>
-                          <td className="num">
-                            <strong>{moneyShort(row.recount_expected_value)}</strong>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <DataGrid
+                  columns={RECOUNT_COLUMNS}
+                  rows={data.recountPriority as unknown as Array<Record<string, unknown>>}
+                  exportTitle="Priorité de recomptage"
+                  campaignId={campaignId}
+                  getRowId={(_row, index) => String(index)}
+                  searchPlaceholder="Filtrer par article, emplacement…"
+                  maxHeight={460}
+                  initialSort={{ key: 'recount_expected_value', direction: 'desc' }}
+                />
               </Card>
             )}
 
@@ -614,30 +889,16 @@ function AnalyticsTab({ campaignId }: { campaignId: string }) {
                   {data.anomalies.flagged.length === 0 ? (
                     <EmptyState title="Aucun écart atypique" icon={<Icons.check size={20} />} />
                   ) : (
-                    <div className="table-wrap" style={{ maxHeight: 320 }}>
-                      <table className="data">
-                        <thead>
-                          <tr>
-                            <th>Article</th>
-                            <th className="num">Écart</th>
-                            <th className="num">Atypicité</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {data.anomalies.flagged.slice(0, 20).map((row, index) => (
-                            <tr key={index}>
-                              <td className="mono">{String(row.item_number)}</td>
-                              <td className={`num ${signClass(Number(row.variance_value))}`}>
-                                {signedMoney(Number(row.variance_value))}
-                              </td>
-                              <td className="num">
-                                {percent(Number(row.anomaly_percentile ?? 0))}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    <DataGrid
+                      columns={ANOMALY_COLUMNS}
+                      rows={data.anomalies.flagged}
+                      exportTitle="Écarts atypiques"
+                      campaignId={campaignId}
+                      getRowId={(_row, index) => String(index)}
+                      searchPlaceholder="Filtrer par article, emplacement…"
+                      maxHeight={360}
+                      initialSort={{ key: 'anomaly_percentile', direction: 'desc' }}
+                    />
                   )}
                 </Card>
               )}
@@ -682,6 +943,174 @@ function AnalyticsTab({ campaignId }: { campaignId: string }) {
   )
 }
 
+/**
+ * Les articles d'un segment ABC/XYZ.
+ *
+ * Le graphique dit que le segment AZ pèse tant ; il ne dit jamais *lesquels*.
+ * C'est pourtant la seule chose qu'on emporte : la liste des références à
+ * mettre sous inventaire tournant. Les pilules portent le compte du segment,
+ * et la grille donne recherche, tri et export comme partout ailleurs.
+ */
+function SegmentedItems({
+  campaignId,
+  summary,
+  items,
+}: {
+  campaignId: string
+  summary: Array<{ segment: string; items: number; abs_variance_value: number }>
+  items: Array<Record<string, unknown>>
+}) {
+  // AZ d'abord : forte valeur, faible fiabilité — c'est le segment pour lequel
+  // cette analyse existe. Il ne se trouve pas tout seul dans une liste triée
+  // alphabétiquement.
+  const preferred = summary.some((s) => s.segment === 'AZ') ? 'AZ' : (summary[0]?.segment ?? '')
+  const [segment, setSegment] = useState(preferred)
+  const rows = useMemo(
+    () => items.filter((row) => String(row.segment) === segment),
+    [items, segment],
+  )
+
+  const columns: Column[] = [
+    { key: 'item_number', label: 'Article', width: 180 },
+    { key: 'segment', label: 'Segment', width: 100 },
+    { key: 'item_type', label: 'Type', width: 140 },
+    { key: 'category', label: 'Catégorie', width: 140 },
+    { key: 'program', label: 'Programme', width: 130 },
+    {
+      key: 'book_value',
+      label: 'Stock ERP',
+      numeric: true,
+      width: 140,
+      render: (row) => moneyShort(Number(row.book_value ?? 0)),
+      value: (row) => Number(row.book_value ?? 0),
+    },
+    {
+      key: 'abs_variance_value',
+      label: 'Écart absolu',
+      numeric: true,
+      width: 150,
+      render: (row) => moneyShort(Number(row.abs_variance_value ?? 0)),
+      value: (row) => Number(row.abs_variance_value ?? 0),
+    },
+    {
+      key: 'variance_ratio',
+      label: 'Écart relatif',
+      numeric: true,
+      width: 140,
+      render: (row) =>
+        row.variance_ratio === null || row.variance_ratio === undefined
+          ? DASH
+          : percent(Number(row.variance_ratio)),
+      value: (row) => Number(row.variance_ratio ?? 0),
+    },
+  ]
+
+  return (
+    <Card
+      title="Articles par segment"
+      message="AZ — forte valeur, faible fiabilité — est la liste à mettre sous inventaire tournant."
+      flush
+    >
+      <div className="chips" style={{ padding: '0 var(--space-4)' }}>
+        {summary.map((row) => (
+          <button
+            key={row.segment}
+            className={`chip${segment === row.segment ? ' chip--active' : ''}`}
+            title={`${moneyShort(row.abs_variance_value)} d’écart absolu`}
+            onClick={() => setSegment(row.segment)}
+          >
+            {row.segment} <span className="num">{row.items}</span>
+          </button>
+        ))}
+      </div>
+      <DataGrid
+        columns={columns}
+        rows={rows}
+        exportTitle={`Segment ${segment}`}
+        campaignId={campaignId}
+        getRowId={(row, index) => String(row.item_number ?? index)}
+        searchPlaceholder="Filtrer par article, catégorie, programme…"
+        maxHeight={460}
+        emptyTitle="Aucun article dans ce segment"
+        initialSort={{ key: 'abs_variance_value', direction: 'desc' }}
+      />
+    </Card>
+  )
+}
+
+/** Les articles d'un profil de comportement, même raison, même forme. */
+function ClusterItems({
+  campaignId,
+  profiles,
+  items,
+}: {
+  campaignId: string
+  profiles: Array<{ cluster: number; items: number; label: string }>
+  items: Array<Record<string, unknown>>
+}) {
+  const [cluster, setCluster] = useState(profiles[0]?.cluster ?? 0)
+  const rows = useMemo(
+    () => items.filter((row) => Number(row.cluster) === cluster),
+    [items, cluster],
+  )
+  const active = profiles.find((p) => p.cluster === cluster)
+
+  const columns: Column[] = [
+    { key: 'item_number', label: 'Article', width: 180 },
+    { key: 'warehouse_id', label: 'Entrepôt', width: 120 },
+    { key: 'location_id', label: 'Emplacement', width: 150 },
+    { key: 'item_type', label: 'Type', width: 140 },
+    {
+      key: 'book_value',
+      label: 'Stock ERP',
+      numeric: true,
+      width: 140,
+      render: (row) => moneyShort(Number(row.book_value ?? 0)),
+      value: (row) => Number(row.book_value ?? 0),
+    },
+    {
+      key: 'variance_value',
+      label: 'Écart',
+      numeric: true,
+      width: 140,
+      render: (row) => (
+        <span className={`num ${signClass(Number(row.variance_value ?? 0))}`}>
+          {signedMoney(Number(row.variance_value ?? 0))}
+        </span>
+      ),
+      value: (row) => Number(row.variance_value ?? 0),
+    },
+  ]
+
+  return (
+    <Card title="Articles par profil" message={active?.label} flush>
+      <div className="chips" style={{ padding: '0 var(--space-4)' }}>
+        {profiles.map((profile) => (
+          <button
+            key={profile.cluster}
+            className={`chip${cluster === profile.cluster ? ' chip--active' : ''}`}
+            title={profile.label}
+            onClick={() => setCluster(profile.cluster)}
+          >
+            Profil #{profile.cluster} <span className="num">{profile.items}</span>
+          </button>
+        ))}
+      </div>
+      <DataGrid
+        columns={columns}
+        rows={rows}
+        exportTitle={`Profil ${cluster}`}
+        campaignId={campaignId}
+        getRowId={(_row, index) => String(index)}
+        searchPlaceholder="Filtrer par article, emplacement…"
+        maxHeight={420}
+        emptyTitle="Aucun article dans ce profil"
+        initialSort={{ key: 'variance_value', direction: 'desc' }}
+      />
+    </Card>
+  )
+}
+
 const BUCKET_LABELS: Record<string, string> = {
   multiplesOf10: 'Multiples de 10',
   multiplesOf50: 'Multiples de 50',
@@ -697,6 +1126,10 @@ function CausesTab({ campaignId, overview }: { campaignId: string; overview: Ove
   const queryClient = useQueryClient()
   const toast = useToast()
   const showError = useErrorToast()
+  // Affecter une cause sans pouvoir regarder d'où sort l'écart, c'est deviner.
+  const [drill, setDrill] = useState<
+    { itemNumber: string; aspect: BreakdownAspect } | null
+  >(null)
 
   const split = useQuery({
     queryKey: ['cause-split', campaignId],
@@ -786,6 +1219,8 @@ function CausesTab({ campaignId, overview }: { campaignId: string; overview: Ove
                 <thead>
                   <tr>
                     <th>Article</th>
+                    <th className="num">Compté</th>
+                    <th className="num">Physique</th>
                     <th className="num">Écart</th>
                     <th style={{ width: 260 }}>Cause retenue</th>
                     <th>Proposition IA</th>
@@ -800,8 +1235,35 @@ function CausesTab({ campaignId, overview }: { campaignId: string; overview: Ove
                           {row.name}
                         </div>
                       </td>
+                      <td className="num">
+                        <DrillCell
+                          disabled={row.countedQty === 0}
+                          onOpen={() =>
+                            setDrill({ itemNumber: row.itemNumber, aspect: 'counted' })
+                          }
+                        >
+                          <span className="num">{qty(row.countedQty)}</span>
+                        </DrillCell>
+                      </td>
+                      <td className="num">
+                        <DrillCell
+                          disabled={row.physicalQty === 0}
+                          onOpen={() =>
+                            setDrill({ itemNumber: row.itemNumber, aspect: 'physical' })
+                          }
+                        >
+                          <span className="num">{qty(row.physicalQty)}</span>
+                        </DrillCell>
+                      </td>
                       <td className={`num ${signClass(row.varianceValue)}`}>
-                        {signedMoney(row.varianceValue)}
+                        <DrillCell
+                          disabled={row.varianceQty === 0}
+                          onOpen={() =>
+                            setDrill({ itemNumber: row.itemNumber, aspect: 'variance' })
+                          }
+                        >
+                          {signedMoney(row.varianceValue)}
+                        </DrillCell>
                       </td>
                       <td>
                         <select
@@ -863,6 +1325,15 @@ function CausesTab({ campaignId, overview }: { campaignId: string; overview: Ove
           )}
         </AsyncBoundary>
       </Card>
+
+      {drill && (
+        <BreakdownModal
+          campaignId={campaignId}
+          itemNumber={drill.itemNumber}
+          aspect={drill.aspect}
+          onClose={() => setDrill(null)}
+        />
+      )}
     </div>
   )
 }
@@ -885,9 +1356,33 @@ function AdjustmentsTab({
     queryKey: ['adjustments', campaignId],
     queryFn: () => api.adjustments(campaignId),
   })
+  // Un ajustement se juge contre le stock qu'il déplace : la référence s'ouvre
+  // sur le physique de l'emplacement concerné, ce mouvement-ci compris.
+  const [drill, setDrill] = useState<
+    { itemNumber: string; aspect: BreakdownAspect; warehouseId: string; locationId: string } | null
+  >(null)
 
   const columns: Column[] = [
-    { key: 'item_number', label: 'Article', width: 170 },
+    {
+      key: 'item_number',
+      label: 'Article',
+      width: 170,
+      render: (row) => (
+        <DrillCell
+          onOpen={() =>
+            setDrill({
+              itemNumber: String(row.item_number ?? ''),
+              aspect: 'physical',
+              warehouseId: String(row.warehouse_id ?? ''),
+              locationId: String(row.location_id ?? ''),
+            })
+          }
+        >
+          <span className="mono">{String(row.item_number ?? DASH)}</span>
+        </DrillCell>
+      ),
+      value: (row) => String(row.item_number ?? ''),
+    },
     { key: 'physical_date', label: 'Date', width: 120 },
     { key: 'kind', label: 'Nature', width: 130 },
     { key: 'journal_number', label: 'Journal', width: 140 },
@@ -897,7 +1392,7 @@ function AdjustmentsTab({
       numeric: true,
       width: 120,
       render: (row) => (
-        <span className={`num ${signClass(Number(row.qty))}`}>{numShort(Number(row.qty))}</span>
+        <span className={`num ${signClass(Number(row.qty))}`}>{qty(Number(row.qty))}</span>
       ),
       value: (row) => Number(row.qty),
     },
@@ -933,7 +1428,7 @@ function AdjustmentsTab({
 
       <Card
         title="Mouvements et ajustements"
-        message="Quantité et valeur signées : négatif = diminution de stock. Chaque mouvement réduit l’écart résiduel."
+        message="Négatif = diminution de stock. Chaque mouvement s’ajoute au comptage pour former le stock physique."
         flush
       >
         <AsyncBoundary
@@ -950,6 +1445,8 @@ function AdjustmentsTab({
             <DataGrid
               columns={columns}
               rows={rows}
+              exportTitle="Ajustements"
+              campaignId={campaignId}
               getRowId={(row, index) => String(row.id ?? index)}
               searchPlaceholder="Filtrer les mouvements…"
               maxHeight={560}
@@ -957,6 +1454,17 @@ function AdjustmentsTab({
           )}
         </AsyncBoundary>
       </Card>
+
+      {drill && (
+        <BreakdownModal
+          campaignId={campaignId}
+          itemNumber={drill.itemNumber}
+          aspect={drill.aspect}
+          warehouseId={drill.warehouseId}
+          locationId={drill.locationId}
+          onClose={() => setDrill(null)}
+        />
+      )}
     </div>
   )
 }
@@ -965,15 +1473,23 @@ function AdjustmentsTab({
 // Controls & summary
 // --------------------------------------------------------------------------- //
 
-function ControlsTab({ campaignId }: { campaignId: string }) {
+function ControlsTab({
+  campaignId,
+  overview,
+}: {
+  campaignId: string
+  overview: Overview
+}) {
   const query = useQuery({
     queryKey: ['controls', campaignId],
     queryFn: () => api.controls(campaignId),
   })
 
   return (
-    <AsyncBoundary query={query} skeleton={<Skeleton height={280} />}>
-      {(data) => (
+    <div className="stack" style={{ gap: 'var(--space-4)' }}>
+      <ClosurePanel campaignId={campaignId} overview={overview} />
+      <AsyncBoundary query={query} skeleton={<Skeleton height={280} />}>
+        {(data) => (
         <div className="stack">
           <div className="grid grid--kpi">
             {(['BLOCKER', 'WARNING', 'INFO'] as const).map((severity) => (
@@ -994,7 +1510,22 @@ function ControlsTab({ campaignId }: { campaignId: string }) {
             ))}
           </div>
 
-          <Card title="Constats de contrôle" flush>
+          <Card
+            title="Constats par contrôle"
+            message="Un contrôle, une ligne. Le détail article par article s’ouvre à la demande."
+          >
+            <FindingGroups
+              groups={data.groups}
+              findings={data.findings}
+              emptyLabel="Aucun constat : rien ne s’oppose à la clôture"
+            />
+          </Card>
+
+          <Card
+            title="Tous les constats"
+            message="La même chose à plat, pour chercher une référence précise."
+            flush
+          >
             <DataGrid
               columns={[
                 {
@@ -1021,14 +1552,53 @@ function ControlsTab({ campaignId }: { campaignId: string }) {
                 { key: 'message', label: 'Constat', width: 520 },
               ]}
               rows={data.findings as unknown as Array<Record<string, unknown>>}
+              exportTitle="Constats de contrôle"
+              campaignId={campaignId}
               getRowId={(_, index) => String(index)}
               searchPlaceholder="Filtrer les constats…"
               maxHeight={600}
             />
           </Card>
         </div>
-      )}
-    </AsyncBoundary>
+        )}
+      </AsyncBoundary>
+    </div>
+  )
+}
+
+/**
+ * La liste de contrôle de clôture, sur l'écran des contrôles.
+ *
+ * En phase d'analyse seulement : plus tôt, les journaux et les zones y
+ * figureraient comme bloquants alors que la phase ne les a pas encore exigés,
+ * et une liste rouge sur une campagne parfaitement normale apprend à ignorer
+ * la liste.
+ */
+function ClosurePanel({
+  campaignId,
+  overview,
+}: {
+  campaignId: string
+  overview: Overview
+}) {
+  const inAnalysis = overview.campaign.status === 'ANALYSIS'
+  const query = useQuery({
+    queryKey: ['closure-checklist', campaignId],
+    queryFn: () => api.closureChecklist(campaignId),
+    enabled: inAnalysis,
+  })
+  if (!inAnalysis) return null
+  return (
+    <Card
+      title="Avant de clôturer"
+      message="Clôturer est irréversible. Ce qui suit se prépare pendant l’analyse, pas au moment de cliquer."
+    >
+      <ClosureChecklistView
+        campaignId={campaignId}
+        data={query.data}
+        pending={query.isPending}
+      />
+    </Card>
   )
 }
 

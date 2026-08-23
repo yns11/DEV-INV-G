@@ -2,19 +2,29 @@
 
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import {
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useOutletContext,
+} from 'react-router-dom'
 import { api } from './lib/api'
-import { CAMPAIGN_STATUS_LABELS, label as toLabel } from './lib/format'
+import type { CampaignStatus, Overview } from './lib/types'
+import { CAMPAIGN_STATUS_LABELS, date as fmtDate, label as toLabel } from './lib/format'
 import { Alert, Badge, Button, Icons } from './components/ui'
+import { Logo } from './components/Logo'
 import { CampaignNav } from './components/CampaignNav'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { CampaignsPage } from './features/Campaigns'
 import { CampaignShell } from './features/CampaignShell'
-import { Dashboard } from './features/Dashboard'
 import { Preparation } from './features/Preparation'
 import { Counting } from './features/Counting'
 import { Generic } from './features/Generic'
 import { Analysis } from './features/Analysis'
+import { Backflush } from './features/Backflush'
+import { Reconciliation } from './features/Reconciliation'
 import { Audit } from './features/Audit'
 import { Assistant } from './features/Assistant'
 
@@ -50,10 +60,9 @@ export function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="sidebar__brand">
-          <span className="sidebar__mark">INV</span>
-          <div>
+          <div className="stack" style={{ gap: 'var(--space-1)' }}>
+            <Logo height={38} />
             <div className="sidebar__title">Campagnes Inventaire</div>
-            <div className="subtle">Site industriel</div>
           </div>
         </div>
 
@@ -114,13 +123,35 @@ export function App() {
               <Route path="/" element={<Navigate to="/campagnes" replace />} />
               <Route path="/campagnes" element={<CampaignsPage />} />
               <Route path="/campagnes/:campaignId" element={<CampaignShell />}>
-                <Route index element={<Dashboard />} />
+                {/* One route per navigation entry, in the order the work is
+                    done. The two screens that serve several entries take the
+                    view as a prop rather than reading the path themselves —
+                    the tree is declared once, in `lib/navigation`. */}
+                <Route index element={<CampaignHome />} />
                 <Route path="assistant" element={<Assistant />} />
-                <Route path="preparation" element={<Preparation />} />
-                <Route path="comptage" element={<Counting />} />
-                <Route path="generique" element={<Generic />} />
-                <Route path="analyse" element={<Analysis />} />
                 <Route path="audit" element={<Audit />} />
+
+                <Route path="articles" element={<Preparation view="items" />} />
+                <Route path="nomenclatures" element={<Preparation view="boms" />} />
+                <Route path="feuilles" element={<Preparation view="count_sheets" />} />
+                <Route path="gestion" element={<Preparation view="gestion" />} />
+
+                <Route path="stock-erp" element={<Preparation view="book_stock" />} />
+                <Route path="backflush" element={<Backflush />} />
+                <Route path="compil" element={<Generic />} />
+                <Route path="comptage" element={<Counting />} />
+
+                <Route path="controles" element={<Analysis view="controls" />} />
+                <Route path="ecarts" element={<Analysis view="variances" />} />
+                <Route path="causes" element={<Analysis view="causes" />} />
+                <Route path="reconciliation" element={<Reconciliation />} />
+                <Route path="ajustements" element={<Analysis view="adjustments" />} />
+
+                {/* Anciennes adresses : un lien en favori doit continuer de
+                    tomber sur l'écran correspondant. */}
+                <Route path="preparation" element={<Navigate to="../articles" replace />} />
+                <Route path="generique" element={<Navigate to="../compil" replace />} />
+                <Route path="analyse" element={<Navigate to="../ecarts" replace />} />
               </Route>
               <Route
                 path="*"
@@ -155,6 +186,10 @@ function CampaignSidebar({ campaignId }: { campaignId: string }) {
 
   return (
     <>
+      {/* L'identité de la campagne — son code, son libellé, sa date de
+          comptage — vivait sur le tableau de bord, qui n'existe plus. Elle est
+          ici : c'est le bloc qui répond à « dans quelle campagne suis-je ? »,
+          et il est visible depuis tous les écrans. */}
       <div className="sidebar__campaign">
         <div className="sidebar__campaign-code truncate" title={campaign.label}>
           {campaign.code}
@@ -163,7 +198,34 @@ function CampaignSidebar({ campaignId }: { campaignId: string }) {
           {toLabel(CAMPAIGN_STATUS_LABELS, campaign.status)}
         </Badge>
       </div>
+      <div className="subtle" style={{ padding: '0 var(--space-3) var(--space-2)' }}>
+        <div className="truncate" title={campaign.label}>{campaign.label}</div>
+        <div>Comptage du {fmtDate(campaign.count_date)}</div>
+        {campaign.book_stock_frozen_at && (
+          <div>Stock ERP gelé le {fmtDate(campaign.book_stock_frozen_at)}</div>
+        )}
+      </div>
       <CampaignNav overview={query.data} />
     </>
   )
+}
+
+/**
+ * L'écran d'accueil d'une campagne : celui de l'étape en cours.
+ *
+ * Il n'y a plus de tableau de bord — il redisait ce que le carrousel de
+ * l'en-tête montre déjà sur *tous* les écrans, et il obligeait à un clic de
+ * plus avant d'atteindre le travail. Ouvrir une campagne mène donc là où il y a
+ * quelque chose à faire, ce qui dépend de sa phase.
+ */
+const HOME_OF: Record<CampaignStatus, string> = {
+  PREPARATION: 'articles',
+  COUNTING: 'compil',
+  ANALYSIS: 'ecarts',
+  CLOSED: 'ecarts',
+}
+
+function CampaignHome() {
+  const overview = useOutletContext<Overview>()
+  return <Navigate to={HOME_OF[overview.campaign.status]} replace />
 }

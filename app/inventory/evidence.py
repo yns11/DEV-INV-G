@@ -1,0 +1,322 @@
+"""Archivage des pièces justificatives dans un volume Unity Catalog.
+
+Ce que l'inventaire produit de plus fragile, ce ne sont pas les chiffres : c'est
+ce qui les justifie. Un écart de quarante mille euros signé par un contrôleur se
+défend six mois plus tard avec la feuille manuscrite qui l'a produit, ou ne se
+défend pas. Or le conteneur de l'application est éphémère : le fichier chargé y
+vit le temps de la requête et disparaît avec elle.
+
+D'où ce module. Chaque fichier reçu — export ERP, scan de feuille — est déposé
+dans le volume avant d'être oublié, et son chemin est écrit à côté de ce qu'il a
+produit : ``import_batch.storage_path`` pour un chargement,
+``count_sheet.evidence_path`` pour une feuille scannée.
+
+**L'archivage échoue-t-il en silence ?** Cela dépend de ce qu'il archive, et
+c'est l'appelant qui tranche par ``required``.
+
+*Par défaut, non bloquant.* Un export ERP se relit dans l'ERP ; perdre un import
+de deux cent mille lignes parce que le volume est en panne coûterait plus cher
+que de ne pas archiver le fichier. Volume absent, droit manquant, API
+indisponible : la méthode le journalise et renvoie ``None``, le chargement
+aboutit. Les colonnes sont donc nullables, et l'écran distingue « pas de pièce »
+de « pièce archivée ».
+
+*Sur demande, bloquant.* ``required=True`` fait échouer l'opération. C'est le
+régime des scans de feuilles manuscrites : le papier repart dans l'atelier et
+finit à la benne, le modèle a lu ce qu'il a lu, et sans l'image, la quantité
+n'a plus rien derrière elle. Écrire ces chiffres en sachant que la pièce qui
+les justifie n'a pas été archivée reviendrait à fabriquer un comptage
+invérifiable — précisément ce que l'application existe pour empêcher.
+
+**Le chemin se lit sans l'application.** Un volume se parcourt depuis l'espace
+de travail, et quelqu'un qui cherche la feuille d'une campagne doit la trouver
+sans requête SQL :
+
+    /Volumes/<cat>/<schéma>/<vol>/<campagne>/<nature>/<horodatage>-<abcdef12>-<nom>
+
+L'horodatage précède le nom pour que l'ordre alphabétique du dossier soit
+l'ordre chronologique — c'est celui dans lequel on cherche.
+
+**Le fragment hexadécimal n'est pas décoratif.** Le chemin ne portait que
+l'horodatage à la seconde et le nom du fichier, et le dépôt était fait en
+``overwrite=True``. Deux scans nommés ``scan.pdf`` déposés dans la même seconde
+— deux feuilles envoyées ensemble, un re-scan après correction — écrivaient au
+même endroit : le second effaçait le premier, et la feuille dont la base
+conservait le chemin pointait alors sur l'image d'une autre. Le fragment est
+l'empreinte du contenu : deux fichiers différents ne peuvent plus se retrouver
+au même chemin, et deux dépôts du **même** fichier convergent vers le même,
+ce qui est le comportement voulu.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import logging
+import mimetypes
+import re
+import unicodedata
+from dataclasses import dataclass
+from typing import Any
+
+from .config import Settings
+from .errors import NotFoundError, UpstreamError
+
+log = logging.getLogger(__name__)
+
+__all__ = ["ArchivedFile", "EvidenceStore", "safe_name"]
+
+#: Longueur maximale du nom de fichier conservé dans le chemin. Un scanner
+#: produit volontiers des noms de cent cinquante caractères ; au-delà de
+#: soixante on ne lit plus rien de plus, et le chemin complet reste manipulable.
+_NAME_MAX = 60
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+#: Longueur du fragment d'empreinte inséré dans le chemin. Huit caractères
+#: hexadécimaux, soit quatre milliards de valeurs : la collision demanderait
+#: deux contenus distincts dont le sha256 partage ses trente-deux premiers bits,
+#: dans la même seconde et sous le même nom. Plus long n'ajouterait rien qu'un
+#: chemin moins lisible.
+_DIGEST_CHARS = 8
+
+
+@dataclass(frozen=True, slots=True)
+class ArchivedFile:
+    """Une pièce déposée, et de quoi vérifier plus tard que c'est bien elle.
+
+    L'empreinte répond à la seule question qui compte au moment d'un contrôle :
+    le fichier que je relis est-il celui que le modèle a lu ? Le chemin seul ne
+    le dit pas — un volume se modifie depuis l'espace de travail.
+    """
+
+    path: str
+    sha256: str
+    size: int
+    mime: str
+
+    def __str__(self) -> str:  # pragma: no cover - confort de journalisation
+        return self.path
+
+
+def safe_name(value: str, *, fallback: str = "fichier") -> str:
+    """Un segment de chemin sûr, tiré d'un nom saisi par un humain.
+
+    Les libellés de campagne et les noms de scan portent des accents, des
+    espaces et parfois une barre oblique. Une barre oblique changerait
+    l'arborescence du volume, ce qui n'est pas un détail cosmétique : le fichier
+    partirait ailleurs que là où le chemin enregistré prétend qu'il est.
+
+    >>> safe_name("Inventaire T3 / atelier")
+    'Inventaire-T3-atelier'
+    >>> safe_name("relevé n°4.pdf")
+    'releve-n4.pdf'
+    >>> safe_name("///")
+    'fichier'
+    """
+    flat = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    cleaned = _UNSAFE.sub("-", flat).strip("-.")
+    return cleaned[:_NAME_MAX] or fallback
+
+
+def _looks_like_already_there(exc: Exception) -> bool:
+    """L'échec est-il « ce chemin est déjà pris » ?
+
+    Le SDK ne présente pas une exception dédiée : selon la version et le
+    transport, c'est une ``AlreadyExists``, un 409, ou un message. Le chemin
+    portant l'empreinte du contenu, un chemin pris l'est par un fichier
+    identique — le distinguer d'une vraie panne évite de refuser un re-dépôt
+    parfaitement légitime.
+    """
+    name = type(exc).__name__
+    if name in {"AlreadyExists", "ResourceAlreadyExists", "FileExistsError"}:
+        return True
+    text = str(exc).lower()
+    return "already exists" in text or "existe déjà" in text
+
+
+def _described(path: str, payload: bytes, digest: str, filename: str) -> ArchivedFile:
+    """Ce qui sera écrit à côté de ce que la pièce a produit."""
+    guessed, _ = mimetypes.guess_type(filename)
+    return ArchivedFile(
+        path=path,
+        sha256=digest,
+        size=len(payload),
+        mime=guessed or "application/octet-stream",
+    )
+
+
+class EvidenceStore:
+    """Dépose et relit les pièces justificatives d'une campagne.
+
+    Le client est injectable pour que la suite de tests n'ait besoin ni d'un
+    espace de travail ni du SDK — la même règle que la lecture ERP.
+    """
+
+    def __init__(self, settings: Settings, client: Any | None = None) -> None:
+        self._settings = settings
+        self._client = client
+
+    # ------------------------------------------------------------------ état
+
+    @property
+    def available(self) -> bool:
+        """Si un dépôt peut être tenté.
+
+        Ne vérifie que la configuration : joindre l'espace de travail pour le
+        savoir coûterait un aller-retour à chaque import, et l'échec réel est
+        de toute façon rattrapé au dépôt.
+        """
+        return self._settings.evidence_configured
+
+    @property
+    def root(self) -> str:
+        return self._settings.uc_volume_path
+
+    # ----------------------------------------------------------------- écrit
+
+    def put(
+        self,
+        payload: bytes,
+        *,
+        campaign_code: str,
+        kind: str,
+        filename: str,
+        at: dt.datetime | None = None,
+        required: bool = False,
+    ) -> ArchivedFile | None:
+        """Archive *payload* et renvoie ce qui a été déposé, ou ``None``.
+
+        ``kind`` sépare les natures de pièces dans le volume (« imports »,
+        « scans ») : c'est ce qui permet de retrouver toutes les feuilles
+        scannées d'une campagne sans les trier une à une.
+
+        ``required`` dit ce qu'il advient d'un échec — voir l'en-tête du module.
+        Sous ``required=True``, une archive indisponible, un droit manquant ou
+        un volume non configuré lèvent :class:`UpstreamError` : l'opération ne
+        doit pas écrire de chiffres qu'aucune pièce ne justifie.
+        """
+        if not payload:
+            if required:
+                raise UpstreamError(
+                    "Fichier vide : il n'y a rien à archiver, et donc rien qui "
+                    "justifierait les quantités lues."
+                )
+            return None
+        if not self.available:
+            if required:
+                raise UpstreamError(
+                    "L'archivage des pièces justificatives n'est pas configuré. "
+                    "Cette opération produit des quantités qui doivent rester "
+                    "vérifiables : déclarez le volume Unity Catalog avant de la "
+                    "relancer."
+                )
+            return None
+
+        digest = hashlib.sha256(payload).hexdigest()
+        path = self.path_for(
+            campaign_code=campaign_code, kind=kind, filename=filename,
+            at=at, digest=digest,
+        )
+        try:
+            # Jamais `overwrite=True` : le chemin porte désormais l'empreinte du
+            # contenu, donc un chemin déjà pris ne peut l'être que par un
+            # fichier **identique**. Écraser n'apporterait rien et masquerait le
+            # jour où cette propriété cesserait d'être vraie.
+            self._files().upload(path, payload, overwrite=False)
+        except Exception as exc:
+            if _looks_like_already_there(exc):
+                # Le même fichier, déposé deux fois. C'est le cas nominal d'un
+                # re-scan à l'identique après une erreur ailleurs : la pièce est
+                # là, et c'est la bonne.
+                log.info("Pièce déjà archivée, contenu identique : %s", path)
+                return _described(path, payload, digest, filename)
+            if required:
+                log.error(
+                    "Pièce justificative obligatoire non archivée (%s) : %s — %s",
+                    path, type(exc).__name__, exc,
+                )
+                raise UpstreamError(
+                    "La pièce justificative n'a pas pu être archivée. "
+                    "L'opération est interrompue : elle produirait des "
+                    "quantités que rien ne rattacherait au document lu.",
+                    cause=str(exc),
+                ) from exc
+            # Journalisé en avertissement, pas en erreur : ce qui comptait —
+            # les lignes chargées — a abouti. L'appelant ne le voit pas passer.
+            log.warning(
+                "Pièce justificative non archivée (%s) : %s — %s",
+                path, type(exc).__name__, exc,
+            )
+            return None
+        log.info("Pièce archivée : %s (%d octets)", path, len(payload))
+        return _described(path, payload, digest, filename)
+
+    def path_for(
+        self,
+        *,
+        campaign_code: str,
+        kind: str,
+        filename: str,
+        at: dt.datetime | None = None,
+        digest: str = "",
+    ) -> str:
+        """Où *filename* sera déposé. Séparé de :meth:`put` pour être testable.
+
+        ``digest`` est le sha256 du contenu ; ses premiers caractères entrent
+        dans le nom déposé. C'est ce qui rend le chemin propre à un contenu, et
+        non plus à une seconde et un nom de fichier.
+        """
+        stamp = (at or dt.datetime.now(dt.UTC)).strftime("%Y%m%dT%H%M%S")
+        short = (digest or "0" * _DIGEST_CHARS)[:_DIGEST_CHARS]
+        return "/".join((
+            self.root,
+            safe_name(campaign_code, fallback="campagne"),
+            safe_name(kind, fallback="divers"),
+            f"{stamp}-{short}-{safe_name(filename)}",
+        ))
+
+    # ------------------------------------------------------------------- lit
+
+    def get(self, path: str) -> bytes:
+        """Relit une pièce archivée.
+
+        Contrairement au dépôt, la relecture échoue franchement : elle répond à
+        quelqu'un qui a cliqué sur « pièce jointe » et attend un fichier. Une
+        réponse vide le laisserait croire que la pièce n'existe pas, alors
+        qu'elle peut n'être qu'inaccessible.
+        """
+        self._assert_inside(path)
+        try:
+            response = self._files().download(path)
+        except Exception as exc:
+            log.error("Pièce illisible (%s) : %s", path, exc)
+            raise NotFoundError(
+                "Cette pièce justificative est introuvable dans l'archive. "
+                "Elle a pu être déplacée ou supprimée du volume."
+            ) from exc
+        contents = getattr(response, "contents", response)
+        data = contents.read() if hasattr(contents, "read") else contents
+        return bytes(data)
+
+    # --------------------------------------------------------------- interne
+
+    def _assert_inside(self, path: str) -> None:
+        """Refuse un chemin qui sortirait du volume de l'application.
+
+        Le chemin vient de la base, donc d'un fichier que l'application a
+        elle-même déposé — mais il transite par une URL, et une colonne texte
+        n'est pas une garantie. Le seul endroit où cette vérification a un coût
+        nul est ici, juste avant la lecture.
+        """
+        root = self.root.rstrip("/") + "/"
+        if not path.startswith(root) or ".." in path:
+            raise NotFoundError("Chemin de pièce justificative invalide.")
+
+    def _files(self) -> Any:
+        if self._client is not None:
+            return self._client.files
+        from databricks.sdk import WorkspaceClient
+
+        self._client = WorkspaceClient()
+        return self._client.files

@@ -8,9 +8,14 @@
 
 export type CampaignStatus = 'PREPARATION' | 'COUNTING' | 'ANALYSIS' | 'CLOSED'
 export type JournalStatus = 'PENDING' | 'IN_PROGRESS' | 'POSTED' | 'BOOK_ENFORCED'
-export type SheetStatus = 'PENDING' | 'COUNTING' | 'ENCODING' | 'DONE'
-export type ZoneStatus =
-  | 'PENDING' | 'PASS_1_RUNNING' | 'PASS_2_RUNNING' | 'ARBITRATION' | 'DONE'
+/**
+ * Trois états, dont deux se déduisent des quantités relevées.
+ *
+ * Une feuille de comptage n'a plus d'état propre : elle en avait quatre,
+ * qu'il fallait faire avancer à la main deux fois par zone sans qu'aucune
+ * écriture n'en dépende.
+ */
+export type ZoneStatus = 'PENDING' | 'IN_PROGRESS' | 'DONE'
 export type CountSection = 'LINE_SIDE' | 'WIP' | 'WIP_OK'
 export type ItemType =
   | 'COMPONENT' | 'SEMI_FINISHED' | 'FINISHED' | 'PACKAGING' | 'UNKNOWN'
@@ -19,6 +24,13 @@ export type Severity = 'BLOCKER' | 'WARNING' | 'INFO'
 export type DataSource =
   | 'ERP_IMPORT' | 'FILE_IMPORT' | 'MANUAL' | 'SCAN_AI'
   | 'CONSOLIDATION' | 'ARBITRATION' | 'SYSTEM'
+
+/** Une page de campagnes, avec de quoi savoir si elle en cache d'autres. */
+export interface CampaignPage {
+  items: Campaign[]
+  total: number
+  offset: number
+}
 
 export interface Campaign {
   id: string
@@ -58,6 +70,9 @@ export interface Permissions {
   countSheets: boolean
   adjustments: boolean
   analysis: boolean
+  /** Ouverts tant que la campagne l'est ; la clôture les fige. */
+  backflush: boolean
+  stockFlow: boolean
 }
 
 /**
@@ -78,9 +93,26 @@ export interface PerimeterSummary {
   zoneCount: number
 }
 
+/**
+ * Ce que l'utilisateur est vis-à-vis de cette campagne.
+ *
+ * Pas un rôle global : la même personne pilote sa campagne et ne fait que lire
+ * celle du trimestre précédent. `permissions` porte déjà le résultat — tout y
+ * est faux pour un lecteur —, mais un écran entièrement grisé ne se distingue
+ * pas d'une campagne clôturée. C'est ce bloc qui permet de dire laquelle des
+ * deux, et à qui s'adresser.
+ */
+export interface Access {
+  role: 'OWNER' | 'MANAGER' | 'READER'
+  canWrite: boolean
+  isOwner: boolean
+  owner: string
+}
+
 export interface Overview {
   campaign: Campaign
   permissions: Permissions
+  access: Access
   perimeter: PerimeterSummary
   journalProgress: {
     total: number
@@ -97,6 +129,16 @@ export interface Overview {
     pendingArbitrations: number
   }
   counts: { items: number; bookStockLines: number }
+  /**
+   * Which steps are open, and why the others are not.
+   *
+   * Computed by the same function the API guard uses, so the interface can grey
+   * out a step with the exact sentence a write would have been refused with.
+   */
+  sequence: {
+    unlocked: Record<string, boolean>
+    blockedBy: Record<string, string>
+  }
 }
 
 /**
@@ -108,15 +150,21 @@ export interface Overview {
 export interface ErpSource {
   available: boolean
   reason: string | null
+  /**
+   * `uc` reads the silver tables live; `mirror` reads a local copy refreshed by
+   * a scheduled job — the fallback when the application's service principal
+   * cannot be granted access to the ERP's catalog.
+   */
+  source: 'uc' | 'mirror'
   tables: { items: string; boms: string }
+  /** Age of the local copy, per grid. Null when reading the ERP live. */
+  mirror: Record<string, { rows: number | null; syncedAt: string | null; stale: boolean | null }> | null
 }
 
 export interface Threshold {
   item_type: ItemType
   value_abs_eur: string | number
   qty_relative: string | number | null
-  qty_abs_floor: string | number
-  ira_tolerance: string | number
 }
 
 /**
@@ -133,11 +181,29 @@ export interface Kpis {
   bookValue: number | null
   countedQty: number | null
   countedValue: number | null
+  /** Le stock physique — compté plus mouvements postés : le terme de l'écart. */
+  physicalQty: number | null
+  physicalValue: number | null
   netVarianceQty: number | null
   netVarianceValue: number | null
   grossVarianceQty: number | null
   grossVarianceValue: number | null
-  residualValue: number | null
+  /**
+   * L'écart tel que le comptage seul le montrait, et ce que les ajustements
+   * ont posté depuis. Leur somme vaut `netVarianceValue` : le stock physique —
+   * compté plus mouvements — est la référence, ces deux-là en sont la lecture
+   * détaillée.
+   */
+  countedVarianceValue: number | null
+  adjustedValue: number | null
+  /** Ce que le backflush explique, et ce qui reste. */
+  backflushShareValue: number | null
+  unexplainedValue: number | null
+  grossUnexplainedValue: number | null
+  /** L'écart d'inventaire des seuls articles mesurés : les trois se soustraient. */
+  backflushVarianceValue: number | null
+  backflushExplanationRate: number | null
+  backflushLineCount: number
   netReliabilityValue: number | null
   grossReliabilityValue: number | null
   grossReliabilityQty: number | null
@@ -162,11 +228,29 @@ export interface VarianceRow {
   bookQty: number
   bookValue: number
   countedQty: number
+  /**
+   * Le stock physique — compté plus les mouvements postés après — et l'écart
+   * qu'il creuse face à l'ERP gelé. C'est *la* référence : `countedVariance*`
+   * garde à côté ce que le comptage seul montrait, avant ajustements.
+   */
+  physicalQty: number
+  physicalValue: number
   varianceQty: number
   varianceValue: number
   adjustedQty: number
-  residualQty: number
-  residualValue: number
+  adjustedValue: number
+  countedVarianceQty: number
+  countedVarianceValue: number
+  /** Écart backflush brut, dans la convention backflush (théorique − réel). */
+  backflushQty: number
+  /** Le même, dans la convention d'inventaire : c'est lui qu'on soustrait. */
+  backflushShareQty: number
+  backflushShareValue: number
+  unexplainedQty: number
+  unexplainedValue: number
+  explanationRate: number | null
+  /** Distingue « mesuré et nul » de « jamais mesuré ». */
+  backflushMeasured: boolean
   finalQty: number
   countedOnly: boolean
   bookOnly: boolean
@@ -187,7 +271,7 @@ export interface AggregateRow {
   varianceValue: number
   absVarianceQty: number
   absVarianceValue: number
-  residualValue: number
+  countedVarianceValue: number
   lineCount: number
   materialCount: number
 }
@@ -204,6 +288,20 @@ export interface Finding {
   context: Record<string, unknown>
 }
 
+/**
+ * Un contrôle et son nombre d'occurrences.
+ *
+ * Les occurrences elles-mêmes ne voyagent qu'une fois, dans `findings` : on les
+ * retrouve en filtrant sur `code`. Deux copies d'une même liste finiraient par
+ * ne plus dire le même nombre.
+ */
+export interface FindingGroup {
+  code: string
+  label: string
+  severity: Severity
+  count: number
+}
+
 export interface ControlsPayload {
   summary: {
     total: number
@@ -211,6 +309,7 @@ export interface ControlsPayload {
     byCode: Record<string, number>
     hasBlocker: boolean
   }
+  groups: FindingGroup[]
   findings: Finding[]
 }
 
@@ -265,7 +364,6 @@ export interface Sheet {
   id: string
   zone_id: string
   pass_no: 'PASS_1' | 'PASS_2'
-  status: SheetStatus
   counter_name: string
   started_at: string | null
   ended_at: string | null
@@ -306,8 +404,79 @@ export interface MultiScanReport {
     correctedLines: number
     reason: string
   }>
-  /** Pages whose footer could not be read — reported, never guessed. */
+  /**
+   * Pages no sheet could be matched to — reported, never guessed. `read` is
+   * what the model transcribed off the footer, which tells a damaged strip
+   * apart from a page that simply belongs to another campaign.
+   */
   unroutedPages: Array<{ page: number; read: string; note: string }>
+  /** Une feuille que le modèle n'a pas pu lire. Nommée, jamais tue. */
+  sheetsFailed?: Array<{
+    sheetId: string
+    zoneCode: string
+    passNo: number
+    pages: number[]
+    reason: string
+  }>
+  /** Où le temps est passé. Absent des scans lus avant l'instrumentation. */
+  timings?: Record<string, number | string>
+}
+
+/**
+ * La lecture d'une pile scannée, suivie pendant qu'elle se fait.
+ *
+ * Le dépôt rend immédiatement ce travail en `QUEUED` ; l'écran l'interroge
+ * jusqu'à `isDone`, et lit alors `report`. Sans ce suivi, six minutes de
+ * traitement sont indistinguables d'une panne — et c'est précisément ce que
+ * faisait la version qui attendait le rapport dans la requête de dépôt.
+ */
+/**
+ * Ce que rend la lecture d'**une** feuille.
+ *
+ * Les listes portent des étiquettes prêtes à lire — « MASS-1 » ou
+ * « MASS-1 [WIP non déclaré] » quand la référence figure deux fois sur la
+ * feuille et qu'il faut dire laquelle vérifier.
+ */
+export interface SheetScanReport {
+  linesExtracted: number
+  counted: number
+  pagesRead: number
+  meanConfidence: number | null
+  counterName: string
+  startedAt: string | null
+  endedAt: string | null
+  lowConfidence: string[]
+  missing: string[]
+  unexpected: Array<{ text?: string; qty?: unknown; note?: string }>
+  tokensUsed?: number
+}
+
+export interface ScanJob {
+  id: string
+  /**
+   * Renseigné = le scan d'une feuille ; nul = une pile multi-feuilles.
+   *
+   * Les deux chemins partagent la table, le suivi et l'écran d'avancement :
+   * ce qui les sépare est la lecture, et c'est ce champ qui la désigne.
+   */
+  sheetId: string | null
+  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
+  step: string
+  filename: string
+  totalPages: number
+  pagesRouted: number
+  sheetsTotal: number
+  sheetsDone: number
+  percent: number
+  /** Multi-feuilles : `MultiScanReport`. Feuille seule : le rapport d'extraction. */
+  report: MultiScanReport | SheetScanReport | Record<string, never>
+  error: string
+  createdBy: string
+  createdAt: string | null
+  startedAt: string | null
+  finishedAt: string | null
+  /** Vrai quand il n'y a plus rien à attendre — succès comme échec. */
+  isDone: boolean
 }
 
 /**
@@ -340,6 +509,9 @@ export interface Zone {
   /** Whether a negative counted quantity is accepted on this zone's sheets. */
   allow_negative: boolean
   status: ZoneStatus
+  /** Quand la zone a été déclarée terminée, et par qui. Null = encore ouverte. */
+  closed_at: string | null
+  closed_by: string
   pendingArbitrations: number
   /** What this zone can be printed as right now, in the order to offer them. */
   printModes: PrintMode[]
@@ -592,6 +764,7 @@ export interface Analytics {
   clusters?: {
     n: number
     silhouette: number | null
+    items: Array<Record<string, unknown>>
     profiles: Array<{
       cluster: number
       items: number
@@ -639,6 +812,31 @@ export interface TransitionReadiness {
   allowed: boolean
   ready: boolean
   blockers: Finding[]
+}
+
+/**
+ * Un point de la liste de contrôle de clôture.
+ *
+ * Trois tons, et l'ordre de lecture est celui-là : ce qui arrête, ce qui
+ * mérite un regard, ce qui est fait. `where` est le fragment de route qui
+ * résout le point — sans lui, « rechargez le fichier corrigé » laisse
+ * chercher l'écran.
+ */
+export type ChecklistState = 'BLOCKING' | 'ATTENTION' | 'DONE'
+
+export interface ChecklistItem {
+  code: string
+  label: string
+  state: ChecklistState
+  detail: string
+  where: string | null
+}
+
+export interface ClosureChecklist {
+  ready: boolean
+  allowed: boolean
+  items: ChecklistItem[]
+  counts: { blocking: number; attention: number; done: number }
 }
 
 export interface Health {
@@ -703,4 +901,230 @@ export interface AssistantProfiles {
   /** The profile used when the request names none — the deployment default. */
   active: string
   profiles: AssistantProfile[]
+}
+
+
+// --------------------------------------------------------------------------- //
+// Écart backflush
+// --------------------------------------------------------------------------- //
+
+/**
+ * La période sur laquelle l'écart a été lu, et la fraîcheur de la source.
+ *
+ * Voyage avec les lignes plutôt que d'être demandée à part : un chiffre de
+ * backflush sans ses bornes n'est pas interprétable, et deux réponses séparées
+ * finissent par se contredire à l'écran.
+ */
+export interface BackflushPeriod {
+  periodStart: string
+  periodEnd: string
+  weeks: number
+  sourceLoadedAt: string | null
+  refreshedAt: string | null
+  items: number
+}
+
+export interface BackflushRow {
+  itemNumber: string
+  name: string
+  itemType: string
+  category: string
+  program: string
+  unit: string
+  unitCost: number
+  netQty: number
+  underConsumedQty: number
+  overConsumedQty: number
+  theoreticalQty: number
+  actualQty: number
+  parentCount: number
+  weekCount: number
+  backflushShareQty: number
+  backflushShareValue: number
+  typeEcart: string
+  /** `null` tant que l'article n'a pas été compté : « non comparé » n'est pas 0. */
+  varianceQty: number | null
+  varianceValue: number | null
+  unexplainedQty: number | null
+  unexplainedValue: number | null
+  explanationRate: number | null
+  compared: boolean
+}
+
+export interface BackflushView {
+  period: BackflushPeriod | null
+  kpis: Kpis
+  rows: BackflushRow[]
+}
+
+// --------------------------------------------------------------------------- //
+// Réconciliation entre deux campagnes
+// --------------------------------------------------------------------------- //
+
+export interface StockFlowCandidate {
+  id: string
+  code: string
+  label: string
+  countDate: string
+  status: string
+  weeks: number
+}
+
+export interface StockFlowRun {
+  id: string
+  campaignId: string
+  baselineCampaignId: string
+  periodStart: string
+  periodEnd: string
+  weeks: number
+  scrapLoaded: boolean
+  erpRefreshedAt: string | null
+  /** Quand chaque étape a été lue dans l'ERP. */
+  receiptsRefreshedAt: string | null
+  shipmentsRefreshedAt: string | null
+  scrapRefreshedAt: string | null
+  baselineCode?: string
+  baselineLabel?: string
+  baselineCountDate?: string
+  campaignCode?: string
+  campaignCountDate?: string
+}
+
+/** D'où vient une quantité de la comparaison. */
+export type FlowSource = 'ERP' | 'FILE' | 'MANUAL'
+
+/** Où en est chaque étape de chargement. */
+export interface StockFlowStep {
+  kind: string
+  label: string
+  items: number
+  totalQty: number
+  loaded: boolean
+  optional: boolean
+  /**
+   * Les provenances présentes dans l'étape, et la date de sa dernière lecture
+   * ERP. Quatre étapes affichant un nombre se ressemblent ; « lu dans l'ERP il
+   * y a deux minutes » et « corrigé à la main » ne se défendent pas pareil.
+   */
+  sources: FlowSource[]
+  refreshedAt: string | null
+  /** La sous-section qui détaille cette étape. */
+  view: string
+}
+
+/** Une ligne d'étape chargée, telle que la grille éditable la montre. */
+export interface StockFlowInputRow {
+  itemNumber: string
+  name: string
+  unit: string
+  qty: number
+  source: FlowSource
+}
+
+/** Une ligne de l'instantané production / consommation théorique. */
+export interface StockFlowErpRow {
+  itemNumber: string
+  name: string
+  unit: string
+  producedQty: number
+  consumedQty: number
+  source: FlowSource
+}
+
+/** Ce que renvoie une lecture ERP d'une étape. */
+export interface StockFlowErpRead {
+  kind: string
+  label: string
+  /** Retenus : lus *et* présents au référentiel de la campagne. */
+  items: number
+  /** Lus dans l'ERP, avant filtrage. */
+  rowsRead: number
+  outOfScope: number
+  totalQty: number
+  /** Somme signée telle que l'ERP la donne : négative = sortie nette. */
+  netQty: number
+  periodStart: string
+  periodEnd: string
+  source: string
+}
+
+export interface StockFlowSaveResult {
+  rows: number
+  /** Les références absentes du référentiel, nommées plutôt qu'ignorées. */
+  unknown: string[]
+  unknownCount: number
+}
+
+/** Un maillon de la chaîne, du stock initial au stock compté final. */
+export interface StockFlowChainStep {
+  key: string
+  label: string
+  qty: number
+  value: number
+  sign: number
+  terminal: boolean
+}
+
+export interface StockFlowRow {
+  itemNumber: string
+  name: string
+  unit: string
+  unitCost: number
+  openingQty: number
+  receivedQty: number
+  producedQty: number
+  shippedQty: number
+  consumedQty: number
+  scrappedQty: number
+  expectedQty: number
+  closingQty: number
+  varianceQty: number
+  varianceValue: number
+  varianceRatio: number | null
+  hasOpening: boolean
+  hasClosing: boolean
+  complete: boolean
+}
+
+/**
+ * Quels stocks encadrent les flux — « physique » veut dire compté ajusté.
+ *
+ * Un paramètre de *lecture* : les quantités chargées et l'instantané ERP gelé
+ * ne bougent pas, si bien que les quatre combinaisons sont quatre vues d'une
+ * même comparaison et non quatre comparaisons.
+ */
+export type StockBasis = 'PHYSICAL' | 'BOOK'
+
+export interface StockFlowBasis {
+  opening: StockBasis
+  closing: StockBasis
+  /** « Physique » / « ERP » — la forme courte des pastilles. */
+  openingLabel: string
+  closingLabel: string
+  /** « Stock physique » / « Stock ERP » — la forme qui tient dans une phrase. */
+  openingStockLabel: string
+  closingStockLabel: string
+  label: string
+}
+
+export interface StockFlowKpis {
+  lineCount: number
+  completeCount: number
+  incompleteCount: number
+  matchedCount: number
+  expectedValue: number
+  closingValue: number
+  netVarianceValue: number
+  grossVarianceValue: number
+  netReliability: number | null
+  grossReliability: number | null
+}
+
+export interface StockFlowReport {
+  run: StockFlowRun
+  basis: StockFlowBasis
+  steps: StockFlowStep[]
+  kpis: StockFlowKpis
+  chain: StockFlowChainStep[]
+  rows: StockFlowRow[]
 }

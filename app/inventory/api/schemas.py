@@ -17,10 +17,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..domain.enums import (
     CampaignStatus,
     CountSection,
+    ExclusionScope,
     ItemType,
     JournalStatus,
     LocationStatus,
-    SheetStatus,
 )
 
 __all__ = [
@@ -32,6 +32,12 @@ __all__ = [
     "ThresholdPayload",
     "UpdateThresholdsRequest",
     "CampaignConfigPayload",
+    "ItemPatch",
+    "ItemExclusionsRequest",
+    "BomLinkPatch",
+    "BomLinkKey",
+    "BomActivationRequest",
+    "TableExportRequest",
     "ImportRequest",
     "PasteRequest",
     "RowsRequest",
@@ -46,8 +52,10 @@ __all__ = [
     "ManagerRowsRequest",
     "WarehouseAssignment",
     "WarehouseAssignmentRequest",
-    "SheetTransitionRequest",
+    "ZoneClosureRequest",
     "SheetLinesRequest",
+    "ZoneDeleteRequest",
+    "SheetLineDeleteRequest",
     "ArbitrationDecisionRequest",
     "ReclassifyRequest",
     "AnalysisRequest",
@@ -78,7 +86,9 @@ class ErrorPayload(ApiModel):
 class CampaignConfigPayload(ApiModel):
     generic_warehouse: str = Field(default="B06VRAC", alias="genericWarehouse")
     generic_location: str = Field(default="GENERIQUE", alias="genericLocation")
-    generic_passes: int = Field(default=2, ge=1, le=3, alias="genericPasses")
+    #: Deux au maximum : au-delà, la campagne annonçait un comptage que rien
+    #: ne savait produire. Voir ``CampaignConfig.generic_passes``.
+    generic_passes: int = Field(default=2, ge=1, le=2, alias="genericPasses")
     arbitration_tolerance: Decimal = Field(
         default=Decimal("0"), ge=0, le=1, alias="arbitrationTolerance"
     )
@@ -90,8 +100,89 @@ class ThresholdPayload(ApiModel):
     item_type: ItemType = Field(alias="itemType")
     value_abs_eur: Decimal = Field(default=Decimal("1000"), ge=0, alias="valueAbsEur")
     qty_relative: Decimal | None = Field(default=None, ge=0, alias="qtyRelative")
-    qty_abs_floor: Decimal = Field(default=Decimal("0"), ge=0, alias="qtyAbsFloor")
-    ira_tolerance: Decimal = Field(default=Decimal("0"), ge=0, alias="iraTolerance")
+
+
+class ItemPatch(ApiModel):
+    """One article, edited in place.
+
+    Every field is optional and ``None`` means "leave it alone": the grid sends
+    what the user changed, not a whole row rebuilt from what happened to be on
+    screen. The business key is not here — an article number is the identity of
+    the line, and renaming it would be a different article.
+    """
+
+    name: str | None = None
+    item_type: ItemType | None = Field(default=None, alias="itemType")
+    category: str | None = None
+    program: str | None = None
+    unit: str | None = None
+    std_price: Decimal | None = Field(default=None, ge=0, alias="stdPrice")
+    #: Typed rather than free strings: an unknown scope has to be refused at the
+    #: door, because stored it would only fail later, when the referential is
+    #: read back and every screen breaks at once.
+    exclusions: list[ExclusionScope] | None = None
+
+
+class ItemExclusionsRequest(ApiModel):
+    """The exclusion of a whole selection, in one decision.
+
+    Setting it article by article is what people actually do — a family, a
+    programme, a supplier's whole range — so the batch is the operation, not a
+    convenience wrapper around the single edit. An empty ``exclusions`` puts the
+    selection back fully in scope, which is the same gesture in reverse and must
+    cost exactly as little.
+    """
+
+    item_numbers: list[str] = Field(min_length=1, max_length=50_000, alias="itemNumbers")
+    exclusions: list[ExclusionScope] = Field(default_factory=list)
+
+
+class BomLinkPatch(ApiModel):
+    """One bill-of-materials edge, edited in place.
+
+    Parent and child identify the edge, so they are required and never changed;
+    changing either is deleting one link and creating another, which the grid
+    already offers.
+    """
+
+    parent_item: str = Field(alias="parentItem", min_length=1)
+    child_item: str = Field(alias="childItem", min_length=1)
+    qty_per: Decimal | None = Field(default=None, gt=0, alias="qtyPer")
+    unit: str | None = None
+    #: Whether this version is in force. Only those are exploded.
+    active: bool | None = None
+
+
+class BomLinkKey(ApiModel):
+    parent_item: str = Field(alias="parentItem", min_length=1)
+    child_item: str = Field(alias="childItem", min_length=1)
+
+
+class BomActivationRequest(ApiModel):
+    """Put a batch of edges in force, or retire them."""
+
+    links: list[BomLinkKey] = Field(min_length=1, max_length=50_000)
+    active: bool
+
+
+class TableColumn(ApiModel):
+    key: str = Field(min_length=1)
+    label: str = ""
+
+
+class TableExportRequest(ApiModel):
+    """A grid's visible rows, on their way to a spreadsheet.
+
+    The rows come *from the client* rather than being recomputed server-side,
+    and that is the point: what gets exported is what is on screen — the
+    filtering, the sorting and the selection the user actually made. Rebuilding
+    it from the query parameters would work for the two or three grids backed by
+    a single endpoint and quietly lie for all the others.
+    """
+
+    title: str = Field(default="Export", max_length=120)
+    columns: list[TableColumn] = Field(min_length=1, max_length=80)
+    rows: list[dict[str, Any]] = Field(max_length=50_000)
 
 
 class CreateCampaignRequest(ApiModel):
@@ -137,6 +228,14 @@ class PasteRequest(ApiModel):
     text: str = Field(min_length=1)
     dry_run: bool = Field(default=False, alias="dryRun")
     replace: bool = False
+    #: Autoriser l'écriture d'un ensemble amputé.
+    #:
+    #: Les grilles qui **remplacent** ce qui existe — le stock ERP, l'écart
+    #: backflush, une nomenclature en mode remplacement — refusent d'écrire dès
+    #: qu'une ligne est rejetée : les lignes manquantes deviendraient des lignes
+    #: supprimées, et rien ne dirait lesquelles. Ce drapeau lève le refus, se
+    #: voit dans le rapport du lot, et n'est jamais le défaut.
+    allow_partial: bool = Field(default=False, alias="allowPartial")
 
 
 class RowsRequest(ApiModel):
@@ -145,6 +244,25 @@ class RowsRequest(ApiModel):
     rows: list[dict[str, Any]]
     dry_run: bool = Field(default=False, alias="dryRun")
     replace: bool = False
+    #: Autoriser l'écriture d'un ensemble amputé.
+    #:
+    #: Les grilles qui **remplacent** ce qui existe — le stock ERP, l'écart
+    #: backflush, une nomenclature en mode remplacement — refusent d'écrire dès
+    #: qu'une ligne est rejetée : les lignes manquantes deviendraient des lignes
+    #: supprimées, et rien ne dirait lesquelles. Ce drapeau lève le refus, se
+    #: voit dans le rapport du lot, et n'est jamais le défaut.
+    allow_partial: bool = Field(default=False, alias="allowPartial")
+
+
+class StockFlowRunRequest(ApiModel):
+    """Which earlier campaign to compare against.
+
+    The period is not part of the request: it *is* the two count dates. Letting
+    it be typed would allow a period that does not match the inventories it
+    claims to bracket.
+    """
+
+    baseline_campaign_id: str = Field(alias="baselineCampaignId", min_length=1)
 
 
 # --------------------------------------------------------------------------- #
@@ -236,9 +354,11 @@ class WarehouseAssignmentRequest(ApiModel):
     assignments: list[WarehouseAssignment] = Field(min_length=1)
 
 
-class SheetTransitionRequest(ApiModel):
-    target: SheetStatus
-    counter_name: str | None = Field(default=None, alias="counterName")
+class ZoneClosureRequest(ApiModel):
+    """Déclarer une zone terminée, ou la rouvrir. La seule décision d'état
+    qui reste au parcours de comptage."""
+
+    closed: bool = True
 
 
 class SheetLineRow(ApiModel):
@@ -254,6 +374,25 @@ class SheetLineRow(ApiModel):
 class SheetLinesRequest(ApiModel):
     lines: list[SheetLineRow]
     replace: bool = False
+    #: La version de la feuille que l'écran avait sous les yeux.
+    #:
+    #: Facultative parce que tous les appelants ne l'ont pas — un collage depuis
+    #: Excel n'ajoute que des lignes, une extraction IA écrit une feuille qu'elle
+    #: vient de lire. L'écran de saisie, lui, la transmet toujours : c'est là que
+    #: deux personnes se retrouvent sur la même feuille.
+    expected_version: int | None = Field(default=None, alias="expectedVersion")
+
+
+class SheetLineDeleteRequest(ApiModel):
+    """A selection of counting-sheet lines to remove."""
+
+    line_ids: list[str] = Field(min_length=1, max_length=20_000, alias="lineIds")
+
+
+class ZoneDeleteRequest(ApiModel):
+    """Les zones à retirer, avec leurs feuilles — une ou tout un lot."""
+
+    zone_ids: list[str] = Field(min_length=1, max_length=5_000, alias="zoneIds")
 
 
 class ArbitrationDecisionRequest(ApiModel):

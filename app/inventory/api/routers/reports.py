@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import urllib.parse
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -12,32 +11,14 @@ from ...domain.printing import PrintMode
 from ...services import ReportService
 from ...services.report_service import MAX_BLANK_LINES
 from ..deps import CampaignDep, report_service
+from ..downloads import attachment
+from ..schemas import TableExportRequest
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/reports", tags=["rapports"])
 
 Service = Annotated[ReportService, Depends(report_service)]
 
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-
-
-def _download(payload: bytes, filename: str, media_type: str) -> Response:
-    """Attachment response with an RFC 5987 filename.
-
-    French campaign labels contain accents; without the ``filename*`` form some
-    browsers mangle them into unusable file names.
-    """
-    quoted = urllib.parse.quote(filename)
-    return Response(
-        content=payload,
-        media_type=media_type,
-        headers={
-            "Content-Disposition": (
-                f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quoted}"
-            ),
-            "Content-Length": str(len(payload)),
-            "Cache-Control": "no-store",
-        },
-    )
 
 
 #: Shared print options. Printing is available from the first phase — paper is
@@ -68,7 +49,7 @@ def counting_sheet(
         campaign, sheet_id,
         mode=mode, with_sources=with_sources, blank_lines=blank_lines,
     )
-    return _download(payload, filename, "application/pdf")
+    return attachment(payload, filename, "application/pdf")
 
 
 @router.get("/counting-sheets.pdf", summary="Imprimer toutes les feuilles d'un passage")
@@ -79,13 +60,25 @@ def all_counting_sheets(
     mode: _Mode = PrintMode.LIST,
     with_sources: _WithSources = False,
     blank_lines: _BlankLines = 0,
+    zone_ids: Annotated[str | None, Query(alias="zoneIds")] = None,
 ) -> Response:
-    """The eve-of-inventory print: every zone the mode applies to, in zone order."""
+    """The eve-of-inventory print: every zone the mode applies to, in zone order.
+
+    ``zoneIds`` narrows it to a selection. Reprinting one sector's sheets, or the
+    four zones whose stack got soaked, is the common case the day after — and
+    printing the whole site again to get them is how a second, contradictory
+    stack of paper ends up on the floor.
+    """
+    selection = (
+        [z for z in (part.strip() for part in zone_ids.split(",")) if z]
+        if zone_ids else None
+    )
     payload, filename = service.all_counting_sheets_pdf(
         campaign, pass_no=pass_no,
         mode=mode, with_sources=with_sources, blank_lines=blank_lines,
+        zone_ids=selection,
     )
-    return _download(payload, filename, "application/pdf")
+    return attachment(payload, filename, "application/pdf")
 
 
 @router.get("/journals/{journal_id}.xlsx", summary="Exporter un journal pour l'ERP")
@@ -98,7 +91,72 @@ def journal_export(
     the transcription and row-shift errors of the manual paste.
     """
     payload, filename = service.journal_export(campaign, journal_id)
-    return _download(payload, filename, _XLSX)
+    return attachment(payload, filename, _XLSX)
+
+
+@router.post("/table.xlsx", summary="Exporter un tableau affiché")
+def table_export(
+    campaign: CampaignDep, payload: TableExportRequest, service: Service
+) -> Response:
+    """Any grid, exactly as it is on screen, as a workbook.
+
+    One endpoint for every table in the application rather than one export route
+    per screen: the grid component knows its own columns and its own selection,
+    so it can ask for the file itself, and a table added tomorrow gets the
+    button for free instead of getting it eventually.
+    """
+    payload_bytes, filename = service.table_export(
+        campaign,
+        title=payload.title,
+        columns=[(c.key, c.label or c.key) for c in payload.columns],
+        rows=payload.rows,
+    )
+    return attachment(payload_bytes, filename, _XLSX)
+
+
+#: Which variance table is being exported — the same two the screen offers.
+_Granularity = Annotated[
+    Literal["item", "item_location"], Query(alias="granularity")
+]
+_MaterialOnly = Annotated[bool, Query(alias="materialOnly")]
+
+
+@router.get("/variances.xlsx", summary="Exporter les écarts en Excel")
+def variance_export(
+    campaign: CampaignDep,
+    service: Service,
+    granularity: _Granularity = "item",
+    material_only: _MaterialOnly = False,
+) -> Response:
+    """The variance view, with each figure in its own column.
+
+    ``granularity=item`` gives the site's real loss or gain; ``item_location``
+    the detail one goes and recounts from. Quantity and value are separate
+    columns for both the ERP stock and the counted stock — a spreadsheet whose
+    cells hold two figures cannot be summed or pivoted.
+    """
+    payload, filename = service.variance_export(
+        campaign, granularity=granularity, material_only=material_only
+    )
+    return attachment(payload, filename, _XLSX)
+
+
+@router.get("/variances.pdf", summary="Imprimer les écarts")
+def variance_pdf(
+    campaign: CampaignDep,
+    service: Service,
+    granularity: _Granularity = "item",
+    material_only: _MaterialOnly = False,
+) -> Response:
+    """The same table as a document, biggest variances first.
+
+    Capped: past a few hundred rows a PDF stops being read. The page says how
+    many lines it left out, and the Excel export carries them all.
+    """
+    payload, filename = service.variance_pdf(
+        campaign, granularity=granularity, material_only=material_only
+    )
+    return attachment(payload, filename, "application/pdf")
 
 
 @router.get("/campaign.xlsx", summary="Exporter le dossier complet de la campagne")
@@ -109,7 +167,7 @@ def campaign_workbook(campaign: CampaignDep, service: Service) -> Response:
     edit and re-derive numbers from.
     """
     payload, filename = service.campaign_workbook(campaign)
-    return _download(payload, filename, _XLSX)
+    return attachment(payload, filename, _XLSX)
 
 
 @router.get("/grids/{contract_key}.xlsx", summary="Exporter une grille ou son modèle")
@@ -121,4 +179,4 @@ def grid_export(
     The exported file can be re-imported as-is: the headers are the contract.
     """
     payload, filename = service.grid_export(campaign, contract_key)
-    return _download(payload, filename, _XLSX)
+    return attachment(payload, filename, _XLSX)

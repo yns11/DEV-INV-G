@@ -14,22 +14,22 @@
 
 import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Outlet, useLocation, useParams } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, downloads } from '../lib/api'
 import type { CampaignStatus, Overview } from '../lib/types'
 import {
   CAMPAIGN_STATUS_LABELS,
-  date as fmtDate,
   moneyShort,
-  numShort,
+  qty,
   percent,
   signClass,
   signedMoney,
   signedNum,
   label as toLabel,
 } from '../lib/format'
+import { ClosureChecklistView } from '../components/ClosureChecklist'
 import { useFocusMode } from '../lib/focus'
-import { sectionFor } from '../lib/navigation'
+import { UTILITIES, labelOf, sectionFor } from '../lib/navigation'
 import {
   Alert, AsyncBoundary, Badge, Button, Carousel, ErrorState, Icons, Kpi, Modal,
   Skeleton, Switch, useDownload, useErrorToast, useToast,
@@ -73,6 +73,7 @@ export function CampaignShell() {
 function CampaignHeader({ overview }: { overview: Overview }) {
   const startDownload = useDownload()
   const location = useLocation()
+  const navigate = useNavigate()
   const { campaign } = overview
   const [transitionTarget, setTransitionTarget] = useState<CampaignStatus | null>(null)
   const [focus] = useFocusMode()
@@ -84,33 +85,43 @@ function CampaignHeader({ overview }: { overview: Overview }) {
       <div className="page-head" style={{ marginBottom: 0 }}>
         <div className="stack" style={{ gap: 'var(--space-1)' }}>
           <h1 className="page-head__title" style={{ marginBottom: 0 }}>
-            {section?.label ?? campaign.code}
+            {section ? labelOf(section, overview) : campaign.code}
           </h1>
-          {/* The campaign's own dates belong on the campaign's own screen. On
-              every other one they are a line of noise above the actual work. */}
-          <p className="page-head__lede">
-            {section?.lede ?? campaign.label}
-            {section?.to === '' && (
-              <>
-                {' '}
-                — {campaign.label}, comptage du{' '}
-                <strong>{fmtDate(campaign.count_date)}</strong>
-                {campaign.book_stock_frozen_at && (
-                  <> · stock livre gelé le {fmtDate(campaign.book_stock_frozen_at)}</>
-                )}
-              </>
-            )}
-          </p>
+          <p className="page-head__lede">{section?.lede ?? campaign.label}</p>
         </div>
         <div className="row-wrap">
           <FocusSwitch overview={overview} />
+          {/* L'assistant et l'audit s'ouvrent à propos de ce qu'on est en train
+              de faire, depuis n'importe quel écran. Ils appartiennent donc à la
+              barre d'actions, pas à l'arborescence des étapes — où ils
+              formaient un groupe qu'il fallait traverser pour atteindre la
+              première. */}
+          {UTILITIES.map((utility) => {
+            const Icon = Icons[utility.icon]
+            const here = location.pathname.endsWith(`/${utility.to}`)
+            return (
+              <Button
+                key={utility.to}
+                variant={here ? 'primary' : 'secondary'}
+                icon={<Icon size={14} />}
+                title={utility.lede}
+                onClick={() => navigate(`/campagnes/${campaign.id}/${utility.to}`)}
+              >
+                {utility.short}
+              </Button>
+            )
+          })}
           <Button
             icon={<Icons.download size={14} />}
+            title="Le dossier complet de la campagne, en un classeur Excel"
             onClick={() => startDownload(downloads.campaignWorkbook(campaign.id))}
           >
-            Exporter le dossier
+            Exporter
           </Button>
-          {next && (
+          {/* Le changement de phase gèle des données : proposer le bouton à
+              quelqu'un qui n'a pas le droit de le presser reviendrait à faire
+              découvrir la règle par un refus. */}
+          {next && overview.access.canWrite && (
             <Button
               variant="primary"
               icon={<Icons.chevronRight size={14} />}
@@ -121,6 +132,8 @@ function CampaignHeader({ overview }: { overview: Overview }) {
           )}
         </div>
       </div>
+
+      {!overview.access.canWrite && <ReadOnlyNote overview={overview} />}
 
       <KpiCarousel overview={overview} />
 
@@ -135,6 +148,25 @@ function CampaignHeader({ overview }: { overview: Overview }) {
         />
       )}
     </header>
+  )
+}
+
+/**
+ * Pourquoi tout est grisé.
+ *
+ * Les boutons se désactivent seuls : ils lisent `permissions`, où tout est
+ * faux pour un lecteur. Mais un écran entièrement gris ressemble exactement à
+ * une campagne clôturée, et rien ne distinguerait « c'est fini » de « ce n'est
+ * pas à vous ». D'où cette bande, qui dit laquelle des deux et à qui demander.
+ */
+function ReadOnlyNote({ overview }: { overview: Overview }) {
+  const { owner } = overview.access
+  return (
+    <Alert tone="info" title="Lecture seule">
+      Cette campagne se consulte et s'exporte, mais ne se modifie pas depuis
+      votre compte. Demandez à {owner || 'son créateur'} de vous déclarer comme
+      gestionnaire.
+    </Alert>
   )
 }
 
@@ -186,7 +218,7 @@ function PerimeterNote({ overview }: { overview: Overview }) {
  * offered empty.
  */
 function KpiCarousel({ overview }: { overview: Overview }) {
-  const { campaign, journalProgress, genericProgress, counts, perimeter } = overview
+  const { campaign, journalProgress, genericProgress, counts } = overview
   const hasBookStock = campaign.book_stock_frozen_at !== null
 
   const kpis = useQuery({
@@ -226,19 +258,30 @@ function KpiCarousel({ overview }: { overview: Overview }) {
             tone={genericProgress.pendingArbitrations ? 'neg' : 'neutral'}
             compare={<span>écarts entre les deux comptages</span>}
           />
+          {/* Le gestionnaire ne figure plus ici : cette troisième ligne
+              rendait la carte — et donc toute la planche — plus haute que les
+              autres, et le carrousel changeait de taille à chaque flèche. Il
+              est déjà nommé par l'interrupteur « Mon périmètre », qui est
+              l'endroit d'où il se change. */}
           <Kpi
-            label="Dossier"
+            label="Articles au dossier"
             value={counts.items.toLocaleString('fr-FR')}
             compare={
               <span className="num">
-                {counts.bookStockLines.toLocaleString('fr-FR')} lignes de stock livre
+                {counts.bookStockLines.toLocaleString('fr-FR')} lignes de stock ERP
               </span>
             }
-            source={
-              perimeter.resolved
-                ? `Gestionnaire : ${perimeter.managerLabel || perimeter.managerCode}`
-                : undefined
+          />
+          <Kpi
+            label="Journaux en cours"
+            value={journalProgress.running.toLocaleString('fr-FR')}
+            tone={journalProgress.running ? 'neg' : 'neutral'}
+            compare={
+              <span className="num">
+                {journalProgress.pending.toLocaleString('fr-FR')} pas encore ouverts
+              </span>
             }
+            hint="Saisis mais pas encore postés à l’ERP."
           />
         </div>
       ),
@@ -265,10 +308,16 @@ function KpiCarousel({ overview }: { overview: Overview }) {
           {(data) => (
             <div className="grid grid--kpi">
               <Kpi
-                label="Stock livre"
+                label="Stock ERP"
                 value={moneyShort(data.bookValue)}
-                compare={<span className="num">{numShort(data.bookQty)} unités</span>}
+                compare={<span className="num">{qty(data.bookQty)} unités</span>}
                 hero
+              />
+              <Kpi
+                label="Stock physique"
+                value={moneyShort(data.physicalValue)}
+                compare={<span className="num">{qty(data.physicalQty)} unités</span>}
+                hint="Ce qui a été compté, plus les mouvements postés depuis. C’est ce total-là que l’écart oppose au stock ERP."
               />
               <Kpi
                 label="Écart net"
@@ -292,7 +341,7 @@ function KpiCarousel({ overview }: { overview: Overview }) {
                     nette <strong className="num">{percent(data.netReliabilityValue, 2)}</strong>
                   </span>
                 }
-                hint="1 − Σ|écart €| / Σ stock livre €. La nette, compensée, flatte."
+                hint="1 − Σ|écart €| / Σ stock ERP €. La nette, compensée, flatte."
               />
               <Kpi
                 label="IRA"
@@ -324,7 +373,7 @@ function KpiCarousel({ overview }: { overview: Overview }) {
                 hero
               />
               <Kpi
-                label="Comptés sans stock livre"
+                label="Comptés sans stock ERP"
                 value={data.countedOnlyCount.toLocaleString('fr-FR')}
                 tone={data.countedOnlyCount ? 'neg' : 'neutral'}
                 compare={<span>trouvé là où l’ERP ne voyait rien</span>}
@@ -337,10 +386,17 @@ function KpiCarousel({ overview }: { overview: Overview }) {
                 compare={<span>seront soldés à zéro à la clôture</span>}
               />
               <Kpi
-                label="Écart résiduel"
-                value={moneyShort(data.residualValue)}
-                compare={<span>après ajustements postés</span>}
-                hint="Ce qui reste inexpliqué une fois les corrections prises en compte."
+                label="Ajustements postés"
+                value={moneyShort(data.adjustedValue)}
+                compare={<span>déjà compris dans l’écart</span>}
+                hint={`Les mouvements postés après le comptage : ils s’ajoutent à lui pour former le stock physique. Le comptage seul montrait ${moneyShort(data.countedVarianceValue)}.`}
+              />
+              <Kpi
+                label="Lignes hors seuils"
+                value={data.materialLineCount.toLocaleString('fr-FR')}
+                tone={data.materialLineCount ? 'neg' : 'neutral'}
+                compare={<span>à analyser une par une</span>}
+                hint="Celles dont l’écart dépasse le seuil de leur type d’article."
               />
             </div>
           )}
@@ -349,7 +405,7 @@ function KpiCarousel({ overview }: { overview: Overview }) {
     })
   }
 
-  return <Carousel slides={slides} storageKey={`campaign.${campaign.id}`} />
+  return <Carousel slides={slides} alignColumns storageKey={`campaign.${campaign.id}`} />
 }
 
 function FocusSwitch({ overview }: { overview: Overview }) {
@@ -397,6 +453,15 @@ function TransitionModal({
     queryFn: () => api.transitionReadiness(campaignId, target),
   })
 
+  // La clôture est le seul geste irréversible : elle mérite l'état des lieux
+  // complet plutôt que la seule liste de ce qui manque. Les autres transitions
+  // gardent la liste courte — il n'y a rien à préparer pour entrer en comptage.
+  const checklist = useQuery({
+    queryKey: ['closure-checklist', campaignId],
+    queryFn: () => api.closureChecklist(campaignId),
+    enabled: target === 'CLOSED',
+  })
+
   const mutation = useMutation({
     mutationFn: () => api.transition(campaignId, target),
     onSuccess: () => {
@@ -434,18 +499,27 @@ function TransitionModal({
       <div className="stack">
         {readiness.isPending && <Skeleton count={3} />}
 
-        {blockers.length > 0 && (
-          <Alert tone="danger" title={`${blockers.length} point(s) bloquant(s)`}>
-            <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
-              {blockers.map((blocker, index) => (
-                <li key={index}>{blocker.message}</li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-
-        {ready && blockers.length === 0 && (
-          <Alert tone="success" title="Prérequis remplis" />
+        {target === 'CLOSED' ? (
+          <ClosureChecklistView
+            campaignId={campaignId}
+            data={checklist.data}
+            pending={checklist.isPending}
+          />
+        ) : (
+          <>
+            {blockers.length > 0 && (
+              <Alert tone="danger" title={`${blockers.length} point(s) bloquant(s)`}>
+                <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
+                  {blockers.map((blocker, index) => (
+                    <li key={index}>{blocker.message}</li>
+                  ))}
+                </ul>
+              </Alert>
+            )}
+            {ready && blockers.length === 0 && (
+              <Alert tone="success" title="Prérequis remplis" />
+            )}
+          </>
         )}
 
         {freezes.length > 0 && (
@@ -478,5 +552,9 @@ const FREEZE_NOTES: Partial<Record<CampaignStatus, string[]>> = {
     'Feuilles GENERIQUE, arbitrages et consolidation.',
     'Référentiel emplacements.',
   ],
-  CLOSED: ['Tout : ajustements, causes, commentaires. Exports et audit restent lisibles.'],
+  CLOSED: [
+    'Ajustements, causes, commentaires, et l’écart backflush.',
+    'La comparaison entre deux campagnes reste ouverte : elle ne change aucun chiffre de celle-ci, et c’est une fois close qu’on la fait.',
+    'Exports et audit restent lisibles.',
+  ],
 }

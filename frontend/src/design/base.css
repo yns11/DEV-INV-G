@@ -180,22 +180,41 @@ h1, h2, h3, h4 {
   min-height: var(--header-height);
 }
 
-.sidebar__mark {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--accent), var(--cat-3));
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-weight: var(--weight-bold);
-  font-size: var(--text-xs);
-  flex-shrink: 0;
+/* ---- Marque ------------------------------------------------------------------
+   Deux fichiers, l'un pour chaque fond : le tracé bleu nuit disparaît sur un
+   fond sombre. Le basculement est en CSS parce que le thème peut venir d'un
+   réglage explicite (`data-theme`) ou du système, et une seule règle couvre les
+   deux cas — un composant qui s'abonnerait au thème ferait clignoter le logo. */
+.brand {
+  display: inline-flex;
+  align-items: center;
 }
 
+.brand__logo {
+  display: block;
+  width: auto;
+  max-width: 100%;
+}
+
+.brand__logo--dark {
+  display: none;
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand__logo--light { display: none; }
+  :root:not([data-theme="light"]) .brand__logo--dark { display: block; }
+}
+
+:root[data-theme="dark"] .brand__logo--light { display: none; }
+:root[data-theme="dark"] .brand__logo--dark { display: block; }
+:root[data-theme="light"] .brand__logo--light { display: block; }
+:root[data-theme="light"] .brand__logo--dark { display: none; }
+
 .sidebar__title {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--fg-muted);
   line-height: 1.15;
 }
 
@@ -369,6 +388,46 @@ h1, h2, h3, h4 {
   font-weight: var(--weight-semibold);
 }
 
+/* La poignée de pliage. Discrète tant qu'on ne la vise pas : elle est présente
+   sur chaque bloc de chaque écran, et un chevron appuyé × huit ferait une page
+   de chevrons. */
+.card__fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  margin-top: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.card__fold:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.card__fold:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Replié, l'en-tête n'a plus rien à séparer de ce qui suit. */
+.card--collapsed .card__head {
+  border-bottom: none;
+}
+
+/* Et le bloc ne s'étire plus à la hauteur de son voisin de grille : replier
+   pour se retrouver avec un cadre vide de la taille du graphique qu'on vient
+   de cacher n'aurait rien gagné. */
+.card--collapsed {
+  align-self: start;
+}
+
 /* IBCS: the message goes in the title area, not buried under the chart. */
 .card__message {
   font-size: var(--text-sm);
@@ -408,8 +467,51 @@ h1, h2, h3, h4 {
   grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
 }
 
+/* Les vignettes de campagne : quatre par ligne au plus.
+   `auto-fit` seul en posait cinq voire six sur un grand écran, et une carte de
+   deux cents pixels de large tronque le code de la campagne — l'information qui
+   sert à la reconnaître. Le plancher garde le repli sur écran étroit : la piste
+   ne descend jamais sous 280 px, donc le nombre de colonnes tombe de lui-même. */
 .grid--3 {
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+/* Quatre au plus. `auto-fit` seul en posait cinq voire six sur un grand écran,
+   et une vignette de deux cents pixels tronque le code de la campagne —
+   l'information qui sert à la reconnaître. Le compte est fixé plutôt que calculé
+   en pourcentages : la même formule rendait trois colonnes ou quatre selon
+   l'arrondi de la largeur disponible. */
+/* Le seuil porte sur la fenêtre, alors que la contrainte porte sur la zone de
+   contenu : quatre pistes d'au moins 280 px et trois écarts demandent 1168 px,
+   soit la fenêtre moins la barre latérale et ses marges. En deçà, `auto-fit`
+   reprend la main et pose trois colonnes, puis deux. */
+@media (min-width: 1500px) {
+  .grid--3 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* ---- Rangée de filtres d'écran -------------------------------------------
+   Une grille et non une ligne : les étiquettes s'alignent entre elles et les
+   champs aussi, quelle que soit la largeur des colonnes ou la présence d'une
+   aide de saisie sous l'une d'elles. */
+.filters-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: end;
+  gap: var(--space-3) var(--space-4);
+}
+
+/* Les deux bornes de date tiennent dans un champ, qui a donc besoin du double. */
+.filters-row .field--wide {
+  grid-column: span 2;
+}
+
+.filters-row .field,
+.filters-row .input,
+.filters-row .select,
+.filters-row .search {
+  width: 100%;
 }
 
 /* ---- KPI tile -------------------------------------------------------------- */
@@ -607,6 +709,43 @@ h1, h2, h3, h4 {
   transition: width var(--transition-base);
 }
 
+/* Travail en cours dont l'avancement n'est pas mesurable — la lecture d'une
+   feuille seule tient dans un unique appel au modèle. Une barre figée à zéro
+   pendant une minute se lit comme une panne ; celle-ci dit « ça travaille »
+   sans prétendre dire combien il reste. */
+.progress__track--pending {
+  position: relative;
+}
+
+.progress__track--pending::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent) 45%,
+    var(--accent) 55%,
+    transparent
+  );
+  animation: progress-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes progress-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(340%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress__track--pending::after {
+    animation: none;
+    width: 100%;
+    opacity: 0.45;
+  }
+}
+
 .progress__legend {
   display: flex;
   gap: var(--space-4);
@@ -722,6 +861,319 @@ table.data td.editable input.num {
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
   background: var(--bg-raised);
+}
+
+/* ---- Sélecteur de colonnes ------------------------------------------------
+   Un menu ancré au bouton, fermé par un voile transparent qui couvre l'écran :
+   sans lui, le menu resterait ouvert au premier clic ailleurs, ce qui est la
+   façon la plus sûre de le faire prendre pour un panneau figé. */
+.colpicker {
+  position: relative;
+  display: inline-flex;
+}
+
+.colpicker__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-header) + 1);
+  background: none;
+  cursor: default;
+}
+
+.colpicker__menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  z-index: calc(var(--z-header) + 2);
+  min-width: 210px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg, 0 10px 30px rgb(0 0 0 / 18%));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.colpicker__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm, var(--text-base));
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.colpicker__row:hover {
+  background: var(--bg-hover);
+}
+
+.colpicker__row:has(input:disabled) {
+  cursor: default;
+  color: var(--fg-subtle);
+}
+
+.colpicker__reset {
+  margin-top: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+  text-align: left;
+  font-size: var(--text-xs);
+}
+
+/* ---- Filtres de colonne ---------------------------------------------------
+   Un déclencheur compact par colonne, et le détail au clic. La version
+   précédente posait chaque filtre à plat — dont un `<select multiple>` natif,
+   qui exige le Ctrl+clic, n'offre ni recherche ni compte, et déployait quinze
+   champs en permanence au-dessus du tableau. */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.filter {
+  position: relative;
+  display: inline-flex;
+}
+
+.filter__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 260px;
+  height: 30px;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  color: var(--fg);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.filter__trigger:hover {
+  border-color: var(--accent);
+}
+
+/* Un filtre posé se voit sans être lu : la couleur porte l'information, le
+   texte la précise. */
+.filter__trigger--active {
+  border-color: var(--accent);
+  background: var(--accent-soft, var(--bg-active));
+  color: var(--accent-strong, var(--accent));
+  font-weight: var(--weight-medium);
+}
+
+.filter__label {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.filter__trigger--active .filter__label {
+  color: inherit;
+  opacity: 0.75;
+}
+
+.filter__summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter__caret {
+  flex: none;
+  opacity: 0.5;
+}
+
+.filter__clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, currentcolor 18%, transparent);
+  cursor: pointer;
+}
+
+.filter__clear:hover {
+  background: color-mix(in srgb, currentcolor 32%, transparent);
+}
+
+.filter__panel {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: 0;
+  z-index: calc(var(--z-header) + 2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: max(240px, 100%);
+  padding: var(--space-3);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.filter__search {
+  width: 100%;
+}
+
+.filter__actions {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.filter__action {
+  padding: 2px var(--space-1);
+  font-size: var(--text-2xs);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.filter__action:disabled {
+  color: var(--fg-subtle);
+  cursor: default;
+}
+
+.filter__action--on {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  font-weight: var(--weight-semibold);
+}
+
+/* Plafonnée puis défilante : quarante valeurs ne doivent pas pousser le
+   panneau hors de l'écran. */
+.filter__list {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0 calc(-1 * var(--space-1));
+}
+
+.filter__option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.filter__option:hover {
+  background: var(--bg-hover);
+}
+
+.filter__count {
+  margin-left: auto;
+  padding-left: var(--space-2);
+  color: var(--fg-muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.filter__range {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.filter__range .input {
+  width: 100%;
+  min-width: 0;
+}
+
+.filter__hint,
+.filter__empty {
+  margin: 0;
+  font-size: var(--text-2xs);
+  line-height: var(--leading-snug);
+}
+
+.input--sm {
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+}
+
+/* Champ étroit posé dans une ligne de contrôles — panneau d'import. */
+.input--mini {
+  width: auto;
+  min-width: 84px;
+  max-width: 180px;
+  padding: 3px var(--space-2);
+  font-size: var(--text-xs);
+}
+
+/* ---- Ce qui filtre, en clair, au-dessus du tableau ------------------------
+   Un compteur « Filtres (3) » dit qu'il y a trois critères ; il ne dit pas
+   lesquels, et un tableau amputé des deux tiers de ses lignes reste alors
+   inexplicable tant qu'on n'a pas rouvert le panneau. */
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Colonne épinglée à droite — la colonne d'actions d'une grille large. Sans
+   elle, le bouton qui fait avancer la ligne sort de l'écran dès dix colonnes,
+   et il faut défiler horizontalement à chaque ligne pour l'atteindre. */
+table.data th.sticky-right,
+table.data td.sticky-right {
+  position: sticky;
+  right: 0;
+  background: var(--bg-raised);
+  border-left: 1px solid var(--border);
+}
+
+table.data th.sticky-right {
+  z-index: calc(var(--z-sticky) + 1);
+  background: var(--bg-inset);
+}
+
+/* La ligne survolée ou sélectionnée garde sa teinte jusque sous la colonne
+   épinglée, sinon celle-ci flotte comme un bloc étranger. */
+table.data tr:hover td.sticky-right {
+  background: var(--bg-hover);
+}
+
+table.data tr[data-selected] td.sticky-right {
+  background: var(--accent-soft);
+}
+
+table.data tfoot td.sticky-right {
+  background: var(--bg-raised);
+}
+
+/* ---- Pied de tableau : les totaux ----------------------------------------
+   Collé au bas de la zone défilante, comme l'en-tête l'est au haut : sur deux
+   mille lignes, un total qu'il faut aller chercher tout en bas ne sert pas. */
+.data tfoot td {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg-raised);
+  border-top: 2px solid var(--border-strong);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
 }
 
 .table-foot {
@@ -1275,6 +1727,24 @@ table.data td.editable input.num {
   padding: 2px;
 }
 
+/* Every board on the same grid.
+   `auto-fit` sizes each board's cards to fill the row, so a board of four gets
+   wider cards than a board of five: switching slides then changes the shape of
+   the strip, and it reads as the page moving rather than the numbers changing.
+   Pinned to the widest board, the columns line up and a shorter board just ends
+   before the last one. */
+.carousel--fixed-columns .grid--kpi {
+  grid-template-columns: repeat(var(--kpi-columns, 4), minmax(0, 1fr));
+}
+
+/* Below that width five columns of figures stop being readable, and lining
+   them up matters less than being able to read one. */
+@media (max-width: 1180px) {
+  .carousel--fixed-columns .grid--kpi {
+    grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+  }
+}
+
 /* A hidden slide must not be reachable by keyboard or read aloud: a tab stop
    that scrolls to something invisible is worse than no tab stop. */
 .carousel__slide[aria-hidden='true'] {
@@ -1380,55 +1850,6 @@ table.data td.editable input.num {
   color: var(--accent);
 }
 
-.subnav {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin: 2px 0 var(--space-2) 17px;
-  padding-left: 13px;
-  border-left: 1px solid var(--border);
-}
-
-.subnav__heading {
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-subtle);
-  padding: var(--space-3) var(--space-2) var(--space-1);
-}
-
-.subnav__link {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 5px var(--space-2);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-  color: var(--fg-muted);
-  text-decoration: none;
-}
-
-.subnav__link:hover {
-  background: var(--bg-hover);
-  color: var(--fg);
-  text-decoration: none;
-}
-
-.subnav__link--active {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: var(--weight-semibold);
-}
-
-.subnav__count {
-  margin-left: auto;
-  font-size: var(--text-2xs);
-  color: var(--fg-subtle);
-}
-
-.subnav__link--active .subnav__count { color: var(--accent); }
-
 /* ---- Campaign identity block in the sidebar ------------------------------ */
 
 .sidebar__campaign {
@@ -1451,6 +1872,96 @@ table.data td.editable input.num {
 /* Used where a screen still needs a horizontal choice inside its own content.
    Deliberately shaped nothing like the sidebar, so it never reads as a second
    navigation. */
+
+/* ---- Sous-navigation d'écran -------------------------------------------------
+   « Quel volet de cet écran est-ce que je regarde ? »
+
+   Soulignée, posée sur une règle pleine largeur, juste sous le titre. Les
+   pilules sont des jetons arrondis, groupés au-dessus d'un tableau, et elles
+   répondent à une autre question : « quelles lignes est-ce que je garde ? ».
+   Deux formes franchement différentes pour deux gestes différents — quand elles
+   se ressemblaient, on cliquait sur l'une en croyant agir sur l'autre. */
+.viewtabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.viewtabs::-webkit-scrollbar {
+  display: none;
+}
+
+.viewtabs__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  /* Le trait de l'onglet actif recouvre la règle plutôt que de s'y ajouter. */
+  margin-bottom: -1px;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.viewtabs__item:hover {
+  color: var(--fg);
+}
+
+.viewtabs__item--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: var(--weight-semibold);
+}
+
+.viewtabs__count {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: var(--bg-active);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.viewtabs__item--active .viewtabs__count {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Une cellule chiffrée qu'on peut interroger.
+   Discrète au repos : c'est une valeur qu'on lit d'abord, et souligner tous les
+   nombres d'un tableau le rendrait illisible. Le pointillé n'apparaît qu'au
+   survol, là où la main est déjà. */
+.drill {
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  border-bottom: 1px dashed transparent;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.drill:hover {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Nom de fichier cliquable dans une grille : le même texte que `.drill`, plus
+   la place de l'icône qui annonce le téléchargement. Le nom tronque au lieu de
+   déborder — une colonne de 260 px et des noms de scanner à rallonge. */
+.filelink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 
 .segmented {
   display: inline-flex;

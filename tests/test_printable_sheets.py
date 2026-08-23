@@ -226,3 +226,79 @@ class TestDesignation:
         assert "STATOR ASSEMBLE M3 GEN2 AVEC CO" in wide[0]
         assert "STATOR ASSEMBLE M3 " in narrow[0]
         assert "STATOR ASSEMBLE M3 GEN2" not in narrow[0]
+
+
+class TestNoBlankPages:
+    """A printed stack must not contain a page with nothing on it.
+
+    The gap between two section tables used to be appended *after* each table,
+    including the last. A trailing spacer is still a flowable: when a table ended
+    exactly at the bottom of a page it flowed onto the next one, and the sheet
+    came out with a page carrying only its header and footer. It turned up once
+    in sixty-two pages of a real workbook — rare enough to ship, frequent enough
+    to confuse a counter every campaign.
+
+    The cases below are the exact fits found by sweeping the old builder; the
+    surrounding range guards the neighbourhood, because the boundary moves with
+    any change to row height or margins.
+    """
+
+    def _assert_every_page_carries_a_line(self, line_side, wip=0, wip_ok=0):
+        rows = (
+            [line(f"P-{i:04d}", qty=1) for i in range(line_side)]
+            + [line(f"W-{i:04d}", section="WIP", qty=1) for i in range(wip)]
+            + [line(f"K-{i:04d}", section="WIP_OK", qty=1) for i in range(wip_ok)]
+        )
+        pages = render(rows, mode=PrintMode.FILLED)
+        for number, page in enumerate(pages, start=1):
+            assert any(k in page for k in ("P-", "W-", "K-")), (
+                f"page {number} sur {len(pages)} est vide "
+                f"({line_side}/{wip}/{wip_ok} lignes)"
+            )
+
+    @pytest.mark.parametrize("line_side,wip,wip_ok", [
+        (23, 0, 0),   # une seule section, qui finit pile en bas de page
+        (15, 3, 2),   # trois sections, la dernière finit pile
+        (44, 2, 0),
+        (44, 0, 2),
+    ])
+    def test_the_known_exact_fits_leave_no_empty_page(self, line_side, wip, wip_ok):
+        self._assert_every_page_carries_a_line(line_side, wip, wip_ok)
+
+    @pytest.mark.parametrize("count", range(20, 27))
+    def test_nor_does_the_neighbourhood_of_a_page_boundary(self, count):
+        self._assert_every_page_carries_a_line(count)
+
+
+class TestNumbersOnPaper:
+    """Every character of a quantity has to be drawable by the PDF's font.
+
+    The sheet is drawn in Helvetica, whose Latin-1 encoding has no narrow
+    no-break space. Using one as the thousands separator printed « 2■724 »: a
+    black box exactly where the counter reads a digit. It only showed above a
+    thousand, so the demo campaign never caught it.
+
+    Reading the page back is what makes these tests worth having: a character
+    the font cannot draw comes back as U+25A0 — the box itself — so the failure
+    appears here in the same shape it has on paper. Asserting on the formatter's
+    output instead would have passed throughout the bug.
+    """
+
+    @pytest.mark.parametrize("quantity,expected", [
+        (2724, "2 724"),
+        (15600, "15 600"),
+        (1_234_567, "1 234 567"),
+        (999, "999"),
+    ])
+    def test_a_thousands_separator_survives_the_page(self, quantity, expected):
+        """The separator drawn is a no-break space; extraction normalises it."""
+        pages = render([line("P-001", qty=quantity)], mode=PrintMode.FILLED)
+        assert expected in pages[0]
+
+    def test_no_undrawable_character_reaches_the_paper(self):
+        pages = render(
+            [line(f"P-{i:03d}", qty=1000 * (i + 1)) for i in range(5)],
+            mode=PrintMode.FILLED,
+        )
+        text = "\n".join(pages)
+        assert "■" not in text, "un caractère non dessinable a atteint le papier"

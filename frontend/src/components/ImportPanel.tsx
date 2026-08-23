@@ -22,15 +22,16 @@
 
 import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useOutletContext } from 'react-router-dom'
 import { api, downloads } from '../lib/api'
-import type { GridContract, ImportResult } from '../lib/types'
+import type { GridContract, ImportResult, Overview } from '../lib/types'
 import {
   Alert, Badge, Button, Card, Icons, useDownload, useErrorToast, useToast,
 } from './ui'
 import { DataGrid, columnsFromContract } from './DataGrid'
 
 /** Grids the ERP is authoritative for — mirrors `ERP_TARGETS` on the API. */
-const ERP_TARGETS = ['items', 'boms']
+const ERP_TARGETS = ['items', 'boms', 'book_stock', 'backflush']
 
 type Stage =
   | { kind: 'idle' }
@@ -50,6 +51,8 @@ export function ImportPanel({
   disabled = false,
   disabledReason,
   replace = false,
+  params,
+  transport,
   onImported,
   extraActions,
 }: {
@@ -59,9 +62,34 @@ export function ImportPanel({
   disabled?: boolean
   disabledReason?: string
   replace?: boolean
+  /**
+   * Paramètres propres à la grille, ajoutés à chaque appel.
+   *
+   * Les bornes de période de l'écart backflush passent par là : elles
+   * qualifient *la lecture*, pas le contenu du fichier — un fichier n'a pas de
+   * corps où les mettre, et un téléversement non plus.
+   */
+  params?: Record<string, string | number | boolean | undefined>
+  /**
+   * Transport de remplacement, quand la grille n'est pas servie par la route
+   * d'import générique.
+   *
+   * Les trois chargements de la réconciliation ont leurs propres points
+   * d'entrée — ils écrivent dans une série, pas dans la campagne. Le panneau
+   * reste identique : c'est la boucle « voir avant d'écrire » qui compte, et
+   * elle ne doit pas se dédoubler.
+   */
+  transport?: {
+    file: (file: File, options: { dryRun?: boolean }) => Promise<ImportResult>
+    paste: (text: string, options: { dryRun?: boolean }) => Promise<ImportResult>
+  }
   onImported?: (result: ImportResult) => void
   extraActions?: React.ReactNode
 }) {
+  // Le rôle vient du contexte de la campagne : le panneau est toujours rendu
+  // sous elle, et le faire descendre par les sept appelants n'ajouterait que
+  // sept occasions de l'oublier.
+  const { access } = useOutletContext<Overview>()
   const [stage, setStage] = useState<Stage>({ kind: 'idle' })
   const [pasteText, setPasteText] = useState('')
   const [pasting, setPasting] = useState(false)
@@ -74,6 +102,26 @@ export function ImportPanel({
     enabled: hasErp,
     staleTime: Infinity,
   })
+  const mirror = erp.data?.mirror?.[target] ?? null
+  // Le stock est une suite de photos ; les autres grilles sont un état. Il est
+  // donc la seule à demander « laquelle ».
+  const datedSource = target === 'book_stock'
+  const stockDates = useQuery({
+    queryKey: ['erp-stock-dates'],
+    queryFn: api.erpStockDates,
+    enabled: datedSource && erp.data?.available === true,
+    staleTime: 5 * 60 * 1000,
+  })
+  const dates = stockDates.data?.dates ?? []
+  const [chosenDate, setChosenDate] = useState('')
+  // La plus récente par défaut, sans la figer : `chosenDate` reste vide tant
+  // que personne n'a choisi, si bien qu'une liste rafraîchie propose la
+  // nouvelle photo au lieu de rester sur celle d'hier.
+  const snapshotDate = chosenDate || dates[0] || ''
+  const erpParams = {
+    ...params,
+    ...(datedSource && snapshotDate ? { dateSnapshot: snapshotDate } : {}),
+  }
   const fileInput = useRef<HTMLInputElement>(null)
   const toast = useToast()
   const showError = useErrorToast()
@@ -83,10 +131,18 @@ export function ImportPanel({
     setStage({ kind: 'validating' })
     try {
       const result = source.erp
-        ? await api.importErp(campaignId, target, { dryRun: true, replace })
+        ? await api.importErp(campaignId, target, { dryRun: true, replace, params: erpParams })
         : source.file
-          ? await api.importFile(campaignId, target, source.file, { dryRun: true, replace })
-          : await api.importPaste(campaignId, target, source.text ?? '', { dryRun: true })
+          ? transport
+            ? await transport.file(source.file, { dryRun: true })
+            : await api.importFile(campaignId, target, source.file, {
+                dryRun: true, replace, params,
+              })
+          : transport
+            ? await transport.paste(source.text ?? '', { dryRun: true })
+            : await api.importPaste(campaignId, target, source.text ?? '', {
+                dryRun: true, params,
+              })
       setStage({ kind: 'preview', result, source })
     } catch (error) {
       showError(error, source.erp ? 'Lecture ERP impossible' : 'Analyse impossible')
@@ -100,10 +156,16 @@ export function ImportPanel({
     setStage({ kind: 'importing' })
     try {
       const result = source.erp
-        ? await api.importErp(campaignId, target, { replace })
+        ? await api.importErp(campaignId, target, { replace, params: erpParams })
         : source.file
-          ? await api.importFile(campaignId, target, source.file, { replace })
-          : await api.importPaste(campaignId, target, source.text ?? '', { replace })
+          ? transport
+            ? await transport.file(source.file, {})
+            : await api.importFile(campaignId, target, source.file, { replace, params })
+          : transport
+            ? await transport.paste(source.text ?? '', {})
+            : await api.importPaste(campaignId, target, source.text ?? '', {
+                replace, params,
+              })
       setStage({ kind: 'done', result })
       setPasteText('')
       setPasting(false)
@@ -124,6 +186,20 @@ export function ImportPanel({
 
   // A locked panel is dead weight: every button in it would refuse. The reason
   // alone says everything it would have, in one line.
+  //
+  // Qui ne peut pas écrire du tout l'emporte sur la raison passée par l'écran.
+  // Celles-ci nomment toutes la phase — « gelé depuis le passage en comptage »
+  // — et cette phrase devient un mensonge pour un lecteur devant une campagne
+  // en préparation : rien n'est gelé, c'est lui qui n'a pas le droit. Décidé
+  // ici, à l'unique endroit qui rend le verrou, plutôt qu'aux sept appels.
+  if (!access.canWrite) {
+    return (
+      <Alert tone="info" title={`${contract.title} — lecture seule`}>
+        Cette campagne ne se modifie pas depuis votre compte. Demandez à{' '}
+        {access.owner || 'son créateur'} de vous déclarer comme gestionnaire.
+      </Alert>
+    )
+  }
   if (disabled) {
     return disabledReason ? (
       <Alert tone="info" title={`${contract.title} — import verrouillé`}>
@@ -156,6 +232,40 @@ export function ImportPanel({
           >
             Lire depuis l’ERP
           </Button>
+        )}
+        {/* Quelle photo. Le stock ERP est publié une fois par jour, et la
+            journée de comptage n'est pas toujours celle du chargement : le
+            comptage a commencé samedi matin, la reprise se fait le lundi, et
+            c'est la photo de samedi qui fait foi. Prendre la plus récente
+            d'office rendait ce cas inatteignable, sans le dire. */}
+        {datedSource && erp.data?.available && dates.length > 0 && (
+          <label className="row" style={{ gap: 'var(--space-2)' }}>
+            <span className="muted">Photo du</span>
+            <select
+              className="input input--mini"
+              value={snapshotDate}
+              disabled={busy}
+              onChange={(event) => setChosenDate(event.target.value)}
+            >
+              {dates.map((date, index) => (
+                <option key={date} value={date}>
+                  {new Date(`${date}T00:00:00`).toLocaleDateString('fr-FR')}
+                  {index === 0 ? ' (la plus récente)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {/* The age of the copy, next to the button that loads it. Reading a
+            month-old referential without noticing is exactly the error this
+            application exists to remove — it cannot be left to a log line. */}
+        {hasErp && erp.data?.available && mirror && (
+          <span className={mirror.stale ? 'badge badge--warning' : 'muted'}>
+            Données ERP
+            {mirror.syncedAt
+              ? ` · ${new Date(mirror.syncedAt).toLocaleDateString('fr-FR')}`
+              : ' · jamais copiées'}
+          </span>
         )}
         <Button
           size="sm"

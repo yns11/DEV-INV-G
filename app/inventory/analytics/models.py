@@ -361,7 +361,7 @@ def _describe_cluster(row: pd.Series) -> str:
     if row.get("counted_only", 0) > row.get("items", 1) * 0.3:
         parts.append("stock non connu de l'ERP")
     if row.get("book_only", 0) > row.get("items", 1) * 0.3:
-        parts.append("stock livre non compté")
+        parts.append("stock ERP non compté")
     return " · ".join(parts) or "profil mixte"
 
 

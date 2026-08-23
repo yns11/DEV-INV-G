@@ -25,6 +25,7 @@ from decimal import Decimal
 from .enums import ItemType, LocationStatus
 from .models import (
     AdjustmentLine,
+    BackflushLine,
     BookStockLine,
     Campaign,
     Item,
@@ -70,6 +71,7 @@ def build_variances(
     items: Mapping[str, Item],
     locations: Mapping[LocationKey, Location] | None = None,
     adjustments: Iterable[AdjustmentLine] = (),
+    backflush: Mapping[str, BackflushLine] | None = None,
     granularity: str = "item_location",
 ) -> list[VarianceLine]:
     """Reconcile book stock against counted stock.
@@ -80,8 +82,14 @@ def build_variances(
         because a transfer between two locations is not a stock variance).
     :param locations: when supplied, lines whose location is ``DISABLED`` are
         dropped entirely — quantities *and* values — as the spec requires.
-    :param adjustments: post-count movements; their signed quantities are
-        subtracted from the variance to produce the residual.
+    :param adjustments: post-count movements. Their signed quantities are *added
+        to the count* to give the physical stock, which is what the variance is
+        then measured against: an adjustment is a real movement, so once one is
+        posted the count alone is no longer the current picture.
+    :param backflush: the frozen backflush variance, per article. It is carried
+        onto the line rather than netted into it — what production explains and
+        what the ERP has already been corrected for are two different questions,
+        and a single "corrected" quantity would answer neither.
 
     Both directions of the outer join are materialised: an article counted but
     absent from the book stock (``counted_only``) and an article in the book
@@ -127,6 +135,13 @@ def build_variances(
             continue
         adjusted_qty[key_of(adj.item_number, adj.warehouse_id, adj.location_id)] += adj.qty
 
+    # The backflush is measured per article and has no location: production
+    # consumes from a line, not from a bin. In the per-location reading it is
+    # therefore attached only to the article's total, which is the granularity
+    # at which it means anything — spreading it over bins would invent a
+    # distribution the source never had.
+    _bf = dict(backflush or {}) if collapse else {}
+
     out: list[VarianceLine] = []
     for k in sorted(set(book_qty) | set(counted_qty) | set(adjusted_qty)):
         item_number, wh, loc = k
@@ -148,6 +163,8 @@ def build_variances(
                 book_qty=quantize_qty(book_qty.get(k, ZERO)),
                 counted_qty=quantize_qty(counted_qty.get(k, ZERO)),
                 adjusted_qty=quantize_qty(adjusted_qty.get(k, ZERO)),
+                backflush_qty=bf.net_qty if (bf := _bf.get(item_number)) else ZERO,
+                backflush_measured=item_number in _bf,
                 counted_only=k not in book_qty and k in counted_qty,
                 book_only=k in book_qty and k not in counted_qty,
             )
@@ -165,7 +182,6 @@ def is_material(line: VarianceLine, thresholds: Thresholds) -> bool:
     A line is material when **every** configured gate is breached:
 
     * absolute value  ``|Δ€| >= value_abs_eur``
-    * absolute qty    ``|Δqty| >= qty_abs_floor``
     * relative qty    ``|Δqty| / book_qty >= qty_relative``
 
     Requiring all gates (rather than any) keeps the exception list at a size a
@@ -179,8 +195,6 @@ def is_material(line: VarianceLine, thresholds: Thresholds) -> bool:
     if line.book_qty == 0:
         return True
     if abs(line.variance_value) < thresholds.value_abs_eur:
-        return False
-    if dq < thresholds.qty_abs_floor:
         return False
     if thresholds.qty_relative is not None:
         ratio = safe_ratio(dq, abs(line.book_qty))
@@ -219,7 +233,13 @@ class VarianceSet:
     variance_value: Decimal = ZERO
     abs_variance_qty: Decimal = ZERO
     abs_variance_value: Decimal = ZERO
-    residual_value: Decimal = ZERO
+    #: L'écart que le comptage seul montrait, avant tout ajustement. Conservé
+    #: à côté de l'écart et non à sa place : la différence entre les deux est
+    #: exactement ce que les ajustements ont fait.
+    counted_variance_value: Decimal = ZERO
+    backflush_share_value: Decimal = ZERO
+    unexplained_value: Decimal = ZERO
+    abs_unexplained_value: Decimal = ZERO
     line_count: int = 0
     material_count: int = 0
 
@@ -231,7 +251,10 @@ class VarianceSet:
         self.variance_value += line.variance_value
         self.abs_variance_qty += abs(line.variance_qty)
         self.abs_variance_value += abs(line.variance_value)
-        self.residual_value += line.residual_value
+        self.counted_variance_value += line.counted_variance_value
+        self.backflush_share_value += line.backflush_share_value
+        self.unexplained_value += line.unexplained_value
+        self.abs_unexplained_value += abs(line.unexplained_value)
         self.line_count += 1
         self.material_count += int(material)
 
@@ -240,7 +263,8 @@ class VarianceSet:
         self.variance_qty = quantize_qty(self.variance_qty)
         self.abs_variance_qty = quantize_qty(self.abs_variance_qty)
         for attr in ("book_value", "variance_value", "abs_variance_value",
-                     "residual_value"):
+                     "counted_variance_value", "backflush_share_value",
+                     "unexplained_value", "abs_unexplained_value"):
             setattr(self, attr, quantize_money(getattr(self, attr)))
 
 
@@ -298,6 +322,11 @@ class KpiBlock:
     book_value: Decimal = ZERO
     counted_qty: Decimal = ZERO
     counted_value: Decimal = ZERO
+    #: The physical stock — counted plus what moved after. This, not the count,
+    #: is what the variance measures, so it is reported next to the ERP total:
+    #: the two figures on screen must be the two the subtraction uses.
+    physical_qty: Decimal = ZERO
+    physical_value: Decimal = ZERO
 
     #: Signed variance — "did we gain or lose value overall?"
     net_variance_qty: Decimal = ZERO
@@ -305,8 +334,29 @@ class KpiBlock:
     #: Absolute variance — "how much did we get wrong?"
     gross_variance_qty: Decimal = ZERO
     gross_variance_value: Decimal = ZERO
-    #: Variance still unexplained after adjustments.
-    residual_value: Decimal = ZERO
+    #: The gap the count alone showed, before the adjustments moved the stock.
+    #: Reported beside the variance so the effect of the adjustments is readable
+    #: as the difference between two figures rather than asserted in a sentence.
+    counted_variance_value: Decimal = ZERO
+    #: Signed total of the movements posted during the analysis phase.
+    adjusted_value: Decimal = ZERO
+
+    #: What the backflush accounts for, in the inventory convention, and what is
+    #: left once it is taken off. Reported over the articles the backflush was
+    #: actually measured on: averaging in the ones it never covered would dilute
+    #: the rate towards zero and make a good explanation look like a poor one.
+    backflush_share_value: Decimal = ZERO
+    unexplained_value: Decimal = ZERO
+    gross_unexplained_value: Decimal = ZERO
+    #: The inventory variance of those same articles. Reported alongside the two
+    #: above so the three read as one subtraction: variance − share = unexplained.
+    #: Taking the campaign-wide variance instead would put a total over one
+    #: population next to two over another, and the arithmetic on screen would
+    #: not close.
+    backflush_variance_value: Decimal = ZERO
+    #: 1 − Σ|inexpliqué| / Σ|écart|, over the measured articles only.
+    backflush_explanation_rate: Decimal | None = None
+    backflush_line_count: int = 0
 
     #: 1 − |Σ Δ€| / Σ book€ — the optimistic view (offsets allowed).
     net_reliability_value: Decimal | None = None
@@ -332,11 +382,20 @@ class KpiBlock:
             "bookValue": num(self.book_value),
             "countedQty": num(self.counted_qty),
             "countedValue": num(self.counted_value),
+            "physicalQty": num(self.physical_qty),
+            "physicalValue": num(self.physical_value),
             "netVarianceQty": num(self.net_variance_qty),
             "netVarianceValue": num(self.net_variance_value),
             "grossVarianceQty": num(self.gross_variance_qty),
             "grossVarianceValue": num(self.gross_variance_value),
-            "residualValue": num(self.residual_value),
+            "countedVarianceValue": num(self.counted_variance_value),
+            "adjustedValue": num(self.adjusted_value),
+            "backflushShareValue": num(self.backflush_share_value),
+            "unexplainedValue": num(self.unexplained_value),
+            "grossUnexplainedValue": num(self.gross_unexplained_value),
+            "backflushVarianceValue": num(self.backflush_variance_value),
+            "backflushExplanationRate": num(self.backflush_explanation_rate),
+            "backflushLineCount": self.backflush_line_count,
             "netReliabilityValue": num(self.net_reliability_value),
             "grossReliabilityValue": num(self.gross_reliability_value),
             "grossReliabilityQty": num(self.gross_reliability_qty),
@@ -355,11 +414,17 @@ def compute_kpis(
     """Headline KPIs over a set of variance lines.
 
     A record counts as *accurate* for IRA when ``|Δqty| / book_qty`` is within
-    the item type's ``ira_tolerance`` (0 by default: exact match required).
+    counted quantity matches the book exactly. There is no tolerance: a record
+    that is off by one is a record that was wrong, and softening that would make
+    the indicator agree with itself rather than with the shelf.
     Records with a zero book quantity are accurate only when nothing was counted
     either — "we thought there was nothing and there was nothing".
     """
     kpi = KpiBlock()
+    #: Absolute variance of the articles the backflush covers. The explanation
+    #: rate is a ratio of two sums over the *same* population, and mixing in the
+    #: articles production never touched would answer a different question.
+    measured_gap = ZERO
     for line in lines:
         thresholds = (
             campaign.threshold_for(line.item_type)
@@ -371,25 +436,45 @@ def compute_kpis(
         kpi.book_value += line.book_value
         kpi.counted_qty += line.counted_qty
         kpi.counted_value += line.counted_qty * line.unit_cost
+        kpi.physical_qty += line.physical_qty
+        kpi.physical_value += line.physical_value
         kpi.net_variance_qty += line.variance_qty
         kpi.net_variance_value += line.variance_value
         kpi.gross_variance_qty += abs(line.variance_qty)
         kpi.gross_variance_value += abs(line.variance_value)
-        kpi.residual_value += line.residual_value
+        kpi.counted_variance_value += line.counted_variance_value
+        kpi.adjusted_value += line.adjusted_value
+        if line.backflush_measured:
+            kpi.backflush_line_count += 1
+            kpi.backflush_share_value += line.backflush_share_value
+            kpi.unexplained_value += line.unexplained_value
+            kpi.gross_unexplained_value += abs(line.unexplained_value)
+            kpi.backflush_variance_value += line.variance_value
+            measured_gap += abs(line.variance_value)
         kpi.counted_only_count += int(line.counted_only)
         kpi.book_only_count += int(line.book_only)
         kpi.material_line_count += int(is_material(line, thresholds))
 
-        if _is_accurate(line, thresholds.ira_tolerance):
+        if _is_accurate(line):
             kpi.accurate_line_count += 1
 
     kpi.book_qty = quantize_qty(kpi.book_qty)
     kpi.counted_qty = quantize_qty(kpi.counted_qty)
+    kpi.physical_qty = quantize_qty(kpi.physical_qty)
     kpi.net_variance_qty = quantize_qty(kpi.net_variance_qty)
     kpi.gross_variance_qty = quantize_qty(kpi.gross_variance_qty)
-    for attr in ("book_value", "counted_value", "net_variance_value",
-                 "gross_variance_value", "residual_value"):
+    for attr in ("book_value", "counted_value", "physical_value",
+                 "net_variance_value",
+                 "gross_variance_value", "counted_variance_value",
+                 "adjusted_value",
+                 "backflush_share_value", "unexplained_value",
+                 "gross_unexplained_value", "backflush_variance_value"):
         setattr(kpi, attr, quantize_money(getattr(kpi, attr)))
+
+    explained = safe_ratio(kpi.gross_unexplained_value, abs(measured_gap))
+    # Not clamped: a negative rate says taking the backflush into account widens
+    # the gap instead of closing it, which is a finding, not a formula error.
+    kpi.backflush_explanation_rate = None if explained is None else 1 - explained
 
     base_value = abs(kpi.book_value)
     net_ratio = safe_ratio(abs(kpi.net_variance_value), base_value)
@@ -407,11 +492,10 @@ def compute_kpis(
     return kpi
 
 
-def _is_accurate(line: VarianceLine, tolerance: Decimal) -> bool:
+def _is_accurate(line: VarianceLine) -> bool:
     if line.book_qty == 0:
         return line.counted_qty == 0
-    ratio = safe_ratio(abs(line.variance_qty), abs(line.book_qty))
-    return ratio is not None and ratio <= tolerance
+    return line.variance_qty == 0
 
 
 def _clamp(value: Decimal) -> Decimal:

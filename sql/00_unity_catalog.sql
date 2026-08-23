@@ -63,6 +63,29 @@ USING DELTA
 COMMENT 'Une ligne par campagne : son cycle de vie et ses horodatages de gel.'
 TBLPROPERTIES (delta.enableChangeDataFeed = true);
 
+-- La publication elle-même : une ligne par campagne archivée.
+--
+-- Écrite **en dernier** par le job, et par rien d'autre. Delta n'offre pas de
+-- transaction couvrant plusieurs tables : une panne au milieu de la publication
+-- laisse quelques tables à la nouvelle version et les autres à l'ancienne.
+-- Cette table est ce qui empêche un tel dossier de se faire passer pour
+-- complet — une campagne est publiée si, et seulement si, elle y figure.
+--
+-- La reprise est propre : chaque table est réécrite par `replaceWhere` sur le
+-- même `campaign_id`, donc rejouer le job écrase l'exécution interrompue.
+CREATE TABLE IF NOT EXISTS publication (
+    campaign_id    STRING    NOT NULL COMMENT 'Identifiant technique de la campagne publiée',
+    campaign_code  STRING    NOT NULL COMMENT 'Code métier, pour la lecture humaine',
+    published_at   TIMESTAMP NOT NULL COMMENT 'Fin de la publication, pas son début',
+    engine_version STRING             COMMENT 'Version du moteur ayant produit les données dérivées',
+    table_count    INT       NOT NULL COMMENT 'Nombre de tables écrites',
+    row_total      BIGINT    NOT NULL COMMENT 'Total des lignes, toutes tables confondues',
+    row_counts     MAP<STRING, BIGINT> COMMENT 'Décompte table par table : « l''archive est-elle fidèle » sans relire les neuf tables'
+)
+USING DELTA
+COMMENT 'Manifeste de publication. Une campagne absente d''ici n''est pas archivée, quelles que soient les lignes présentes ailleurs.'
+TBLPROPERTIES (delta.enableChangeDataFeed = true);
+
 CREATE TABLE IF NOT EXISTS book_stock_snapshot (
     campaign_id  STRING        NOT NULL,
     campaign_code STRING       NOT NULL,
@@ -77,7 +100,7 @@ CREATE TABLE IF NOT EXISTS book_stock_snapshot (
     published_at TIMESTAMP     NOT NULL
 )
 USING DELTA
-PARTITIONED BY (campaign_code)
+PARTITIONED BY (campaign_id)
 COMMENT 'Photographie immuable du stock ERP au moment du gel. Ne jamais mettre à jour.'
 TBLPROPERTIES (delta.autoOptimize.optimizeWrite = true);
 
@@ -96,7 +119,7 @@ CREATE TABLE IF NOT EXISTS item_snapshot (
     published_at    TIMESTAMP NOT NULL
 )
 USING DELTA
-PARTITIONED BY (campaign_code)
+PARTITIONED BY (campaign_id)
 COMMENT 'Référentiel articles tel qu''il était pour cette campagne.';
 
 CREATE TABLE IF NOT EXISTS bom_snapshot (
@@ -109,7 +132,7 @@ CREATE TABLE IF NOT EXISTS bom_snapshot (
     published_at  TIMESTAMP NOT NULL
 )
 USING DELTA
-PARTITIONED BY (campaign_code)
+PARTITIONED BY (campaign_id)
 COMMENT 'Nomenclatures effectives de la campagne — ce qui a servi à éclater le WIP.';
 
 CREATE TABLE IF NOT EXISTS count_result (
@@ -130,7 +153,7 @@ CREATE TABLE IF NOT EXISTS count_result (
     published_at  TIMESTAMP NOT NULL
 )
 USING DELTA
-PARTITIONED BY (campaign_code)
+PARTITIONED BY (campaign_id)
 COMMENT 'Comptages retenus, avec la valeur importée et la correction humaine côte à côte.';
 
 CREATE TABLE IF NOT EXISTS wip_breakdown (
@@ -145,7 +168,7 @@ CREATE TABLE IF NOT EXISTS wip_breakdown (
     published_at   TIMESTAMP NOT NULL
 )
 USING DELTA
-PARTITIONED BY (campaign_code)
+PARTITIONED BY (campaign_id)
 COMMENT 'Traçabilité de l''éclatement du WIP : quel assemblage a produit quelle quantité de quel composant.';
 
 CREATE TABLE IF NOT EXISTS adjustment (
@@ -164,7 +187,7 @@ CREATE TABLE IF NOT EXISTS adjustment (
     published_at   TIMESTAMP NOT NULL
 )
 USING DELTA
-PARTITIONED BY (campaign_code)
+PARTITIONED BY (campaign_id)
 COMMENT 'Mouvements de stock postés après comptage.';
 
 CREATE TABLE IF NOT EXISTS variance_analysis (
@@ -181,7 +204,7 @@ CREATE TABLE IF NOT EXISTS variance_analysis (
     published_at       TIMESTAMP NOT NULL
 )
 USING DELTA
-PARTITIONED BY (campaign_code)
+PARTITIONED BY (campaign_id)
 COMMENT 'Analyse des écarts : la cause retenue par un humain et, à côté, ce que l''IA avait proposé.';
 
 CREATE TABLE IF NOT EXISTS audit_event (
@@ -197,7 +220,7 @@ CREATE TABLE IF NOT EXISTS audit_event (
     published_at  TIMESTAMP NOT NULL
 )
 USING DELTA
-PARTITIONED BY (campaign_code)
+PARTITIONED BY (campaign_id)
 COMMENT 'Journal d''audit archivé. Append-only côté Lakebase, append-only ici.';
 
 -- --------------------------------------------------------------------------
@@ -207,28 +230,32 @@ COMMENT 'Journal d''audit archivé. Append-only côté Lakebase, append-only ici
 -- Reconciled variance, at article granularity (the financial view: a transfer
 -- between two bins is not a variance).
 CREATE OR REPLACE VIEW v_variance AS
+-- Les regroupements et les jointures portent sur `campaign_id`, jamais sur le
+-- code : un code métier se réutilise après une suppression logique, et deux
+-- campagnes homonymes verraient leurs stocks et leurs comptages additionnés
+-- dans la même ligne d'écart.
 WITH book AS (
-    SELECT campaign_code, campaign_id, count_date, item_number,
+    SELECT campaign_id, MAX(campaign_code) AS campaign_code, count_date, item_number,
            SUM(qty) AS book_qty,
            SUM(value) AS book_value,
            MAX(unit_cost) AS unit_cost,
            MAX(unit) AS unit
     FROM book_stock_snapshot
-    GROUP BY campaign_code, campaign_id, count_date, item_number
+    GROUP BY campaign_id, count_date, item_number
 ),
 counted AS (
-    SELECT campaign_code, item_number, SUM(qty) AS counted_qty
+    SELECT campaign_id, item_number, SUM(qty) AS counted_qty
     FROM count_result
-    GROUP BY campaign_code, item_number
+    GROUP BY campaign_id, item_number
 ),
 adjusted AS (
-    SELECT campaign_code, item_number, SUM(qty) AS adjusted_qty
+    SELECT campaign_id, item_number, SUM(qty) AS adjusted_qty
     FROM adjustment
-    GROUP BY campaign_code, item_number
+    GROUP BY campaign_id, item_number
 )
 SELECT
-    COALESCE(b.campaign_code, c.campaign_code)              AS campaign_code,
-    b.campaign_id,
+    COALESCE(b.campaign_id, c.campaign_id)                  AS campaign_id,
+    b.campaign_code,
     b.count_date,
     COALESCE(b.item_number, c.item_number)                  AS item_number,
     i.name,
@@ -250,12 +277,12 @@ SELECT
     c.item_number IS NULL                                   AS book_only
 FROM book b
 FULL OUTER JOIN counted c
-  ON b.campaign_code = c.campaign_code AND b.item_number = c.item_number
+  ON b.campaign_id = c.campaign_id AND b.item_number = c.item_number
 LEFT JOIN adjusted a
-  ON COALESCE(b.campaign_code, c.campaign_code) = a.campaign_code
+  ON COALESCE(b.campaign_id, c.campaign_id) = a.campaign_id
  AND COALESCE(b.item_number, c.item_number) = a.item_number
 LEFT JOIN item_snapshot i
-  ON COALESCE(b.campaign_code, c.campaign_code) = i.campaign_code
+  ON COALESCE(b.campaign_id, c.campaign_id) = i.campaign_id
  AND COALESCE(b.item_number, c.item_number) = i.item_number;
 
 COMMENT ON VIEW v_variance IS
@@ -265,7 +292,8 @@ COMMENT ON VIEW v_variance IS
 -- questions and are deliberately kept apart — see docs/02-data-model.md.
 CREATE OR REPLACE VIEW v_campaign_kpi AS
 SELECT
-    campaign_code,
+    campaign_id,
+    MAX(campaign_code)                                     AS campaign_code,
     MAX(count_date)                                        AS count_date,
     SUM(book_qty)                                          AS book_qty,
     SUM(book_value)                                        AS book_value,
@@ -287,7 +315,7 @@ SELECT
     COUNT_IF(book_only)                                    AS book_only_count,
     COUNT_IF(counted_only)                                 AS counted_only_count
 FROM v_variance
-GROUP BY campaign_code;
+GROUP BY campaign_id;
 
 COMMENT ON VIEW v_campaign_kpi IS
     'Indicateurs de campagne. Trois mesures de fiabilité distinctes : nette (compensée), brute (absolue) et IRA (exactitude des enregistrements).';
@@ -297,17 +325,17 @@ COMMENT ON VIEW v_campaign_kpi IS
 CREATE OR REPLACE VIEW v_variance_recurrence AS
 SELECT
     item_number,
-    COUNT(DISTINCT campaign_code)                          AS campaigns,
+    COUNT(DISTINCT campaign_id)                          AS campaigns,
     SUM(variance_value)                                    AS cumulative_variance_value,
     SUM(ABS(variance_value))                               AS cumulative_abs_variance_value,
     COUNT_IF(variance_value < 0)                           AS shortage_campaigns,
     COUNT_IF(variance_value > 0)                           AS surplus_campaigns,
     CASE
-        WHEN COUNT_IF(variance_value < 0) = COUNT(DISTINCT campaign_code)
-             AND COUNT(DISTINCT campaign_code) > 1 THEN 'manquant récurrent'
-        WHEN COUNT_IF(variance_value > 0) = COUNT(DISTINCT campaign_code)
-             AND COUNT(DISTINCT campaign_code) > 1 THEN 'excédent récurrent'
-        WHEN COUNT(DISTINCT campaign_code) > 1 THEN 'alternant'
+        WHEN COUNT_IF(variance_value < 0) = COUNT(DISTINCT campaign_id)
+             AND COUNT(DISTINCT campaign_id) > 1 THEN 'manquant récurrent'
+        WHEN COUNT_IF(variance_value > 0) = COUNT(DISTINCT campaign_id)
+             AND COUNT(DISTINCT campaign_id) > 1 THEN 'excédent récurrent'
+        WHEN COUNT(DISTINCT campaign_id) > 1 THEN 'alternant'
         ELSE 'ponctuel'
     END                                                    AS pattern
 FROM v_variance
@@ -321,7 +349,8 @@ COMMENT ON VIEW v_variance_recurrence IS
 -- answer at all.
 CREATE OR REPLACE VIEW v_wip_contribution AS
 SELECT
-    w.campaign_code,
+    w.campaign_id,
+    MAX(w.campaign_code)                                   AS campaign_code,
     w.child_item                                           AS item_number,
     i.name,
     SUM(w.child_qty)                                       AS wip_qty,
@@ -330,8 +359,8 @@ SELECT
     COLLECT_SET(w.zone_code)                               AS zones
 FROM wip_breakdown w
 LEFT JOIN item_snapshot i
-  ON w.campaign_code = i.campaign_code AND w.child_item = i.item_number
-GROUP BY w.campaign_code, w.child_item, i.name;
+  ON w.campaign_id = i.campaign_id AND w.child_item = i.item_number
+GROUP BY w.campaign_id, w.child_item, i.name;
 
 COMMENT ON VIEW v_wip_contribution IS
     'Quantité et valeur créditées à chaque composant par l''éclatement du WIP, avec les assemblages et zones d''origine.';

@@ -326,7 +326,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 204 tests, ~1 s, aucune base requise
+make test      # 1308 tests, ~17 s ; 8 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -498,7 +498,63 @@ Réponse attendue :
 }
 ```
 
+#### Les trois points d'entrée de santé
+
+Ils répondent à trois questions différentes, et ne s'échangent pas.
+
+| Chemin | Question | Code | À câbler sur |
+|---|---|---|---|
+| `/api/health/live` | Le processus est-il figé ? | Toujours 200 | La sonde de **vivacité** |
+| `/api/health/ready` | Ce conteneur peut-il servir ? | 200 ou **503** | La sonde de **disponibilité** |
+| `/api/health` | Que sait-on de ce conteneur ? | Toujours 200 | Un humain, un `curl` |
+
+`/api/health/live` ne consulte **aucune** dépendance, et c'est délibéré : y
+faire entrer l'état de Lakebase ferait redémarrer en boucle des conteneurs
+parfaitement sains le jour où la base est indisponible, et la rafale de
+reconnexions qu'ils produiraient l'empêcherait de revenir.
+
+`/api/health/ready` répond 503 quand la base ne répond pas, quand une migration
+reste en attente, quand l'état du schéma est illisible, ou quand
+l'initialisation a échoué. Une migration en attente compte : le schéma n'est
+pas celui que le code attend, et servir dans cet état produit des colonnes
+manquantes au moment où quelqu'un enregistre un comptage, plutôt qu'un refus
+franc à la porte.
+
+```bash
+URL="$(databricks apps get campagnes-inventaire --profile PROD -o json | jq -r .url)"
+curl -s -o /dev/null -w "live:%{http_code}\n"  "$URL/api/health/live"
+curl -s -w "\nready:%{http_code}\n"           "$URL/api/health/ready"
+```
+
 ### 4.6 Déployer le job de publication
+
+> **Repartitionnement des tables d'archive.** Les tables Delta sont désormais
+> partitionnées par `campaign_id` et non plus par `campaign_code`. Un code
+> métier se réutilise — l'application ne supprime que logiquement — si bien
+> qu'une campagne « INV-2026-06 » créée après le retrait d'une homonyme
+> écrasait l'archive de la première.
+>
+> `sql/00_unity_catalog.sql` utilise `CREATE TABLE IF NOT EXISTS` : un
+> déploiement neuf obtient le bon partitionnement, **une installation existante
+> garde l'ancien**. Pour la reprendre, sauvegardez les tables, supprimez-les et
+> rejouez le script :
+>
+> ```sql
+> CREATE TABLE inventory.book_stock_snapshot_sauvegarde
+>   DEEP CLONE inventory.book_stock_snapshot;   -- et ainsi de suite
+> DROP TABLE inventory.book_stock_snapshot;
+> -- puis `make uc`, et republier chaque campagne
+> ```
+>
+> Republier est sans risque : chaque écriture est un `replaceWhere` sur
+> l'identifiant de la campagne.
+
+> **La table `publication`.** Elle est écrite en dernier par le job, et par rien
+> d'autre. Une campagne y figure si et seulement si son archive est complète :
+> Delta n'offrant pas de transaction couvrant plusieurs tables, c'est ce qui
+> empêche une publication interrompue de se faire passer pour aboutie. Le job
+> repose ensuite l'horodatage sur `campaign.published_at` dans Lakebase, que la
+> clôture consulte.
 
 ```bash
 databricks bundle deploy -t prod --profile PROD
@@ -574,9 +630,17 @@ Onglet **Environment**, ajoutez :
 | `INV_LOG_LEVEL` | `INFO` |
 | `INV_ENV` | `prod` |
 | `INV_ASSISTANT_PROFILE` | `etendu` (seul profil livré) |
+| `INV_SCAN_LLM_ENDPOINT` | *(vide)* — voir §8.2 bis |
+| `INV_SCAN_MAX_WORKERS` | `4` |
+| `INV_SCAN_MAX_PAGES` | `250` |
+| `INV_SCAN_MAX_PIXELS` | `40000000` |
+| `INV_SCAN_ROUTING_BATCH` | `12` |
+| `INV_SCAN_DPI` | `150` |
 | `INV_ERP_SCHEMA` | `emotors_data_champions.silver_erp_ye` |
 | `INV_ERP_ITEMS_TABLE` | `silver_base_article` |
 | `INV_ERP_BOM_TABLE` | `silver_bom` |
+| `INV_ERP_STOCK_TABLE` | `stock_snapshot` |
+| `INV_ERP_MOVEMENTS_TABLE` | `mouvements` |
 
 `INV_ASSISTANT_PROFILE` décide de ce que l'assistant de campagne reçoit et de
 ce qu'on lui demande. Un seul profil est livré — `etendu` : le dossier complet
@@ -584,12 +648,242 @@ de la campagne, un raisonnement libre, des chiffres qui restent ceux du dossier.
 La variable existe pour qu'en ajouter un autre, plus restreint pour un public
 plus large par exemple, soit un redémarrage et non une livraison de code.
 
-Les trois variables `INV_ERP_*` désignent les tables silver lues par
-« Lire depuis l'ERP » sur les grilles Articles et Nomenclatures. La lecture
-emprunte l'entrepôt SQL attaché (`DATABRICKS_WAREHOUSE_ID`) et les droits Unity
-Catalog de l'application : sans entrepôt ou sans `SELECT` sur ces tables,
-l'option apparaît désactivée avec sa raison, et le chargement par fichier reste
-disponible.
+`INV_ERP_SCHEMA` et ses tables désignent les tables **silver** lues par « Lire
+depuis l'ERP » sur les grilles Articles, Nomenclatures et Stock ERP.
+
+`INV_ERP_STOCK_TABLE` désigne le **snapshot de stock physique** : une ligne par
+article × entrepôt × emplacement, partitionnée par `snapshot_date`. Les colonnes
+attendues sont `item_id`, `entrepot`, `emplacement`, `stock_physique`, `unite` et
+`snapshot_date` ; l'entité juridique et les lignes supprimées sont filtrées en
+amont.
+
+L'écran propose les journées publiées et **n'en charge qu'une**, celle que
+l'utilisateur désigne — la plus récente par défaut. Deux conséquences pour la
+plateforme : la table doit garder quelques jours d'historique pour que le choix
+ait un sens, et `GET /api/erp/stock-dates` fait un `SELECT DISTINCT
+snapshot_date … LIMIT 30` sur cette table, borné pour la même raison que la liste
+affichée.
+
+`INV_ERP_MOVEMENTS_TABLE` désigne la table des **mouvements de stock**, lue par
+« Tout charger de l'ERP » dans la vue Comparaison. Une ligne par référence et par
+jour, une colonne par flux : `reception`, `expedition`, `production`,
+`conso_theorique`, `consommation`, `rebut`. Les cinq quantités dont la
+comparaison a besoin en sortent, y compris la production et la consommation
+théorique, qui venaient auparavant de la table de faits du backflush.
+
+Elle vit dans `INV_ERP_SCHEMA`, le schéma du référentiel : **même catalogue,
+même grant**. Et tout ce que l'application filtrait elle-même contre les tables
+bronze est appliqué en amont — l'entité juridique, l'exclusion des lignes
+supprimées, la reconnaissance du rebut à son emplacement `QUAL VRAC` /
+`QUA REBUT`, et la déduplication de la production d'un parent sur ses
+composants.
+
+Ces lectures empruntent l'entrepôt SQL attaché (`DATABRICKS_WAREHOUSE_ID`) et
+les droits Unity Catalog de l'application : sans entrepôt ou sans `SELECT` sur
+ces tables, l'option apparaît désactivée avec sa raison, et le chargement par
+fichier reste disponible.
+
+### 8.2 bis — Régler la lecture des scans
+
+Une pile de cent feuilles de comptage fait deux cents pages. Cinq variables
+gouvernent ce que ce volume coûte, et **aucune n'a de valeur optimale
+universelle** : elles dépendent du débit réel de l'endpoint. Les défauts sont un
+point de départ à mesurer, pas un réglage.
+
+| Variable | Défaut | Ce qu'elle décide |
+|---|---|---|
+| `INV_SCAN_LLM_ENDPOINT` | *(vide)* | L'endpoint qui lit les scans. Vide, c'est `INV_LLM_ENDPOINT` — le comportement d'avant |
+| `INV_SCAN_MAX_WORKERS` | `4` | Combien de feuilles sont lues en même temps |
+| `INV_SCAN_MAX_PAGES` | `250` | Le plafond d'une pile. Au-delà : refus explicite, jamais troncature |
+| `INV_SCAN_MAX_PIXELS` | `40000000` | Le plafond d'**une page rendue**. `render()` alloue son bitmap hors de portée de la garde anti-bombe de PIL : un PDF de quelques kilo-octets peut déclarer une page de deux cents pouces de côté, soit 900 Mpx à 150 dpi. Au-delà du plafond la résolution est **réduite**, pas la page refusée — un MediaBox démesuré est presque toujours un artefact de scanner, et une feuille reste lisible à cent dpi. Un A4 à 600 dpi tient dans la valeur par défaut |
+| `INV_SCAN_ROUTING_BATCH` | `12` | Combien de pieds de page partent dans un même appel de routage |
+| `INV_SCAN_DPI` | `150` | Résolution de rastérisation |
+
+**Si le routage échoue en masse.** Un lot en erreur est recoupé en deux et
+redemandé jusqu'à la page seule : la pile passe, au prix d'appels
+supplémentaires. Le rapport et les logs distinguent maintenant les deux causes —
+*« Réponse du modèle coupée au plafond de N jetons »* (le modèle a écrit plus que
+le budget accordé) de *« pas renvoyé de JSON exploitable »* (la réponse est
+entière mais mal formée). Si c'est la première, et systématiquement, baissez
+`INV_SCAN_ROUTING_BATCH` : le plafond de jetons suit la taille du lot, mais un
+endpoint peut aussi buter sur le **nombre d'images** d'un appel, et cette
+limite-là ne s'achète pas en jetons.
+
+**Un endpoint vision dédié.** Transcrire des chiffres manuscrits en JSON
+n'appelle aucun raisonnement : payer un modèle de raisonnement pour cela coûte
+du temps sur *chacune* des cent feuilles d'une pile, et c'est le temps qui fait
+renoncer à scanner. Pointer `INV_SCAN_LLM_ENDPOINT` sur un modèle vision rapide
+laisse l'assistant de campagne sur le modèle puissant. Les deux clients
+négocient leurs paramètres séparément : ils n'ont aucune raison d'accepter les
+mêmes.
+
+**Le parallélisme se mesure, il ne se devine pas.** Quatre est un début. Montez
+en surveillant deux choses dans les journaux du serving endpoint : les **429**
+et la **profondeur de file**. Au-delà de ce que l'endpoint absorbe, les appels
+attendent côté serving et le temps gagné se paie en relances. La marche à
+suivre est celle que Databricks recommande pour tout endpoint : un test de
+charge, puis un réglage sur le débit observé.
+
+**Ce que le rapport mesure.** Chaque lecture renvoie ses chronomètres —
+`evidence_upload_ms`, `pdf_render_ms`, `routing_ms`, `model_inference_ms`,
+`db_write_ms`, `totalMs` — plus le nombre de pages, d'octets d'image et de
+tokens. « C'est lent » ne dit pas où ; ces cinq nombres, si, et trois des cinq
+causes possibles ne sont pas dans ce code.
+
+**Le travail est asynchrone.** Le dépôt (`POST …/generic/scan`) rend un
+identifiant tout de suite ; l'écran interroge `GET …/generic/scan/jobs/{id}`. La
+lecture tourne dans **un** fil de l'application — pas dans un job Databricks :
+le démarrage d'un job coûterait à lui seul plus que le rendu de la pile. Un seul
+scan à la fois par conteneur, délibérément : deux piles se disputeraient le même
+endpoint sans aller plus vite.
+
+Conséquence à connaître : le PDF vit en mémoire du conteneur qui l'a reçu.
+**Un redémarrage pendant une lecture la perd**, et le travail est marqué en
+échec au démarrage suivant avec un message qui invite à recharger. Les feuilles
+déjà écrites avant l'interruption sont conservées.
+
+### 8.3 bis — Quand le catalogue de l'ERP n'est pas ouvrable à l'application
+
+La lecture directe suppose que le **service principal de l'App** — pas vous —
+ait `USE CATALOG` sur le catalogue de l'ERP, puis `USE SCHEMA` et `SELECT`.
+Sans quoi le chargement échoue en nommant la commande à faire exécuter :
+
+```sql
+GRANT USE CATALOG ON CATALOG emotors_data_champions              TO `<sp-de-l-app>`;
+GRANT USE SCHEMA  ON SCHEMA  emotors_data_champions.silver_erp_ye TO `<sp-de-l-app>`;
+GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.silver_base_article TO `<sp-de-l-app>`;
+GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.silver_bom          TO `<sp-de-l-app>`;
+GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.stock_snapshot      TO `<sp-de-l-app>`;
+GRANT SELECT ON TABLE emotors_data_champions.silver_erp_ye.mouvements          TO `<sp-de-l-app>`;
+```
+
+Seul un propriétaire du catalogue peut les passer. Quand aucun n'est joignable
+— et un inventaire garde sa date —, `INV_ERP_SOURCE=mirror` renverse la
+contrainte : l'application lit une copie locale, dans sa propre base, alimentée
+par le job `inventory_sync_erp_mirror` qui tourne, lui, avec une identité ayant
+déjà accès à l'ERP.
+
+| `INV_ERP_SOURCE` | Lit | Exige |
+|---|---|---|
+| `uc` (défaut) | les tables silver, en direct | `USE CATALOG` + `SELECT` pour le SP de l'App |
+| `mirror` | `erp_base_article`, `erp_bom`, `erp_ecart_backflush`, `erp_mouvements`, `erp_stock_snapshot` (Lakebase) | que le job de synchronisation ait tourné |
+
+En `uc`, deux catalogues se demandent : celui du référentiel — qui porte aussi
+les mouvements — et celui du backflush. Deux grants, potentiellement deux
+propriétaires.
+
+**La voie recommandée est le notebook**, `jobs/sync_erp_mirror_notebook.py` :
+importez-le dans le workspace (*Workspace → Import → File*), renseignez les
+widgets, « Exécuter tout », puis planifiez-le depuis l'interface. Il obtient son
+jeton du contexte de session et ne dépend donc pas de la version du SDK — que le
+runtime serverless fige en deçà de l'API Lakebase (voir plus bas). Un seul
+widget demande une valeur qui ne se devine pas, `pg_host` : console Lakebase → le
+projet → l'endpoint en écriture, ou le `PGHOST` de l'App dans son onglet
+*Environment*.
+
+L'écart backflush est copié par le même notebook, sous deux widgets :
+`sync_backflush` (`non` pour ne copier que le référentiel) et `backflush_since`,
+le lundi ISO à partir duquel copier. La table de faits est à la maille semaine
+et grossit indéfiniment, d'où la borne. La dernière cellule affiche les semaines
+effectivement couvertes — c'est la réponse à la seule question que pose l'écran
+*Backflush* quand il n'affiche rien : une période d'inventaire hors de cet
+intervalle ne renverra jamais de ligne.
+
+Les **mouvements de stock** se copient sous deux widgets seulement :
+`sync_movements` et `movements_since`. La table est déjà agrégée et filtrée à la
+source — plus d'entité juridique, plus d'emplacement de rebut, plus de
+déduplication à paramétrer. Elle remonte à janvier 2022 et grossit d'un jour par
+jour, d'où la borne ; la maille référence × jour se retaille ensuite sur
+n'importe quelle période d'inventaire. La dernière cellule affiche l'intervalle
+couvert et le total de chacun des six flux.
+
+Le **snapshot de stock physique** n'a besoin que d'un interrupteur,
+`sync_stock` : la source est partitionnée par jour et le job n'en copie que la
+tranche la plus récente — il n'y a pas d'historique à borner. La dernière cellule
+affiche la date copiée et le nombre de lignes, ce qui répond à la seule question
+que pose l'écran *Stock ERP* : de quel jour vient ce stock.
+
+```bash
+# 1. l'App d'abord : la migration 006 s'applique à son démarrage et ouvre
+#    l'écriture du miroir à l'identité qui synchronise
+databricks apps deploy -t prod --profile PROD
+
+# 2. exécuter le notebook depuis l'interface, puis basculer l'App sur le miroir
+databricks apps deploy -t prod --profile PROD --var=erp_source=mirror
+```
+
+Le job `inventory_sync_erp_mirror` du bundle fait la même chose en ligne de
+commande ; sa planification est en pause, faute de quoi il échouerait chaque
+nuit tant que le SDK du runtime n'expose pas l'API Lakebase.
+
+Le job est planifié à 4 h 30 (Europe/Paris) : un référentiel n'est pas un flux
+temps réel, et la copie doit être en place **avant** la journée de comptage.
+Le bouton « Lire depuis l'ERP » ne change ni de place ni de comportement ; il
+affiche à côté de lui la date de la copie, et la signale en orange au-delà de
+sept jours. L'historique d'import enregistre « … (miroir du JJ/MM/AAAA) » plutôt
+que la table seule : une campagne chargée sur une copie de trois semaines doit
+rester lisible six mois plus tard.
+
+Si le job échoue en cours de route, le miroir précédent reste intact — le
+remplacement se fait dans une seule transaction. Et un ERP qui ne renvoie aucun
+article n'écrase rien : le job s'arrête en erreur.
+
+**Deux identités, et c'est le principe même.** L'application ne peut pas lire
+l'ERP ; le job le peut. Il tourne donc sous une autre identité qu'elle, ce qui a
+deux conséquences côté Lakebase, à régler une fois :
+
+1. **Le job doit pouvoir se connecter.** Contrairement à une App, un job ne
+   reçoit aucune variable `PG*` : il déduit l'endpoint de `--branch`, passé par
+   le bundle, puis mint un credential pour l'identité qui l'exécute. Il faut donc
+   que cette identité ait un rôle dans la base (console Lakebase → le projet →
+   *Roles*). Sinon : `FATAL: role "…" does not exist`, et le job dit quoi faire.
+2. **Le job doit pouvoir écrire.** Les tables du miroir appartiennent au service
+   principal de l'App, qui les a créées ; dans PostgreSQL, seul le propriétaire
+   accorde des droits dessus. La migration `006` le fait, à l'endroit unique où
+   l'application parle en tant que propriétaire. Elle s'applique au démarrage de
+   l'App — donc **redéployez l'App avant de relancer le job**.
+
+Le grant de la migration 006 porte sur les deux tables du miroir et sur elles
+seules : l'identité de synchronisation n'accède ni aux campagnes, ni aux
+comptages, ni à l'audit — vérifié, `permission denied for table campaign`.
+
+À défaut, le job accepte `PGHOST` / `PGUSER` / `PGPASSWORD` depuis un secret
+scope, ou `--pg-user` pour un rôle Postgres dédié.
+
+**Si la découverte de l'endpoint est refusée** (« Impossible de lister les
+endpoints de … »), la même commande depuis votre poste tranche en dix secondes,
+puisqu'elle emprunte la même identité que le job :
+
+```bash
+databricks postgres list-projects --profile PROD
+databricks postgres list-endpoints projects/inventaire/branches/production --profile PROD
+```
+
+- Elle répond → l'identité a bien l'accès ; c'est le SDK de l'environnement du
+  job qui ne connaît pas l'API. Voir juste en dessous : il ne peut pas être
+  relevé, passez `--pg-host`.
+- Elle échoue → c'est l'accès au projet Lakebase, ou le chemin de branche.
+  Corrigez `lakebase_project` / `lakebase_branch`, ou contournez avec
+  `--pg-host`, lu dans la console Lakebase.
+
+**Le SDK d'un job ne se choisit pas.** `w.postgres` (API Lakebase Autoscaling)
+n'existe qu'à partir de `databricks-sdk` 0.81, mais `databricks-sdk` figure dans
+`immutable-package-constraints.txt` du runtime serverless : en déclarer une autre
+version fait échouer l'installation de **tout** l'environnement, et le job ne
+démarre pas — l'environnement n'accepte d'ailleurs que des versions exactes,
+jamais de bornes. Le job s'accommode donc de ce qui est présent :
+
+| Ce que le SDK offre | Hôte | Mot de passe |
+|---|---|---|
+| `w.postgres` (≥ 0.81) | déduit de `--branch` | credential dédié à l'endpoint |
+| version plus ancienne | **`--pg-host` requis** | jeton OAuth de l'identité du job |
+| — | `--pg-host` | `PGPASSWORD` d'un secret scope |
+
+L'hôte se relève une fois dans la console Lakebase (le projet → l'endpoint en
+écriture) ; il ne change pas. C'est la même valeur que le `PGHOST` de l'App.
+
+Le job journalise la version du SDK qu'il utilise et reporte la cause exacte de
+chaque refus : ces trois pannes se ressemblaient à l'écran.
 
 `DATABRICKS_WAREHOUSE_ID` et `INV_LLM_ENDPOINT` sont fournis par les ressources
 attachées (`valueFrom`), ne les saisissez pas à la main.
@@ -748,9 +1042,20 @@ Ou, à la souris : onglet **Permissions** de l'app.
 ### 7.2 Vérifier l'identité vue par l'application
 
 Ouvrez `<url-de-lapp>/api/me`. Vous devez voir votre adresse et
-`"source": "databricks-apps"`. Si vous voyez `unknown@unauthenticated`,
-l'application est accessible sans passer par le proxy : vérifiez la configuration
-réseau du workspace.
+`"source": "databricks-apps"`.
+
+Si la réponse est un **401** (`« Identité absente. Cette application doit être
+atteinte via le proxy d'authentification Databricks »`), l'application est
+joignable sans passer par le proxy. Vérifiez la configuration réseau du
+workspace avant toute autre chose : dans cet état, chaque écriture serait
+attribuée à quelqu'un que personne n'a authentifié.
+
+L'application inventait auparavant une identité générique dans ce cas et
+laissait passer. Les campagnes créées ainsi portent un propriétaire que
+personne ne peut identifier, et la barrière d'identité — propriétaire ou
+gestionnaire déclaré — ne protégeait alors rien. Le refus a remplacé
+l'invention : mieux vaut une application injoignable qu'une piste d'audit qui
+ment.
 
 ### 7.3 Première campagne
 
@@ -765,6 +1070,79 @@ réseau du workspace.
 7. Passer en **Comptage** — les référentiels sont alors gelés.
 
 Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur.md).
+
+### 7.4 Le volume des pièces justificatives
+
+Chaque fichier chargé et chaque feuille scannée est déposé dans un volume Unity
+Catalog, et son chemin enregistré à côté de ce qu'il a produit. C'est ce qui
+permet, six mois plus tard, de rouvrir la feuille manuscrite derrière un écart
+signé — le conteneur de l'application étant éphémère, le fichier n'y survit pas
+à la requête qui l'a reçu.
+
+Le volume se crée une fois, dans le schéma de l'application :
+
+```sql
+CREATE VOLUME IF NOT EXISTS emotors_data_champions.inventory.inventory_evidence;
+GRANT READ VOLUME, WRITE VOLUME
+  ON VOLUME emotors_data_champions.inventory.inventory_evidence
+  TO `<sp-de-l-app>`;
+```
+
+Il s'organise par campagne, puis par nature de pièce :
+
+```
+/Volumes/<catalogue>/<schéma>/<volume>/
+  INV-2026-T3/
+    items/       20260901T063015-3016ef88-articles.xlsx
+    book_stock/  20260901T071140-a71c0e42-stock-erp.csv
+    scans/       20260902T081205-9d4b1f07-releve-atelier.pdf
+```
+
+L'horodatage précède le nom pour que l'ordre alphabétique du dossier soit
+l'ordre chronologique, qui est celui dans lequel on cherche.
+
+**Le fragment hexadécimal est l'empreinte du contenu.** Le chemin ne portait
+auparavant que l'horodatage à la seconde et le nom du fichier, et le dépôt se
+faisait en écrasement. Deux scans nommés `scan.pdf` déposés dans la même
+seconde — deux feuilles envoyées ensemble, un re-scan après correction —
+écrivaient au même endroit : le second effaçait le premier, et la feuille dont
+la base gardait le chemin pointait alors sur l'image d'une autre. Rien ne le
+signalait, et un contrôle six mois plus tard aurait relu la mauvaise pièce.
+
+Deux contenus différents ne peuvent plus se retrouver au même chemin ; deux
+dépôts du **même** fichier convergent vers le même, ce qui est le comportement
+voulu. Plus rien n'est déposé en écrasement.
+
+Les feuilles scannées conservent en outre l'empreinte, la taille et le type du
+fichier lu (`count_sheet.evidence_sha256`, `evidence_bytes`, `evidence_mime`,
+migration 019). Le chemin dit *où* ; l'empreinte dit *lequel* — un volume se
+modifie depuis l'espace de travail, et c'est la seule façon de répondre
+autrement que par la confiance. Les feuilles scannées avant la migration 019
+gardent leur chemin sans empreinte : les remplir après coup reviendrait à
+affirmer que le fichier présent aujourd'hui est bien l'original, ce que ces
+colonnes existent précisément pour ne plus avoir à supposer.
+
+**L'archivage fait échouer ce qu'il accompagne — ou non, selon la pièce.**
+
+*Un chargement de fichier* aboutit même si l'archivage échoue : volume absent,
+droit manquant, API indisponible, la pièce n'est pas déposée et
+l'avertissement part dans les journaux. L'écran affiche alors le nom du fichier
+en texte simple au lieu d'un lien — « pas de pièce » se voit, ce qui vaut mieux
+qu'un import de deux cent mille lignes refusé, et l'export se relit dans l'ERP.
+
+*Un scan de feuille* est refusé. Le papier manuscrit repart dans l'atelier et
+finit à la benne ; écrire les quantités que le modèle y a lues en sachant que
+l'image n'a pas été archivée fabriquerait un comptage que personne ne pourra
+jamais vérifier. Si le volume n'est pas configuré, la lecture de scans est donc
+indisponible et le dit, au lieu de produire des chiffres sans pièce.
+
+`<url-de-lapp>/api/health` répond `"evidenceConfigured": true` quand les trois
+noms qui composent le chemin sont renseignés. Les droits, eux, ne se vérifient
+qu'au premier dépôt.
+
+Ni les collages ni les lectures ERP ne produisent de pièce : le texte collé est
+déjà dans les lignes chargées, et une lecture ERP se rejoue par sa requête, que
+l'historique des imports nomme.
 
 ---
 
@@ -788,6 +1166,7 @@ Le détail fonctionnel est dans [`04-guide-utilisateur.md`](04-guide-utilisateur
 | `invalid dependency "${DATABRICKS_APP_PORT}", no such node ""` | `${...}` est aussi la syntaxe d'interpolation du bundle : le résolveur cherche ce nom dans l'arbre du bundle | Ne mettez aucune variable d'exécution dans `config.command`. La commande est `python main.py`, et `main.py` lit le port depuis l'environnement. Non détecté par `validate` |
 | `Error installing packages. Please check /logz for more details` | Conflit de dépendances dans `app/requirements.txt` — le message de l'app ne dit pas lequel | Reproduisez-le localement, où pip nomme le coupable : `pip install --dry-run -r app/requirements.txt` |
 | Page « L'API fonctionne, l'interface n'a pas été construite » (503), ou `{"detail":"Not Found"}` sur les versions antérieures | `app/static/` absent du déploiement | Deux causes distinctes : la SPA n'a pas été construite, **ou** elle l'a été mais le bundle ne la téléverse pas (`.gitignore` s'applique à la synchronisation — d'où le bloc `sync.include` de `databricks.yml`). Contrôlez l'un avec `dir app\static\index.html`, l'autre avec `databricks bundle sync --dry-run --full -o json` (§4.2) |
+| **Le déploiement réussit, l'app démarre, et c'est la version précédente qui s'affiche** | Trois causes possibles, à départager par `curl` (voir §8.3) | Comparez `frontend.bundle` de `/api/health` avec le nom du fichier présent dans `app/static/assets/` après un build local. Identiques → c'est le cache du navigateur (`Ctrl`+`Maj`+`R`). Différents → le téléversement n'a pas emporté la nouvelle interface : construisez **avant** de déployer, et vérifiez que `databricks apps deploy` est bien lancé avec `-t <cible>` (sans cible, la CLI redéploie ce qui se trouve déjà dans le workspace, donc l'ancienne version) |
 | `password authentication failed` après ~1 h | Jeton Lakebase expiré | Normalement géré automatiquement ; si cela persiste, redémarrez l'app et ouvrez un ticket |
 | **404 sur toutes les pages sauf `/api/...`** | SPA non construite | `make build-frontend` puis redéployez ; `app/static/index.html` doit exister |
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |
@@ -814,7 +1193,39 @@ databricks apps logs campagnes-inventaire --profile PROD \
   | jq 'select(.request_id=="<identifiant>")'
 ```
 
-### 8.2 Se connecter à Lakebase pour inspecter
+### 8.2 Quelle version est réellement déployée ?
+
+« J'ai redéployé et rien n'a changé » a trois causes qui, depuis un navigateur,
+sont indiscernables. Une seule commande les départage :
+
+```bash
+curl -s https://<app>.databricksapps.com/api/health | jq '.frontend, .migrations'
+```
+
+```json
+{ "bundle": "index-goTc8FJP.js", "builtAt": "2026-08-19T00:05:29Z", "assets": 6 }
+{ "applied": ["001_initial_schema", "…", "009_stock_flow"], "pending": [], "error": null }
+```
+
+`bundle` est le nom du paquet JavaScript que le conteneur sert. Vite le dérive
+du *contenu* : deux constructions des mêmes sources donnent le même nom, et le
+moindre changement en donne un autre. Comparez-le au fichier présent dans
+`app/static/assets/` après un `make build-frontend` local.
+
+| Constat | Cause | Correction |
+|---|---|---|
+| Le nom est le même que localement | Le déploiement est bon ; c'est le navigateur | `Ctrl`+`Maj`+`R`. Ne devrait plus se produire : la coquille est désormais servie en `no-cache` |
+| Le nom diffère | Le téléversement n'a pas emporté la nouvelle interface | Construisez avant de déployer (`make deploy` enchaîne les deux), et déployez avec `-t <cible>` |
+| `bundle: null` | `app/static/` est absent du déploiement | Voir la ligne « Page L'API fonctionne… » du tableau ci-dessus |
+| `migrations.pending` non vide | Le code est à jour, le schéma non | Consultez les journaux de démarrage : le rôle doit avoir `CREATE` sur le schéma |
+
+> **Sans cible, `databricks apps deploy` n'est pas la commande du bundle.**
+> `databricks apps deploy <nom> --source-code-path <chemin workspace>` redéploie
+> ce qui se trouve **déjà** dans le workspace — c'est-à-dire la version
+> précédente. Seul `databricks apps deploy -t <cible>` synchronise d'abord les
+> fichiers locaux. C'est ce que fait `make deploy`.
+
+### 8.3 Se connecter à Lakebase pour inspecter
 
 ```bash
 # Générer un credential temporaire
@@ -841,12 +1252,38 @@ databricks bundle validate -t prod --profile PROD
 databricks apps deploy -t prod --profile PROD
 ```
 
+L'ordre compte : `apps deploy` téléverse ce qui est sur le disque au moment où
+il tourne, donc la construction vient **avant**. `make deploy TARGET=prod
+PROFILE=PROD` enchaîne les deux et ne peut pas être fait dans le mauvais ordre.
+
+Une fois l'app redémarrée, vérifiez que c'est bien la nouvelle version qui
+répond — un déploiement réussi qui sert l'ancienne interface est un cas réel, et
+le navigateur ne le dit pas (§8.2) :
+
+```bash
+curl -s https://<app>.databricksapps.com/api/health | jq '.frontend.bundle'
+ls app/static/assets/index-*.js        # le même nom, sinon voir §8.2
+```
+
 Les nouvelles migrations SQL s'appliquent automatiquement au redémarrage. Elles
 sont **en avant uniquement** : il n'y a pas de migration descendante, parce
 qu'annuler un schéma dans un système dont la promesse est un journal d'audit
 immuable n'est pas une garantie qu'on peut offrir. Pour revenir en arrière,
 redéployez la version précédente du code — le schéma reste compatible tant
 qu'aucune colonne n'a été supprimée.
+
+> **La migration 014 écrit des données, pas seulement du schéma.** Elle affecte
+> `younes.elhachi1@emotors.com` aux campagnes dont `created_by` est vide. Depuis
+> que l'écriture suppose d'être propriétaire ou gestionnaire déclaré, une
+> campagne sans propriétaire n'est modifiable par personne — pas même par celui
+> qui l'a créée. Elle ne touche aucune campagne qui a déjà un auteur, et une
+> seconde exécution ne trouve plus rien à corriger. Pour vérifier avant ou après
+> le déploiement :
+>
+> ```sql
+> SELECT code, created_by FROM inventory.campaign
+>  WHERE coalesce(btrim(created_by), '') = '';
+> ```
 
 ### 9.1 Sauvegarde avant une mise à jour majeure
 

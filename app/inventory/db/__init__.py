@@ -10,13 +10,16 @@ from .repositories import (
     AdjustmentRepository,
     AnalysisRepository,
     AuditRepository,
+    BackflushRepository,
     BookStockRepository,
     CampaignRepository,
     ConsolidationRepository,
     ImportBatchRepository,
     JournalRepository,
     ReferentialRepository,
+    ScanJobRepository,
     SheetRepository,
+    StockFlowRepository,
     new_id,
 )
 
@@ -32,7 +35,10 @@ __all__ = [
     "CampaignRepository",
     "ConsolidationRepository",
     "ImportBatchRepository",
+    "ScanJobRepository",
     "JournalRepository",
+    "BackflushRepository",
     "ReferentialRepository",
     "SheetRepository",
+    "StockFlowRepository",
 ]

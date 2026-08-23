@@ -13,7 +13,9 @@ labels are only ever seen at the import boundary.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
+from collections.abc import Mapping
 from decimal import Decimal
 from typing import Annotated, Any, Self
 
@@ -26,6 +28,8 @@ from .enums import (
     CountSection,
     DataSource,
     ExclusionScope,
+    FlowKind,
+    FlowSource,
     ItemCommonality,
     ItemType,
     JournalKind,
@@ -33,10 +37,10 @@ from .enums import (
     LocationStatus,
     LocationType,
     SheetPass,
-    SheetStatus,
-    ZoneStatus,
 )
 from .quantities import ZERO, quantize_money, quantize_qty, to_decimal
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "DomainModel",
@@ -48,6 +52,7 @@ __all__ = [
     "CampaignConfig",
     "Campaign",
     "Item",
+    "in_perimeter",
     "BomLink",
     "Warehouse",
     "Location",
@@ -62,8 +67,14 @@ __all__ = [
     "ConsolidatedLine",
     "WipBreakdown",
     "AdjustmentLine",
+    "BackflushLine",
+    "StockFlowRun",
+    "StockFlowInput",
+    "StockFlowErp",
+    "StockFlowLine",
     "VarianceLine",
     "ControlFinding",
+    "FindingGroup",
     "AuditEvent",
     "AssignableCause",
     "VarianceAnalysis",
@@ -165,18 +176,13 @@ class Thresholds(DomainModel):
     value_abs_eur: Decimal = Field(default=Decimal("1000"))
     #: |Δqty| / book_qty above which the line is an exception (0.05 = 5 %).
     qty_relative: Decimal | None = Field(default=Decimal("0.02"))
-    #: |Δqty| below which the line is never an exception, whatever the ratio.
-    qty_abs_floor: Decimal = Field(default=Decimal("0"))
-    #: Tolerance used by the Inventory Record Accuracy (IRA) KPI, per WMS
-    #: practice: a line counts as "accurate" when |Δqty|/book_qty <= tolerance.
-    ira_tolerance: Decimal = Field(default=Decimal("0"))
 
-    @field_validator("value_abs_eur", "qty_abs_floor", mode="before")
+    @field_validator("value_abs_eur", mode="before")
     @classmethod
     def _money(cls, v: Any) -> Decimal:
         return _as_money(v)
 
-    @field_validator("qty_relative", "ira_tolerance", mode="before")
+    @field_validator("qty_relative", mode="before")
     @classmethod
     def _ratio(cls, v: Any) -> Decimal | None:
         if v is None:
@@ -192,8 +198,36 @@ class CampaignConfig(DomainModel):
 
     generic_warehouse: str = "B06VRAC"
     generic_location: str = "GENERIQUE"
-    #: Number of independent counts required on GENERIQUE zones.
-    generic_passes: int = Field(default=2, ge=1, le=3)
+    #: Nombre de comptages indépendants exigés sur les zones GENERIQUE.
+    #:
+    #: **Deux au maximum, et pas trois.** Ce champ acceptait 3, mais rien
+    #: derrière ne savait en faire quoi que ce soit : :class:`SheetPass` ne
+    #: connaît que ``PASS_1`` et ``PASS_2``, une zone est bornée à 2, et
+    #: :func:`passes_for` ramenait silencieusement à 2. Une campagne configurée
+    #: à 3 affichait donc « 3 comptages » sur son écran de configuration et
+    #: créait deux feuilles — un troisième comptage que tout le monde croyait
+    #: exigé, que personne ne pouvait faire, et dont l'absence ne se signalait
+    #: nulle part.
+    generic_passes: int = Field(default=2, ge=1, le=2)
+
+    @field_validator("generic_passes", mode="before")
+    @classmethod
+    def _at_most_two_counts(cls, value: Any) -> Any:
+        """Ramène une valeur enregistrée à 3 sans faire échouer la campagne.
+
+        Le champ a accepté 3 : des campagnes existantes peuvent le porter.
+        Refuser de les charger reviendrait à les rendre inaccessibles pour une
+        valeur qui n'a jamais rien produit de différent — 2 est ce que la base
+        contient réellement, en feuilles comme en arbitrages.
+        """
+        if isinstance(value, int) and value > 2:
+            log.warning(
+                "Campagne configurée à %d comptages GENERIQUE : ramenée à 2, "
+                "qui est ce que les feuilles et l'arbitrage savent porter.",
+                value,
+            )
+            return 2
+        return value
     #: Relative gap between pass 1 and pass 2 above which arbitration is
     #: mandatory rather than automatic (0 = any difference triggers arbitration).
     arbitration_tolerance: Decimal = Field(default=Decimal("0"))
@@ -233,6 +267,10 @@ class Campaign(DomainModel):
     #: Set when counting is closed (entering ANALYSIS).
     counting_frozen_at: dt.datetime | None = None
     closed_at: dt.datetime | None = None
+    #: Fin de la dernière publication Delta réussie, posée par le job après
+    #: son manifeste. ``None`` = jamais archivée, et la clôture le refuse : la
+    #: base opérationnelle est vivante, l'archive est ce qui reste.
+    published_at: dt.datetime | None = None
 
     created_by: str
     created_at: dt.datetime
@@ -311,13 +349,7 @@ class Item(DomainModel):
     @field_validator("exclusions", mode="before")
     @classmethod
     def _exclusions(cls, v: Any) -> set[ExclusionScope]:
-        if v is None:
-            return set()
-        if isinstance(v, (str, ExclusionScope)):
-            v = [v]
-        out = {ExclusionScope(str(x).upper()) for x in v}
-        out.discard(ExclusionScope.NONE)
-        return out
+        return ExclusionScope.normalise(v)
 
     # -- scope helpers --------------------------------------------------------
     @property
@@ -338,9 +370,16 @@ class Item(DomainModel):
     def is_assembly(self) -> bool:
         return self.item_type in (ItemType.SEMI_FINISHED, ItemType.FINISHED)
 
-    def value_of(self, qty: Decimal) -> Decimal:
-        """Valuation of *qty* at the frozen standard price."""
-        return quantize_money(qty * self.std_price)
+def in_perimeter(items: Mapping[str, Item]) -> dict[str, Item]:
+    """The articles the campaign actually inventories.
+
+    The rule of every ERP read, in one place. Those tables cover the whole
+    plant, so being in the campaign's referential is necessary but not enough:
+    an article deliberately left out of the perimeter must not come back
+    through the quantities read on it, or its expected stock would be computed
+    and shown as a variance nobody asked for.
+    """
+    return {number: item for number, item in items.items() if not item.excluded_everywhere}
 
 
 class BomLink(DomainModel):
@@ -354,6 +393,15 @@ class BomLink(DomainModel):
     unit: str = "PCE"
     #: 0 for the top level; kept to reproduce the ERP's effective BOM view.
     level: int = 1
+    #: Whether this version of the recipe is the one in force.
+    #:
+    #: The ERP keeps every version of a bill of materials, active or not, and
+    #: the campaign now loads them all — an assembly whose only recipe is
+    #: retired *has* a structure, and reporting it as having none produced a
+    #: page of alerts nobody could act on. Only the active versions are exploded
+    #: though: adding a retired quantity to a live one would inflate the
+    #: component count with parts the assembly no longer contains.
+    active: bool = True
 
     @field_validator("parent_item", "child_item", mode="before")
     @classmethod
@@ -434,13 +482,17 @@ class Location(DomainModel):
 class Manager(DomainModel):
     """One of the campaign's managers (« gestionnaire ») and their identity.
 
-    A manager is a *perimeter*, not a permission: warehouses and zones are
-    assigned to one so that each person can filter the screens down to their own
-    work. Everybody keeps the right to act everywhere — see the focus mode.
-
     ``actor`` is the signed-in identity forwarded by the platform (an email).
-    It is what lets the server resolve "my perimeter" without the client ever
-    naming a manager, which is what makes the filtering trustworthy.
+    It carries two things that must not be confused.
+
+    **The right to write.** Being declared here — and active — is what makes
+    somebody a manager of the campaign rather than a reader of it. See
+    :mod:`inventory.domain.access`.
+
+    **A perimeter.** Warehouses and zones are assigned to a manager so each
+    person can filter the screens down to their own work. Within the campaign
+    that perimeter stays a *filter*: a manager may act outside it, because
+    somebody has to cover for a colleague at 6 a.m. on inventory day.
     """
 
     campaign_id: str
@@ -465,7 +517,7 @@ class Manager(DomainModel):
 
 
 class BookStockLine(DomainModel):
-    """One line of the frozen ERP book stock (``stock livre``) snapshot."""
+    """One line of the frozen ERP book stock (``stock ERP``) snapshot."""
 
     campaign_id: str
     item_number: str
@@ -603,7 +655,11 @@ class Zone(DomainModel):
     campaign_id: str
     code: str
     label: str = ""
-    status: ZoneStatus = ZoneStatus.PENDING
+    #: Quand un humain a déclaré la zone terminée, et qui. C'est la **seule**
+    #: donnée d'état stockée du parcours de comptage : les deux autres statuts
+    #: se déduisent des quantités relevées, et ne peuvent donc pas mentir.
+    closed_at: dt.datetime | None = None
+    closed_by: str = ""
     #: Free-text owner/sector, used for dispatching printed sheets.
     sector: str = ""
     display_order: int = 0
@@ -641,12 +697,20 @@ class CountSheet(DomainModel):
     campaign_id: str
     zone_id: str
     pass_no: SheetPass
-    status: SheetStatus = SheetStatus.PENDING
     counter_name: str = ""
     started_at: dt.datetime | None = None
     ended_at: dt.datetime | None = None
     #: UC volume path of the scanned sheet, when one was uploaded.
     evidence_path: str | None = None
+    #: sha256 du fichier déposé. Le chemin dit *où*, l'empreinte dit *lequel* :
+    #: un volume se modifie depuis l'espace de travail, et six mois plus tard
+    #: c'est la seule façon de répondre autrement que par la confiance.
+    #: ``None`` sur les feuilles scannées avant la migration 019.
+    evidence_sha256: str | None = None
+    #: Taille du fichier déposé, en octets.
+    evidence_bytes: int | None = None
+    #: Type MIME déduit du nom du fichier déposé.
+    evidence_mime: str | None = None
     #: Mean confidence reported by the extraction model, in [0, 1].
     extraction_confidence: float | None = None
     updated_at: dt.datetime | None = None
@@ -835,6 +899,233 @@ class AdjustmentLine(DomainModel):
         return _as_money(v if v not in (None, "") else 0)
 
 
+# --------------------------------------------------------------------------- #
+# Backflush
+# --------------------------------------------------------------------------- #
+
+class BackflushLine(DomainModel):
+    """The backflush variance of one article, frozen on a campaign.
+
+    Production does not book component issues line by line: they are deducted
+    from the declared output according to the bill of materials. That deduction
+    assumes real consumption equals theoretical consumption, and this figure is
+    exactly the measure of that assumption:
+
+        écart = consommation théorique − consommation réelle
+
+    Its sign says which way the system stock drifted, and the sign is the whole
+    point for an inventory. A **positive** backflush variance means the deduction
+    took *less* than theory: the part left the store without the ERP recording
+    it, so the system stock is overstated and the count will find less than the
+    ERP claims. A negative one says the opposite.
+
+    Which is why it enters the inventory formula with its sign changed — the two
+    conventions are mirror images, and reconciling them anywhere but in one
+    named property is how a sign error survives a review.
+    """
+
+    campaign_id: str
+    item_number: str
+    #: ISO Mondays. Start inclusive, end exclusive — the fact table's own grain.
+    period_start: dt.date
+    period_end: dt.date
+    unit: str = "PCE"
+    #: ``ecart_backflush_net``, in the backflush convention.
+    net_qty: Decimal = ZERO
+    #: The two halves of the net. They do not feed the recalculation — the net
+    #: does — but they say what it is made of: 40 of under-consumption against
+    #: 38 of over-consumption does not read like 2.
+    under_consumed_qty: Decimal = ZERO
+    over_consumed_qty: Decimal = ZERO
+    theoretical_qty: Decimal = ZERO
+    actual_qty: Decimal = ZERO
+    parent_count: int = 0
+    week_count: int = 0
+    #: Freshness of the gold table when it was read, and when the read happened.
+    #: Both are needed to replay a figure months later.
+    source_loaded_at: dt.datetime | None = None
+    refreshed_at: dt.datetime | None = None
+
+    @field_validator("item_number", "unit", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @field_validator(
+        "net_qty", "under_consumed_qty", "over_consumed_qty",
+        "theoretical_qty", "actual_qty", mode="before",
+    )
+    @classmethod
+    def _qty(cls, v: Any) -> Decimal:
+        return _as_qty(v if v not in (None, "") else 0)
+
+    @field_validator("parent_count", "week_count", mode="before")
+    @classmethod
+    def _count(cls, v: Any) -> int:
+        return int(v) if v not in (None, "") else 0
+
+    @property
+    def inventory_share_qty(self) -> Decimal:
+        """``part_backflush`` — the same figure, in the inventory convention.
+
+        The inventory reads ``compté − ERP``; the backflush reads
+        ``théorique − réel``. Changing the sign here, once, is what lets every
+        caller downstream stay in a single convention.
+        """
+        return quantize_qty(-self.net_qty)
+
+
+# --------------------------------------------------------------------------- #
+# Stock-flow reconciliation between two campaigns
+# --------------------------------------------------------------------------- #
+
+class StockFlowRun(DomainModel):
+    """One comparison of two campaigns, and the period it spans."""
+
+    id: str
+    #: The campaign whose counted stock we are trying to explain.
+    campaign_id: str
+    #: The earlier one, by *count date* — never by creation date. Two campaigns
+    #: created in one order and counted in the other exist, and it is the count
+    #: that bounds the period.
+    baseline_campaign_id: str
+    period_start: dt.date
+    period_end: dt.date
+    #: Distinguishes « no scrap » from « scrap not entered », which are two very
+    #: different readings of the same zero.
+    scrap_loaded: bool = False
+    source_loaded_at: dt.datetime | None = None
+    erp_refreshed_at: dt.datetime | None = None
+    #: When each loaded step was last read from the ERP. Per step and not per
+    #: run: the four reads hit four different tables, and one of them failing
+    #: must not make the other three look stale.
+    receipts_refreshed_at: dt.datetime | None = None
+    shipments_refreshed_at: dt.datetime | None = None
+    scrap_refreshed_at: dt.datetime | None = None
+    created_by: str = ""
+    created_at: dt.datetime | None = None
+    updated_at: dt.datetime | None = None
+
+
+class StockFlowInput(DomainModel):
+    """One quantity the user loaded for the period."""
+
+    run_id: str
+    item_number: str
+    kind: FlowKind
+    #: Always positive; the direction is carried by :attr:`kind`.
+    qty: Decimal = ZERO
+    unit: str = "PCE"
+    #: Read from the ERP, loaded from a file, or typed into the grid.
+    source: FlowSource = FlowSource.MANUAL
+
+    @field_validator("item_number", "unit", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @field_validator("qty", mode="before")
+    @classmethod
+    def _qty(cls, v: Any) -> Decimal:
+        return abs(_as_qty(v if v not in (None, "") else 0))
+
+
+class StockFlowErp(DomainModel):
+    """The two backflush measures of one article, frozen with the run."""
+
+    run_id: str
+    item_number: str
+    #: Output declared for this article *as a parent*, de-duplicated by week.
+    produced_qty: Decimal = ZERO
+    #: Theoretical consumption of this article *as a component*.
+    consumed_qty: Decimal = ZERO
+    #: Read from the backflush table, or corrected by hand in the grid.
+    source: FlowSource = FlowSource.ERP
+
+    @field_validator("item_number", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @field_validator("produced_qty", "consumed_qty", mode="before")
+    @classmethod
+    def _qty(cls, v: Any) -> Decimal:
+        return _as_qty(v if v not in (None, "") else 0)
+
+
+class StockFlowLine(DomainModel):
+    """One article's walk from the opening count to the closing one.
+
+    Computed, never stored: every term is recoverable from the two campaigns,
+    the loaded quantities and the frozen ERP snapshot, so the whole report can be
+    rebuilt months later from the same inputs.
+    """
+
+    item_number: str
+    name: str = ""
+    unit: str = "PCE"
+    unit_cost: Decimal = ZERO
+    #: Stock of the earlier campaign — the opening balance. Which reading it is,
+    #: physical or ERP, is the run's ``StockBasis`` and is reported with it.
+    opening_qty: Decimal = ZERO
+    received_qty: Decimal = ZERO
+    produced_qty: Decimal = ZERO
+    shipped_qty: Decimal = ZERO
+    consumed_qty: Decimal = ZERO
+    scrapped_qty: Decimal = ZERO
+    #: Stock of the later campaign — what the chosen reading says turned up.
+    closing_qty: Decimal = ZERO
+    #: Whether each campaign has a figure for this article at all. A reference
+    #: absent from one of the two readings is not a zero: it is a hole in the
+    #: comparison, and reading it as a zero would produce a variance the size of
+    #: the stock.
+    has_opening: bool = False
+    has_closing: bool = False
+
+    @property
+    def expected_qty(self) -> Decimal:
+        """The whole chain, in the order the flows happen."""
+        return quantize_qty(
+            self.opening_qty
+            + self.received_qty
+            + self.produced_qty
+            - self.shipped_qty
+            - self.consumed_qty
+            - self.scrapped_qty
+        )
+
+    @property
+    def variance_qty(self) -> Decimal:
+        """Counted minus expected — what none of the flows explains."""
+        return quantize_qty(self.closing_qty - self.expected_qty)
+
+    @property
+    def variance_value(self) -> Decimal:
+        return quantize_money(self.variance_qty * self.unit_cost)
+
+    @property
+    def abs_variance_value(self) -> Decimal:
+        return abs(self.variance_value)
+
+    @property
+    def variance_ratio(self) -> Decimal | None:
+        """Relative to the expected stock. ``None`` when nothing was expected.
+
+        Returned as ``None`` rather than zero: an article expected at zero and
+        found at twelve has an undefined ratio, not a nil one, and showing 0 %
+        next to a real discrepancy is worse than showing nothing.
+        """
+        expected = self.expected_qty
+        if expected == 0:
+            return None
+        return quantize_qty(self.variance_qty / expected)
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether both readings carry it — the comparison is only valid then."""
+        return self.has_opening and self.has_closing
+
+
 class VarianceLine(DomainModel):
     """A computed variance between book stock and counted stock.
 
@@ -855,6 +1146,12 @@ class VarianceLine(DomainModel):
     book_qty: Decimal = ZERO
     counted_qty: Decimal = ZERO
     adjusted_qty: Decimal = ZERO
+    #: ``ecart_backflush_net``, in the *backflush* convention (théorique − réel).
+    #: Zero when the period holds no backflush line for this article, which is
+    #: the honest reading: production did not touch it, so it has no such
+    #: variance. :attr:`backflush_measured` distinguishes that from « not loaded ».
+    backflush_qty: Decimal = ZERO
+    backflush_measured: bool = False
 
     #: True when the article/location appears in a count but not in the book
     #: stock, or vice-versa — the two cases that used to disappear silently.
@@ -866,27 +1163,113 @@ class VarianceLine(DomainModel):
         return quantize_money(self.book_qty * self.unit_cost)
 
     @property
+    def physical_qty(self) -> Decimal:
+        """The physical stock: counted, plus what moved after the count.
+
+        An adjustment is a *real stock movement* recorded during the analysis
+        phase — a late receipt, a recount, an issue booked afterwards. It
+        therefore changes what is on the shelf, and the count alone stops being
+        the current picture the moment one is posted.
+
+        This is the reference the whole application reads. Everything else —
+        KPIs, controls, aggregates, analytics, exports — goes through
+        :attr:`variance_qty` below, so redefining the reference here changes them
+        all at once rather than in twenty places that would drift.
+        """
+        return quantize_qty(self.counted_qty + self.adjusted_qty)
+
+    @property
+    def physical_value(self) -> Decimal:
+        return quantize_money(self.physical_qty * self.unit_cost)
+
+    @property
     def variance_qty(self) -> Decimal:
-        """Counted minus book, before adjustments."""
-        return quantize_qty(self.counted_qty - self.book_qty)
+        """Physical minus book — *the* variance, adjustments included.
+
+        The frozen ERP snapshot stays the reference on the other side: it is
+        what the campaign was counted against, and moving it would make the
+        variance irreproducible.
+        """
+        return quantize_qty(self.physical_qty - self.book_qty)
 
     @property
     def variance_value(self) -> Decimal:
         return quantize_money(self.variance_qty * self.unit_cost)
 
     @property
-    def residual_qty(self) -> Decimal:
-        """Variance still unexplained after the posted adjustments."""
-        return quantize_qty(self.variance_qty - self.adjusted_qty)
+    def counted_variance_qty(self) -> Decimal:
+        """The gap the count alone showed, before any adjustment.
+
+        Kept because it answers a different question — « what did the count
+        find? » rather than « where do we stand? » — and because the difference
+        between the two is precisely what the adjustments did. Nothing steers on
+        it; it is shown beside the variance when adjustments exist.
+        """
+        return quantize_qty(self.counted_qty - self.book_qty)
 
     @property
-    def residual_value(self) -> Decimal:
-        return quantize_money(self.residual_qty * self.unit_cost)
+    def counted_variance_value(self) -> Decimal:
+        return quantize_money(self.counted_variance_qty * self.unit_cost)
+
+    @property
+    def adjusted_value(self) -> Decimal:
+        return quantize_money(self.adjusted_qty * self.unit_cost)
 
     @property
     def final_qty(self) -> Decimal:
-        """Stock after inventory = book + variance."""
+        """Stock after inventory = book + variance = the physical stock."""
         return quantize_qty(self.book_qty + self.variance_qty)
+
+    # -- backflush ---------------------------------------------------------- #
+    #
+    # Read against the *adjusted* variance, like everything else: the question is
+    # « of the gap we are left with, how much does production explain? », and
+    # asking it about a gap the adjustments have already moved would answer about
+    # a state nobody is in any more.
+
+    @property
+    def backflush_share_qty(self) -> Decimal:
+        """``part_backflush`` — the backflush figure, sign flipped once."""
+        return quantize_qty(-self.backflush_qty)
+
+    @property
+    def backflush_share_value(self) -> Decimal:
+        return quantize_money(self.backflush_share_qty * self.unit_cost)
+
+    @property
+    def unexplained_qty(self) -> Decimal:
+        """What production does *not* explain — the figure to investigate.
+
+        Named « inexpliqué » rather than « résiduel » : the word says what is
+        missing — an explanation — instead of merely saying that something is
+        left over, which is true of half the figures on the screen.
+        """
+        return quantize_qty(self.variance_qty - self.backflush_share_qty)
+
+    @property
+    def unexplained_value(self) -> Decimal:
+        return quantize_money(self.unexplained_qty * self.unit_cost)
+
+    @property
+    def explanation_rate(self) -> Decimal | None:
+        """How much of the variance the backflush removes, in [−∞, 1].
+
+        A plain ``part / écart`` ratio is misleading: it passes 100 % as soon as
+        the backflush over-explains, and has no readable sign when the two terms
+        point opposite ways. Framing it as a *reduction of the gap* behaves:
+
+            1  the backflush explains the variance exactly
+            0  it brings nothing
+           <0  taking it into account widens the gap instead of closing it
+
+        That last case is a signal, not a defect of the formula, so it is
+        returned as it stands rather than floored at zero. ``None`` when the
+        variance is nil, because a share of nothing is undefined, not total.
+        """
+        gap = abs(self.variance_qty)
+        if gap == 0:
+            return None
+        return quantize_qty(1 - abs(self.unexplained_qty) / gap)
 
 
 class ControlFinding(DomainModel):
@@ -902,6 +1285,40 @@ class ControlFinding(DomainModel):
     warehouse_id: str = ""
     location_id: str = ""
     context: dict[str, Any] = Field(default_factory=dict)
+
+
+class FindingGroup(DomainModel):
+    """Every occurrence of one control, under a single title.
+
+    The screen shows the label and the count, and opens the occurrences on
+    demand. Carrying them here rather than re-fetching them keeps the two
+    numbers — the one announced and the one listed — impossible to disagree.
+    """
+
+    code: str
+    label: str
+    #: The worst severity present among the occurrences.
+    severity: ControlSeverity
+    findings: list[ControlFinding] = Field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        return len(self.findings)
+
+    def to_summary(self) -> dict[str, Any]:
+        """Wire shape: the title and how many, not the occurrences again.
+
+        The occurrences already travel in the flat ``findings`` list the screen
+        receives alongside; sending them a second time would double a payload
+        that runs to thousands of lines, and hand the client two copies free to
+        disagree. It filters that list by ``code`` to open a group.
+        """
+        return {
+            "code": self.code,
+            "label": self.label,
+            "severity": str(self.severity),
+            "count": self.count,
+        }
 
 
 class AssignableCause(DomainModel):

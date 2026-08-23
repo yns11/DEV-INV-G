@@ -20,6 +20,7 @@ from inventory.domain.quantities import to_decimal
 from inventory.ingest import (
     get_contract,
     map_adjustments,
+    map_bom_links,
     map_book_stock,
     map_count_sheets,
     map_items,
@@ -30,6 +31,18 @@ from inventory.ingest import (
 )
 
 next_id = lambda: "id"
+
+
+def _referential(*numbers: str, excluded: tuple[str, ...] = ()) -> dict[str, Item]:
+    """Un référentiel articles minimal, pour les mappeurs qui s'y adossent."""
+    return {
+        number: Item(
+            campaign_id="c",
+            item_number=number,
+            exclusions={ExclusionScope.ALL} if number in excluded else set(),
+        )
+        for number in numbers
+    }
 
 
 class TestHeaderMatching:
@@ -189,6 +202,7 @@ class TestBookStockMapping:
                 {"item_number": "P-1", "warehouse_id": "B", "location_id": "L",
                  "qty": "5"},
             ],
+            items=_referential("P-1"),
         )
         assert len(lines) == 1
         assert lines[0].qty == Decimal("15.000000")
@@ -205,6 +219,69 @@ class TestBookStockMapping:
         )
         assert lines[0].unit_cost == Decimal("42.00")
         assert lines[0].value == Decimal("84.00")
+
+    def test_an_unknown_reference_is_a_row_error(self):
+        """Sans article, la ligne n'a ni désignation, ni prix, ni matérialité."""
+        lines, errors = map_book_stock(
+            "c",
+            [{"item_number": "INCONNU", "warehouse_id": "B", "location_id": "L",
+              "qty": "3"}],
+            items=_referential("P-1"),
+        )
+        assert lines == []
+        assert len(errors) == 1
+        assert errors[0].column == "item_number"
+        assert "absent du référentiel" in errors[0].message
+
+    def test_an_excluded_article_is_a_row_error(self):
+        """Charger son stock reprendrait par la fenêtre la décision d'exclusion."""
+        lines, errors = map_book_stock(
+            "c",
+            [{"item_number": "P-2", "warehouse_id": "B", "location_id": "L",
+              "qty": "3"}],
+            items=_referential("P-1", "P-2", excluded=("P-2",)),
+        )
+        assert lines == []
+        assert len(errors) == 1
+        assert "exclu du périmètre" in errors[0].message
+
+    def test_the_refusal_says_where_to_go(self):
+        """Deux causes, deux gestes : compléter le référentiel, ou lever
+        l'exclusion."""
+        _, absent = map_book_stock(
+            "c",
+            [{"item_number": "X", "warehouse_id": "B", "qty": "1"}],
+            items=_referential("P-1"),
+        )
+        _, excluded = map_book_stock(
+            "c",
+            [{"item_number": "P-2", "warehouse_id": "B", "qty": "1"}],
+            items=_referential("P-2", excluded=("P-2",)),
+        )
+        assert "référentiel articles" in absent[0].message
+        assert "grille Articles" in excluded[0].message
+
+    def test_a_refused_row_does_not_drag_the_others_down(self):
+        lines, errors = map_book_stock(
+            "c",
+            [
+                {"item_number": "P-1", "warehouse_id": "B", "qty": "4"},
+                {"item_number": "INCONNU", "warehouse_id": "B", "qty": "9"},
+                {"item_number": "P-2", "warehouse_id": "B", "qty": "6"},
+            ],
+            items=_referential("P-1", "P-2"),
+        )
+        assert sorted(line.item_number for line in lines) == ["P-1", "P-2"]
+        assert len(errors) == 1
+
+    def test_the_rule_holds_whatever_the_input_looked_like(self):
+        """Le mappeur est le point de passage des trois modes : fichier,
+        collage et lecture ERP y arrivent sous la même forme, donc la règle ne
+        peut pas ne valoir que pour l'un d'eux."""
+        rows = [{"item_number": "INCONNU", "warehouse_id": "B", "qty": "1"}]
+        for _ in range(2):
+            lines, errors = map_book_stock("c", rows, items=_referential("P-1"))
+            assert lines == [] and len(errors) == 1
 
 
 class TestJournalMapping:
@@ -370,3 +447,157 @@ class TestAdjustmentMapping:
         )
         assert result.rows[0]["physical_date"] == dt.date(2026, 6, 13)
         assert result.rows[1]["physical_date"] == dt.date(2026, 6, 13)
+
+
+class TestSeveralVersionsOfTheSameRecipe:
+    """L'ERP garde toutes les versions ; la campagne n'en retient qu'une.
+
+    L'insertion en base est un upsert sur (parent, enfant) : c'est la dernière
+    ligne vue qui gagne, et « dernière » veut dire l'ordre de l'ERP. Une version
+    retirée arrivant après la version en vigueur écrasait donc celle-ci — un
+    assemblage parfaitement documenté devenait inéclatable, sans que rien ne le
+    signale. Vérifié sur une vraie base avant d'être corrigé ici.
+    """
+
+    def rows(self, *versions):
+        return [
+            {"parent_item": "MEL", "child_item": "VIS", "qty_per": qty,
+             "unit": "PCE", "statut": statut}
+            for qty, statut in versions
+        ]
+
+    def test_the_version_in_force_wins_whatever_the_order(self):
+        for order in (
+            (("8", "Actif"), ("30", "Inactif")),
+            (("30", "Inactif"), ("8", "Actif")),
+        ):
+            links, errors = map_bom_links("c", self.rows(*order))
+            assert not errors
+            assert len(links) == 1
+            assert links[0].qty_per == Decimal("8")
+            assert links[0].active
+
+    def test_only_retired_versions_leave_one_retired_edge(self):
+        """L'assemblage garde une structure — retirée, mais présente."""
+        links, _ = map_bom_links("c", self.rows(("30", "Inactif"), ("2", "Inactif")))
+        assert len(links) == 1 and not links[0].active
+
+    def test_distinct_pairs_are_untouched(self):
+        links, _ = map_bom_links("c", [
+            {"parent_item": "MEL", "child_item": "VIS", "qty_per": "8",
+             "statut": "Actif"},
+            {"parent_item": "MEL", "child_item": "TOLE", "qty_per": "2",
+             "statut": "Actif"},
+        ])
+        assert {l.child_item for l in links} == {"VIS", "TOLE"}
+
+    def test_a_source_without_the_column_is_taken_as_in_force(self):
+        links, _ = map_bom_links("c", [
+            {"parent_item": "MEL", "child_item": "VIS", "qty_per": "8"},
+        ])
+        assert links[0].active
+
+
+class TestAnArticleThatArrivesTwice:
+    """La table silver calcule le programme en remontant les nomenclatures.
+
+    Cette remontée fait éventail : le même article est revenu deux fois, avec
+    deux programmes. En base, l'upsert prenait la ligne arrivée en dernier —
+    c'est-à-dire celle que l'ERP avait émise en dernier — si bien que deux
+    chargements des mêmes données pouvaient donner deux référentiels.
+    """
+
+    def rows(self, *programmes):
+        return [
+            {"item_number": "mass-00046610", "name": "CARTER",
+             "item_type": "COMPONENT", "unit": "PCE", "std_price": "10",
+             "program": p}
+            for p in programmes
+        ]
+
+    def test_only_one_article_survives(self):
+        items, errors = map_items("c", self.rows("M3", "M4"), source=DataSource.ERP_IMPORT)
+        assert not errors
+        assert len(items) == 1
+
+    def test_the_first_occurrence_decides(self):
+        """Déterministe : la lecture ERP est ordonnée, donc reproductible."""
+        first, _ = map_items("c", self.rows("M3", "M4"), source=DataSource.ERP_IMPORT)
+        again, _ = map_items("c", self.rows("M3", "M4"), source=DataSource.ERP_IMPORT)
+        assert first[0].program == again[0].program == "M3"
+
+    def test_distinct_articles_are_untouched(self):
+        items, _ = map_items("c", [
+            {"item_number": "A", "name": "A", "item_type": "COMPONENT",
+             "unit": "PCE", "std_price": "1"},
+            {"item_number": "B", "name": "B", "item_type": "COMPONENT",
+             "unit": "PCE", "std_price": "1"},
+        ], source=DataSource.ERP_IMPORT)
+        assert {i.item_number for i in items} == {"A", "B"}
+
+    def test_a_rejected_row_does_not_take_a_valid_twin_with_it(self):
+        """Une ligne fautive est rejetée seule, pas au titre de sa clé."""
+        items, errors = map_items("c", [
+            {"item_number": "", "name": "SANS RÉFÉRENCE"},
+            {"item_number": "A", "name": "A", "item_type": "COMPONENT",
+             "unit": "PCE", "std_price": "1"},
+        ], source=DataSource.ERP_IMPORT)
+        assert len(errors) == 1
+        assert [i.item_number for i in items] == ["A"]
+
+
+class TestDuplicateBomLinksAreOnlyReportedInForce:
+    """Cinquante « doublons » qui n'en étaient pas.
+
+    Depuis que la table silver porte toutes les versions d'une recette, le même
+    couple parent/enfant apparaît une fois par version retirée. Le contrôle les
+    signalait toutes, et le seul cas qui compte — le même lien déclaré deux fois
+    *en vigueur*, où l'éclatement devrait choisir une quantité et ne le peut
+    pas — se retrouvait noyé au milieu.
+    """
+
+    def link(self, child: str, statut: str, qty: str = "1"):
+        return {"parent_item": "PROTO-00162222", "child_item": child,
+                "qty_per": qty, "unit": "PCE", "statut": statut}
+
+    def parse(self, rows):
+        return parse_rows(get_contract("boms"), rows)
+
+    def test_several_retired_versions_of_a_link_are_not_a_duplicate(self):
+        result = self.parse([
+            self.link("P-00003418", "INACTIF", "2"),
+            self.link("P-00003418", "INACTIF", "3"),
+        ])
+        assert result.duplicate_keys == []
+        assert len(result.rows) == 2, "les deux versions restent chargées"
+
+    def test_the_same_link_twice_in_force_is_still_reported(self):
+        """Le cas qui compte : l'éclatement ne saurait pas laquelle appliquer."""
+        result = self.parse([
+            self.link("P-00003418", "Actif", "2"),
+            self.link("P-00003418", "Actif", "3"),
+        ])
+        assert len(result.duplicate_keys) == 1
+        assert "PROTO-00162222|P-00003418" in result.duplicate_keys[0]
+
+    def test_one_in_force_and_one_retired_is_not_a_duplicate(self):
+        """C'est la situation normale d'une recette qui a été révisée."""
+        assert self.parse([
+            self.link("P-00003418", "Actif"),
+            self.link("P-00003418", "INACTIF"),
+        ]).duplicate_keys == []
+
+    def test_the_status_no_longer_appears_in_the_reported_key(self):
+        """La clé nommée est celle du lien, pas celle de la ligne."""
+        result = self.parse([
+            self.link("P-1", "Actif"), self.link("P-1", "Actif"),
+        ])
+        assert "ACTIF" not in result.duplicate_keys[0]
+
+    def test_a_grid_without_a_scope_checks_every_row(self):
+        """La restriction est propre aux nomenclatures, pas au parseur."""
+        result = parse_rows(get_contract("items"), [
+            {"item_number": "A", "name": "A"},
+            {"item_number": "A", "name": "A bis"},
+        ])
+        assert len(result.duplicate_keys) == 1

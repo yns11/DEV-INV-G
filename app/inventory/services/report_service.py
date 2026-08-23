@@ -14,6 +14,7 @@ from ..errors import NotFoundError, ValidationError
 from ..reporting.exports import (
     build_counting_sheet_pdf,
     build_journal_export,
+    build_variance_pdf,
     build_workbook,
 )
 from .analysis_service import AnalysisService
@@ -122,6 +123,7 @@ class ReportService:
         mode: PrintMode = PrintMode.LIST,
         with_sources: bool = False,
         blank_lines: int = 0,
+        zone_ids: Sequence[str] | None = None,
     ) -> tuple[bytes, str]:
         """One PDF containing every printable zone's sheet for a given pass.
 
@@ -138,6 +140,15 @@ class ReportService:
         target_pass = SheetPass.PASS_1 if pass_no == 1 else SheetPass.PASS_2
         blank_lines = _validated_blank_lines(blank_lines, mode=mode)
         zones = ctx.sheets.list_zones(campaign.id)
+        if zone_ids is not None:
+            wanted = set(zone_ids)
+            zones = [z for z in zones if z.id in wanted]
+            if not zones:
+                raise ValidationError(
+                    "Aucune des zones sélectionnées n'existe encore dans cette "
+                    "campagne. Rechargez la liste.",
+                    zoneIds=list(wanted)[:20],
+                )
         sheets = {
             (s.zone_id, s.pass_no): s
             for s in ctx.sheets.list_sheets(campaign.id)
@@ -261,7 +272,8 @@ class ReportService:
                 v["itemNumber"], v["name"], v["itemType"], v["category"], v["program"],
                 v["unit"], v["unitCost"], v["bookQty"], v["bookValue"],
                 v["countedQty"], v["varianceQty"], v["varianceValue"],
-                v["adjustedQty"], v["residualQty"], v["residualValue"],
+                v["adjustedQty"], v["physicalQty"], v["countedVarianceQty"],
+                v["countedVarianceValue"],
                 v["finalQty"], v["causeCode"], v["comment"],
                 "oui" if v["isMaterial"] else "non",
             ]
@@ -270,9 +282,10 @@ class ReportService:
         sheets["Écarts par article"] = (
             [
                 "Article", "Désignation", "Type", "Catégorie", "Programme", "Unité",
-                "Coût unitaire €", "Stock livre qté", "Stock livre valeur €",
+                "Coût unitaire €", "Stock ERP qté", "Stock ERP valeur €",
                 "Compté qté", "Écart qté", "Écart valeur €", "Ajusté qté",
-                "Résiduel qté", "Résiduel valeur €", "Stock après qté",
+                "Physique qté", "Écart avant ajust. qté",
+                "Écart avant ajust. valeur €", "Stock après qté",
                 "Cause", "Commentaire", "Matériel",
             ],
             variance_rows,
@@ -280,7 +293,7 @@ class ReportService:
 
         # -- variances by location --------------------------------------------
         sheets["Écarts par emplacement"] = (
-            ["Emplacement", "Stock livre valeur €", "Écart valeur €",
+            ["Emplacement", "Stock ERP valeur €", "Écart valeur €",
              "Écart absolu €", "Lignes", "Lignes matérielles"],
             [
                 [g["key"], g["bookValue"], g["varianceValue"],
@@ -289,7 +302,7 @@ class ReportService:
             ],
         )
         sheets["Écarts par entrepôt"] = (
-            ["Entrepôt", "Stock livre valeur €", "Écart valeur €",
+            ["Entrepôt", "Stock ERP valeur €", "Écart valeur €",
              "Écart absolu €", "Lignes"],
             [
                 [g["key"], g["bookValue"], g["varianceValue"],
@@ -336,17 +349,15 @@ class ReportService:
             ],
         )
         sheets["Seuils"] = (
-            ["Type d'article", "Valeur absolue €", "Écart relatif qté",
-             "Plancher qté", "Tolérance IRA"],
+            ["Type d'article", "Valeur absolue €", "Écart relatif qté"],
             [
-                [str(t.item_type), float(t.value_abs_eur), float(t.qty_relative),
-                 float(t.qty_abs_floor), float(t.ira_tolerance)]
+                [str(t.item_type), float(t.value_abs_eur), float(t.qty_relative)]
                 for t in campaign.thresholds
             ],
         )
 
         # -- book stock snapshot ----------------------------------------------
-        sheets["Stock livre"] = (
+        sheets["Stock ERP"] = (
             ["Article", "Désignation", "Entrepôt", "Emplacement", "Quantité",
              "Unité", "Coût unitaire €", "Valeur €"],
             [
@@ -454,7 +465,7 @@ class ReportService:
                 "Campagne": f"{campaign.code} — {campaign.label}",
                 "Date de comptage": campaign.count_date.isoformat(),
                 "Statut": str(campaign.status),
-                "Stock livre gelé le": _iso(campaign.book_stock_frozen_at),
+                "Stock ERP gelé le": _iso(campaign.book_stock_frozen_at),
                 "Comptage clôturé le": _iso(campaign.counting_frozen_at),
                 "Campagne clôturée le": _iso(campaign.closed_at),
                 "Dupliquée depuis": campaign.cloned_from_code or "—",
@@ -476,6 +487,160 @@ class ReportService:
             summary=f"Export du dossier complet ({len(sheets)} onglets)",
         )
         return payload, f"bilan-inventaire_{campaign.code}.xlsx"
+
+    # ------------------------------------------------------------- variances
+
+    def _variance_rows(
+        self, campaign: Campaign, *, granularity: str, material_only: bool
+    ) -> list[dict[str, Any]]:
+        """The variance view, exactly as the screen shows it.
+
+        Same service call, same filters, same ordering — so the file and the
+        table can never disagree. ``countedValue`` is computed here rather than
+        left to the reader: on screen the amount sits under the quantity and is
+        obviously derived, but a spreadsheet column the user is asked to build
+        themselves is a column half of them will build differently.
+        """
+        rows = AnalysisService(self.ctx).top_variances(
+            campaign,
+            limit=VARIANCE_EXPORT_CEILING,
+            material_only=material_only,
+            granularity=granularity,
+        )
+        for row in rows:
+            row["countedValue"] = row["countedQty"] * row["unitCost"]
+        return rows
+
+    def variance_export(
+        self, campaign: Campaign, *, granularity: str = "item",
+        material_only: bool = False,
+    ) -> tuple[bytes, str]:
+        """The variance table as a workbook, quantities and values side by side.
+
+        Every figure gets its own column — ERP quantity, ERP value, counted
+        quantity, counted value, then the gap in both units. On screen the two
+        share a cell because the eye reads a pair; in a spreadsheet they must be
+        two columns, or nobody can sum, pivot or filter on either.
+        """
+        by_location = granularity == "item_location"
+        rows = self._variance_rows(
+            campaign, granularity=granularity, material_only=material_only
+        )
+        headers = variance_columns(by_location=by_location)
+        body = [variance_row(r, by_location=by_location) for r in rows]
+
+        scope = "par référence et emplacement" if by_location else "par référence"
+        sheet_name = "Écarts par emplacement" if by_location else "Écarts par référence"
+        payload = build_workbook(
+            {sheet_name: (headers, body)},
+            title=f"Écarts d'inventaire — {scope}",
+            provenance={
+                "Campagne": f"{campaign.code} — {campaign.label}",
+                "Date de comptage": campaign.count_date,
+                "Vue": scope,
+                "Filtre": (
+                    "au-delà des seuils uniquement" if material_only
+                    else "tous les écarts"
+                ),
+                "Lignes": len(rows),
+                "Généré le": utcnow().isoformat(timespec="seconds"),
+                "Moteur": ENGINE_VERSION,
+            },
+        )
+        self.ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.EXPORT,
+            entity_type="variance",
+            entity_id=campaign.id,
+            summary=f"Export Excel des écarts {scope} ({len(rows)} ligne(s))",
+        )
+        suffix = "emplacement" if by_location else "reference"
+        return payload, f"ecarts-{suffix}_{campaign.code}.xlsx"
+
+    def variance_pdf(
+        self, campaign: Campaign, *, granularity: str = "item",
+        material_only: bool = False,
+    ) -> tuple[bytes, str]:
+        """The same table, printable.
+
+        Capped well below the workbook: past a few hundred rows a PDF is no
+        longer a document somebody reads, it is a spreadsheet that lost its
+        filters. The cap is announced on the page rather than applied silently.
+        """
+        by_location = granularity == "item_location"
+        rows = self._variance_rows(
+            campaign, granularity=granularity, material_only=material_only
+        )
+        if not rows:
+            raise ValidationError(
+                "Aucun écart à imprimer avec ce filtre.",
+                granularity=granularity, materialOnly=material_only,
+            )
+        payload = build_variance_pdf(
+            campaign_label=campaign.label or campaign.code,
+            campaign_code=campaign.code,
+            count_date=campaign.count_date,
+            rows=rows[:VARIANCE_PDF_CEILING],
+            by_location=by_location,
+            material_only=material_only,
+            generated_at=utcnow(),
+            omitted=max(0, len(rows) - VARIANCE_PDF_CEILING),
+        )
+        scope = "par référence et emplacement" if by_location else "par référence"
+        self.ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.EXPORT,
+            entity_type="variance",
+            entity_id=campaign.id,
+            summary=(
+                f"Export PDF des écarts {scope} "
+                f"({min(len(rows), VARIANCE_PDF_CEILING)} ligne(s))"
+            ),
+        )
+        suffix = "emplacement" if by_location else "reference"
+        return payload, f"ecarts-{suffix}_{campaign.code}.pdf"
+
+    def table_export(
+        self,
+        campaign: Campaign,
+        *,
+        title: str,
+        columns: Sequence[tuple[str, str]],
+        rows: Sequence[Mapping[str, Any]],
+    ) -> tuple[bytes, str]:
+        """A grid's visible rows, written as a workbook.
+
+        Values are taken as they arrive and only coerced, never re-derived: a
+        cell the screen shows as a badge or a two-line figure has a plain value
+        behind it, and that value is what a spreadsheet can sort and sum. A
+        missing key becomes an empty cell rather than an error — a column added
+        to a grid and absent from an older row is a display detail, not a reason
+        to refuse the file.
+        """
+        headers = [label for _, label in columns]
+        body = [[row.get(key) for key, _ in columns] for row in rows]
+        payload = build_workbook(
+            {title[:31] or "Export": (headers, body)},
+            title=title,
+            provenance={
+                "Campagne": f"{campaign.code} — {campaign.label}",
+                "Tableau": title,
+                "Lignes": len(body),
+                "Généré le": utcnow().isoformat(timespec="seconds"),
+                "Portée": (
+                    "Les lignes telles qu'elles étaient affichées : filtres, tri "
+                    "et sélection compris."
+                ),
+            },
+        )
+        self.ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.EXPORT,
+            entity_type="table",
+            entity_id=campaign.id,
+            summary=f"Export Excel — {title} ({len(body)} ligne(s))",
+        )
+        return payload, f"{_slug(title) or 'export'}_{campaign.code}.xlsx"
 
     def grid_export(
         self, campaign: Campaign, contract_key: str
@@ -511,6 +676,59 @@ class ReportService:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+def variance_columns(*, by_location: bool) -> list[str]:
+    """The workbook's columns, in order.
+
+    Quantity and value never share a column. On screen they share a cell —
+    the eye reads the pair, and the arrangement is deliberate — but a
+    spreadsheet cell holding two figures cannot be summed, pivoted or filtered,
+    which is the entire reason somebody asked for the export instead of a
+    screenshot. So the ERP stock contributes two columns, the counted stock two
+    more, and the gap between them two again.
+    """
+    columns = ["Article", "Désignation", "Type", "Catégorie", "Programme"]
+    if by_location:
+        columns += ["Entrepôt", "Emplacement"]
+    return [
+        *columns,
+        "Unité", "Coût unitaire €",
+        "Stock ERP qté", "Stock ERP valeur €",
+        "Compté qté", "Compté valeur €",
+        "Écart qté", "Écart valeur €",
+        "Ajusté qté", "Physique qté",
+        "Écart avant ajust. qté", "Écart avant ajust. valeur €",
+        "Au-delà des seuils", "Cause", "Commentaire",
+    ]
+
+
+def variance_row(row: Mapping[str, Any], *, by_location: bool) -> list[Any]:
+    """One variance as a spreadsheet line, matching :func:`variance_columns`."""
+    cells: list[Any] = [
+        row["itemNumber"], row["name"], row["itemType"],
+        row["category"], row["program"],
+    ]
+    if by_location:
+        cells += [row["warehouseId"], row["locationId"]]
+    return [
+        *cells,
+        row["unit"], row["unitCost"],
+        row["bookQty"], row["bookValue"],
+        row["countedQty"], row["countedValue"],
+        row["varianceQty"], row["varianceValue"],
+        row["adjustedQty"], row["physicalQty"],
+        row["countedVarianceQty"], row["countedVarianceValue"],
+        "oui" if row["isMaterial"] else "non",
+        row.get("causeCode") or "", row.get("comment") or "",
+    ]
+
+
+#: How many variance lines an export carries. The workbook takes the whole
+#: population — that is what a spreadsheet is for. The PDF stops far earlier:
+#: past a few hundred rows it is no longer a document anybody reads, and the
+#: cap is stated on the page rather than applied quietly.
+VARIANCE_EXPORT_CEILING = 100_000
+VARIANCE_PDF_CEILING = 400
 
 #: Bounds on the number of blank rows a free-entry sheet may be printed with.
 #: Ten is the fewest worth walking to the printer for; 180 fills four A4 pages,
@@ -639,15 +857,18 @@ def _grid_rows(ctx: ServiceContext, campaign: Campaign, key: str) -> list[list[A
 def _kpi_rows(kpis: Any) -> list[tuple[str, Any]]:
     data = kpis.as_dict()
     labels = [
-        ("Stock livre — quantité", "bookQty"),
-        ("Stock livre — valeur (€)", "bookValue"),
+        ("Stock ERP — quantité", "bookQty"),
+        ("Stock ERP — valeur (€)", "bookValue"),
         ("Compté — quantité", "countedQty"),
         ("Compté — valeur (€)", "countedValue"),
+        ("Stock physique (compté + ajustements) — quantité", "physicalQty"),
+        ("Stock physique (compté + ajustements) — valeur (€)", "physicalValue"),
         ("Écart net — quantité", "netVarianceQty"),
         ("Écart net — valeur (€)", "netVarianceValue"),
         ("Écart brut (absolu) — quantité", "grossVarianceQty"),
         ("Écart brut (absolu) — valeur (€)", "grossVarianceValue"),
-        ("Écart résiduel après ajustements (€)", "residualValue"),
+        ("Écart du comptage seul, avant ajustements (€)", "countedVarianceValue"),
+        ("Ajustements postés (€)", "adjustedValue"),
         ("Fiabilité nette en valeur", "netReliabilityValue"),
         ("Fiabilité brute en valeur", "grossReliabilityValue"),
         ("Fiabilité brute en quantité", "grossReliabilityQty"),
@@ -655,8 +876,8 @@ def _kpi_rows(kpis: Any) -> list[tuple[str, Any]]:
         ("Lignes analysées", "lineCount"),
         ("Lignes exactes (dans la tolérance)", "accurateLineCount"),
         ("Lignes au-delà des seuils", "materialLineCount"),
-        ("Comptés sans stock livre", "countedOnlyCount"),
-        ("Stock livre jamais compté", "bookOnlyCount"),
+        ("Comptés sans stock ERP", "countedOnlyCount"),
+        ("Stock ERP jamais compté", "bookOnlyCount"),
     ]
     return [(label, data.get(key)) for label, key in labels]
 

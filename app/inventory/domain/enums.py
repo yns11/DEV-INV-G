@@ -14,6 +14,7 @@ labels found in old files onto them so that archived workbooks stay importable.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 __all__ = [
     "CampaignStatus",
@@ -25,11 +26,13 @@ __all__ = [
     "JournalKind",
     "JournalStatus",
     "SheetPass",
-    "SheetStatus",
     "ZoneStatus",
     "CountSection",
     "DataSource",
     "AdjustmentKind",
+    "FlowKind",
+    "FlowSource",
+    "StockBasis",
     "ControlSeverity",
     "AuditAction",
     "legacy_section_alias",
@@ -80,6 +83,25 @@ class ExclusionScope(StrEnum):
     BOM = "BOM"
     ALL = "ALL"
 
+    @classmethod
+    def normalise(cls, values: Any) -> set[ExclusionScope]:
+        """The set an article really carries, from whatever was asked for.
+
+        ``NONE`` is the absence of an exclusion rather than a fourth one, so it
+        drops out; and ``ALL`` already means both facets, so it replaces them
+        instead of sitting beside them. Without that last rule the same
+        intention could be stored three ways — ``{ALL}``, ``{ALL, GENERIC}``,
+        ``{ALL, GENERIC, BOM}`` — and a screen listing the raw set would say
+        three different things about three identical articles.
+        """
+        if values is None:
+            return set()
+        if isinstance(values, (str, ExclusionScope)):
+            values = [values]
+        out = {cls(str(v).upper()) for v in values}
+        out.discard(cls.NONE)
+        return {cls.ALL} if cls.ALL in out else out
+
 
 class LocationType(StrEnum):
     """How a location is counted."""
@@ -128,26 +150,30 @@ class SheetPass(StrEnum):
     PASS_2 = "PASS_2"
 
 
-class SheetStatus(StrEnum):
-    """Life of a single printed counting sheet.
+class ZoneStatus(StrEnum):
+    """Où en est une zone de l'emplacement GENERIQUE. Trois états, pas plus.
 
-    PENDING → COUNTING (sheet handed to the counter) → ENCODING (sheet returned,
-    scanned or being typed in) → DONE (encoding validated; reversible).
+    Une feuille de comptage n'a **pas** d'état propre. Elle en a eu quatre —
+    en attente, comptage en cours, encodage en cours, terminée — que quelqu'un
+    devait faire avancer à la main, deux fois par zone, sans qu'aucune écriture
+    n'en dépende : le papier partait au comptage que le bouton ait été cliqué ou
+    non, et les quantités s'enregistraient dans tous les cas. Quatre clics par
+    zone pour tenir à jour une donnée que personne ne lisait.
+
+    Ce qui reste :
+
+    * ``PENDING``     aucune quantité relevée dans la zone ;
+    * ``IN_PROGRESS`` des quantités sont là, la zone n'est pas déclarée close ;
+    * ``DONE``        un humain a déclaré la zone terminée.
+
+    Les deux premiers se **déduisent** des quantités : ils ne peuvent donc pas
+    mentir. Le troisième est la seule décision humaine du parcours, et elle est
+    nécessaire — dérivé de « toutes les lignes comptées », il condamnerait une
+    campagne entière pour une ligne qu'on ne peut légitimement pas compter.
     """
 
     PENDING = "PENDING"
-    COUNTING = "COUNTING"
-    ENCODING = "ENCODING"
-    DONE = "DONE"
-
-
-class ZoneStatus(StrEnum):
-    """Aggregated state of a physical zone of the GENERIQUE location."""
-
-    PENDING = "PENDING"
-    PASS_1_RUNNING = "PASS_1_RUNNING"
-    PASS_2_RUNNING = "PASS_2_RUNNING"
-    ARBITRATION = "ARBITRATION"
+    IN_PROGRESS = "IN_PROGRESS"
     DONE = "DONE"
 
 
@@ -186,6 +212,58 @@ class AdjustmentKind(StrEnum):
     ADJUSTMENT = "ADJUSTMENT"    # journal d'ajustement saisi après analyse
     RECOUNT = "RECOUNT"          # recomptage post-inventaire
     OTHER = "OTHER"
+
+
+class FlowKind(StrEnum):
+    """A quantity the user loads to explain the period between two campaigns.
+
+    Only the three the application cannot derive on its own. Production and
+    theoretical consumption are read from the backflush fact table instead —
+    asking somebody to retype what a warehouse already knows is how the legacy
+    process introduced most of its errors.
+
+    The sign lives here, not in the quantity: a shipment is stored positive and
+    subtracted by the calculation. Letting it be typed negative would mean an
+    expedition entered the wrong way round is added to the stock, and nothing on
+    screen would show it.
+    """
+
+    RECEIPT = "RECEIPT"      # réceptions : entrées en stock sur la période
+    SHIPMENT = "SHIPMENT"    # expéditions : sorties vers le client
+    SCRAP = "SCRAP"          # rebuts : étape facultative
+
+
+class FlowSource(StrEnum):
+    """Where one quantity of a comparison came from.
+
+    Not decoration: a figure read from the ERP is rejouable by re-running its
+    query, a figure typed into the grid is somebody's judgement, and a
+    contested number is defended differently in each case. Without this, the
+    two are indistinguishable the moment the screen is refreshed.
+    """
+
+    ERP = "ERP"
+    FILE = "FILE"
+    MANUAL = "MANUAL"
+
+
+class StockBasis(StrEnum):
+    """Which reading of a campaign's stock a comparison brackets itself with.
+
+    Two readings coexist in every campaign and neither is the other's draft:
+    the ERP said one thing at the freeze, the shelf said another. Comparing two
+    campaigns therefore has four legitimate forms, and which one is wanted
+    depends on the question — physique/physique measures what the plant lost,
+    ERP/ERP measures what the system thinks it lost, and the two crossed pairs
+    isolate where a divergence was born.
+
+    ``PHYSICAL`` is the counted stock plus the adjustments posted after it, the
+    same definition the inventory variance uses. Anything else would make one
+    screen's « physique » mean something different from another's.
+    """
+
+    PHYSICAL = "PHYSICAL"
+    BOOK = "BOOK"
 
 
 class ControlSeverity(StrEnum):

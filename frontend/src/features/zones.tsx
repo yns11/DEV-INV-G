@@ -18,6 +18,7 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDelete,
   EmptyState,
   Field,
   Icons,
@@ -166,11 +167,27 @@ export function CreateZoneModal({
 export function ZonesAdminGrid({
   campaignId,
   editable,
+  deletable = false,
   managers = [],
+  onPrint,
+  onOpen,
 }: {
   campaignId: string
   editable: boolean
+  /**
+   * Si la suppression est offerte — c'est-à-dire en préparation.
+   *
+   * Plus étroit que `editable`, qui reste vrai au comptage : une zone y porte
+   * des quantités relevées sur le terrain, et le serveur refuse de la
+   * supprimer. Le bouton suit la règle plutôt que de la faire découvrir par un
+   * refus.
+   */
+  deletable?: boolean
   managers?: Manager[]
+  /** Print the selected zones. Absent on screens where printing has no place. */
+  onPrint?: (zones: Zone[]) => void
+  /** Open one zone's article list for editing. */
+  onOpen?: (zone: Zone) => void
 }) {
   const queryClient = useQueryClient()
   const toast = useToast()
@@ -217,6 +234,45 @@ export function ZonesAdminGrid({
     },
     onError: (error) => showError(error, 'Changement impossible'),
   })
+
+  // Un seul chemin pour la ligne et pour la sélection : deux mutations, ce
+  // serait deux endroits où la confirmation peut diverger de la règle.
+  const remove = useMutation({
+    mutationFn: (zoneIds: string[]) => api.deleteZones(campaignId, zoneIds),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries()
+      setSelected(new Set())
+      toast.success(
+        `${result.zones} zone(s) supprimée(s)`,
+        result.sheets
+          ? `${result.sheets} feuille(s) de comptage retirée(s) avec elles.`
+          : 'Elles n’avaient aucune feuille.',
+      )
+    },
+    onError: (error) => showError(error, 'Suppression impossible'),
+  })
+
+  // Ce que la suppression emporte, énoncé avant qu'on la déclenche. Une zone
+  // supprimée part avec ses feuilles et les lignes qu'on a mis une matinée à
+  // corriger : `window.confirm` posait cette question-là comme il posait
+  // n'importe quelle autre.
+  const [removing, setRemoving] = useState<Zone[] | null>(null)
+  const removalConsequences = (zones: Zone[]) => {
+    const sheets = zones.reduce((n, z) => n + z.sheets.length, 0)
+    const lines = zones.reduce((n, z) => n + (z.sheets[0]?.lineCount ?? 0), 0)
+    const consequences = [`${sheets} feuille(s) de comptage`]
+    if (lines) {
+      consequences.push(`${lines} ligne(s) pré-imprimée(s)`)
+    }
+    const counted = zones.filter((z) => (z.sheets[0]?.countedLines ?? 0) > 0)
+    if (counted.length) {
+      consequences.push(
+        `des quantités déjà saisies sur ${counted.length} zone(s) : ` +
+          counted.map((z) => z.code).join(', '),
+      )
+    }
+    return consequences
+  }
 
   const assign = useMutation({
     mutationFn: (managerCode: string) =>
@@ -284,6 +340,42 @@ export function ZonesAdminGrid({
         ),
       value: (row) => (row.allow_negative ? 1 : 0),
     },
+    ...(onOpen
+      ? [
+          {
+            key: 'open',
+            label: '',
+            width: 90,
+            sortable: false,
+            render: (row: Zone) => (
+              <Button size="sm" onClick={() => onOpen(row)}>
+                Ouvrir
+              </Button>
+            ),
+          } satisfies Column<Zone>,
+        ]
+      : []),
+    ...(deletable
+      ? [
+          {
+            key: 'remove',
+            label: '',
+            width: 52,
+            sortable: false,
+            filter: false as const,
+            render: (row: Zone) => (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Icons.trash size={13} />}
+                disabled={remove.isPending}
+                title={`Supprimer la zone ${row.code} et ses feuilles`}
+                onClick={() => setRemoving([row])}
+              />
+            ),
+          } satisfies Column<Zone>,
+        ]
+      : []),
     ...(managers.length > 0
       ? [
           {
@@ -344,15 +436,44 @@ export function ZonesAdminGrid({
           <DataGrid
               columns={columns}
               rows={zones}
+              exportTitle="Zones"
+              campaignId={campaignId}
               getRowId={(row) => row.id}
-              selectable={editable}
+              selectable={editable || Boolean(onPrint)}
               selected={selected}
               onSelectedChange={setSelected}
               searchPlaceholder="Filtrer par zone, libellé, secteur…"
               maxHeight={520}
               toolbar={
-                editable && selected.size > 0 ? (
+                selected.size > 0 ? (
                   <div className="row-wrap" style={{ gap: 'var(--space-2)' }}>
+                    {onPrint && (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        icon={<Icons.printer size={13} />}
+                        onClick={() =>
+                          onPrint(zones.filter((z) => selected.has(z.id)))
+                        }
+                      >
+                        Imprimer la sélection
+                      </Button>
+                    )}
+                    {deletable && (
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        icon={<Icons.trash size={13} />}
+                        disabled={remove.isPending}
+                        onClick={() =>
+                          setRemoving(zones.filter((z) => selected.has(z.id)))
+                        }
+                      >
+                        Supprimer ({selected.size})
+                      </Button>
+                    )}
+                    {editable && (
+                    <>
                     <Button
                       size="sm"
                       disabled={setPasses.isPending}
@@ -408,6 +529,8 @@ export function ZonesAdminGrid({
                         ))}
                       </select>
                     )}
+                    </>
+                    )}
                   </div>
                 ) : null
               }
@@ -427,6 +550,22 @@ export function ZonesAdminGrid({
           campaignId={campaignId}
           managers={managers}
           onClose={() => setCreating(false)}
+        />
+      )}
+      {removing && (
+        <ConfirmDelete
+          what={
+            removing.length === 1
+              ? `la zone ${removing[0]!.code}`
+              : `${removing.length} zones`
+          }
+          consequences={removalConsequences(removing)}
+          pending={remove.isPending}
+          onClose={() => setRemoving(null)}
+          onConfirm={() => {
+            remove.mutate(removing.map((z) => z.id))
+            setRemoving(null)
+          }}
         />
       )}
     </Card>

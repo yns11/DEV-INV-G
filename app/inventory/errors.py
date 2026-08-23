@@ -15,6 +15,7 @@ __all__ = [
     "ConflictError",
     "WorkflowError",
     "FrozenError",
+    "UnauthenticatedError",
     "PermissionDeniedError",
     "UpstreamError",
 ]
@@ -69,6 +70,20 @@ class FrozenError(WorkflowError):
     """The entity is frozen by the campaign lifecycle and cannot be modified."""
 
     code = "frozen"
+
+
+class UnauthenticatedError(InventoryError):
+    """Aucune identité vérifiée sur une requête qui en exige une.
+
+    Distinct de :class:`PermissionDeniedError`, et la distinction porte : 403
+    dit « je sais qui vous êtes, et vous n'avez pas le droit », 401 dit « je ne
+    sais pas qui vous êtes ». Les confondre envoyait un exploitant chercher un
+    droit manquant alors que c'est le proxy d'authentification qui est hors
+    circuit.
+    """
+
+    status_code = 401
+    code = "unauthenticated"
 
 
 class PermissionDeniedError(InventoryError):

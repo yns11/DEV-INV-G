@@ -9,9 +9,8 @@ from fastapi import APIRouter, Depends, Query
 from ...domain.enums import CampaignStatus
 from ...domain.models import CampaignConfig, Thresholds
 from ...services import CampaignService
-from ..deps import CampaignDep, Ctx, campaign_service
+from ..deps import CampaignDep, campaign_service
 from ..schemas import (
-    CampaignConfigPayload,
     CloneCampaignRequest,
     CreateCampaignRequest,
     TransitionRequest,
@@ -27,8 +26,25 @@ Service = Annotated[CampaignService, Depends(campaign_service)]
 def list_campaigns(
     service: Service,
     include_closed: Annotated[bool, Query(alias="includeClosed")] = True,
-) -> list[dict[str, Any]]:
-    return [c.model_dump(mode="json") for c in service.list(include_closed=include_closed)]
+    limit: Annotated[int | None, Query(ge=1, le=500)] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+    """Une page de campagnes, et combien il y en a en tout.
+
+    La réponse portait un tableau nu, borné à cent sans le dire : après
+    quelques années d'inventaires, les plus anciennes disparaissaient de
+    l'écran sans qu'aucun message ne l'annonce. ``total`` est ce qui permet à
+    l'interface de proposer les suivantes plutôt que de faire comme si elles
+    n'existaient pas.
+    """
+    campaigns, total = service.list(
+        include_closed=include_closed, limit=limit, offset=offset
+    )
+    return {
+        "items": [c.model_dump(mode="json") for c in campaigns],
+        "total": total,
+        "offset": offset,
+    }
 
 
 @router.post("", status_code=201, summary="Créer une campagne")
@@ -70,6 +86,17 @@ def get_campaign(campaign: CampaignDep) -> dict[str, Any]:
     return campaign.model_dump(mode="json")
 
 
+@router.delete("/{campaign_id}", summary="Supprimer une campagne")
+def delete_campaign(campaign: CampaignDep, service: Service) -> dict[str, bool]:
+    """Logical deletion, reserved to the campaign's author.
+
+    Nothing is erased: the row is flagged and stops being listed. A campaign
+    created by somebody else is refused with a 403 rather than silently ignored.
+    """
+    service.delete(campaign.id)
+    return {"deleted": True}
+
+
 @router.get("/{campaign_id}/overview", summary="Tableau de bord de la campagne")
 def overview(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     """Header data for every screen: status, permissions and both progress bars."""
@@ -91,6 +118,22 @@ def transition_readiness(
     return service.transition_readiness(campaign.id, target)
 
 
+@router.get(
+    "/{campaign_id}/closure-checklist",
+    summary="Liste de contrôle avant clôture",
+)
+def closure_checklist(campaign: CampaignDep, service: Service) -> dict[str, Any]:
+    """L'état des lieux du dossier, avant le seul geste irréversible.
+
+    Trois tons : ce qui bloque, ce qui mérite un regard, ce qui est fait. Le
+    premier vient de la même fonction que le refus — l'écran et le serveur ne
+    peuvent donc pas diverger. Lisible pendant toute la phase d'analyse, et pas
+    seulement dans la fenêtre qui clôture : découvrir trois points bloquants au
+    moment de cliquer, un vendredi soir, est exactement ce qu'on évite ici.
+    """
+    return service.closure_checklist(campaign.id)
+
+
 @router.post("/{campaign_id}/transition", summary="Changer le statut de la campagne")
 def transition(
     campaign: CampaignDep, payload: TransitionRequest, service: Service
@@ -99,8 +142,8 @@ def transition(
 
 
 @router.get("/{campaign_id}/thresholds", summary="Seuils de matérialité")
-def get_thresholds(campaign: CampaignDep, ctx: Ctx) -> list[dict[str, Any]]:
-    return [t.model_dump(mode="json") for t in ctx.campaigns.list_thresholds(campaign.id)]
+def get_thresholds(campaign: CampaignDep, service: Service) -> list[dict[str, Any]]:
+    return [t.model_dump(mode="json") for t in service.thresholds(campaign)]
 
 
 @router.put("/{campaign_id}/thresholds", summary="Mettre à jour les seuils")
@@ -113,25 +156,17 @@ def update_thresholds(
     return [t.model_dump(mode="json") for t in updated]
 
 
-@router.put("/{campaign_id}/config", summary="Mettre à jour la configuration")
-def update_config(
-    campaign: CampaignDep, payload: CampaignConfigPayload, service: Service
-) -> dict[str, Any]:
-    updated = service.update_config(campaign.id, CampaignConfig(**payload.model_dump()))
-    return updated.model_dump(mode="json")
-
-
 @router.get("/{campaign_id}/audit", summary="Journal d'audit")
 def audit_trail(
     campaign: CampaignDep,
-    ctx: Ctx,
+    service: Service,
     entity_type: Annotated[str | None, Query(alias="entityType")] = None,
     actor: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[dict[str, Any]]:
-    events = ctx.audit.list(
-        campaign.id, entity_type=entity_type, actor=actor, limit=limit, offset=offset
+    events = service.audit_trail(
+        campaign, entity_type=entity_type, actor=actor, limit=limit, offset=offset
     )
     return [e.model_dump(mode="json") for e in events]
 
@@ -139,10 +174,7 @@ def audit_trail(
 @router.get("/{campaign_id}/imports", summary="Historique des imports")
 def import_history(
     campaign: CampaignDep,
-    ctx: Ctx,
+    service: Service,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[dict[str, Any]]:
-    return [
-        {**row, "id": str(row["id"])}
-        for row in ctx.imports.list(campaign.id, limit=limit)
-    ]
+    return service.import_history(campaign, limit=limit)

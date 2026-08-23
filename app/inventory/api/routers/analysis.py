@@ -6,11 +6,8 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
 
-from ...db import new_id
-from ...domain.enums import AuditAction
-from ...domain.models import AdjustmentLine
 from ...services import AnalysisService
-from ..deps import CampaignDep, Ctx, analysis_service
+from ..deps import CampaignDep, analysis_service
 from ..schemas import AdjustmentRowRequest, AnalysisRequest
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/analysis", tags=["analyse"])
@@ -94,6 +91,64 @@ def controls(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     return service.controls(campaign)
 
 
+@router.get("/breakdown/{item_number}", summary="D'où vient un chiffre")
+def breakdown(
+    campaign: CampaignDep,
+    item_number: str,
+    service: Service,
+    aspect: Annotated[str, Query()] = "counted",
+    warehouse_id: Annotated[str, Query(alias="warehouseId")] = "",
+    location_id: Annotated[str, Query(alias="locationId")] = "",
+) -> dict[str, Any]:
+    """The lines behind one figure, whichever figure it is.
+
+    Only the WIP column could be explored; every other quantity had to be taken
+    on trust. One endpoint, one shape — origin, place, detail, quantity, value —
+    so a single dialog serves the consolidated journal, the variances, the root
+    causes and the adjustments instead of four that would drift apart.
+    """
+    return service.breakdown(
+        campaign,
+        item_number,
+        aspect,
+        warehouse_id=warehouse_id,
+        location_id=location_id,
+    )
+
+
+@router.get("/backflush", summary="Écart backflush de la campagne")
+def backflush(campaign: CampaignDep, service: Service) -> dict[str, Any]:
+    """One line per article: what production explains, and what it does not.
+
+    The period header travels with the rows rather than being fetched apart:
+    a backflush figure without its bounds is not interpretable, and the two
+    arriving in separate responses is how they end up disagreeing on screen.
+    """
+    return service.backflush(campaign)
+
+
+@router.get("/backflush/period", summary="Période proposée pour l'écart backflush")
+def backflush_period(campaign: CampaignDep, service: Service) -> dict[str, str]:
+    """A period the screen pre-fills, and that the user is free to change."""
+    return service.suggested_backflush_period(campaign)
+
+
+@router.get("/alerts", summary="Compteurs d'alertes pour la navigation")
+def alerts(campaign: CampaignDep, service: Service) -> dict[str, int]:
+    """How many *distinct* things are wrong, per screen.
+
+    Distinct, not total: a control firing on four hundred articles is one thing
+    to go and look at, and a badge reading « 400 » next to « Contrôles » says
+    nothing except that the number is large. What the sidebar has to answer is
+    "is there something here I have not seen?", and that is a count of controls.
+
+    Its own endpoint rather than a field of the overview: computing it runs the
+    whole control suite, and the overview is fetched on every screen of every
+    page load.
+    """
+    return service.alert_counts(campaign)
+
+
 @router.get("/analytics", summary="Analyses statistiques et machine learning")
 def analytics(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     """ABC/XYZ, Pareto, anomalies, clustering, recount priority, data forensics.
@@ -120,8 +175,8 @@ def compare(
 
 
 @router.get("/causes", summary="Référentiel des causes standard")
-def causes(campaign: CampaignDep, ctx: Ctx) -> list[dict[str, Any]]:
-    return [c.model_dump(mode="json") for c in ctx.analysis.list_causes()]
+def causes(campaign: CampaignDep, service: Service) -> list[dict[str, Any]]:
+    return [c.model_dump(mode="json") for c in service.causes()]
 
 
 @router.get("/cause-split", summary="Répartition des écarts par cause")
@@ -185,7 +240,7 @@ def explain(
 @router.get("/adjustments", summary="Mouvements et ajustements")
 def list_adjustments(
     campaign: CampaignDep,
-    ctx: Ctx,
+    service: Service,
     limit: Annotated[int, Query(ge=1, le=50_000)] = 1000,
 ) -> list[dict[str, Any]]:
     return [
@@ -194,56 +249,21 @@ def list_adjustments(
             "qty": float(a.qty),
             "value": float(a.value),
         }
-        for a in ctx.adjustments.list(campaign.id, limit=limit)
+        for a in service.adjustments(campaign, limit=limit)
     ]
 
 
 @router.put("/adjustments", summary="Créer ou modifier des ajustements")
 def upsert_adjustments(
-    campaign: CampaignDep, rows: list[AdjustmentRowRequest], ctx: Ctx
+    campaign: CampaignDep, rows: list[AdjustmentRowRequest], service: Service
 ) -> dict[str, int]:
-    ctx.guard(campaign, "adjustments")
-    lines = [
-        AdjustmentLine(
-            id=row.id or new_id(),
-            campaign_id=campaign.id,
-            item_number=row.item_number,
-            warehouse_id=row.warehouse_id,
-            location_id=row.location_id,
-            kind=row.kind,
-            qty=row.qty,
-            unit=row.unit,
-            value=row.value,
-            journal_number=row.journal_number,
-            physical_date=row.physical_date,
-            reason_code=row.reason_code,
-            comment=row.comment,
-            source="MANUAL",
-        )
-        for row in rows
-    ]
-    written = ctx.adjustments.upsert(lines, actor=ctx.actor)
-    ctx.record(
-        campaign_id=campaign.id,
-        action=AuditAction.UPDATE,
-        entity_type="adjustment_line",
-        summary=f"{len(lines)} ajustement(s) enregistré(s) manuellement",
-        after={"count": len(lines)},
-    )
-    return {"written": written}
+    """Créer ou modifier des ajustements saisis à la main."""
+    return service.upsert_adjustments(campaign, rows)
 
 
 @router.delete("/adjustments/{line_id}", summary="Supprimer un ajustement")
 def delete_adjustment(
-    campaign: CampaignDep, line_id: str, ctx: Ctx
+    campaign: CampaignDep, line_id: str, service: Service
 ) -> dict[str, bool]:
-    ctx.guard(campaign, "adjustments")
-    ctx.adjustments.delete(line_id, actor=ctx.actor)
-    ctx.record(
-        campaign_id=campaign.id,
-        action=AuditAction.DELETE,
-        entity_type="adjustment_line",
-        entity_id=line_id,
-        summary="Suppression logique d'un ajustement",
-    )
+    service.delete_adjustment(campaign, line_id)
     return {"deleted": True}

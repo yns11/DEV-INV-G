@@ -299,3 +299,18 @@
   --shadow-md: 0 4px 12px rgb(0 0 0 / 0.5), 0 2px 4px rgb(0 0 0 / 0.3);
   --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.6), 0 4px 8px rgb(0 0 0 / 0.4);
 }
+
+/* ---- Marque -----------------------------------------------------------------
+   Les deux couleurs de la charte eMotors. L'encre suit le thème : le bleu nuit
+   de la marque sur un fond sombre serait un logo invisible, ce qui n'est pas
+   une façon de respecter une charte. Le vert, lui, tient sur les deux fonds. */
+:root {
+  --brand-ink: #0B0B33;
+  --brand-accent: #2FA04A;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --brand-ink: #E9ECF8; }
+}
+
+:root[data-theme="dark"] { --brand-ink: #E9ECF8; }

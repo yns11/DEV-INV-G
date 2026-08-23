@@ -19,6 +19,7 @@ validation messages and the downloadable template all follow.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -58,6 +59,26 @@ class FieldSpec:
         }
 
 
+#: How the ERP spells "in force" in a ``statut`` column. Declared here, with the
+#: contracts, because it is what the column *means* — the mappers and the
+#: duplicate check both read it, and two definitions would drift.
+ACTIVE_STATUSES = frozenset(
+    {"actif", "active", "1", "true", "vrai", "o", "oui", "y", "yes"}
+)
+
+
+def is_active_status(value: Any) -> bool:
+    """Whether a ``statut`` cell marks the row as in force.
+
+    An empty cell counts as in force: a source that predates the column is a
+    source of live recipes, and treating its rows as retired would silently
+    empty every bill of materials.
+    """
+    if value is None or value == "":
+        return True
+    return str(value).strip().lower() in ACTIVE_STATUSES
+
+
 @dataclass(frozen=True, slots=True)
 class GridContract:
     """The full contract of one importable/editable grid."""
@@ -68,6 +89,14 @@ class GridContract:
     fields: tuple[FieldSpec, ...]
     #: Columns forming the natural key; duplicates on these are reported.
     natural_key: tuple[str, ...] = ()
+    #: Rows the duplicate check applies to. ``None`` means all of them.
+    #:
+    #: A grid where several rows legitimately share a key needs the check
+    #: narrowed rather than switched off: the bill of materials holds every
+    #: version of a recipe, so the same pair appears once per retired version —
+    #: normal — but twice in force is an anomaly worth naming. Reporting both
+    #: buried the second under fifty of the first.
+    duplicate_scope: Callable[[Mapping[str, Any]], bool] | None = None
     #: Short usage note rendered above the grid.
     hint: str = ""
     examples: tuple[dict[str, Any], ...] = field(default=())
@@ -75,12 +104,6 @@ class GridContract:
     @property
     def headers(self) -> list[str]:
         return [f.name for f in self.fields]
-
-    def field_by_name(self, name: str) -> FieldSpec | None:
-        for f in self.fields:
-            if f.name == name:
-                return f
-        return None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -167,6 +190,12 @@ BOMS = GridContract(
         "par UNE unité de l'assemblage."
     ),
     natural_key=("parent_item", "child_item"),
+    # Only the versions in force are checked. The ERP keeps every version of a
+    # recipe, so a retired pair appearing three times is three versions of the
+    # same link, not three mistakes — and reporting them drowned the one case
+    # that matters: the same link declared twice, both in force, where the
+    # explosion would have to pick one quantity and could not.
+    duplicate_scope=lambda row: is_active_status(row.get("statut")),
     fields=(
         FieldSpec("parent_item", "Assemblage (parent)", required=True,
                   aliases=("ref_mere", "parent", "article/ressource"), width=180),
@@ -178,16 +207,23 @@ BOMS = GridContract(
                   aliases=("quantite", "qty", "qty / bom", "quantite par"), width=180),
         FieldSpec("unit", "Unité", default="PCE",
                   aliases=("unite", "unit"), width=90),
+        # The ERP holds every version of a recipe. All of them are loaded, and
+        # only the ones in force are exploded — hence a column rather than a
+        # filter at import: an assembly whose only recipe is retired has a
+        # structure, and the screens have to be able to say so.
+        FieldSpec("statut", "Statut", default="Actif",
+                  aliases=("status", "actif", "etat", "état"), width=100),
     ),
     examples=(
         {"parent_item": "mass-00040922", "parent_name": "STATOR M4",
-         "child_item": "P-00003759", "qty_per": 4.86, "unit": "KG"},
+         "child_item": "P-00003759", "qty_per": 4.86, "unit": "KG",
+         "statut": "Actif"},
     ),
 )
 
 BOOK_STOCK = GridContract(
     key="book_stock",
-    title="Stock livre (snapshot ERP)",
+    title="Stock ERP (snapshot ERP)",
     description=(
         "Photographie du stock ERP prise juste avant le comptage. Entrepôts et "
         "emplacements sont normalisés en majuscules à l'import."
@@ -350,6 +386,75 @@ ADJUSTMENTS = GridContract(
     ),
 )
 
+BACKFLUSH = GridContract(
+    key="backflush",
+    title="Écart backflush par article",
+    description=(
+        "Écart entre la consommation théorique déduite des nomenclatures et la "
+        "consommation réellement sortie du stock, sur la période retenue."
+    ),
+    hint=(
+        "Convention backflush : positif = non-consommation (le stock système est "
+        "surévalué, on comptera moins). Les bornes sont des lundis ISO, début "
+        "inclus et fin exclue."
+    ),
+    natural_key=("item_number",),
+    fields=(
+        FieldSpec("item_number", "Numéro d'article", required=True,
+                  aliases=("numero d'article", "child_itemid", "itemnumber",
+                           "reference", "composant"), width=170),
+        FieldSpec("name", "Désignation",
+                  aliases=("child_name", "libelle", "designation"), width=240),
+        FieldSpec("unit", "Unité", default="PCE",
+                  aliases=("child_unite", "unite", "unit"), width=90),
+        FieldSpec("net_qty", "Écart backflush", type="number", required=True,
+                  default=0,
+                  aliases=("ecart_backflush_net", "ecart_brut", "ecart", "net"),
+                  help="Théorique − réel, toutes lignes confondues.", width=160),
+        FieldSpec("under_consumed_qty", "Non-consommation", type="number", default=0,
+                  aliases=("non_consommation",), width=160),
+        FieldSpec("over_consumed_qty", "Surconsommation", type="number", default=0,
+                  aliases=("surconsommation",), width=160),
+        FieldSpec("theoretical_qty", "Conso. théorique", type="number", default=0,
+                  aliases=("conso_theorique",), width=160),
+        FieldSpec("actual_qty", "Conso. réelle", type="number", default=0,
+                  aliases=("conso_reelle",), width=150),
+        FieldSpec("parent_count", "Parents", type="integer", default=0,
+                  aliases=("nb_parents",), width=100),
+        FieldSpec("week_count", "Semaines", type="integer", default=0,
+                  aliases=("nb_semaines",), width=100),
+        FieldSpec("source_loaded_at", "Fraîcheur de la source", type="datetime",
+                  aliases=("source_loaded_at", "loaded_at"), width=190),
+    ),
+)
+
+#: The three quantities the stock-flow reconciliation has to be given, because
+#: nothing in the application can derive them. One contract rather than three:
+#: the columns are identical, and the nature of the load is a property of the
+#: screen it was started from, not of the file.
+STOCK_FLOW = GridContract(
+    key="stock_flow",
+    title="Quantités de la période",
+    description=(
+        "Quantités réceptionnées, expédiées ou rebutées par article, entre les "
+        "deux campagnes comparées."
+    ),
+    hint=(
+        "Une ligne par article, quantité positive : le sens (entrée ou sortie) "
+        "est donné par l'étape, pas par le signe."
+    ),
+    natural_key=("item_number",),
+    fields=(
+        FieldSpec("item_number", "Numéro d'article", required=True,
+                  aliases=("numero d'article", "itemnumber", "reference"),
+                  width=170),
+        FieldSpec("qty", "Quantité", type="number", required=True, default=0,
+                  aliases=("quantite", "qty", "quantity"), width=150),
+        FieldSpec("unit", "Unité", default="PCE", aliases=("unite", "unit"),
+                  width=90),
+    ),
+)
+
 ZONES = GridContract(
     key="zones",
     title="Zones de l'emplacement GENERIQUE",
@@ -373,7 +478,7 @@ LOCATIONS = GridContract(
     key="locations",
     title="Référentiel entrepôts / emplacements",
     description=(
-        "Construit automatiquement à partir du stock livre, complétable à la main. "
+        "Construit automatiquement à partir du stock ERP, complétable à la main. "
         "Un emplacement désactivé sort totalement du périmètre."
     ),
     hint=(
@@ -408,6 +513,8 @@ CONTRACTS: dict[str, GridContract] = {
         COUNT_JOURNAL_LINES,
         COUNT_SHEETS,
         ADJUSTMENTS,
+        BACKFLUSH,
+        STOCK_FLOW,
         ZONES,
         LOCATIONS,
     )

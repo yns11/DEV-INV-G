@@ -6,7 +6,7 @@ comptage, analyse & ajustements, clôture.
 
 ```
 PRÉPARATION ──────► COMPTAGE ──────► ANALYSE & AJUSTEMENTS ──────► CLÔTURE
- référentiels      stock livre gelé      journaux gelés            tout gelé
+ référentiels      stock ERP gelé        journaux gelés            tout gelé
  seuils            journaux + feuilles   ajustements
  zones             consolidation         causes
 ```
@@ -37,21 +37,35 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
 - **Les feuilles se préparent, elles ne s'improvisent pas.** Un fichier
   `[feuille, article, section]` crée les zones et pré-imprime leur liste, sur les
   deux passages. Un article absent du référentiel est une erreur de ligne, jamais
-  un article créé par effet de bord.
+  un article créé par effet de bord — et la règle vaut pour le stock ERP comme
+  pour les feuilles, dans les trois modes d'import.
+- **La photo du stock se désigne.** Le snapshot ERP est publié chaque jour ;
+  c'est celui de la journée de comptage qui fait foi, pas celui du jour où on le
+  charge. La campagne dit lequel elle a chargé, et l'historique le garde.
 - **Deux comptages, un arbitrage outillé.** Valorisé en euros, couvrant aussi les
   articles comptés par une seule équipe. Le nombre de comptages appartient à la
   zone : le double comptage est la règle, le comptage unique l'exception qu'on
   assume, zone par zone.
+- **Lecture pour tous, écriture pour ceux qui la portent.** Une campagne se
+  consulte et s'exporte par tout le monde ; elle ne se modifie que par son
+  créateur et les neuf gestionnaires qu'il a déclarés. Le contrôle est posé au
+  même endroit que le gel des phases, en une seule règle : les deux barrières
+  ne peuvent pas diverger.
 - **Chacun voit son périmètre, personne n'est cloisonné.** Entrepôts et zones
-  s'affectent à cinq gestionnaires ; l'interrupteur « Mon périmètre » filtre
-  côté serveur — ce qu'il exclut n'est jamais envoyé au poste. C'est un filtre,
-  jamais une habilitation : les actions restent identiques dans les deux modes.
+  s'affectent aux gestionnaires ; l'interrupteur « Mon périmètre » filtre côté
+  serveur — ce qu'il exclut n'est jamais envoyé au poste. C'est un filtre, pas
+  une habilitation : un gestionnaire garde le droit d'agir hors du sien, ce
+  qu'exige la couverture d'un collègue à six heures du matin.
 - **Un transfert entre bacs n'est pas une perte.** L'analyse s'ouvre sur l'écart
   par référence et chiffre explicitement la part qui n'est qu'un déplacement.
 - **Le WIP est explorable.** Chaque quantité éclatée est traçable jusqu'à
   l'assemblage et la zone qui l'ont produite.
 - **L'IA propose, l'humain décide.** Lecture des feuilles scannées, suggestions
   de causes, synthèse — toujours en proposition, jamais en décision.
+- **Toute la pile part au scanner.** Cent feuilles, deux cents pages : chaque
+  page se rattache à la sienne par l'identifiant imprimé en pied de page, les
+  lectures partent en parallèle, et le dépôt rend la main tout de suite — la
+  progression s'affiche pendant que les feuilles se remplissent.
 - **Chaque action est tracée.** Journal d'audit en ajout seul, protégé au niveau
   du moteur de base de données.
 
@@ -120,7 +134,7 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      204 tests, ~1 s, sans base de données
+tests/                      1308 tests, ~17 s ; 8 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -137,7 +151,6 @@ Makefile                    Points d'entrée développeur
 | [`03-guide-deploiement.md`](docs/03-guide-deploiement.md) | Déploiement pas à pas : local, CLI, interface graphique, CI/CD, dépannage |
 | [`04-guide-utilisateur.md`](docs/04-guide-utilisateur.md) | Le processus vu par l'utilisateur, de la préparation à la clôture |
 | [`05-modele-de-donnees.md`](docs/05-modele-de-donnees.md) | Schémas, types, index, définition exacte des indicateurs |
-| [`05chantierv2.md`](docs/05chantierv2.md) | Conception du chantier V2 : feuilles préparées, périmètres, impressions |
 | [`06-top20-ameliorations.md`](docs/06-top20-ameliorations.md) | Revue critique : 20 améliorations priorisées, séquencées |
 
 ---
@@ -146,7 +159,7 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 204 tests, ~1 s, aucune base requise
+make test            # 1308 tests, ~17 s ; 8 ignorés sans PostgreSQL
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000

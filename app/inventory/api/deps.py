@@ -10,15 +10,19 @@ from fastapi import Depends, Header, Request
 
 from ..config import get_settings
 from ..domain.models import Campaign
+from ..errors import UnauthenticatedError
 from ..services import (
     AnalysisService,
     CampaignService,
     CountingService,
+    EvidenceService,
     GenericService,
     ImportService,
     ManagerService,
     Perimeter,
+    ReferentialService,
     ReportService,
+    ScanJobService,
     ServiceContext,
 )
 
@@ -33,11 +37,14 @@ __all__ = [
     "get_campaign",
     "campaign_service",
     "counting_service",
+    "evidence_service",
     "generic_service",
     "analysis_service",
     "import_service",
     "manager_service",
+    "referential_service",
     "report_service",
+    "scan_job_service",
     "resolve_perimeter",
 ]
 
@@ -54,9 +61,18 @@ def get_current_user(
     caller's identity. Those headers are the *only* trustworthy source: never
     read a user id from the request body, where a client could put anything.
 
-    Outside the platform (local development) there is no proxy, so the identity
-    falls back to a clearly-marked local user rather than pretending to be
-    someone. Every audit entry then says exactly what it is.
+    **Sans identité, on refuse.** Le comportement précédent retombait sur
+    ``unknown@unauthenticated`` et laissait la requête écrire sous ce nom : une
+    application jointe directement, ou un proxy mal configuré, créait et
+    modifiait des données sous une identité générique que le journal d'audit
+    enregistrait comme n'importe quelle autre. Une campagne d'inventaire est un
+    dossier opposable ; « on ne sait pas qui » n'y est pas une identité
+    acceptable, et l'erreur doit tomber à la porte plutôt que six couches plus
+    bas dans une ligne d'audit.
+
+    Hors plateforme (développement local) il n'y a pas de proxy, donc l'identité
+    est un utilisateur local clairement nommé — jamais quelqu'un d'autre. Ce
+    repli est **conditionné à ``INV_ENV=local``** : en déployé, il n'existe pas.
     """
     identity = (
         x_forwarded_email
@@ -67,10 +83,15 @@ def get_current_user(
         return identity.strip().lower()
     if get_settings().env == "local":
         return "local@dev"
-    # Deployed but no identity header: the app is reachable without the proxy,
-    # which is a misconfiguration worth seeing in the logs.
-    log.warning("No forwarded identity header on a non-local request")
-    return "unknown@unauthenticated"
+    log.error(
+        "Requête sans en-tête d'identité en environnement déployé : "
+        "l'application est joignable hors du proxy d'authentification.",
+        extra={"path": request.url.path},
+    )
+    raise UnauthenticatedError(
+        "Identité absente. Cette application doit être atteinte via le proxy "
+        "d'authentification Databricks ; un accès direct est refusé."
+    )
 
 
 CurrentUser = Annotated[str, Depends(get_current_user)]
@@ -127,6 +148,14 @@ def manager_service(ctx: Ctx) -> ManagerService:
     return ManagerService(ctx)
 
 
+def referential_service(ctx: Ctx) -> ReferentialService:
+    return ReferentialService(ctx)
+
+
+def evidence_service(ctx: Ctx) -> EvidenceService:
+    return EvidenceService(ctx)
+
+
 def resolve_perimeter(
     campaign: Campaign, ctx: ServiceContext, *, focus: bool, manager: str | None
 ) -> Perimeter | None:
@@ -145,3 +174,7 @@ def resolve_perimeter(
 
 def report_service(ctx: Ctx) -> ReportService:
     return ReportService(ctx)
+
+
+def scan_job_service(ctx: Ctx) -> ScanJobService:
+    return ScanJobService(ctx)

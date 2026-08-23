@@ -13,32 +13,36 @@ Cross-cutting behaviour lives here and nowhere else:
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
+import re
 import sys
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from ..config import get_settings
 from ..errors import InventoryError
+from ..metrics import REGISTRY
 from .routers import (
     analysis,
     assistant,
     campaigns,
     counting,
     data,
+    evidence,
     generic,
     managers,
     reports,
+    stock_flow,
 )
 
 log = logging.getLogger("inventory")
@@ -103,6 +107,28 @@ def _configure_logging(level: str) -> None:
 # Lifespan
 # --------------------------------------------------------------------------- #
 
+def _migration_state(settings: Any) -> dict[str, Any]:
+    """Applied versions, and the ones still missing.
+
+    Never raises: this is the payload somebody reads *because* something is
+    wrong, and it must not be the thing that fails.
+    """
+    if not settings.lakebase_configured:
+        return {"applied": [], "pending": [], "error": "Lakebase non configuré."}
+    try:
+        from ..db import get_database
+        from ..db.migrations import applied_versions, discover
+
+        applied = applied_versions(get_database(settings))
+        return {
+            "applied": sorted(applied),
+            "pending": [v for v, _ in discover() if v not in applied],
+            "error": None,
+        }
+    except Exception as exc:  # pragma: no cover - infrastructure dependent
+        return {"applied": [], "pending": [], "error": str(exc)}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Apply migrations at start-up, dispose of the pool at shutdown.
@@ -128,6 +154,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if applied:
                 log.info("Applied migrations: %s", ", ".join(applied))
             app.state.ready = database.ping()
+            # Un scan encore « en cours » appartient à un conteneur qui n'existe
+            # plus : son PDF vivait dans sa mémoire. Le laisser dans cet état
+            # afficherait une progression qui n'avancera jamais.
+            from ..services import abandon_orphan_jobs
+
+            abandon_orphan_jobs()
         except Exception as exc:  # pragma: no cover - infrastructure dependent
             app.state.startup_error = str(exc)
             log.exception("Lakebase initialisation failed")
@@ -141,9 +173,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         from ..db import reset_database
+        from ..services import shutdown_workers
 
+        # Le fil de scan avant le pool : il écrit dedans.
+        shutdown_workers()
         reset_database()
         log.info("Shutdown complete")
+
+
+# --------------------------------------------------------------------------- #
+# Metrics
+# --------------------------------------------------------------------------- #
+
+def _route_of(request: Request) -> str:
+    """Le gabarit de la route, jamais le chemin appelé.
+
+    ``/campaigns/{campaign_id}/items`` est une série ; le chemin brut en ferait
+    une par campagne, et le registre grossirait avec l'usage. Une requête qui
+    n'a atteint aucune route — un 404, un scan de vulnérabilité — n'a pas de
+    gabarit : la ranger sous un seul nom est ce qui empêche mille chemins
+    inventés de créer mille séries.
+    """
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    return path if isinstance(path, str) else "(inconnue)"
 
 
 # --------------------------------------------------------------------------- #
@@ -188,6 +241,9 @@ def create_app() -> FastAPI:
         duration = (time.perf_counter() - started) * 1000
         response.headers["x-request-id"] = request_id
         if request.url.path.startswith("/api"):
+            REGISTRY.observe(
+                request.method, _route_of(request), response.status_code, duration
+            )
             log.info(
                 "%s %s → %s",
                 request.method,
@@ -249,21 +305,77 @@ def create_app() -> FastAPI:
         )
 
     # ---- routes ------------------------------------------------------------
-    @app.get("/api/health", tags=["système"], summary="Sonde de santé")
-    def health() -> dict[str, Any]:
-        """Liveness and readiness in one payload.
-
-        Always answers 200 so the platform does not recycle a container that is
-        merely degraded; ``ready`` carries the truth.
-        """
+    def _database_ok() -> bool:
         from ..db import get_database
 
-        database_ok = False
-        if settings.lakebase_configured:
-            try:
-                database_ok = get_database(settings).ping()
-            except Exception:  # pragma: no cover - infrastructure dependent
-                database_ok = False
+        if not settings.lakebase_configured:
+            return False
+        try:
+            return get_database(settings).ping()
+        except Exception:  # pragma: no cover - infrastructure dependent
+            return False
+
+    @app.get("/api/health/live", tags=["système"], summary="Sonde de vivacité")
+    def health_live() -> dict[str, Any]:
+        """Le processus répond-il ? Rien d'autre.
+
+        Aucune dépendance n'est consultée : la vivacité dit « ce conteneur
+        n'est pas figé », et c'est sur cette réponse que la plateforme décide de
+        le recycler. Y faire entrer l'état de Lakebase reviendrait à faire
+        redémarrer en boucle des conteneurs parfaitement sains le jour où la
+        base est indisponible — le redémarrage ne répare pas la base, et la
+        rafale de reconnexions qu'il provoque l'empêche de revenir.
+        """
+        return {"status": "ok", "version": app.version}
+
+    @app.get(
+        "/api/health/ready",
+        tags=["système"],
+        summary="Sonde de disponibilité",
+        responses={503: {"description": "Le conteneur ne peut pas servir."}},
+    )
+    def health_ready(response: Response) -> dict[str, Any]:
+        """Ce conteneur peut-il servir une requête ? Répond 503 sinon.
+
+        C'est la sonde que la plateforme lit pour décider de lui envoyer du
+        trafic. Le diagnostic complet — ``/api/health`` — répond 200 quoi qu'il
+        arrive, ce qui est juste pour un humain qui vient lire l'état et faux
+        pour un orchestrateur : un conteneur dont les migrations ont échoué
+        recevait des requêtes exactement comme les autres, et les servait avec
+        des erreurs SQL. Ici, l'indisponibilité est dans le **code de statut**,
+        seul endroit qu'une sonde regarde.
+
+        Une migration en attente compte comme une indisponibilité : le schéma
+        n'est pas celui que le code attend, et servir dans cet état produit des
+        colonnes manquantes plutôt qu'un refus franc.
+        """
+        migrations = _migration_state(settings)
+        ready = (
+            _database_ok()
+            and not migrations["pending"]
+            and not migrations["error"]
+            and getattr(app.state, "startup_error", None) is None
+        )
+        if not ready:
+            response.status_code = 503
+        return {
+            "ready": ready,
+            "database": _database_ok(),
+            "pendingMigrations": migrations["pending"],
+            "startupError": getattr(app.state, "startup_error", None),
+        }
+
+    @app.get("/api/health", tags=["système"], summary="Diagnostic complet")
+    def health() -> dict[str, Any]:
+        """Tout ce qu'on peut savoir de ce conteneur, en une réponse.
+
+        Répond toujours 200 : c'est une page de diagnostic, lue par un humain
+        qui cherche pourquoi quelque chose ne marche pas, et une page de
+        diagnostic qui refuse de s'afficher quand ça va mal ne sert à rien. Les
+        deux sondes que la plateforme interroge sont ``/api/health/live`` et
+        ``/api/health/ready``.
+        """
+        database_ok = _database_ok()
         return {
             "status": "ok" if database_ok else "degraded",
             "ready": database_ok,
@@ -271,12 +383,96 @@ def create_app() -> FastAPI:
             "env": settings.env,
             "lakebaseConfigured": settings.lakebase_configured,
             "warehouseConfigured": bool(settings.warehouse_id),
+            # Faux, l'application marche entièrement : les chargements
+            # aboutissent, ils n'ont simplement aucune pièce jointe à proposer.
+            # C'est exactement ce que ce diagnostic doit permettre de constater
+            # avant qu'on le découvre en cherchant une feuille six mois plus
+            # tard.
+            "evidenceConfigured": settings.evidence_configured,
             # False means the deployment shipped without `app/static/`, i.e.
             # the API answers but the browser gets no interface.
             "frontendBuilt": STATIC_DIR.exists(),
+            # *Which* interface it shipped. « J'ai redéployé et rien n'a
+            # changé » has two causes that look identical from a browser — the
+            # upload did not carry the new build, or the browser is serving a
+            # cached shell — and no amount of reloading tells them apart. This
+            # names the bundle the container actually holds, so one `curl`
+            # settles it.
+            "frontend": _frontend_state(),
             "llmEndpoint": settings.llm_endpoint,
             "startupError": getattr(app.state, "startup_error", None),
+            # Which schema versions this container actually applied. A failed
+            # migration is logged and start-up continues on purpose — a
+            # crash-looping container shows nothing at all — but the trade-off
+            # only works if the state is readable from outside. It was not:
+            # « the app does not create the columns » took a round trip to
+            # diagnose because nothing said which migrations had run.
+            "migrations": _migration_state(settings),
         }
+
+    @app.get("/api/metrics", tags=["système"], summary="Métriques d'exploitation")
+    def metrics(hours: Annotated[int, Query(ge=1, le=168)] = 24) -> dict[str, Any]:
+        """Ce qu'un exploitant vient mesurer quand la journée se passe mal.
+
+        Quatre familles, et rien d'autre. Les **requêtes**, agrégées par
+        gabarit de route : combien, combien en erreur, et combien de
+        millisecondes au p95 — la seule façon de répondre à « qu'est-ce qui est
+        lent » sans exporter des heures de journaux. Le **pool** de connexions,
+        dont l'épuisement se manifestait jusqu'ici par des requêtes qui
+        attendent quinze secondes puis échouent, sans que rien ne nomme la
+        cause. Le **miroir ERP**, dont la fraîcheur décide si les écarts
+        affichés veulent dire quelque chose. Les **chargements et les scans**
+        récents, parce qu'un contrat mal accordé rejette quelques lignes à
+        chaque fichier sans que personne n'ouvre le rapport.
+
+        Répond toujours 200, comme ``/api/health`` : une page qu'on vient lire
+        *parce que* quelque chose ne va pas ne doit pas être la deuxième chose
+        qui ne marche pas. Chaque bloc porte donc son propre message d'erreur
+        plutôt que de faire échouer la réponse entière.
+
+        **JSON, et non le format d'exposition Prometheus.** Rien ne scrute ce
+        conteneur : les applications Databricks n'exposent pas de cible de
+        collecte, et ces compteurs vivent le temps du processus. Une seconde
+        sérialisation, que personne n'analyserait, coûterait un format de plus
+        à tenir à jour.
+        """
+        return {
+            "version": app.version,
+            "env": settings.env,
+            "http": REGISTRY.snapshot(),
+            "pool": _pool_state(),
+            "erpMirror": _ops_block(lambda repo: repo.erp_freshness()),
+            "imports": _ops_block(lambda repo: repo.import_volumes(hours=hours)),
+            "scanJobs": _ops_block(lambda repo: repo.scan_jobs(hours=hours)),
+        }
+
+    def _pool_state() -> dict[str, Any]:
+        """Les compteurs du pool psycopg, ou pourquoi il n'y en a pas.
+
+        ``requests_waiting`` durablement non nul est le signe qu'on cherche :
+        le pool est trop petit, ou une requête ne rend pas sa connexion.
+        """
+        from ..db import get_database
+
+        if not settings.lakebase_configured:
+            return {"error": "Lakebase non configuré."}
+        try:
+            return dict(get_database(settings).stats)
+        except Exception as exc:  # pragma: no cover - infrastructure dependent
+            return {"error": str(exc)}
+
+    def _ops_block(read: Any) -> Any:
+        """Un bloc de la réponse, ou son erreur, jamais une réponse en échec."""
+        from ..db import get_database
+        from ..db.repositories import OperationsRepository
+
+        if not settings.lakebase_configured:
+            return {"error": "Lakebase non configuré."}
+        try:
+            return read(OperationsRepository(get_database(settings)))
+        except Exception as exc:  # pragma: no cover - infrastructure dependent
+            log.warning("Lecture d'exploitation impossible: %s", exc)
+            return {"error": str(exc)}
 
     @app.get("/api/me", tags=["système"], summary="Utilisateur connecté")
     def me(request: Request) -> dict[str, Any]:
@@ -295,7 +491,10 @@ def create_app() -> FastAPI:
         )
         return {
             "actor": actor,
-            "authenticated": actor not in ("local@dev", "unknown@unauthenticated"),
+            # `get_current_user` refuse désormais une requête déployée sans
+            # identité : arriver ici signifie qu'on en a une, ou qu'on est en
+            # local. Seul le repli local reste « non authentifié ».
+            "authenticated": actor != "local@dev",
             "source": (
                 "databricks-apps"
                 if request.headers.get("x-forwarded-email")
@@ -311,7 +510,9 @@ def create_app() -> FastAPI:
         managers.router,
         analysis.router,
         reports.router,
+        evidence.router,
         assistant.router,
+        stock_flow.router,
     )
     for router in api_routers:
         app.include_router(router, prefix="/api")
@@ -351,9 +552,82 @@ databricks apps deploy -t prod --profile PROD</pre>
  <p>Sous Linux ou macOS, <code>make deploy</code> enchaîne les deux étapes.
     L'API reste utilisable en attendant&nbsp;:
     <a href="/api/health">/api/health</a> ·
+    <a href="/api/health/ready">/api/health/ready</a> ·
+    <a href="/api/metrics">/api/metrics</a> ·
     <a href="/api/docs">/api/docs</a></p>
 </main></html>
 """
+
+
+def _frontend_state() -> dict[str, Any]:
+    """Which built SPA this container is serving.
+
+    The hashed bundle name *is* the build identity: Vite derives it from the
+    content, so two deployments of the same sources produce the same name and
+    any change produces a different one. Comparing it with the local
+    `app/static/assets/` after a build answers « did my deployment land? »
+    without a single guess.
+
+    Never raises: this is part of the payload somebody reads when something is
+    already wrong.
+    """
+    index = STATIC_DIR / "index.html"
+    if not index.is_file():
+        return {"bundle": None, "builtAt": None, "assets": 0}
+    try:
+        html = index.read_text(encoding="utf-8", errors="replace")
+        bundle = next(
+            (m for m in _MAIN_BUNDLE.findall(html) if "index-" in m), None
+        )
+        assets = STATIC_DIR / "assets"
+        return {
+            "bundle": bundle,
+            "builtAt": dt.datetime.fromtimestamp(
+                index.stat().st_mtime, dt.UTC
+            ).isoformat(),
+            "assets": len(list(assets.iterdir())) if assets.is_dir() else 0,
+        }
+    except Exception as exc:  # pragma: no cover — depends on the filesystem
+        return {"bundle": None, "builtAt": None, "assets": 0, "error": str(exc)}
+
+
+#: `<script src="/assets/index-XXXXXXXX.js">`, as Vite writes it.
+_MAIN_BUNDLE = re.compile(r"/assets/([A-Za-z0-9_.-]+\.js)")
+
+
+#: ``index.html`` is the one file that must never be cached.
+#:
+#: Every other asset carries a content hash in its name, so a new build produces
+#: new names and the old files can sit in the browser cache forever. The shell
+#: is the opposite: same URL, new content at every deployment, and it is the
+#: file that *names* the hashed bundles. Served without a directive, a browser
+#: is free to cache it heuristically — and it does, typically for a tenth of the
+#: file's age. That is exactly the « I redeployed and nothing changed » failure:
+#: the shell comes from the cache, points at yesterday's bundle, and the old
+#: interface loads perfectly.
+#:
+#: The cost is one request per navigation for a file of a few hundred bytes —
+#: the shell names the bundles, it does not contain them. Nothing else pays:
+#: everything it points at is hashed and cached below for a year.
+_NEVER_CACHE = {"Cache-Control": "no-cache, must-revalidate"}
+
+#: A year, and immutable: the browser may not even revalidate.
+_CACHE_FOREVER = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+
+def _cache_headers(path: Path) -> dict[str, str]:
+    """How long a static file may be kept, decided by whether its name is a hash.
+
+    Vite writes ``index-D5wpFZpw.js``; anything carrying that shape can be cached
+    without limit. Everything else — the shell, a favicon, a manifest — keeps the
+    conservative answer, because a stale one of those is indistinguishable from a
+    failed deployment.
+    """
+    return _CACHE_FOREVER if _HASHED_NAME.search(path.name) else _NEVER_CACHE
+
+
+#: ``name-<hash>.ext``, the shape Vite gives every file it fingerprints.
+_HASHED_NAME = re.compile(r"-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$")
 
 
 def _mount_spa(app: FastAPI) -> None:
@@ -377,11 +651,11 @@ def _mount_spa(app: FastAPI) -> None:
 
         return
 
-    assets = STATIC_DIR / "assets"
-    if assets.exists():
-        # Hashed filenames: safe to cache for a year.
-        app.mount("/assets", StaticFiles(directory=assets), name="assets")
-
+    # No `StaticFiles` mount for `/assets`: it sets no `Cache-Control` of its
+    # own, so the caching policy would live in two places and only one of them
+    # would be right. The catch-all below already serves any real file under
+    # `static/`, and serving everything through it puts the whole policy in
+    # `_cache_headers`, where it can be read in one go.
     index = STATIC_DIR / "index.html"
 
     @app.get("/{full_path:path}", include_in_schema=False)
@@ -404,5 +678,5 @@ def _mount_spa(app: FastAPI) -> None:
             and candidate.is_file()
             and candidate.is_relative_to(STATIC_DIR.resolve())
         ):
-            return FileResponse(candidate)
-        return FileResponse(index)
+            return FileResponse(candidate, headers=_cache_headers(candidate))
+        return FileResponse(index, headers=_NEVER_CACHE)

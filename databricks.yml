@@ -59,6 +59,17 @@ variables:
   uc_catalog:
     description: Existing Unity Catalog catalog (cannot be created by this project).
     default: emotors_data_champions
+  erp_catalog:
+    description: Catalog holding the ERP silver tables, read by the mirror job.
+    default: emotors_data_champions
+  erp_schema:
+    description: Schema holding silver_base_article and silver_bom.
+    default: silver_erp_ye
+  erp_source:
+    description: >-
+      Where the app reads the referential: `uc` (live silver tables) or
+      `mirror` (local Lakebase copy fed by inventory_sync_erp_mirror).
+    default: uc
   uc_schema:
     description: Schema created by sql/00_unity_catalog.sql.
     default: inventory
@@ -119,6 +130,11 @@ resources:
             value: ${var.uc_schema}
           - name: INV_UC_VOLUME
             value: ${var.uc_volume}
+          # `uc` lit les tables silver en direct (exige USE CATALOG pour le
+          # service principal de l'App) ; `mirror` lit la copie locale
+          # alimentée par le job de synchronisation, sans aucun grant.
+          - name: INV_ERP_SOURCE
+            value: ${var.erp_source}
           - name: INV_GENERIC_WAREHOUSE
             value: "B06VRAC"
           - name: INV_GENERIC_LOCATION
@@ -157,6 +173,13 @@ resources:
               - ${var.uc_schema}
               - "--campaign-code"
               - "{{job.parameters.campaign_code}}"
+              # Un job n'est pas une App : aucune ressource ne lui est attachée
+              # et il ne reçoit donc ni PGHOST ni PGUSER. Il déduit l'endpoint
+              # de la branche, construite depuis les mêmes variables que la
+              # ressource `postgres` de l'App — les deux ne peuvent pas diverger.
+              # Sans ces deux lignes, ce job s'arrêtait au premier lancement.
+              - "--branch"
+              - projects/${var.lakebase_project}/branches/${var.lakebase_branch}
           environment_key: serverless_env
       parameters:
         - name: campaign_code
@@ -167,6 +190,54 @@ resources:
             client: "3"
             dependencies:
               - psycopg[binary]~=3.2.0
+      queue:
+        enabled: true
+
+    inventory_sync_erp_mirror:
+      name: "[inventaire] Synchronisation du miroir ERP"
+      description: >-
+        Copie les tables ERP silver vers le miroir local Lakebase de
+        l'application. À utiliser quand le service principal de l'App n'a pas
+        USE CATALOG sur le catalogue de l'ERP : le job tourne avec l'identité
+        qui a déjà ce droit. Positionner INV_ERP_SOURCE=mirror sur l'App.
+      tasks:
+        - task_key: sync
+          spark_python_task:
+            python_file: ./jobs/sync_erp_mirror.py
+            parameters:
+              - "--catalog"
+              - ${var.erp_catalog}
+              - "--schema"
+              - ${var.erp_schema}
+              # Un job n'est pas une App : aucune ressource ne lui est attachée
+              # et il ne reçoit donc ni PGHOST ni PGUSER. Il déduit l'endpoint
+              # de la branche, construite depuis les mêmes variables que la
+              # ressource `postgres` de l'App — les deux ne peuvent pas diverger.
+              - "--branch"
+              - projects/${var.lakebase_project}/branches/${var.lakebase_branch}
+          environment_key: serverless_env
+      # Planification en pause. La voie opérationnelle est le notebook
+      # `jobs/sync_erp_mirror_notebook.py`, importé dans le workspace et planifié
+      # depuis l'interface : il obtient son jeton du contexte de session et ne
+      # dépend donc pas de la version du SDK, que le runtime serverless fige en
+      # deçà de l'API Lakebase. Ce job-ci reste déployé pour une exécution en
+      # ligne de commande, mais le laisser se déclencher chaque nuit ne
+      # produirait qu'un échec quotidien tant que ce SDK n'a pas évolué.
+      schedule:
+        quartz_cron_expression: "0 30 4 * * ?"
+        timezone_id: Europe/Paris
+        pause_status: PAUSED
+      environments:
+        - environment_key: serverless_env
+          spec:
+            client: "3"
+            # Versions exactes : l'environnement serverless refuse les bornes.
+            # Et surtout, rien d'autre — `databricks-sdk` figure dans les
+            # contraintes immuables du runtime, si bien qu'en demander une autre
+            # version fait échouer l'installation entière. Le job s'accommode
+            # donc de celle qui est là (voir _password dans le script).
+            dependencies:
+              - psycopg[binary]==3.2.3
       queue:
         enabled: true
 

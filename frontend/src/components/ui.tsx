@@ -22,6 +22,7 @@ import {
   type ReactNode,
 } from 'react'
 import { ApiError, download } from '../lib/api'
+import { useCollapsed } from '../lib/collapse'
 import { DASH } from '../lib/format'
 
 /**
@@ -77,6 +78,10 @@ export const Icons = {
   scale: svg(<><path d="M12 3v18" /><path d="m5 8 7-5 7 5" /><path d="M3 14h6l-3-6-3 6Z" /><path d="M15 14h6l-3-6-3 6Z" /></>),
   history: svg(<><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l3 2" /></>),
   plus: svg(<><path d="M12 5v14M5 12h14" /></>),
+  /** Ouvrir une feuille pour la saisir : le geste, pas l'état. */
+  pencil: svg(<><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></>),
+  /** Rouvrir ce qu'on vient de déclarer fini. */
+  undo: svg(<><path d="M3 7v6h6" /><path d="M3.5 13a9 9 0 1 0 2.1-5.9L3 10" /></>),
   check: svg(<><path d="m5 13 4 4L19 7" /></>),
   x: svg(<><path d="M18 6 6 18M6 6l12 12" /></>),
   search: svg(<><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>),
@@ -97,6 +102,10 @@ export const Icons = {
   inbox: svg(<><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1Z" /></>),
   filter: svg(<><path d="M3 5h18l-7 8v6l-4 2v-8L3 5Z" /></>),
   copy: svg(<><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>),
+  box: svg(<><path d="m21 8-9-5-9 5v8l9 5 9-5V8Z" /><path d="m3 8 9 5 9-5" /><path d="M12 13v8" /></>),
+  tree: svg(<><rect x="9" y="2" width="6" height="5" rx="1" /><rect x="2" y="17" width="6" height="5" rx="1" /><rect x="16" y="17" width="6" height="5" rx="1" /><path d="M12 7v5M5 17v-3h14v3" /></>),
+  sliders: svg(<><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="9" cy="6" r="2" /><circle cx="15" cy="12" r="2" /><circle cx="8" cy="18" r="2" /></>),
+  database: svg(<><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5" /><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" /></>),
 }
 
 // --------------------------------------------------------------------------- //
@@ -154,12 +163,27 @@ export function Badge({
   )
 }
 
+/**
+ * A full-width block, foldable by its title.
+ *
+ * Every screen stacks several of these and none of them serves everybody on the
+ * same day, so the title doubles as a fold handle: what you are not using goes
+ * away and what you are lifts above the fold. The state is remembered per block
+ * — a block that springs back open on every navigation is a block you fold ten
+ * times a day.
+ *
+ * Folding needs a stable key, which a plain-string `title` provides; a rich node
+ * does not, so those cards stay open unless a `collapseKey` names them. And a
+ * card with no header has no handle to offer, so it is never foldable.
+ */
 export function Card({
   title,
   message,
   actions,
   footer,
   flush = false,
+  collapseKey,
+  collapsible,
   children,
   className = '',
 }: {
@@ -169,24 +193,51 @@ export function Card({
   actions?: ReactNode
   footer?: ReactNode
   flush?: boolean
+  /** Identity under which the folded state is remembered. */
+  collapseKey?: string
+  /** Force folding off on a block that must stay whole. */
+  collapsible?: boolean
   children: ReactNode
   className?: string
 }) {
+  const key = collapseKey ?? (typeof title === 'string' ? title : '')
+  const foldable = (collapsible ?? true) && key !== ''
+  const [collapsed, setCollapsed] = useCollapsed(key)
+  const folded = foldable && collapsed
+
   return (
-    <section className={`card ${className}`}>
+    <section className={`card${folded ? ' card--collapsed' : ''} ${className}`}>
       {(title || actions) && (
         <header className="card__head">
-          <div style={{ minWidth: 0 }}>
-            {title && <h2 className="card__title">{title}</h2>}
-            {message && <p className="card__message">{message}</p>}
+          <div className="row" style={{ minWidth: 0, gap: 'var(--space-2)' }}>
+            {foldable && (
+              <button
+                className="card__fold"
+                aria-expanded={!folded}
+                title={folded ? 'Déplier ce bloc' : 'Replier ce bloc'}
+                onClick={() => setCollapsed(!folded)}
+              >
+                {folded ? (
+                  <Icons.chevronRight size={14} />
+                ) : (
+                  <Icons.chevronDown size={14} />
+                )}
+              </button>
+            )}
+            <div style={{ minWidth: 0 }}>
+              {title && <h2 className="card__title">{title}</h2>}
+              {message && !folded && <p className="card__message">{message}</p>}
+            </div>
           </div>
-          {actions && <div className="row-wrap">{actions}</div>}
+          {actions && !folded && <div className="row-wrap">{actions}</div>}
         </header>
       )}
-      <div className={flush ? 'card__body card__body--flush' : 'card__body'}>
-        {children}
-      </div>
-      {footer && <footer className="card__foot">{footer}</footer>}
+      {!folded && (
+        <div className={flush ? 'card__body card__body--flush' : 'card__body'}>
+          {children}
+        </div>
+      )}
+      {footer && !folded && <footer className="card__foot">{footer}</footer>}
     </section>
   )
 }
@@ -425,7 +476,13 @@ export function Kpi({
   /** Comparison line: prior period, target, or the complementary measure. */
   compare?: ReactNode
   tone?: 'pos' | 'neg' | 'neutral'
-  /** Provenance and freshness — a KPI without them is not trustworthy. */
+  /**
+   * Provenance and freshness — a KPI without them is not trustworthy.
+   *
+   * Inside a carousel, use it on every board or none: it adds a third line, and
+   * a board one line taller than its neighbours makes the whole strip change
+   * size at each arrow press.
+   */
   source?: ReactNode
   hero?: boolean
   hint?: string
@@ -451,40 +508,44 @@ export function Kpi({
 }
 
 // --------------------------------------------------------------------------- //
-// Tabs
+// Sous-navigation d'écran
 // --------------------------------------------------------------------------- //
 
 /**
- * A horizontal choice *inside* a screen.
+ * La sous-navigation d'un écran : quel volet on regarde.
  *
- * Shaped as a segmented control rather than as underlined tabs, and that is the
- * whole point: navigation now lives in the sidebar, so anything horizontal must
- * read as a filter over the content, never as a second place to navigate. Two
- * bars of identical shape were what made the old layout tiring to read.
+ * Distincte des pilules à dessein. Une pilule filtre des lignes dans un
+ * tableau ; un onglet change ce que l'écran montre. Les deux étaient des
+ * rectangles arrondis empilés l'un sous l'autre, et rien ne disait lequel
+ * faisait quoi — celui-ci est souligné et posé sur une règle pleine largeur,
+ * juste sous le titre, là où le regard cherche « où suis-je ».
+ *
+ * Un compte à zéro n'est pas affiché : sur un onglet il se lirait comme une
+ * anomalie, alors qu'il ne dit rien de plus que l'onglet lui-même.
  */
-export function Tabs<T extends string>({
+export function ViewTabs<T extends string>({
   tabs,
   value,
   onChange,
 }: {
-  tabs: Array<{ id: T; label: string; count?: number | null }>
+  tabs: Array<{ id: T; label: string; count?: number | null; hint?: string }>
   value: T
   onChange: (id: T) => void
 }) {
+  if (tabs.length <= 1) return null
   return (
-    <div className="segmented" role="tablist">
+    <div className="viewtabs" role="tablist">
       {tabs.map((tab) => (
         <button
           key={tab.id}
           role="tab"
           aria-selected={value === tab.id}
-          className={`segmented__item${value === tab.id ? ' segmented__item--active' : ''}`}
+          title={tab.hint}
+          className={`viewtabs__item${value === tab.id ? ' viewtabs__item--active' : ''}`}
           onClick={() => onChange(tab.id)}
         >
           {tab.label}
-          {tab.count !== undefined && tab.count !== null && (
-            <span className="segmented__count num">{tab.count}</span>
-          )}
+          {tab.count ? <span className="viewtabs__count">{tab.count}</span> : null}
         </button>
       ))}
     </div>
@@ -494,6 +555,16 @@ export function Tabs<T extends string>({
 // --------------------------------------------------------------------------- //
 // Modal
 // --------------------------------------------------------------------------- //
+
+/**
+ * Ce qui prend le focus à la tabulation, à l'intérieur d'une fenêtre modale.
+ *
+ * `:not([disabled])` et `tabindex="-1"` sont exclus : les inclure ferait
+ * atterrir le focus sur un bouton grisé, ce qui ressemble à une fenêtre figée.
+ */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 export function Modal({
   title,
@@ -509,16 +580,56 @@ export function Modal({
   children: ReactNode
 }) {
   const titleId = useId()
+  const dialog = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
+    // Ce qui avait le focus avant l'ouverture — le bouton qui a ouvert la
+    // fenêtre, neuf fois sur dix. À la fermeture, le focus y retourne : sans
+    // cela il repart au début du document, et un utilisateur au clavier
+    // retraverse toute la navigation pour revenir là où il en était.
+    const opener = document.activeElement as HTMLElement | null
+
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape') {
+        onClose()
+        return
+      }
+      if (event.key !== 'Tab') return
+      // Le piège de focus. `aria-modal` dit aux lecteurs d'écran que le reste
+      // de la page n'existe plus ; la tabulation, elle, continuait d'en sortir
+      // et de parcourir la grille, la navigation latérale et la barre du
+      // navigateur — le tout invisible derrière l'overlay. On revient donc au
+      // premier élément après le dernier, et inversement.
+      const focusable = dialog.current?.querySelectorAll<HTMLElement>(FOCUSABLE)
+      if (!focusable?.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (!first || !last) return
+      const active = document.activeElement
+      if (event.shiftKey && (active === first || !dialog.current?.contains(active))) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
+
     document.addEventListener('keydown', onKey)
     const previous = document.body.style.overflow
     document.body.style.overflow = 'hidden'
+
+    // Le focus entre dans la fenêtre à l'ouverture. Il restait sur le bouton
+    // d'origine : un lecteur d'écran annonçait la fenêtre sans y être, et la
+    // première tabulation partait dans la page du dessous.
+    const initial =
+      dialog.current?.querySelector<HTMLElement>(FOCUSABLE) ?? dialog.current
+    initial?.focus()
+
     return () => {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = previous
+      opener?.focus?.()
     }
   }, [onClose])
 
@@ -526,9 +637,14 @@ export function Modal({
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
         className="modal"
+        ref={dialog}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        // La fenêtre elle-même reçoit le focus quand elle ne contient rien de
+        // focalisable — une fenêtre de lecture seule. `-1` la rend atteignable
+        // par script sans l'insérer dans l'ordre de tabulation.
+        tabIndex={-1}
         style={width ? ({ '--modal-width': `${width}px` } as React.CSSProperties) : undefined}
       >
         <header className="modal__head">
@@ -545,6 +661,90 @@ export function Modal({
 }
 
 // --------------------------------------------------------------------------- //
+// Confirmation d'une suppression
+// --------------------------------------------------------------------------- //
+
+/**
+ * Demande confirmation avant de supprimer, en nommant ce qui part.
+ *
+ * Les suppressions passaient par `window.confirm`, qui pose trois problèmes et
+ * pas seulement d'apparence.
+ *
+ * D'abord il **bloque le fil du navigateur** : rien ne se rafraîchit tant que la
+ * boîte est ouverte, et le bouton qui l'a déclenchée reste enfoncé.
+ *
+ * Ensuite il n'accepte que du texte brut, ce qui pousse à résumer. « Supprimer
+ * 40 ligne(s) de feuille ? » ne dit pas lesquelles, ni si elles reviendront.
+ *
+ * Enfin, et surtout, il ne distingue pas le réversible de l'irréversible. Une
+ * zone supprimée emporte ses feuilles et les lignes pré-imprimées qu'on a mis
+ * une matinée à corriger ; un lien de nomenclature se recharge en dix secondes.
+ * Les deux posaient la même question, avec le même bouton, au même endroit.
+ *
+ * @param what        Ce qui disparaît, nommé — « la zone Z1 », « 40 lignes ».
+ * @param consequences Ce qui part avec, une phrase par élément. Vide quand rien
+ *                     ne suit : la liste vide est une information, pas un oubli.
+ * @param reversible  Vrai quand le geste se rattrape en rechargeant la source.
+ */
+export function ConfirmDelete({
+  what,
+  consequences = [],
+  reversible = false,
+  pending = false,
+  onConfirm,
+  onClose,
+}: {
+  what: string
+  consequences?: string[]
+  reversible?: boolean
+  pending?: boolean
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  return (
+    <Modal
+      title={`Supprimer ${what} ?`}
+      onClose={onClose}
+      width={520}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={pending}>
+            Annuler
+          </Button>
+          <Button variant="danger" onClick={onConfirm} disabled={pending}>
+            {pending ? 'Suppression…' : `Supprimer ${what}`}
+          </Button>
+        </>
+      }
+    >
+      <div className="stack" style={{ gap: 'var(--space-3)' }}>
+        {consequences.length > 0 ? (
+          <div>
+            <p className="subtle">Ce qui part avec :</p>
+            <ul className="stack" style={{ gap: 'var(--space-1)' }}>
+              {consequences.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="subtle">Rien d’autre ne disparaît avec.</p>
+        )}
+        <Alert
+          tone={reversible ? 'info' : 'warning'}
+          title={reversible ? 'Rattrapable' : 'Sans retour depuis l’application'}
+        >
+          {reversible
+            ? 'Rechargez la source pour revenir à l’état actuel.'
+            : 'Rien dans l’écran ne défait ce geste : ce qui est saisi à la main ' +
+              'devra être ressaisi.'}
+        </Alert>
+      </div>
+    </Modal>
+  )
+}
+
+// --------------------------------------------------------------------------- //
 // Toasts
 // --------------------------------------------------------------------------- //
 
@@ -552,6 +752,14 @@ type Toast = { id: number; tone: 'info' | 'success' | 'warning' | 'danger'; titl
 type ToastApi = {
   push: (toast: Omit<Toast, 'id'>) => void
   success: (title: string, body?: string) => void
+  /**
+   * L'opération a abouti, mais pas à ce qu'on attendait.
+   *
+   * « Zéro ligne lue » n'est ni un succès ni une erreur : la requête a
+   * fonctionné et n'a rien ramené. Faute de ce ton, le message partait en vert
+   * — un petit mensonge, et celui qui fait qu'on cherche l'explication ailleurs.
+   */
+  warning: (title: string, body?: string) => void
   error: (title: string, body?: string) => void
 }
 
@@ -564,8 +772,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const push = useCallback((toast: Omit<Toast, 'id'>) => {
     const id = nextId.current++
     setToasts((current) => [...current, { ...toast, id }])
-    // Errors stay longer: they usually carry something to act on.
-    const ttl = toast.tone === 'danger' ? 9000 : 4500
+    // Errors and warnings stay longer: they carry something to act on, and a
+    // sentence naming a table and a period is not read in four seconds.
+    const ttl = toast.tone === 'danger' || toast.tone === 'warning' ? 9000 : 4500
     window.setTimeout(() => setToasts((c) => c.filter((t) => t.id !== id)), ttl)
   }, [])
 
@@ -573,6 +782,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     () => ({
       push,
       success: (title, body) => push({ tone: 'success', title, body }),
+      warning: (title, body) => push({ tone: 'warning', title, body }),
       error: (title, body) => push({ tone: 'danger', title, body }),
     }),
     [push],
@@ -663,9 +873,21 @@ export function Field({
 export function Carousel({
   slides,
   storageKey,
+  alignColumns = false,
 }: {
   slides: Array<{ id: string; label: string; content: ReactNode }>
   storageKey?: string
+  /**
+   * Lay every board on the widest board's grid.
+   *
+   * Left to itself each board sizes its cards to fill the row, so a board of
+   * four gets visibly wider cards than a board of five: switching slides then
+   * changes the shape of the strip, which reads as the *page* moving rather
+   * than the numbers changing. The widest board is measured rather than
+   * declared — a count written down here would be wrong the first time somebody
+   * adds a KPI and never notices.
+   */
+  alignColumns?: boolean
 }) {
   const [index, setIndex] = useState(() => {
     if (!storageKey) return 0
@@ -687,13 +909,29 @@ export function Carousel({
   // user moves.
   const slideRefs = useRef<Array<HTMLDivElement | null>>([])
   const [height, setHeight] = useState<number | undefined>(undefined)
+  // Cards on the widest board. Counted from what is actually rendered, because
+  // a board can arrive late — a skeleton first, then five figures — and a
+  // number written down in the source would be right until somebody adds a KPI.
+  const [columns, setColumns] = useState(0)
   useEffect(() => {
     const node = slideRefs.current[current]
     if (!node) return
-    const measure = () => setHeight(node.offsetHeight)
+    const measure = () => {
+      setHeight(node.offsetHeight)
+      setColumns(
+        Math.max(
+          0,
+          ...slideRefs.current.map(
+            (slide) => slide?.querySelectorAll('.grid--kpi > .kpi').length ?? 0,
+          ),
+        ),
+      )
+    }
     measure()
     const observer = new ResizeObserver(measure)
-    observer.observe(node)
+    // Every slide, not just the visible one: the widest board is often one the
+    // reader has not opened yet, and its cards land while another is on screen.
+    for (const slide of slideRefs.current) if (slide) observer.observe(slide)
     return () => observer.disconnect()
   }, [current, slides.length])
 
@@ -714,7 +952,12 @@ export function Carousel({
 
   return (
     <section
-      className="carousel"
+      className={`carousel${alignColumns && columns ? ' carousel--fixed-columns' : ''}`}
+      style={
+        alignColumns && columns
+          ? ({ '--kpi-columns': columns } as React.CSSProperties)
+          : undefined
+      }
       aria-roledescription="carrousel"
       aria-label="Indicateurs de la campagne"
       onKeyDown={(event) => {

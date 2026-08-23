@@ -30,7 +30,7 @@ from ..errors import UpstreamError
 
 log = logging.getLogger(__name__)
 
-__all__ = ["LlmClient", "LlmResponse", "get_llm_client"]
+__all__ = ["LlmClient", "LlmResponse", "get_llm_client", "get_scan_client"]
 
 
 @dataclass(slots=True)
@@ -41,6 +41,14 @@ class LlmResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     model: str = ""
+    #: Pourquoi le modèle s'est arrêté. ``"length"`` = réponse coupée au
+    #: plafond : le JSON est alors incomplet, et le dire coûte une ligne là où
+    #: le deviner coûte une campagne de scan.
+    finish_reason: str = ""
+
+    @property
+    def truncated(self) -> bool:
+        return self.finish_reason == "length"
 
     @property
     def total_tokens(self) -> int:
@@ -106,10 +114,20 @@ class LlmClient:
 
     # ------------------------------------------------------------------- call
 
+    # Une seule relance, et seulement sur ce qui est vraiment passager.
+    #
+    # Trois tentatives à 90 secondes plus un backoff exponentiel, c'est près de
+    # cinq minutes pour *un* appel. Sur une feuille isolée cela se voyait à
+    # peine ; sur une pile de cent, un endpoint instable bloquait le traitement
+    # entier derrière une seule page. Une relance rattrape le cas courant — un
+    # démarrage à froid, une pointe de charge — et les suivantes ne rattrapent
+    # plus rien : elles ajoutent de l'attente à une panne installée. Ce qui
+    # n'est pas passager (refus du modèle, JSON invalide, image illisible) n'est
+    # pas relancé du tout : la deuxième réponse serait la même.
     @retry(
         retry=retry_if_exception_type(_TransientLlmError),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1.5, min=1, max=12),
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1.5, min=1, max=8),
         reraise=True,
     )
     def complete(
@@ -191,6 +209,7 @@ class LlmClient:
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             model=getattr(completion, "model", self._endpoint) or self._endpoint,
+            finish_reason=getattr(choice, "finish_reason", "") or "",
         )
 
     def _call(self, kwargs: dict[str, Any]) -> Any:
@@ -259,9 +278,24 @@ class LlmClient:
         )
         payload = _extract_json(response.text)
         if payload is None:
+            # Une réponse coupée au plafond et une réponse mal formée se
+            # ressemblent une fois le JSON illisible — et se corrigent de deux
+            # façons opposées. La distinction est dans `finish_reason` : la
+            # taire fait chercher un défaut de prompt là où il n'y a qu'un
+            # budget trop court. Le message la porte, parce que c'est lui qui
+            # remonte jusqu'au rapport ; les détails, eux, restent en logs.
+            if response.truncated:
+                raise UpstreamError(
+                    f"Réponse du modèle coupée au plafond de {max_tokens} "
+                    "jetons : le JSON est incomplet. Réduisez la taille du lot "
+                    "ou relevez le plafond.",
+                    sample=response.text[-400:],
+                    finish_reason=response.finish_reason,
+                )
             raise UpstreamError(
                 "Le modèle n'a pas renvoyé de JSON exploitable.",
                 sample=response.text[:400],
+                finish_reason=response.finish_reason,
             )
         return payload, response
 
@@ -347,19 +381,28 @@ def _provider_message(exc: BaseException) -> str:
     return match.group(1) if match else text[:400]
 
 
+#: Les seuls codes qui méritent une relance : la file d'attente est pleine, la
+#: passerelle est passée à côté, l'endpoint démarre. Un 500 n'y est **pas** —
+#: sur un endpoint de serving, c'est le plus souvent le modèle qui a échoué sur
+#: cette entrée-là, et la rejouer telle quelle donne la même réponse en doublant
+#: l'attente.
+_TRANSIENT_STATUS = (408, 429, 502, 503, 504)
+
+
 def _is_transient(exc: BaseException) -> bool:
-    text = str(exc).lower()
     status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
-    if status in (408, 429, 500, 502, 503, 504):
-        return True
+    if status is not None:
+        return status in _TRANSIENT_STATUS
+    text = str(exc).lower()
     return any(
         marker in text
         for marker in ("rate limit", "timeout", "timed out", "temporarily",
-                       "overloaded", "503", "502", "429")
+                       "overloaded", "503", "502", "504", "429")
     )
 
 
 _client: LlmClient | None = None
+_scan_client: LlmClient | None = None
 
 
 def get_llm_client(settings: Settings | None = None) -> LlmClient:
@@ -368,3 +411,27 @@ def get_llm_client(settings: Settings | None = None) -> LlmClient:
     if _client is None:
         _client = LlmClient(settings=settings)
     return _client
+
+
+def get_scan_client(settings: Settings | None = None) -> LlmClient:
+    """Le client qui lit les scans — endpoint et budget de temps propres.
+
+    Séparé de :func:`get_llm_client` pour deux raisons qui vont ensemble.
+    L'**endpoint** peut être un modèle vision rapide plutôt que le modèle de
+    raisonnement de l'assistant : transcrire des chiffres manuscrits en JSON
+    n'appelle aucun raisonnement, et payer ce raisonnement cent fois par pile
+    est ce qui fait renoncer à scanner. Le **délai** est plus court : une page
+    qui n'a pas répondu en une minute ne répondra pas mieux en une minute et
+    demie, et pendant ce temps elle tient une des quatre places du parallélisme.
+
+    Les paramètres refusés par un modèle sont mémorisés par client : deux
+    clients, deux négociations, et c'est correct — les deux endpoints n'ont
+    aucune raison d'accepter les mêmes.
+    """
+    global _scan_client
+    if _scan_client is None:
+        resolved = settings or get_settings()
+        _scan_client = LlmClient(
+            endpoint=resolved.scan_endpoint, settings=resolved, timeout=60.0
+        )
+    return _scan_client

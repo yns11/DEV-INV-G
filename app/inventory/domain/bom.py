@@ -103,6 +103,7 @@ class BomIndex:
         "_children",
         "_excluded",
         "_is_phantom",
+        "_known_parents",
         "_max_depth",
         "_truncated",
     )
@@ -123,9 +124,19 @@ class BomIndex:
 
         # Merge duplicate (parent, child) edges rather than double-counting.
         # The ERP export repeats a pair when several BOM versions are effective.
+        #
+        # Retired versions are kept out of that merge, and this is the whole
+        # point of carrying the flag: the export holds every version, so adding
+        # a retired quantity to a live one would explode an assembly into parts
+        # it no longer contains — silently, and in the direction that makes the
+        # variance look explained.
         merged: dict[tuple[str, str], Decimal] = {}
+        known: set[str] = set()
         for link in links:
             if link.child_item in self._excluded or link.parent_item in self._excluded:
+                continue
+            known.add(link.parent_item)
+            if not link.active:
                 continue
             key = (link.parent_item, link.child_item)
             merged[key] = merged.get(key, ZERO) + link.qty_per
@@ -137,6 +148,11 @@ class BomIndex:
             kids.sort()  # deterministic traversal → reproducible breakdowns
 
         self._children: dict[str, list[tuple[str, Decimal]]] = dict(children)
+        #: Every parent the campaign has *a* recipe for, live or retired. Kept
+        #: apart from ``_children`` so "cannot be exploded" and "has no recipe
+        #: at all" stay two different answers — they call for two different
+        #: actions, and merging them is what buried the useful alert.
+        self._known_parents: frozenset[str] = frozenset(known)
         #: memoised expansion of one unit of a parent
         self._cache: dict[str, dict[str, Decimal]] = {}
         #: parents whose phantom chain was cut short by ``max_depth``
@@ -154,7 +170,16 @@ class BomIndex:
         return frozenset(self._children)
 
     def has_bom(self, item: str) -> bool:
+        """Whether *item* can be exploded — i.e. has an **active** structure."""
         return item in self._children
+
+    def has_any_version(self, item: str) -> bool:
+        """Whether the campaign holds any recipe for *item*, live or retired."""
+        return item in self._known_parents
+
+    def retired_only(self, item: str) -> bool:
+        """A structure exists but every version of it is out of force."""
+        return item in self._known_parents and item not in self._children
 
     def direct_children(self, item: str) -> list[tuple[str, Decimal]]:
         """Level-1 structure of *item* as ``(child, qty_per)`` pairs."""

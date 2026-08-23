@@ -20,6 +20,8 @@ from ..domain.enums import (
     CountSection,
     DataSource,
     ExclusionScope,
+    FlowKind,
+    FlowSource,
     ItemCommonality,
     ItemType,
     JournalKind,
@@ -29,13 +31,16 @@ from ..domain.enums import (
 )
 from ..domain.models import (
     AdjustmentLine,
+    BackflushLine,
     BomLink,
     BookStockLine,
     Item,
     Location,
+    StockFlowInput,
     Zone,
     normalise_key,
 )
+from .contracts import is_active_status
 from .parser import RowError
 
 __all__ = [
@@ -47,6 +52,8 @@ __all__ = [
     "map_journal_lines",
     "map_count_sheets",
     "map_adjustments",
+    "map_backflush",
+    "map_stock_flow_inputs",
     "map_zones",
     "map_locations",
 ]
@@ -116,12 +123,21 @@ def _exclusions(value: Any) -> set[ExclusionScope]:
 def map_items(
     campaign_id: str, rows: Iterable[Mapping[str, Any]], *, source: DataSource
 ) -> tuple[list[Item], list[RowError]]:
-    """Build :class:`Item` objects from parsed ``items`` rows."""
-    items: list[Item] = []
+    """Build :class:`Item` objects from parsed ``items`` rows.
+
+    One object per article number, the first occurrence winning. The silver
+    table computes the programme by cascading up the bill of materials, and that
+    climb can fan out: the same article came back twice, with two programmes.
+    The upsert downstream would have taken whichever row came last — that is,
+    whichever the ERP happened to emit last — so the referential would differ
+    between two loads of the same data. The parser still reports the duplicated
+    keys; what changes is that the outcome is now decided here, and stable.
+    """
+    by_number: dict[str, Item] = {}
     errors: list[RowError] = []
     for index, row in enumerate(rows, start=2):
         try:
-            items.append(
+            item = (
                 Item(
                     campaign_id=campaign_id,
                     item_number=row["item_number"],
@@ -141,7 +157,9 @@ def map_items(
             )
         except (ValueError, KeyError) as exc:
             errors.append(RowError(index, "item_number", row.get("item_number"), str(exc)))
-    return items, errors
+            continue
+        by_number.setdefault(item.item_number, item)
+    return list(by_number.values()), errors
 
 
 def _commonality(value: Any, program: Any) -> ItemCommonality:
@@ -161,24 +179,42 @@ def _commonality(value: Any, program: Any) -> ItemCommonality:
 def map_bom_links(
     campaign_id: str, rows: Iterable[Mapping[str, Any]]
 ) -> tuple[list[BomLink], list[RowError]]:
-    links: list[BomLink] = []
+    """One edge per parent/child pair, the version in force winning.
+
+    The ERP keeps every version of a recipe, so the same pair arrives several
+    times: once in force, once or more retired. The campaign stores one edge per
+    pair — that is what the explosion walks — and the flag records whether the
+    surviving one is live.
+
+    Collapsing here rather than letting the upsert decide is the whole point:
+    the upsert keeps whichever row came last, and « last » is the ERP's row
+    order. A retired version arriving after the live one silently replaced it,
+    which turned an assembly with a perfectly good recipe into one that could
+    not be exploded.
+    """
+    by_pair: dict[tuple[str, str], BomLink] = {}
     errors: list[RowError] = []
     for index, row in enumerate(rows, start=2):
         try:
-            links.append(
-                BomLink(
-                    campaign_id=campaign_id,
-                    parent_item=row["parent_item"],
-                    child_item=row["child_item"],
-                    qty_per=row["qty_per"],
-                    unit=row.get("unit") or "PCE",
-                )
+            link = BomLink(
+                campaign_id=campaign_id,
+                parent_item=row["parent_item"],
+                child_item=row["child_item"],
+                qty_per=row["qty_per"],
+                unit=row.get("unit") or "PCE",
+                active=is_active_status(row.get("statut")),
             )
         except (ValueError, KeyError) as exc:
-            errors.append(
-                RowError(index, "qty_per", row.get("qty_per"), str(exc))
-            )
-    return links, errors
+            errors.append(RowError(index, "qty_per", row.get("qty_per"), str(exc)))
+            continue
+
+        key = (link.parent_item, link.child_item)
+        previous = by_pair.get(key)
+        # An active version always wins; between two of the same state the last
+        # one wins, as before.
+        if previous is None or link.active or not previous.active:
+            by_pair[key] = link
+    return list(by_pair.values()), errors
 
 
 def map_locations(
@@ -234,7 +270,7 @@ def map_book_stock(
     campaign_id: str,
     rows: Iterable[Mapping[str, Any]],
     *,
-    items: Mapping[str, Item] | None = None,
+    items: Mapping[str, Item],
 ) -> tuple[list[BookStockLine], list[RowError]]:
     """Build the frozen snapshot.
 
@@ -242,6 +278,18 @@ def map_book_stock(
     overwritten: the ERP export legitimately splits one location's stock across
     several rows when batch or status dimensions differ, and dropping all but
     the last would understate the book.
+
+    **Le référentiel articles fait foi**, comme pour les feuilles de comptage, et
+    quel que soit le mode d'import. Une ligne dont la référence lui est inconnue
+    est une erreur de ligne : le snapshot sert de base à tous les écarts de la
+    campagne, et une référence qu'aucun article ne décrit n'a ni désignation, ni
+    prix, ni type — son écart serait affiché en quantité nue, non valorisé, et
+    hors de toute règle de matérialité.
+
+    Un article **exclu du périmètre** est refusé pour la raison symétrique :
+    l'exclusion est une décision de campagne, et laisser entrer son stock la
+    reprendrait par la fenêtre — l'inventaire ne compte pas cet article, donc son
+    stock ERP produirait un écart égal à la totalité du stock.
 
     When the export carries no unit cost, the referential's standard price is
     used so that every line is valued.
@@ -264,10 +312,26 @@ def map_book_stock(
             errors.append(RowError(index, "qty", row.get("qty"), str(exc)))
             continue
 
-        if line.unit_cost == 0 and items:
-            item = items.get(line.item_number)
-            if item is not None:
-                line.unit_cost = item.std_price
+        item = items.get(line.item_number)
+        if item is None:
+            errors.append(
+                RowError(index, "item_number", row.get("item_number"),
+                         f"L'article {line.item_number} est absent du référentiel "
+                         "de la campagne. Complétez le référentiel articles : un "
+                         "import de stock ne crée jamais d'article.")
+            )
+            continue
+        if item.excluded_everywhere:
+            errors.append(
+                RowError(index, "item_number", row.get("item_number"),
+                         f"L'article {line.item_number} est exclu du périmètre de "
+                         "la campagne. Levez l'exclusion sur la grille Articles "
+                         "pour que son stock soit chargé.")
+            )
+            continue
+
+        if line.unit_cost == 0:
+            line.unit_cost = item.std_price
 
         key = (line.item_number, line.warehouse_id, line.location_id)
         existing = aggregated.get(key)
@@ -600,3 +664,143 @@ def _adjustment_kind(value: Any) -> AdjustmentKind:
     if key in AdjustmentKind.__members__:
         return AdjustmentKind[key]
     return _KIND_ALIASES.get(key, AdjustmentKind.OTHER)
+
+
+def map_backflush(
+    campaign_id: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    period_start: dt.date,
+    period_end: dt.date,
+    items: Mapping[str, Item] | None = None,
+) -> tuple[list[BackflushLine], list[RowError]]:
+    """Build the frozen backflush read.
+
+    Duplicate article numbers are **summed**, like the book stock and for the
+    same reason: an export split by parent, or a workbook with one tab per
+    production line, legitimately carries the same component twice, and keeping
+    only the last row would understate the variance rather than report it.
+
+    Rows whose net variance, both components and both consumptions are all zero
+    are dropped. Absence of data means a nil variance — the guide is explicit —
+    so storing an explicit zero adds a row to every screen and changes no
+    figure. The exception is a row that carries a *count* of parents or weeks:
+    that one says « measured, and it came out at zero », which is worth keeping.
+
+    ``items`` is the campaign's perimeter when it is supplied: in the referential
+    and not excluded from it. The fact table covers the whole plant, and an
+    article the campaign does not inventory has no variance to attribute to it.
+    """
+    aggregated: dict[str, BackflushLine] = {}
+    errors: list[RowError] = []
+
+    for index, row in enumerate(rows, start=2):
+        try:
+            line = BackflushLine(
+                campaign_id=campaign_id,
+                item_number=row["item_number"],
+                period_start=period_start,
+                period_end=period_end,
+                unit=row.get("unit") or "PCE",
+                net_qty=row.get("net_qty") or 0,
+                under_consumed_qty=row.get("under_consumed_qty") or 0,
+                over_consumed_qty=row.get("over_consumed_qty") or 0,
+                theoretical_qty=row.get("theoretical_qty") or 0,
+                actual_qty=row.get("actual_qty") or 0,
+                parent_count=row.get("parent_count") or 0,
+                week_count=row.get("week_count") or 0,
+                source_loaded_at=_as_datetime(row.get("source_loaded_at")),
+            )
+        except (ValueError, KeyError) as exc:
+            errors.append(
+                RowError(index, "net_qty", row.get("net_qty"), str(exc))
+            )
+            continue
+
+        if items is not None and line.item_number not in items:
+            continue
+        if not _carries_information(line):
+            continue
+
+        existing = aggregated.get(line.item_number)
+        if existing is None:
+            aggregated[line.item_number] = line
+            continue
+        existing.net_qty += line.net_qty
+        existing.under_consumed_qty += line.under_consumed_qty
+        existing.over_consumed_qty += line.over_consumed_qty
+        existing.theoretical_qty += line.theoretical_qty
+        existing.actual_qty += line.actual_qty
+        existing.parent_count = max(existing.parent_count, line.parent_count)
+        existing.week_count = max(existing.week_count, line.week_count)
+
+    return list(aggregated.values()), errors
+
+
+def _carries_information(line: BackflushLine) -> bool:
+    """Whether the row says anything a missing row would not say."""
+    return bool(
+        line.net_qty
+        or line.under_consumed_qty
+        or line.over_consumed_qty
+        or line.theoretical_qty
+        or line.actual_qty
+        or line.parent_count
+        or line.week_count
+    )
+
+
+def map_stock_flow_inputs(
+    run_id: str,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    kind: FlowKind,
+    items: Mapping[str, Item] | None = None,
+) -> tuple[list[StockFlowInput], list[RowError]]:
+    """Build one step's loaded quantities.
+
+    Summed on duplicates, again: a year of receipts exported month by month
+    lists the same reference twelve times, and that is the normal shape of the
+    file rather than a mistake to report.
+    """
+    aggregated: dict[str, StockFlowInput] = {}
+    errors: list[RowError] = []
+
+    for index, row in enumerate(rows, start=2):
+        try:
+            line = StockFlowInput(
+                run_id=run_id,
+                item_number=row["item_number"],
+                kind=kind,
+                qty=row.get("qty") or 0,
+                unit=row.get("unit") or "PCE",
+                source=FlowSource.FILE,
+            )
+        except (ValueError, KeyError) as exc:
+            errors.append(RowError(index, "qty", row.get("qty"), str(exc)))
+            continue
+
+        if items is not None and line.item_number not in items:
+            continue
+
+        existing = aggregated.get(line.item_number)
+        if existing is None:
+            aggregated[line.item_number] = line
+        else:
+            existing.qty += line.qty
+
+    return list(aggregated.values()), errors
+
+
+def _as_datetime(value: Any) -> dt.datetime | None:
+    """A timestamp from a cell, whatever the source spelled it as."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, dt.datetime):
+        return value
+    if isinstance(value, dt.date):
+        return dt.datetime.combine(value, dt.time.min, tzinfo=dt.UTC)
+    try:
+        return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None

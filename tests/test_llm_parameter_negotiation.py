@@ -123,3 +123,59 @@ def test_the_error_carries_the_provider_wording() -> None:
 )
 def test_refusal_detection(message: str, expected: str | None) -> None:
     assert _unsupported_parameter(_RefusalError(message)) == expected
+
+
+class _Truncating:
+    """Un endpoint qui coupe la réponse au plafond, comme le vrai le fait."""
+
+    def __init__(self, text: str, finish_reason: str) -> None:
+        self.text = text
+        self.finish_reason = finish_reason
+
+    def create(self, **_: Any) -> Any:
+        message = type("_M", (), {"content": self.text})()
+        choice = type(
+            "_C", (), {"message": message, "finish_reason": self.finish_reason}
+        )()
+        return type("_R", (), {"choices": [choice], "usage": None, "model": "x"})()
+
+
+def _json_client(text: str, finish_reason: str) -> LlmClient:
+    client = LlmClient(endpoint="test-endpoint")
+    api = _Truncating(text, finish_reason)
+    client._client = type(
+        "_Api", (), {"chat": type("_Chat", (), {"completions": api})()}
+    )()
+    return client
+
+
+class TestATruncatedAnswerSaysSo:
+    """« JSON inexploitable » et « réponse coupée » ne se corrigent pas pareil.
+
+    En production, six lots de routage sur sept sont revenus tronqués — le
+    plafond était trop bas pour ce qu'on demandait au modèle d'écrire. Le
+    rapport affichait « Le modèle n'a pas renvoyé de JSON exploitable » sur
+    soixante-douze pages, ce qui envoie chercher un défaut de prompt là où il
+    n'y a qu'un budget trop court. La cause est dans `finish_reason` : la taire
+    coûtait une campagne de scan.
+    """
+
+    def test_the_ceiling_is_named_when_the_answer_was_cut(self) -> None:
+        client = _json_client('{"pages":[{"page":1,"sheet":"aaaa"', "length")
+        with pytest.raises(UpstreamError) as excinfo:
+            client.complete_json(system="s", user="u", max_tokens=1280)
+        message = str(excinfo.value)
+        assert "coupée" in message
+        assert "1280" in message, "le plafond en cause doit être dans le message"
+
+    def test_a_genuinely_malformed_answer_is_not_blamed_on_the_ceiling(self) -> None:
+        client = _json_client("je ne peux pas lire ces images", "stop")
+        with pytest.raises(UpstreamError) as excinfo:
+            client.complete_json(system="s", user="u", max_tokens=1280)
+        assert "coupée" not in str(excinfo.value)
+
+    def test_the_finish_reason_travels_with_the_response(self) -> None:
+        client = _json_client('{"ok":1}', "stop")
+        _, response = client.complete_json(system="s", user="u")
+        assert response.finish_reason == "stop"
+        assert response.truncated is False

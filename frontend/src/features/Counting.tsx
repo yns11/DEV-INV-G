@@ -9,11 +9,12 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api, download, downloads } from '../lib/api'
+import { compositeKey, splitCompositeKey } from '../lib/rowKey'
 import type { GridContract, Journal, JournalStatus, Overview } from '../lib/types'
 import {
   JOURNAL_STATUS_LABELS,
   moneyShort,
-  numShort,
+  qty,
   label as toLabel,
 } from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
@@ -29,7 +30,7 @@ import {
   Icons,
   Modal,
   Skeleton,
-  Tabs,
+  ViewTabs,
   useErrorToast,
   useToast,
 } from '../components/ui'
@@ -55,7 +56,7 @@ export function Counting() {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
-      <Tabs<Tab>
+      <ViewTabs<Tab>
         value={tab}
         onChange={setTab}
         tabs={[
@@ -124,7 +125,7 @@ function JournalsTab({
       toast.success(
         `${result.updated} journal(aux) mis à jour`,
         variables.status === 'BOOK_ENFORCED'
-          ? 'Leur quantité comptée est désormais celle du stock livre : écart nul par construction.'
+          ? 'Leur quantité comptée est désormais celle du stock ERP : écart nul par construction.'
           : undefined,
       )
     },
@@ -189,7 +190,7 @@ function JournalsTab({
       label: 'Qté comptée',
       numeric: true,
       width: 130,
-      render: (row) => <span className="num">{numShort(row.countedQty)}</span>,
+      render: (row) => <span className="num">{qty(row.countedQty)}</span>,
       value: (row) => row.countedQty,
     },
     {
@@ -269,9 +270,9 @@ function JournalsTab({
               onClick={() =>
                 setStatus.mutate({ ids: [...selected], status: 'BOOK_ENFORCED' })
               }
-              title="Pour les emplacements inventoriés avant le snapshot du stock livre"
+              title="Pour les emplacements inventoriés avant la date du stock ERP"
             >
-              Forcer au stock livre
+              Forcer au stock ERP
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
               Désélectionner
@@ -282,7 +283,7 @@ function JournalsTab({
 
       <Card
         title="Journaux de comptage"
-        message="Un journal par emplacement actif. Un emplacement inventorié avant le snapshot peut être forcé au stock livre : son écart est alors nul par construction, et non par accident."
+        message="Un journal par emplacement actif. Un emplacement déjà inventorié peut être aligné sur le stock ERP, son écart devenant nul."
         flush
       >
         <AsyncBoundary
@@ -294,7 +295,7 @@ function JournalsTab({
             >
               {focus
                 ? 'Aucun entrepôt ne vous est affecté. Coupez « Mon périmètre » pour voir toute la campagne — vous gardez le droit d’y agir.'
-                : 'Les journaux sont créés automatiquement au chargement du stock livre, un par emplacement actif.'}
+                : 'Les journaux sont créés automatiquement au chargement du stock ERP, un par emplacement actif.'}
             </EmptyState>
           }
         >
@@ -383,7 +384,7 @@ function JournalModal({
             {data.notCounted.length > 0 && (
               <Alert
                 tone="warning"
-                title={`${data.notCounted.length} article(s) du stock livre non comptés`}
+                title={`${data.notCounted.length} article(s) du stock ERP non comptés`}
               >
                 Ils seront soldés à zéro à la clôture. Total en jeu :{' '}
                 <strong>
@@ -395,7 +396,7 @@ function JournalModal({
                     <thead>
                       <tr>
                         <th>Article</th>
-                        <th className="num">Stock livre</th>
+                        <th className="num">Stock ERP</th>
                         <th className="num">Valeur</th>
                       </tr>
                     </thead>
@@ -404,7 +405,7 @@ function JournalModal({
                         <tr key={row.itemNumber}>
                           <td className="mono">{row.itemNumber}</td>
                           <td className="num">
-                            {numShort(row.bookQty)} {row.unit}
+                            {qty(row.bookQty)} {row.unit}
                           </td>
                           <td className="num">{moneyShort(row.value)}</td>
                         </tr>
@@ -423,7 +424,7 @@ function JournalModal({
                     <th className="num">Importé</th>
                     <th className="num">Corrigé</th>
                     <th className="num">Retenu</th>
-                    <th className="num">Stock livre</th>
+                    <th className="num">Stock ERP</th>
                     <th className="num">Écart</th>
                     <th>Source</th>
                   </tr>
@@ -433,7 +434,7 @@ function JournalModal({
                     <tr key={line.id}>
                       <td className="mono">{line.item_number}</td>
                       <td className="num subtle">
-                        {line.qty_imported === null ? '—' : numShort(line.qty_imported)}
+                        {line.qty_imported === null ? '—' : qty(line.qty_imported)}
                       </td>
                       <td className="editable num">
                         {editable && journal.status !== 'POSTED' ? (
@@ -457,15 +458,15 @@ function JournalModal({
                         ) : line.qty_manual === null ? (
                           <span className="subtle">—</span>
                         ) : (
-                          numShort(line.qty_manual)
+                          qty(line.qty_manual)
                         )}
                       </td>
                       <td className="num">
-                        <strong>{numShort(line.qty)}</strong>
+                        <strong>{qty(line.qty)}</strong>
                       </td>
-                      <td className="num subtle">{numShort(line.bookQty)}</td>
+                      <td className="num subtle">{qty(line.bookQty)}</td>
                       <td className={`num ${line.varianceQty === 0 ? 'neutral' : line.varianceQty > 0 ? 'pos' : 'neg'}`}>
-                        {numShort(line.varianceQty)}
+                        {qty(line.varianceQty)}
                       </td>
                       <td>
                         <SourceBadge
@@ -576,7 +577,7 @@ function LocationsTab({
   return (
     <div className="stack">
       <Alert tone="info" title="Périmètre de comptage">
-        Construit automatiquement à partir du stock livre. Désactiver un emplacement
+        Construit automatiquement à partir du stock ERP. Désactiver un emplacement
         supprime son journal et le sort de tous les indicateurs.
       </Alert>
 
@@ -589,7 +590,7 @@ function LocationsTab({
             onClick={() =>
               setStatus.mutate({
                 keys: [...selected].map((key) => {
-                  const [warehouseId = '', locationId = ''] = key.split(' ')
+                  const [warehouseId, locationId] = splitCompositeKey(key)
                   return { warehouseId, locationId }
                 }),
                 status: 'DISABLED',
@@ -604,7 +605,7 @@ function LocationsTab({
             onClick={() =>
               setStatus.mutate({
                 keys: [...selected].map((key) => {
-                  const [warehouseId = '', locationId = ''] = key.split(' ')
+                  const [warehouseId, locationId] = splitCompositeKey(key)
                   return { warehouseId, locationId }
                 }),
                 status: 'ACTIVE',
@@ -625,7 +626,7 @@ function LocationsTab({
             <DataGrid
               columns={columns}
               rows={data.locations}
-              getRowId={(row) => `${row.warehouse_id} ${row.location_id}`}
+              getRowId={(row) => compositeKey(row.warehouse_id, row.location_id)}
               selectable={editable}
               selected={selected}
               onSelectedChange={setSelected}

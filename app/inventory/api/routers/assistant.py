@@ -30,6 +30,7 @@ from ...services.assistant_service import (
     AssistantService,
 )
 from ..deps import CampaignDep, Ctx
+from ..uploads import offload, read_upload
 
 log = logging.getLogger(__name__)
 
@@ -98,13 +99,15 @@ async def ask_with_files(
 
     attachments: list[Attachment] = []
     for upload in files:
-        payload = await upload.read()
-        if len(payload) > MAX_ATTACHMENT_BYTES:
-            raise ValidationError(
-                f"« {upload.filename} » dépasse "
-                f"{MAX_ATTACHMENT_BYTES // (1024 * 1024)} Mo.",
-                filename=upload.filename,
-            )
+        # Le plafond est consulté *pendant* la lecture, pas après : une pièce
+        # jointe de trois gigaoctets était lue en entier avant d'être refusée,
+        # et les requêtes des autres utilisateurs payaient la mémoire pendant
+        # ce temps.
+        payload = await read_upload(
+            upload,
+            what=f"« {upload.filename or 'La pièce jointe'} »",
+            ceiling=MAX_ATTACHMENT_BYTES,
+        )
         if payload:
             attachments.append(Attachment(
                 filename=upload.filename or "pièce jointe",
@@ -112,13 +115,16 @@ async def ask_with_files(
                 payload=payload,
             ))
 
-    return service.ask(
+    # Endpoint `async` : `ask` interroge un modèle, ce qui dure des dizaines de
+    # secondes. Tenu sur la boucle, il fige l'application entière pendant que
+    # quelqu'un pose une question.
+    return await offload(lambda: service.ask(
         campaign,
         question=question,
         history=_parse_history(history),
         attachments=attachments,
         profile=profile,
-    )
+    ))
 
 
 @router.get("/context", summary="Ce que le modèle voit de la campagne")

@@ -37,7 +37,7 @@ campagne de juin comptait 244 lignes recopiées à la main.
 
 ---
 
-### 2. Lecture automatique du stock livre et des mouvements (pull ERP)
+### 2. Lecture automatique du stock ERP et des mouvements (pull ERP)
 **Impact ⭐⭐⭐⭐⭐ · Effort M**
 
 Le snapshot et les mouvements sont encore chargés depuis des exports faits à la
@@ -72,7 +72,7 @@ atelier :
   est mauvais en bord de ligne — c'est non négociable) ;
 - **scan du code-barres article** : la référence n'est plus jamais transcrite ;
 - saisie numérique avec **contrôle immédiat** (unité, ordre de grandeur par
-  rapport au stock livre, article hors périmètre) ;
+  rapport au stock ERP, article hors périmètre) ;
 - le compteur voit la liste de sa zone, coche au fur et à mesure, et ne peut pas
   clore une feuille en laissant une ligne ambiguë.
 
@@ -225,7 +225,7 @@ Les contrôles s'exécutent après coup. Un compteur qui saisit 9 500 au lieu de
 950 l'apprend le lendemain, quand la zone est rangée et l'équipe partie.
 
 **À faire.** Au moment de la saisie ou de l'extraction :
-- comparaison à l'ordre de grandeur du stock livre de l'emplacement ;
+- comparaison à l'ordre de grandeur du stock ERP de l'emplacement ;
 - comparaison à l'historique de l'article sur les campagnes précédentes ;
 - alerte immédiate « cette quantité est 10× supérieure à ce que l'ERP attend —
   confirmer ? » avec obligation de commenter au-delà d'un seuil.

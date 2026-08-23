@@ -10,8 +10,12 @@ Elles sont issues du cahier des charges et appliquées sans exception.
 | Chaque dimension a sa colonne et une clé technique | Toutes les tables mutables portent un `id UUID` en plus de leur clé métier. |
 | Article, unité, emplacement, BOM et prix sont snapshotés | Chaque campagne possède sa copie complète des référentiels. |
 | Les valeurs calculées conservent la règle et la version de code | `engine_version` sur la campagne et sur chaque exécution de consolidation. |
-| La preuve documentaire est référencée | `count_sheet.evidence_path` et `import_batch.storage_path` pointent vers le volume UC. |
-| Les suppressions logiques sont préférées aux suppressions physiques | `deleted_at` partout ; le journal d'audit résout donc toujours. |
+| La preuve documentaire est référencée **et vérifiable** | `count_sheet.evidence_path` et `import_batch.storage_path` pointent vers le volume UC ; le chemin porte l'empreinte du contenu, et une feuille scannée conserve `evidence_sha256` / `evidence_bytes` / `evidence_mime`. Un volume se modifie depuis l'espace de travail : le chemin dit *où*, l'empreinte dit *lequel*. |
+| Un enfant ne peut pas appartenir à la campagne d'un autre | Clés uniques `(id, campaign_id)` sur `count_journal`, `zone` et `count_sheet` ; clés étrangères **composites** depuis `count_journal_line`, `count_sheet`, `count_sheet_line` et `arbitration`. La permission d'écriture se vérifie sur la campagne de l'URL, les identifiants arrivent dans le corps : c'est Postgres qui garantit qu'ils désignent la même campagne. |
+| Un chargement porte un seul identifiant de lot | Le stock ERP et l'écart backflush marquent leurs lignes avec l'identifiant que porte aussi leur ligne d'`import_batch`. Deux identifiants pour un chargement rendaient « d'où vient cette quantité » sans réponse. |
+| Les suppressions logiques sont préférées aux suppressions physiques | `deleted_at` partout ; le journal d'audit résout donc toujours. Une campagne qui a une histoire ne se supprime plus **physiquement** : `audit_event.campaign_id` est `ON DELETE RESTRICT`, et un trigger `BEFORE TRUNCATE` refuse de vider la trace (migration 020). |
+| Un chargement qui remplace n'écrit pas un ensemble amputé | Stock ERP, écart backflush et nomenclature en mode remplacement refusent d'écrire dès qu'une ligne est rejetée : les lignes manquantes deviendraient des lignes supprimées. Dérogation explicite par `allowPartial`, tracée dans le rapport du lot. |
+| L'archive porte l'identifiant, jamais le code | Les tables Delta sont partitionnées par `campaign_id` : un code métier se réutilise après une suppression logique, et deux campagnes homonymes écrasaient leurs archives. La table `publication`, écrite en dernier, dit qu'un dossier est complet ; `campaign.published_at` le rapporte à Lakebase, où la clôture le consulte. |
 
 ## 2. Types numériques
 
@@ -44,6 +48,11 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           │    1 par emplacement actif      qty_imported / qty_manual séparées
           │
           ├─ zone ──── count_sheet ──── count_sheet_line
+          │    └─ closed_at / closed_by   (« zone terminée » : la seule donnée
+          │                                d'état du parcours de comptage. Les
+          │                                deux autres statuts d'une zone se
+          │                                déduisent de ses quantités. La feuille,
+          │                                elle, n'a plus d'état)
           │  passes 1|2   (1 par passage)      section : LINE_SIDE / WIP / WIP_OK
           │  free_entry
           │  manager_code
@@ -57,11 +66,28 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           │
           ├─ adjustment_line              (mouvements post-comptage)
           ├─ variance_analysis            (cause humaine + proposition IA, séparées)
+          │
+          ├─ campaign_backflush           (écart backflush figé sur une période)
+          │
+          ├─ stock_flow_run ─┬─ stock_flow_input   (1 par flux chargé : provenance
+          │  comparaison     │                      ERP / fichier / saisie)
+          │  avec une        └─ stock_flow_erp     (production et conso. théorique)
+          │  campagne antérieure
+          │
           ├─ import_batch                 (provenance de chaque chargement)
           └─ audit_event                  (append-only, UPDATE/DELETE neutralisés)
 
+          └─ scan_job                    (lecture d'un scan : statut, avancement,
+                                            rapport, chronomètres. `sheet_id`
+                                            renseigné = une feuille ; nul = une
+                                            pile multi-feuilles)
+
 assignable_cause                          (référentiel de site, hors campagne)
 schema_migration                          (bookkeeping des migrations)
+
+erp_base_article, erp_bom,                (miroirs Lakebase des tables Unity
+erp_ecart_backflush, erp_mouvements,       Catalog, alimentés par un job — voir
+erp_stock_snapshot                         le guide de déploiement)
 ```
 
 ### 3.1 Pourquoi `qty_imported` et `qty_manual` sont deux colonnes
@@ -121,9 +147,9 @@ zone.manager_code
 client ne nomme jamais un gestionnaire — c'est ce qui rend le filtrage
 opposable. `warehouse_manager.warehouse_id` accepte la valeur réservée
 **`AUTRES`** : elle rattache d'un coup tout entrepôt sans affectation explicite,
-sinon un entrepôt découvert par un nouvel import de stock livre tomberait hors
+sinon un entrepôt découvert par un nouvel import de stock ERP tomberait hors
 de tout périmètre sans que personne ne le voie. Aucune clé étrangère vers
-`warehouse` : le référentiel des entrepôts naît du stock livre, chargé *après*
+`warehouse` : le référentiel des entrepôts naît du stock ERP, chargé *après*
 la préparation.
 
 Le périmètre est un **filtre, jamais une permission** : aucune écriture n'en
@@ -162,6 +188,29 @@ Ils suivent les chemins réellement empruntés :
 Les index partiels (`WHERE deleted_at IS NULL`) évitent d'indexer les lignes
 logiquement supprimées, qui ne sont jamais lues.
 
+### 3.1 Les clés composites, et pourquoi elles existent
+
+La garde d'écriture vérifie une permission sur la campagne de l'**URL**. Les
+identifiants des objets, eux, arrivent dans le **corps** de la requête. Rien
+dans cette architecture ne relie les deux : un gestionnaire habilité sur la
+campagne A pouvait poster un journal, fermer une zone ou supprimer une ligne de
+la campagne B en connaissant son identifiant, et la garde n'y voyait rien
+puisqu'elle avait bien vu A.
+
+Le correctif est en deux couches, et les deux sont nécessaires.
+
+**Applicative** — chaque écriture est portée par sa campagne :
+`WHERE campaign_id = ? AND id = ?`. Neuf méthodes de dépôt exigent désormais
+`campaign_id` en premier paramètre, sans valeur par défaut.
+
+**Structurelle** — migration 018. `count_journal`, `zone` et `count_sheet`
+portent une clé unique `(id, campaign_id)`, redondante avec leur clé primaire ;
+c'est le prix d'une garantie qui reste vraie même si une requête future oublie
+le filtre. Les clés étrangères simples de `count_journal_line`, `count_sheet`,
+`count_sheet_line` et `arbitration` sont **remplacées** — pas doublées — par
+des clés composites. Garder les deux laisserait croire que la garantie tient
+alors que seule la plus faible s'appliquerait.
+
 ## 4. Schéma analytique (Delta / Unity Catalog)
 
 Alimenté par `jobs/publish_campaign_to_delta.py`, partitionné par
@@ -195,7 +244,7 @@ confondait.
 ### Fiabilité nette
 
 ```
-1 − |Σ écart €| / Σ stock livre €
+1 − |Σ écart €| / Σ stock ERP €
 ```
 
 Les excédents compensent les manques. Répond à **« avons-nous gagné ou perdu de
@@ -204,7 +253,7 @@ la valeur ? »**. C'est la mesure comptable — et la plus flatteuse.
 ### Fiabilité brute
 
 ```
-1 − Σ |écart €| / Σ stock livre €
+1 − Σ |écart €| / Σ stock ERP €
 ```
 
 Chaque erreur compte, dans les deux sens. Répond à **« de combien nous

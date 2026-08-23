@@ -7,7 +7,9 @@ This is the module that replaces ``Compil GENERIQUE.xlsx`` end to end — the
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import Any
 
@@ -20,35 +22,80 @@ from ..domain.consolidation import (
     build_arbitration_lines,
     consolidate_generic,
 )
+from ..domain.controls import group_findings
 from ..domain.enums import (
     AuditAction,
+    CampaignStatus,
     CountSection,
     DataSource,
     JournalStatus,
     SheetPass,
-    SheetStatus,
 )
 from ..domain.models import (
     Campaign,
+    ConsolidatedLine,
     CountJournalLine,
     CountSheet,
     CountSheetLine,
     Zone,
 )
 from ..domain.printing import available_print_modes
-from ..domain.workflow import assert_sheet_transition, derive_zone_status, passes_for
-from ..errors import ConflictError, NotFoundError, ValidationError
-from .context import ENGINE_VERSION, ServiceContext, utcnow
+from ..domain.quantities import ZERO
+from ..domain.workflow import (
+    derive_zone_status,
+    passes_for,
+    zone_closure_blockers,
+)
+from ..errors import (
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+    WorkflowError,
+)
+from .context import ENGINE_VERSION, ServiceContext
 from .manager_service import Perimeter
 
 log = logging.getLogger(__name__)
 
-__all__ = ["GenericService"]
+__all__ = ["GenericService", "ProgressReporter"]
 
-#: A stack of counting sheets fits in one scan; two hundred pages is somebody
-#: feeding the whole campaign at once, which would blow the token budget long
-#: before it finished.
-_MAX_SCAN_PAGES = 40
+#: Combien de pages une *seule* feuille peut porter. Une feuille de comptage
+#: tient sur une à trois pages ; au-delà, c'est une pile déposée sur le mauvais
+#: écran, et c'est le scan multi-feuilles qu'il faut.
+_SINGLE_SHEET_PAGES = 8
+
+#: Ce que la lecture d'une pile signale de son avancement. Un protocole, pas une
+#: dépendance : le pipeline ne connaît ni la table `scan_job` ni l'écran, il dit
+#: simplement où il en est à qui veut l'entendre.
+ProgressReporter = Callable[..., None]
+
+
+class _Stopwatch:
+    """Le temps passé par étape, en millisecondes.
+
+    « Le scan est lent » ne dit pas où : le dépôt de la pièce, le rendu PDF, la
+    file d'attente de l'endpoint, la génération, ou l'écriture en base. Chacune
+    de ces cinq causes appelle une correction différente, et trois d'entre elles
+    ne sont pas dans ce code. Les mesurer séparément est ce qui permet de savoir
+    laquelle traiter — et, après une optimisation, si elle a servi.
+    """
+
+    __slots__ = ("_steps",)
+
+    def __init__(self) -> None:
+        self._steps: dict[str, int] = {}
+
+    @contextmanager
+    def step(self, name: str) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            self._steps[name] = self._steps.get(name, 0) + elapsed
+
+    def as_dict(self) -> dict[str, int]:
+        return {**self._steps, "totalMs": sum(self._steps.values())}
 
 
 class GenericService:
@@ -88,10 +135,14 @@ class GenericService:
         out: list[dict[str, Any]] = []
         for zone in zones:
             zone_sheets = by_zone.get(zone.id, [])
+            counted = sum(
+                1
+                for sheet in zone_sheets
+                for line in lines.get(sheet.id, [])
+                if line.is_counted
+            )
             status = derive_zone_status(
-                zone_sheets,
-                passes_required=zone.passes,
-                pending_arbitrations=pending.get(zone.id, 0),
+                counted_lines=counted, closed=zone.closed_at is not None
             )
             out.append({
                 **zone.model_dump(mode="json"),
@@ -230,18 +281,26 @@ class GenericService:
                 f"Une zone « {zone.code} » existe déjà dans cette campagne.",
                 code=zone.code,
             )
-        ctx.sheets.create_zone(zone, actor=ctx.actor)
-        ctx.sheets.ensure_sheets(
-            campaign.id, zone.id, passes_for(zone.passes), actor=ctx.actor,
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.CREATE,
-            entity_type="zone",
-            entity_id=zone.id,
-            summary=f"Création de la zone {zone.code}",
-            after=zone.model_dump(mode="json"),
-        )
+        # Une zone sans ses feuilles n'est pas une demi-zone : c'est une zone
+        # que rien ne permet de compter, et que l'écran présente pourtant comme
+        # prête. Les trois écritures tiennent ou tombent ensemble.
+        with ctx.db.transaction() as conn:
+            ctx.sheets.create_zone(zone, actor=ctx.actor, conn=conn)
+            ctx.sheets.ensure_sheets(
+                campaign.id, zone.id, passes_for(zone.passes),
+                actor=ctx.actor, conn=conn,
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.CREATE,
+                entity_type="zone",
+                entity_id=zone.id,
+                summary=f"Création de la zone {zone.code}",
+                after=zone.model_dump(mode="json"),
+                conn=conn,
+            )
+        # A zone is what unlocks the pilotage steps; the counts move with it.
+        ctx.forget_progress(campaign.id)
         return zone
 
     def set_zone_passes(
@@ -355,70 +414,131 @@ class GenericService:
             )
         return updated
 
-    def delete_zone(self, campaign: Campaign, zone_id: str) -> None:
+    def delete_zones(
+        self, campaign: Campaign, zone_ids: Sequence[str]
+    ) -> dict[str, int]:
+        """Retire des zones et leurs feuilles de comptage, une ou tout un lot.
+
+        **Réservé à la préparation**, et c'est plus strict que la matrice de gel
+        ne l'exige : les zones restent modifiables en phase de comptage, mais
+        leurs feuilles y portent alors des quantités relevées sur le terrain, et
+        une feuille supprimée emporte ses lignes — donc un comptage que personne
+        ne refera. Préparer du papier est une activité de préparation ; en jeter
+        le jour J n'en est pas une.
+
+        **Les feuilles partent avec la zone.** La zone est retirée
+        logiquement — son histoire reste au dossier — mais ses feuilles sont
+        supprimées pour de bon. Les laisser produirait des feuilles orphelines :
+        les listes par zone ne les montreraient plus, la liste à plat de toutes
+        les lignes si, et la campagne compterait des articles rattachés à une
+        zone qui n'existe plus.
+        """
         ctx = self.ctx
         ctx.guard(campaign, "zones")
-        ctx.sheets.delete_zone(zone_id, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.DELETE,
-            entity_type="zone",
-            entity_id=zone_id,
-            summary="Suppression logique d'une zone",
-        )
+        if campaign.status is not CampaignStatus.PREPARATION:
+            raise ValidationError(
+                "Les zones ne se suppriment qu'en préparation. Depuis le passage "
+                "en comptage, leurs feuilles portent des quantités relevées.",
+                status=str(campaign.status),
+            )
+
+        unique = list(dict.fromkeys(i for i in zone_ids if i))
+        if not unique:
+            raise ValidationError("Aucune zone transmise.")
+
+        known = {zone.id: zone for zone in ctx.sheets.list_zones(campaign.id)}
+        missing = [i for i in unique if i not in known]
+        if missing:
+            raise ValidationError(
+                f"{len(missing)} zone(s) introuvables dans cette campagne, dont "
+                f"{missing[0]}.",
+                missing=missing[:20],
+            )
+
+        doomed = [
+            sheet.id
+            for sheet in ctx.sheets.list_sheets(campaign.id)
+            if sheet.zone_id in known and sheet.zone_id in set(unique)
+        ]
+        with ctx.db.transaction() as conn:
+            sheets = ctx.sheets.delete_sheets(campaign.id, doomed, conn=conn)
+            for zone_id in unique:
+                ctx.sheets.delete_zone(campaign.id, zone_id, actor=ctx.actor, conn=conn)
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.DELETE,
+                entity_type="zone",
+                summary=(
+                    f"Suppression de {len(unique)} zone(s) et de leurs "
+                    f"{sheets} feuille(s) de comptage"
+                ),
+                before={"codes": [known[i].code for i in unique][:50]},
+                conn=conn,
+            )
+        ctx.forget_progress(campaign.id)
+        return {"zones": len(unique), "sheets": sheets}
 
     # ---------------------------------------------------------------- sheets
 
-    def transition_sheet(
-        self,
-        campaign: Campaign,
-        sheet_id: str,
-        target: SheetStatus,
-        *,
-        counter_name: str | None = None,
-    ) -> CountSheet:
-        """Advance a sheet through PENDING → COUNTING → ENCODING → DONE."""
+    def set_zone_closed(
+        self, campaign: Campaign, zone_id: str, *, closed: bool
+    ) -> dict[str, Any]:
+        """Déclare une zone terminée, ou la rouvre.
+
+        La seule décision d'état du parcours de comptage. Elle remplace quatre
+        transitions par feuille — en attente, comptage, encodage, terminée —
+        qu'il fallait faire avancer à la main sans qu'aucune écriture n'en
+        dépende : le papier partait au comptage que le bouton ait été cliqué ou
+        non, et les quantités s'enregistraient dans tous les cas.
+
+        Un écart non tranché refuse la clôture, et le dit : la consolidation ne
+        saurait pas quelle quantité retenir, et fermer la zone reviendrait à
+        promettre un chiffre qui n'existe pas encore. Rouvrir, en revanche, ne
+        se refuse jamais — c'est le geste qui répare une clôture trop rapide.
+        """
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
-        sheet = ctx.sheets.get_sheet(sheet_id)
-        if sheet.campaign_id != campaign.id:
-            raise NotFoundError("Feuille introuvable dans cette campagne.")
+        ctx.guard(campaign, "count_entries")
+        zone = next(
+            (z for z in ctx.sheets.list_zones(campaign.id) if z.id == zone_id), None
+        )
+        if zone is None:
+            raise NotFoundError("Zone introuvable dans cette campagne.")
 
-        pass_1_status: SheetStatus | None = None
-        if sheet.pass_no is SheetPass.PASS_2:
-            siblings = ctx.sheets.list_sheets(campaign.id, zone_id=sheet.zone_id)
-            first = next(
-                (s for s in siblings if s.pass_no is SheetPass.PASS_1), None
+        if closed:
+            # L'arbitrage se calcule sur les quantités du moment : le rafraîchir
+            # d'abord évite de refuser une clôture pour un écart déjà tranché,
+            # ou de l'accepter alors qu'une saisie vient d'en créer un.
+            self.refresh_arbitrations(campaign, zone_id)
+            pending = sum(
+                1
+                for a in ctx.sheets.list_arbitrations(campaign.id)
+                if a.zone_id == zone_id
+                and not a.is_resolved
+                and a.qty_pass_1 != a.qty_pass_2
             )
-            pass_1_status = first.status if first else None
+            blocker = zone_closure_blockers(pending_arbitrations=pending)
+            if blocker:
+                raise WorkflowError(blocker, zone=zone.code, pending=pending)
 
-        assert_sheet_transition(sheet, target, pass_1_status=pass_1_status)
-
-        started_at = utcnow() if target is SheetStatus.COUNTING else None
-        ended_at = utcnow() if target is SheetStatus.ENCODING else None
-        ctx.sheets.update_sheet(
-            sheet_id,
-            status=target,
-            counter_name=counter_name,
-            started_at=started_at,
-            ended_at=ended_at,
-            actor=ctx.actor,
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.STATUS_CHANGE,
-            entity_type="count_sheet",
-            entity_id=sheet_id,
-            summary=f"Feuille {sheet.pass_no} : {sheet.status} → {target}",
-            before={"status": str(sheet.status)},
-            after={"status": str(target), "counterName": counter_name},
-        )
-
-        # Reaching DONE on the last pass is what makes an arbitration list
-        # meaningful, so refresh it immediately rather than on the next page load.
-        if target is SheetStatus.DONE:
-            self.refresh_arbitrations(campaign, sheet.zone_id)
-        return ctx.sheets.get_sheet(sheet_id)
+        with ctx.db.transaction() as conn:
+            ctx.sheets.set_zone_closed(
+                campaign.id, zone_id, closed=closed, actor=ctx.actor, conn=conn
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.STATUS_CHANGE,
+                entity_type="zone",
+                entity_id=zone_id,
+                summary=(
+                    f"Zone {zone.code} déclarée terminée."
+                    if closed
+                    else f"Zone {zone.code} rouverte."
+                ),
+                before={"closed": zone.closed_at is not None},
+                after={"closed": closed},
+                conn=conn,
+            )
+        return {"id": zone_id, "closed": closed}
 
     def upsert_sheet_lines(
         self,
@@ -427,8 +547,25 @@ class GenericService:
         rows: Sequence[dict[str, Any]],
         *,
         replace: bool = False,
+        expected_version: int | None = None,
     ) -> int:
-        """Create or update the lines of a sheet from grid edits or a paste."""
+        """Create or update the lines of a sheet from grid edits or a paste.
+
+        Two different permissions, because they are two different acts. *Which
+        articles are on the sheet* is preparation work — pruning a list, fixing a
+        section, adding the reference somebody forgot — and it stays open as long
+        as the sheets themselves are editable. *What quantity was found* is the
+        count itself, and it only opens when counting does. Guarding both under
+        the stricter of the two is what made the preparation screen refuse to let
+        anyone touch a list they were still building.
+
+        ``expected_version`` est la version que l'écran avait sous les yeux. Un
+        remplacement écrase l'ensemble : sans elle, deux personnes sur la même
+        feuille s'effacent l'une l'autre en silence. Facultative parce que tous
+        les appelants ne l'ont pas — une extraction IA écrit une feuille qu'elle
+        vient de lire, et rien d'autre ne la touche — mais l'écran, lui, la
+        transmet toujours.
+        """
         ctx = self.ctx
         ctx.guard(campaign, "count_sheets")
         sheet = ctx.sheets.get_sheet(sheet_id)
@@ -442,6 +579,9 @@ class GenericService:
         allow_negative = bool(zone and zone.allow_negative)
 
         existing = {l.id: l for l in ctx.sheets.list_sheet_lines(sheet_id)}
+        if _touches_quantities(rows, existing):
+            ctx.guard(campaign, "count_entries")
+
         lines: list[CountSheetLine] = []
         for order, row in enumerate(rows):
             line_id = str(row.get("id") or "") or new_id()
@@ -480,32 +620,138 @@ class GenericService:
                 )
             )
 
-        if replace:
-            written = ctx.sheets.replace_sheet_lines(sheet_id, lines, actor=ctx.actor)
-        else:
-            written = ctx.sheets.upsert_sheet_lines(lines, actor=ctx.actor)
-
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.UPDATE,
-            entity_type="count_sheet_line",
-            entity_id=sheet_id,
-            summary=f"{written} ligne(s) enregistrée(s) sur la feuille",
-            after={"lines": written, "replace": replace},
-        )
+        with ctx.db.transaction() as conn:
+            if replace:
+                # Le verrou est pris *dans* la transaction qui écrit. Le prendre
+                # avant laisserait une fenêtre entre la prise et le
+                # remplacement — c'est-à-dire exactement la course qu'il ferme.
+                if expected_version is not None:
+                    ctx.sheets.bump_sheet(
+                        campaign.id,
+                        sheet_id,
+                        expected_version=expected_version,
+                        actor=ctx.actor,
+                        conn=conn,
+                    )
+                written = ctx.sheets.replace_sheet_lines(
+                    sheet_id, lines, actor=ctx.actor, conn=conn
+                )
+            else:
+                written = ctx.sheets.upsert_sheet_lines(
+                    lines, actor=ctx.actor, conn=conn
+                )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.UPDATE,
+                entity_type="count_sheet_line",
+                entity_id=sheet_id,
+                summary=f"{written} ligne(s) enregistrée(s) sur la feuille",
+                after={"lines": written, "replace": replace},
+                conn=conn,
+            )
         return written
 
-    def delete_sheet_line(self, campaign: Campaign, line_id: str) -> None:
+    def list_all_lines(
+        self, campaign: Campaign, *, zone_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Every counting-sheet line of the campaign, flat.
+
+        Carries the zone and the pass on each line: without them the list is a
+        pile of references with no way back to the paper, and correcting one
+        means guessing which sheet it came from.
+        """
+        ctx = self.ctx
+        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
+        sheets = {
+            s.id: s
+            for s in ctx.sheets.list_sheets(campaign.id)
+            if zone_id is None or s.zone_id == zone_id
+        }
+        items = ctx.referentials.items_by_number(campaign.id)
+        out: list[dict[str, Any]] = []
+        for sheet_id, lines in ctx.sheets.lines_by_sheet(campaign.id).items():
+            sheet = sheets.get(sheet_id)
+            if sheet is None:
+                continue
+            zone = zones.get(sheet.zone_id)
+            for line in lines:
+                out.append({
+                    **line.model_dump(mode="json"),
+                    "qty": float(line.qty) if line.is_counted else None,
+                    "isCounted": line.is_counted,
+                    "zoneId": sheet.zone_id,
+                    "zoneCode": zone.code if zone else "",
+                    "zoneLabel": zone.label if zone else "",
+                    "passNo": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
+                    "sheetStatus": str(sheet.status),
+                    "name": items[line.item_number].name
+                    if line.item_number in items else "",
+                    "known": line.item_number in items,
+                })
+        out.sort(key=lambda r: (r["zoneCode"], r["passNo"], r["display_order"]))
+        return out
+
+    def delete_sheet_lines(
+        self, campaign: Campaign, line_ids: Sequence[str]
+    ) -> int:
+        """Remove a selection of lines.
+
+        Structural, so it follows the sheets' own permission rather than the
+        counting one: pruning a list of references is preparation work, and it
+        is precisely what one does before printing.
+
+        Every identifier is resolved against *this campaign's* lines before
+        anything is written. That is two guarantees in one: an identifier the
+        campaign does not own is refused rather than deleted, and one that is
+        not an identifier at all — a row index sent by a client that mistook a
+        blank row for a saved one — comes back as a clear refusal instead of a
+        driver error five layers down.
+        """
         ctx = self.ctx
         ctx.guard(campaign, "count_sheets")
-        ctx.sheets.delete_sheet_line(line_id, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.DELETE,
-            entity_type="count_sheet_line",
-            entity_id=line_id,
-            summary="Suppression logique d'une ligne de feuille",
-        )
+        unique = list(dict.fromkeys(i for i in line_ids if i))
+        if not unique:
+            raise ValidationError("Aucune ligne transmise.")
+
+        known = {
+            line.id
+            for lines in ctx.sheets.lines_by_sheet(campaign.id).values()
+            for line in lines
+        }
+        missing = [i for i in unique if i not in known]
+        if missing:
+            raise ValidationError(
+                f"{len(missing)} ligne(s) introuvables dans cette campagne, dont "
+                f"« {missing[0]} ». Rechargez la liste avant de recommencer.",
+                missing=missing[:20],
+            )
+
+        # La trace annonce « suppression de N lignes » : elle ne doit pas
+        # survivre à un lot interrompu au milieu, sans quoi elle décrit un état
+        # que la base n'a jamais eu.
+        with ctx.db.transaction() as conn:
+            for line_id in unique:
+                ctx.sheets.delete_sheet_line(
+                    campaign.id, line_id, actor=ctx.actor, conn=conn
+                )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.DELETE,
+                entity_type="count_sheet_line",
+                summary=f"Suppression de {len(unique)} ligne(s) de feuille",
+                after={"lineIds": ", ".join(unique[:50])},
+                conn=conn,
+            )
+        return len(unique)
+
+    def delete_sheet_line(self, campaign: Campaign, line_id: str) -> None:
+        """One line — the same path as a batch of one.
+
+        Deleting by identifier alone would delete it wherever it lives, another
+        campaign included, and would hand an unparsable identifier straight to
+        the driver. Both are the batch's job to check, so this goes through it.
+        """
+        self.delete_sheet_lines(campaign, [line_id])
 
     # ---------------------------------------------------------- AI extraction
 
@@ -517,7 +763,7 @@ class GenericService:
         payload: bytes,
         filename: str,
         content_type: str,
-        storage_path: str | None = None,
+        on_progress: ProgressReporter | None = None,
     ) -> dict[str, Any]:
         """Read a scanned sheet with the vision model.
 
@@ -534,7 +780,13 @@ class GenericService:
         from ..ai import SheetExtractor, render_pdf_pages
 
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
+        # L'avancement est annoncé étape par étape. Une lecture de feuille dure
+        # de dix secondes à plus d'une minute selon la longueur de la liste
+        # pré-imprimée : sans ces jalons, l'écran ne distingue pas un travail qui
+        # avance d'un appel qui a calé, et l'utilisateur relance.
+        say = on_progress or (lambda **_: None)
+        say(step="Ouverture de la feuille")
         sheet = ctx.sheets.get_sheet(sheet_id)
         if sheet.campaign_id != campaign.id:
             raise NotFoundError("Feuille introuvable dans cette campagne.")
@@ -555,9 +807,29 @@ class GenericService:
         items = ctx.referentials.items_by_number(campaign.id)
         extractor = SheetExtractor()
 
+        # Le scan est archivé avant d'être lu. C'est la pièce qui justifie les
+        # quantités : sans elle, une valeur contestée six mois plus tard n'a
+        # plus rien derrière elle, le conteneur qui l'a reçue ayant disparu.
+        say(step="Archivage de la pièce justificative")
+        # `required=True` : la feuille manuscrite repart dans l'atelier et finit
+        # à la benne. Écrire les quantités lues en sachant que l'image n'a pas
+        # été archivée fabriquerait un comptage invérifiable.
+        archived = ctx.evidence.put(
+            payload, campaign_code=campaign.code, kind="scans", filename=filename,
+            required=True,
+        )
+        storage_path = archived.path if archived else None
+
+        say(step="Rendu des pages")
         if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
             # Rasterised, not split: the endpoint accepts images only.
-            images = render_pdf_pages(payload)
+            #
+            # Une feuille seule tient en quelques pages ; le plafond sert ici de
+            # garde-fou contre une pile déposée par erreur sur l'écran d'une
+            # feuille — auquel cas c'est l'écran multi-feuilles qu'il faut.
+            images = render_pdf_pages(
+                payload, max_pages=_SINGLE_SHEET_PAGES, dpi=ctx.settings.scan_dpi
+            )
             mime = "image/png"
         else:
             images = [payload]
@@ -572,6 +844,17 @@ class GenericService:
             "image_mime": mime,
             "id_factory": new_id,
         }
+        say(
+            step=(
+                f"Lecture par le modèle ({len(images)} page(s), "
+                f"{len(expected_lines)} ligne(s) attendues)"
+                if expected_lines
+                else f"Lecture par le modèle ({len(images)} page(s))"
+            ),
+            total_pages=len(images),
+            sheets_total=1,
+            sheets_done=0,
+        )
         result = (
             extractor.extract_free_entry(known_items=items, **common)
             if free_entry
@@ -581,26 +864,41 @@ class GenericService:
             )
         )
 
-        ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
-        ctx.sheets.update_sheet(
-            sheet_id,
-            status=SheetStatus.ENCODING,
-            counter_name=result.counter_name or None,
-            evidence_path=storage_path,
-            extraction_confidence=result.mean_confidence,
-            actor=ctx.actor,
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.IMPORT,
-            entity_type="count_sheet",
-            entity_id=sheet_id,
-            summary=(
-                f"Extraction IA du scan « {filename} » : {len(result.lines)} lignes, "
-                f"confiance moyenne {result.mean_confidence or 0:.0%}."
-            ),
-            after=result.as_report(),
-        )
+        say(step="Écriture des quantités lues")
+        # Les quantités lues, le chemin de la pièce qui les justifie et la trace
+        # de la lecture forment un tout : une feuille dont les lignes sont
+        # écrites mais dont le chemin de preuve manque affiche des chiffres que
+        # plus rien ne rattache au papier.
+        with ctx.db.transaction() as conn:
+            ctx.sheets.replace_sheet_lines(
+                sheet_id, result.lines, actor=ctx.actor, conn=conn
+            )
+            ctx.sheets.update_sheet(
+                campaign.id,
+                sheet_id,
+                counter_name=result.counter_name or None,
+                evidence_path=storage_path,
+                evidence_sha256=archived.sha256 if archived else None,
+                evidence_bytes=archived.size if archived else None,
+                evidence_mime=archived.mime if archived else None,
+                extraction_confidence=result.mean_confidence,
+                actor=ctx.actor,
+                conn=conn,
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.IMPORT,
+                entity_type="count_sheet",
+                entity_id=sheet_id,
+                summary=(
+                    f"Extraction IA du scan « {filename} » : "
+                    f"{len(result.lines)} lignes, confiance moyenne "
+                    f"{result.mean_confidence or 0:.0%}."
+                ),
+                after=result.as_report(),
+                conn=conn,
+            )
+        say(step="Terminé", sheets_total=1, sheets_done=1)
         return {
             "report": result.as_report(),
             "sheet": ctx.sheets.get_sheet(sheet_id).model_dump(mode="json"),
@@ -614,6 +912,7 @@ class GenericService:
         filename: str,
         content_type: str,
         overwrite_reviewed: bool = False,
+        on_progress: ProgressReporter | None = None,
     ) -> dict[str, Any]:
         """Read a scan holding **several** counting sheets in one pass.
 
@@ -629,14 +928,59 @@ class GenericService:
         down with the paper and fixing what the model misread; a second scan
         that silently overwrote it would destroy exactly that. Overwriting stays
         possible — it is an explicit choice, and the report names what it cost.
+
+        :param on_progress: appelé à chaque étape franchie. C'est par là que le
+            travail asynchrone alimente sa barre de progression : sur une pile de
+            cent feuilles, six minutes de silence sont indistinguables d'une
+            panne. Ignoré — et le traitement identique — quand personne n'écoute.
         """
-        from ..ai import SheetCandidate, SheetExtractor, render_pdf_pages
+        from ..ai import (
+            SheetCandidate,
+            SheetExtractor,
+            footer_strips,
+            in_parallel,
+            page_count,
+            render_pdf_pages,
+        )
 
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
+        settings = ctx.settings
+        clock = _Stopwatch()
+        say = on_progress or (lambda **_: None)
+        say(step="Archivage du scan")
 
-        if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
-            images = render_pdf_pages(payload, max_pages=_MAX_SCAN_PAGES)
+        # Une seule pièce pour toute la pile, et chaque feuille pointe dessus :
+        # c'est bien un seul document qui les justifie toutes, et le découper
+        # inventerait des originaux qui n'ont jamais existé.
+        with clock.step("evidence_upload_ms"):
+            archived = ctx.evidence.put(
+                payload, campaign_code=campaign.code, kind="scans",
+                filename=filename, required=True,
+            )
+            storage_path = archived.path if archived else None
+
+        is_pdf = content_type == "application/pdf" or filename.lower().endswith(".pdf")
+        if is_pdf:
+            # Compté avant d'être rendu : une pile trop épaisse se refuse en la
+            # nommant. La version précédente en rendait le début et laissait
+            # tomber le reste avec une ligne de journal — des comptages perdus
+            # sans que personne ne l'apprenne, ce qui est pire que lent.
+            total_pages = page_count(payload)
+            if total_pages > settings.scan_max_pages:
+                raise ValidationError(
+                    f"Ce scan porte {total_pages} pages, au-delà des "
+                    f"{settings.scan_max_pages} traitées en une fois. Scannez la "
+                    "pile en deux fois : chaque page porte son identité, l'ordre "
+                    "des piles n'a aucune importance.",
+                    pages=total_pages,
+                    maxPages=settings.scan_max_pages,
+                )
+            say(step="Préparation des pages", total_pages=total_pages)
+            with clock.step("pdf_render_ms"):
+                images = render_pdf_pages(
+                    payload, max_pages=settings.scan_max_pages, dpi=settings.scan_dpi
+                )
             mime = "image/png"
         else:
             images = [payload]
@@ -669,14 +1013,27 @@ class GenericService:
             )
 
         extractor = SheetExtractor()
-        routing = extractor.route_pages(
-            images=images, candidates=candidates, image_mime=mime
-        )
+        # Le routage ne lit qu'une ligne, imprimée en pied de page : lui envoyer
+        # les pages entières, c'est transmettre neuf dixièmes de surface inutile.
+        say(step="Identification des feuilles", total_pages=len(images))
+        with clock.step("routing_ms"):
+            routing = extractor.route_pages(
+                footers=footer_strips(images),
+                candidates=candidates,
+                image_mime="image/png",
+                batch_size=settings.scan_routing_batch,
+                max_workers=settings.scan_max_workers,
+            )
 
         by_id = {s.id: s for s in sheets}
         processed: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
 
+        # Ce qui est à lire, et ce qui est préservé. Séparé de la lecture pour
+        # que la boucle qui suit ne fasse qu'une chose — sans quoi le
+        # parallélisme aurait à porter aussi la règle de préservation.
+        to_read: list[tuple[str, list[int]]] = []
         for sheet_id, pages in routing.pages_by_sheet.items():
             sheet = by_id[sheet_id]
             zone = zones[sheet.zone_id]
@@ -696,7 +1053,12 @@ class GenericService:
                     ),
                 })
                 continue
+            to_read.append((sheet_id, pages))
 
+        def read(job: tuple[str, list[int]]):
+            sheet_id, pages = job
+            sheet = by_id[sheet_id]
+            zone = zones[sheet.zone_id]
             expected_lines = lines_by_sheet.get(sheet_id, [])
             common = {
                 "campaign_id": campaign.id,
@@ -707,7 +1069,7 @@ class GenericService:
                 "image_mime": mime,
                 "id_factory": new_id,
             }
-            result = (
+            return (
                 extractor.extract_free_entry(known_items=items, **common)
                 if not expected_lines
                 else extractor.extract(
@@ -715,32 +1077,108 @@ class GenericService:
                     **common,
                 )
             )
-            ctx.sheets.replace_sheet_lines(sheet_id, result.lines, actor=ctx.actor)
-            ctx.sheets.update_sheet(
-                sheet_id,
-                status=SheetStatus.ENCODING,
-                counter_name=result.counter_name or None,
-                extraction_confidence=result.mean_confidence,
-                actor=ctx.actor,
+
+        # **Les appels au modèle en parallèle, les écritures en série.** Cent
+        # feuilles lues l'une après l'autre, c'est cent latences additionnées ;
+        # c'est là qu'était l'essentiel du temps. Les écritures, elles, restent
+        # sur ce fil-ci : elles passent par le pool de connexions et par la
+        # discipline de transaction du service, qui ne se partagent pas.
+        say(
+            step="Lecture des feuilles",
+            pages_routed=len(images) - len(routing.unrouted),
+            sheets_total=len(to_read),
+            sheets_done=0,
+        )
+        with clock.step("model_inference_ms"):
+            outcomes = in_parallel(
+                read,
+                to_read,
+                settings.scan_max_workers,
+                on_done=lambda n: say(step="Lecture des feuilles", sheets_done=n),
             )
-            # The per-sheet report is spread *first*: it carries its own
-            # ``pages`` key holding a count, and the page list is what the
-            # screen renders. Spreading it last silently replaced the list with
-            # an integer and crashed the report on ``pages.join``.
-            processed.append({
-                **result.as_report(),
-                "sheetId": sheet_id,
-                "zoneCode": zone.code,
-                "passNo": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
-                "pages": [p + 1 for p in pages],
-                "overwroteCorrections": len(corrected),
-            })
+
+        say(step="Enregistrement", sheets_done=len(to_read))
+        with clock.step("db_write_ms"):
+            for (sheet_id, pages), result in zip(
+                to_read, outcomes, strict=True
+            ):
+                sheet = by_id[sheet_id]
+                zone = zones[sheet.zone_id]
+                pass_no = 1 if sheet.pass_no is SheetPass.PASS_1 else 2
+                if isinstance(result, BaseException):
+                    # Une feuille perdue ne perd pas la pile : elle est nommée,
+                    # avec ses pages, et se rejoue seule.
+                    log.warning("Lecture de la feuille %s échouée : %s",
+                                sheet_id, result)
+                    failed.append({
+                        "sheetId": sheet_id,
+                        "zoneCode": zone.code,
+                        "passNo": pass_no,
+                        "pages": [p + 1 for p in pages],
+                        "reason": str(result),
+                    })
+                    continue
+
+                corrected = [
+                    l for l in lines_by_sheet.get(sheet_id, ()) if l.was_ai_corrected
+                ]
+                # Une transaction par feuille, pas une pour la pile : le
+                # rapport nomme les feuilles traitées une à une, et une pile de
+                # trente feuilles ne doit pas perdre les vingt-neuf qui ont
+                # abouti parce que la trentième a échoué. Ce qui doit tenir
+                # ensemble, ce sont les lignes d'une feuille et le chemin de la
+                # preuve qui les justifie.
+                with ctx.db.transaction() as conn:
+                    ctx.sheets.replace_sheet_lines(
+                        sheet_id, result.lines, actor=ctx.actor, conn=conn
+                    )
+                    ctx.sheets.update_sheet(
+                        campaign.id,
+                        sheet_id,
+                        counter_name=result.counter_name or None,
+                        evidence_path=storage_path,
+                        evidence_sha256=archived.sha256 if archived else None,
+                        evidence_bytes=archived.size if archived else None,
+                        evidence_mime=archived.mime if archived else None,
+                        extraction_confidence=result.mean_confidence,
+                        actor=ctx.actor,
+                        conn=conn,
+                    )
+                # The per-sheet report is spread *first*: it carries its own
+                # ``pages`` key holding a count, and the page list is what the
+                # screen renders. Spreading it last silently replaced the list
+                # with an integer and crashed the report on ``pages.join``.
+                processed.append({
+                    **result.as_report(),
+                    "sheetId": sheet_id,
+                    "zoneCode": zone.code,
+                    "passNo": pass_no,
+                    "pages": [p + 1 for p in pages],
+                    "overwroteCorrections": len(corrected),
+                })
 
         report = {
             "pages": len(images),
             "sheetsProcessed": processed,
             "sheetsSkipped": skipped,
+            "sheetsFailed": failed,
             "unroutedPages": routing.unrouted,
+            # Sans chronomètres, « c'est lent » ne dit pas où : le rendu PDF, la
+            # file d'attente de l'endpoint, la génération ou l'écriture. Chaque
+            # étape se mesure donc, et le rapport les porte.
+            "timings": {
+                **clock.as_dict(),
+                "pages": len(images),
+                "sheets": len(processed),
+                "imageBytes": sum(len(blob) for blob in images),
+                "routingTokens": routing.tokens_used,
+                "extractionTokens": sum(
+                    r.tokens_used for r in outcomes
+                    if not isinstance(r, BaseException)
+                ),
+                "maxWorkers": settings.scan_max_workers,
+                "endpoint": settings.scan_endpoint,
+            },
         }
         ctx.record(
             campaign_id=campaign.id,
@@ -749,6 +1187,7 @@ class GenericService:
             summary=(
                 f"Scan multi-feuilles « {filename} » : {len(images)} page(s), "
                 f"{len(processed)} feuille(s) lue(s), {len(skipped)} préservée(s), "
+                f"{len(failed)} en échec, "
                 f"{len(routing.unrouted)} page(s) non attribuée(s)."
             ),
             after=report,
@@ -766,6 +1205,7 @@ class GenericService:
         never erase an arbitration somebody already made.
         """
         ctx = self.ctx
+        ctx.guard(campaign, "count_entries")
         zone_counts = self._zone_counts(campaign, zone_id)
         # A single-pass zone has nothing to compare: there is no second opinion,
         # so producing arbitration lines would manufacture a decision nobody can
@@ -818,7 +1258,7 @@ class GenericService:
         comment: str = "",
     ) -> None:
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         if qty < 0:
             raise ValidationError("Une quantité arbitrée ne peut pas être négative.")
         ctx.sheets.decide_arbitration(
@@ -846,7 +1286,7 @@ class GenericService:
         overwrite a judgement somebody made line by line.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         proposals: dict[str, Decimal] = {}
         for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id):
             if line.is_resolved or line.qty_pass_1 == line.qty_pass_2:
@@ -876,13 +1316,16 @@ class GenericService:
     # --------------------------------------------------------- consolidation
 
     def consolidate(
-        self, campaign: Campaign, *, preview: bool = False
+        self, campaign: Campaign, *, preview: bool = False, provisional: bool = False
     ) -> ConsolidationResult:
         """Run the GENERIQUE consolidation.
 
         :param preview: include zones that are not finished yet. Used for the
             live view during counting; the posted run always requires every zone
             to be complete.
+        :param provisional: resolve a pending arbitration with the best reading
+            available instead of refusing to. Only for the live variance — the
+            posted run must never guess which of two counts is right.
         """
         ctx = self.ctx
         items = ctx.referentials.items_by_number(campaign.id)
@@ -919,10 +1362,28 @@ class GenericService:
             ],
             items=items,
             bom=bom,
+            book_stock=self._generic_book_stock(campaign),
             arbitration_tolerance=campaign.config.arbitration_tolerance,
             require_done_zones=not preview,
+            provisional=provisional,
         )
         return consolidate_generic(payload)
+
+    def _generic_book_stock(self, campaign: Campaign) -> dict[str, Decimal]:
+        """What the ERP says is in GENERIQUE, per article.
+
+        Only that location: the journal being built covers it and nothing else,
+        so stock sitting in a picking bin elsewhere is not something this count
+        can settle at zero.
+        """
+        warehouse = campaign.config.generic_warehouse
+        location = campaign.config.generic_location
+        totals: dict[str, Decimal] = {}
+        for line in self.ctx.book_stock.list(campaign.id):
+            if line.warehouse_id != warehouse or line.location_id != location:
+                continue
+            totals[line.item_number] = totals.get(line.item_number, ZERO) + line.qty
+        return totals
 
     def consolidate_and_save(self, campaign: Campaign) -> dict[str, Any]:
         """Consolidate, persist the run, and post it to the GENERIQUE journal.
@@ -933,7 +1394,7 @@ class GenericService:
         directly.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         result = self.consolidate(campaign, preview=False)
 
         if result.blocking:
@@ -947,25 +1408,23 @@ class GenericService:
                 "La consolidation ne produit aucune ligne : aucune zone terminée."
             )
 
-        run_id = ctx.consolidation.save_run(
-            campaign_id=campaign.id,
-            run_by=ctx.actor,
-            engine_version=ENGINE_VERSION,
-            zones_included=result.zones_included,
-            zones_skipped=result.zones_skipped,
-            findings=[f.model_dump(mode="json") for f in result.findings],
-            lines=result.lines,
-            breakdown=result.breakdown,
-        )
-
         generic_key = campaign.config.generic_key
         journal = next(
             (j for j in ctx.journals.list(campaign.id) if j.key == generic_key), None
         )
         if journal is None:
-            ctx.journals.ensure_journals(campaign.id, [generic_key], actor=ctx.actor)
-            journal = next(
-                j for j in ctx.journals.list(campaign.id) if j.key == generic_key
+            # La consolidation ne crée plus ce journal. Un journal apparu tout
+            # seul dans la liste est un journal dont personne n'a décidé le
+            # périmètre ni le gestionnaire, et qui se retrouve à compter pour la
+            # couverture alors qu'il n'a jamais été ouvert. Il vient de l'import
+            # ERP, comme les autres, ou d'une création explicite.
+            raise ValidationError(
+                f"Aucun journal de comptage n'existe pour {generic_key.warehouse_id} / "
+                f"{generic_key.location_id}. Créez-le depuis « Journaux de "
+                "comptage » — import ERP ou création manuelle — puis relancez la "
+                "consolidation.",
+                warehouseId=generic_key.warehouse_id,
+                locationId=generic_key.location_id,
             )
 
         journal_lines = [
@@ -981,13 +1440,29 @@ class GenericService:
             )
             for line in result.lines
         ]
+        # Le calcul est enregistré *dans* la transaction qui poste le journal.
+        # Séparés, ils laissaient une campagne dont la consolidation courante
+        # existe et dont le journal correspondant est vide — le refus « aucun
+        # journal GENERIQUE » se déclenchant après l'enregistrement du calcul.
         with ctx.db.transaction() as conn:
+            run_id = ctx.consolidation.save_run(
+                campaign_id=campaign.id,
+                run_by=ctx.actor,
+                engine_version=ENGINE_VERSION,
+                zones_included=result.zones_included,
+                zones_skipped=result.zones_skipped,
+                findings=[f.model_dump(mode="json") for f in result.findings],
+                lines=result.lines,
+                breakdown=result.breakdown,
+                conn=conn,
+            )
             ctx.journals.replace_lines_for_journal(
                 journal.id, campaign.id, journal_lines, actor=ctx.actor, conn=conn
             )
             if journal.status is JournalStatus.PENDING:
                 ctx.journals.set_status(
-                    [journal.id], JournalStatus.IN_PROGRESS, actor=ctx.actor, conn=conn
+                    campaign.id, [journal.id], JournalStatus.IN_PROGRESS,
+                    actor=ctx.actor, conn=conn,
                 )
             ctx.record(
                 campaign_id=campaign.id,
@@ -1076,7 +1551,7 @@ class GenericService:
         posted journal will contain.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
+        ctx.guard(campaign, "count_entries")
         if not line_ids:
             return 0
 
@@ -1110,6 +1585,56 @@ class GenericService:
             )
         return updated
 
+    def line_payload(
+        self, line: ConsolidatedLine, items: dict[str, Any]
+    ) -> dict[str, Any]:
+        """One consolidation line, as the screens read it.
+
+        The four quantities are floats, not the strings ``Decimal`` serialises
+        to. JavaScript adds strings by gluing them together, so a column that
+        displayed correctly line by line totalled to ``NaN`` the moment the
+        composition bar summed it — the sort of fault that only shows up on the
+        aggregate, which is exactly where nobody thinks to check.
+        """
+        known = line.item_number in items
+        return {
+            **line.model_dump(mode="json"),
+            "qty": float(line.qty),
+            "qty_line_side": float(line.qty_line_side),
+            "qty_wip_ok": float(line.qty_wip_ok),
+            "qty_wip_exploded": float(line.qty_wip_exploded),
+            "name": items[line.item_number].name if known else "",
+            "value": float(
+                line.qty * items[line.item_number].std_price
+            ) if known else 0.0,
+            "hasWip": line.has_wip,
+        }
+
+    def preview_consolidation(self, campaign: Campaign) -> dict[str, Any]:
+        """La consolidation telle qu'elle serait, zones inachevées comprises.
+
+        C'est la vue vivante pendant le comptage : ce que le journal GENERIQUE
+        contiendrait maintenant, et quelles zones manquent encore. Rien n'est
+        enregistré.
+
+        Le rendu est ici et non dans la route parce qu'il a besoin du
+        référentiel : la route allait le chercher à travers ``service.ctx``,
+        c'est-à-dire en contournant le service pour atteindre ses dépôts. Une
+        route qui sait faire cela sait tout faire, et la couche ne veut plus
+        rien dire.
+        """
+        result = self.consolidate(campaign, preview=True)
+        items = self.ctx.referentials.items_by_number(campaign.id)
+        return {
+            "lines": [self.line_payload(line, items) for line in result.lines],
+            "totalQty": float(result.total_qty),
+            "zonesIncluded": result.zones_included,
+            "zonesSkipped": result.zones_skipped,
+            "findings": [f.model_dump(mode="json") for f in result.findings],
+            "groups": [g.to_summary() for g in group_findings(result.findings)],
+            "blocking": len(result.blocking),
+        }
+
     def current_consolidation(self, campaign: Campaign) -> dict[str, Any]:
         """The stored consolidation, with its WIP drill-down."""
         ctx = self.ctx
@@ -1117,20 +1642,11 @@ class GenericService:
         if run is None:
             return {"run": None, "lines": [], "breakdown": []}
         items = ctx.referentials.items_by_number(campaign.id)
-        lines = ctx.consolidation.current_lines(campaign.id)
         return {
             "run": {**run, "id": str(run["id"])},
             "lines": [
-                {
-                    **line.model_dump(mode="json"),
-                    "name": items[line.item_number].name
-                    if line.item_number in items else "",
-                    "value": float(
-                        line.qty * items[line.item_number].std_price
-                    ) if line.item_number in items else 0.0,
-                    "hasWip": line.has_wip,
-                }
-                for line in lines
+                self.line_payload(line, items)
+                for line in ctx.consolidation.current_lines(campaign.id)
             ],
             "breakdown": ctx.consolidation.wip_breakdown(campaign.id),
         }
@@ -1211,3 +1727,22 @@ def _section(value: Any) -> CountSection:
             section=str(value),
         )
     return resolved
+
+
+def _touches_quantities(
+    rows: Sequence[dict[str, Any]], existing: dict[str, CountSheetLine]
+) -> bool:
+    """Whether this write changes any counted quantity.
+
+    Only a *change* counts. A preparation screen re-saving a sheet sends back the
+    quantities it was given, and treating that echo as a count would freeze the
+    list the moment one line happened to carry a figure.
+    """
+    for row in rows:
+        qty = row.get("qty")
+        previous = existing.get(str(row.get("id") or ""))
+        before = previous.qty_manual if previous else None
+        after = None if qty in (None, "") else Decimal(str(qty))
+        if after != before:
+            return True
+    return False

@@ -35,16 +35,19 @@ from .models import (
     CountJournalLine,
     CountSheet,
     CountSheetLine,
+    FindingGroup,
     Item,
     Location,
     LocationKey,
     VarianceLine,
     Zone,
 )
-from .quantities import ZERO
 from .variance import is_material
 
 __all__ = [
+    "CONTROL_LABELS",
+    "group_findings",
+    "check_items",
     "check_referentials",
     "check_book_stock",
     "check_journals",
@@ -117,43 +120,86 @@ def check_referentials(
             )
         )
 
-    # -- assemblies without a structure ---------------------------------------
+    # -- assemblies without a usable structure --------------------------------
+    #
+    # Two different situations, and they used to produce the same alert. An
+    # assembly the ERP has no recipe for at all is a referential gap somebody
+    # must fill. One whose recipes are all retired is a decision somebody
+    # already made — it still cannot be exploded, but the answer is to reinstate
+    # a version, not to write one. Reporting both as "aucune nomenclature"
+    # buried the first under the second.
     for item in items.values():
-        if item.is_assembly and not item.excluded_everywhere and not index.has_bom(
-            item.item_number
-        ):
+        if not item.is_assembly or item.excluded_everywhere:
+            continue
+        # « Ignoré en nomenclature » est une décision, pas un oubli : l'article
+        # ne sera jamais éclaté, donc lui réclamer une structure revient à
+        # signaler comme manquant ce que quelqu'un a explicitement retiré.
+        if item.excluded_from_bom:
+            continue
+        if index.has_bom(item.item_number):
+            continue
+        kind = "produit fini" if item.item_type is ItemType.FINISHED else "semi-fini"
+        if index.retired_only(item.item_number):
             findings.append(
                 ControlFinding(
-                    code="ASSEMBLY_WITHOUT_BOM",
+                    code="ASSEMBLY_BOM_RETIRED",
                     severity=ControlSeverity.WARNING,
                     message=(
-                        f"{item.item_number} est déclaré "
-                        f"{'produit fini' if item.item_type is ItemType.FINISHED else 'semi-fini'} "
-                        "mais n'a aucune nomenclature : il ne pourra pas être éclaté "
+                        f"{item.item_number} ({kind}) n'a que des versions de "
+                        "nomenclature inactives : il ne pourra pas être éclaté "
                         "s'il est compté en WIP."
                     ),
                     entity_type="item",
                     item_number=item.item_number,
                 )
             )
+            continue
+        findings.append(
+            ControlFinding(
+                code="ASSEMBLY_WITHOUT_BOM",
+                severity=ControlSeverity.WARNING,
+                message=(
+                    f"{item.item_number} est déclaré {kind} mais n'a aucune "
+                    "nomenclature : il ne pourra pas être éclaté s'il est "
+                    "compté en WIP."
+                ),
+                entity_type="item",
+                item_number=item.item_number,
+            )
+        )
 
-    # -- valuation gaps --------------------------------------------------------
-    unpriced = [
+    return findings
+
+
+def check_items(*, items: Mapping[str, Item]) -> list[ControlFinding]:
+    """Defects of the article referential itself.
+
+    Kept apart from :func:`check_referentials`, which answers "can a bill of
+    materials be exploded?". A missing standard price has nothing to do with a
+    structure — it was showing up under « santé des nomenclatures », where
+    whoever is repairing a BOM cannot act on it and whoever owns prices never
+    looks.
+    """
+    findings: list[ControlFinding] = []
+    unpriced = sorted(
         i.item_number
         for i in items.values()
         if i.std_price == 0 and not i.excluded_everywhere
-    ]
-    if unpriced:
+    )
+    # Un constat par article, et non un seul qui en compterait cent cinq : c'est
+    # la liste elle-même qu'on va relire pour aller chercher les prix, et un
+    # compte sans les références ne dit à personne par où commencer.
+    for item_number in unpriced:
         findings.append(
             ControlFinding(
                 code="ITEMS_WITHOUT_PRICE",
                 severity=ControlSeverity.WARNING,
                 message=(
-                    f"{len(unpriced)} article(s) ont un prix standard nul : leurs écarts "
-                    "seront valorisés à 0 € et disparaîtront des analyses en valeur."
+                    f"{item_number} a un prix standard nul : ses écarts seront "
+                    "valorisés à 0 € et disparaîtront des analyses en valeur."
                 ),
                 entity_type="item",
-                context={"sample": sorted(unpriced)[:20], "count": len(unpriced)},
+                item_number=item_number,
             )
         )
     return findings
@@ -177,7 +223,7 @@ def check_book_stock(
             ControlFinding(
                 code="BOOK_STOCK_EMPTY",
                 severity=ControlSeverity.BLOCKER,
-                message="Le stock livre est vide : aucun écart ne pourra être calculé.",
+                message="Le stock ERP est vide : aucun écart ne pourra être calculé.",
                 entity_type="book_stock",
             )
         ]
@@ -185,17 +231,17 @@ def check_book_stock(
     unknown_items = sorted({
         line.item_number for line in book_stock if line.item_number not in items
     })
-    if unknown_items:
+    for item_number in unknown_items:
         findings.append(
             ControlFinding(
                 code="BOOK_STOCK_UNKNOWN_ITEM",
                 severity=ControlSeverity.WARNING,
                 message=(
-                    f"{len(unknown_items)} article(s) du stock livre sont absents du "
+                    f"{item_number} porte du stock ERP mais est absent du "
                     "référentiel de la campagne."
                 ),
                 entity_type="book_stock",
-                context={"sample": unknown_items[:20], "count": len(unknown_items)},
+                item_number=item_number,
             )
         )
 
@@ -207,18 +253,19 @@ def check_book_stock(
         ).items()
         if n > 1
     ]
-    if duplicates:
+    for item_number, warehouse_id, location_id in sorted(duplicates):
         findings.append(
             ControlFinding(
                 code="BOOK_STOCK_DUPLICATE_KEY",
                 severity=ControlSeverity.WARNING,
                 message=(
-                    f"{len(duplicates)} triplet(s) article/entrepôt/emplacement "
-                    "apparaissent plusieurs fois dans le stock livre ; les quantités "
-                    "ont été sommées."
+                    f"{item_number} apparaît plusieurs fois en {warehouse_id} / "
+                    f"{location_id} dans le stock ERP ; les quantités ont été sommées."
                 ),
                 entity_type="book_stock",
-                context={"sample": [list(d) for d in duplicates[:20]]},
+                item_number=item_number,
+                warehouse_id=warehouse_id,
+                location_id=location_id,
             )
         )
 
@@ -232,7 +279,7 @@ def check_book_stock(
                     code="UNIT_MISMATCH",
                     severity=ControlSeverity.WARNING,
                     message=(
-                        f"{line.item_number} : unité {line.unit} dans le stock livre "
+                        f"{line.item_number} : unité {line.unit} dans le stock ERP "
                         f"contre {item.unit} dans le référentiel."
                     ),
                     entity_type="book_stock",
@@ -250,7 +297,7 @@ def check_book_stock(
                 code="BOOK_STOCK_NEGATIVE",
                 severity=ControlSeverity.INFO,
                 message=(
-                    f"{len(negatives)} ligne(s) de stock livre sont négatives — "
+                    f"{len(negatives)} ligne(s) de stock ERP sont négatives — "
                     "généralement une consommation antérieure à la réception."
                 ),
                 entity_type="book_stock",
@@ -271,7 +318,7 @@ def check_book_stock(
                     code="BOOK_STOCK_UNKNOWN_LOCATION",
                     severity=ControlSeverity.WARNING,
                     message=(
-                        f"{len(orphans)} emplacement(s) du stock livre ne figurent pas "
+                        f"{len(orphans)} emplacement(s) du stock ERP ne figurent pas "
                         "dans le référentiel emplacements."
                     ),
                     entity_type="location",
@@ -448,35 +495,50 @@ def check_variances(
     """Findings derived from the reconciled variances."""
     findings: list[ControlFinding] = []
 
-    never_counted = [v for v in variances if v.book_only and v.book_qty != 0]
-    if never_counted:
-        value = sum((abs(v.book_value) for v in never_counted), ZERO)
+    # Un constat par couple, et non un seul qui en compterait dix-sept. Le
+    # nombre dit l'ampleur, mais ce qu'on va faire ensuite — aller voir dans
+    # l'allée si les palettes y sont encore — demande la liste, article et
+    # emplacement. Le regroupement les ramène à une ligne à l'écran de toute
+    # façon, et « voir plus » les rouvre toutes.
+    for line in variances:
+        if not (line.book_only and line.book_qty != 0):
+            continue
         findings.append(
             ControlFinding(
                 code="BOOK_STOCK_NOT_COUNTED",
                 severity=ControlSeverity.BLOCKER,
                 message=(
-                    f"{len(never_counted)} couple(s) article/emplacement portent du "
-                    f"stock livre ({value:,.0f} €) sans aucun comptage. Ils seront "
-                    "soldés à zéro si l'inventaire est clôturé en l'état."
+                    f"{line.item_number} porte {line.book_qty} en stock ERP "
+                    f"({line.book_value:,.0f} €) en {line.warehouse_id} / "
+                    f"{line.location_id} sans aucun comptage. Sera soldé à zéro si "
+                    "l'inventaire est clôturé en l'état."
                 ),
                 entity_type="variance",
-                context={"count": len(never_counted), "bookValue": str(value)},
+                item_number=line.item_number,
+                warehouse_id=line.warehouse_id,
+                location_id=line.location_id,
+                context={"bookQty": str(line.book_qty),
+                         "bookValue": str(line.book_value)},
             )
         )
 
-    ghosts = [v for v in variances if v.counted_only and v.counted_qty != 0]
-    if ghosts:
+    for line in variances:
+        if not (line.counted_only and line.counted_qty != 0):
+            continue
         findings.append(
             ControlFinding(
                 code="COUNTED_WITHOUT_BOOK_STOCK",
                 severity=ControlSeverity.WARNING,
                 message=(
-                    f"{len(ghosts)} couple(s) article/emplacement ont été comptés alors "
-                    "que l'ERP n'y voyait aucun stock."
+                    f"{line.item_number} a été compté à {line.counted_qty} en "
+                    f"{line.warehouse_id} / {line.location_id} alors que l'ERP n'y "
+                    "voyait aucun stock."
                 ),
                 entity_type="variance",
-                context={"count": len(ghosts)},
+                item_number=line.item_number,
+                warehouse_id=line.warehouse_id,
+                location_id=line.location_id,
+                context={"countedQty": str(line.counted_qty)},
             )
         )
 
@@ -627,6 +689,100 @@ def run_all_controls(
     if variances:
         findings += check_variances(campaign=campaign, variances=variances)
     return findings
+
+
+#: What each control is *about*, in one short phrase.
+#:
+#: The finding's own message names the article, the quantity or the location —
+#: that is what makes it actionable, and it is also what makes forty of them
+#: unreadable. Grouping needs a title that stays the same across the forty, and
+#: the code is already that category; this table is only its French name. It is
+#: deliberately not a second copy of the message: the message is the detail line
+#: shown underneath.
+CONTROL_LABELS: dict[str, str] = {
+    "ARBITRATION_PENDING": "Écarts entre les deux comptages, en attente d'arbitrage",
+    "ASSEMBLY_BOM_RETIRED": "Assemblages dont toutes les versions de nomenclature sont inactives",
+    "ASSEMBLY_WITHOUT_BOM": "Assemblages sans aucune nomenclature",
+    "BOM_CHILD_UNKNOWN": "Composants de nomenclature absents du référentiel articles",
+    "BOM_CYCLE": "Cycles de nomenclature",
+    "BOM_DEPTH_TRUNCATED": "Éclatements arrêtés à la profondeur maximale",
+    "BOM_PARENT_UNKNOWN": "Assemblages de nomenclature absents du référentiel articles",
+    "BOOK_STOCK_DUPLICATE_KEY": "Doublons dans le stock ERP",
+    "BOOK_STOCK_EMPTY": "Stock ERP absent",
+    "BOOK_STOCK_NEGATIVE": "Quantités négatives dans le stock ERP",
+    "BOOK_STOCK_NOT_COUNTED": "Stock ERP jamais compté",
+    "BOOK_STOCK_UNKNOWN_ITEM": "Stock ERP sur des articles hors référentiel",
+    "BOOK_STOCK_UNKNOWN_LOCATION": "Stock ERP sur des emplacements inconnus",
+    "COUNTED_WITHOUT_BOOK_STOCK": "Comptages sans stock ERP en face",
+    "DUPLICATE_COUNT_LINE": "Références saisies plusieurs fois dans un journal",
+    "DUPLICATE_JOURNAL": "Emplacements portant plusieurs journaux",
+    "EXCLUDED_ITEM_COUNTED": "Articles exclus pourtant comptés",
+    "FINISHED_IN_WIP_OK": "Produits finis comptés en WIP assemblé (indicatif)",
+    "FINISHED_ON_LINE_SIDE": "Produits finis comptés en bord de ligne",
+    "ITEMS_WITHOUT_PRICE": "Articles sans prix standard",
+    "JOURNAL_ON_DISABLED_LOCATION": "Journaux ouverts sur un emplacement désactivé",
+    "JOURNAL_UNKNOWN_ITEM": "Comptages sur des articles hors référentiel",
+    "MATERIAL_VARIANCE": "Écarts au-delà des seuils",
+    "NEGATIVE_COUNT": "Quantités comptées négatives",
+    "NET_ZERO_CONSOLIDATION": "Sections qui se compensent exactement",
+    "POSTED_JOURNAL_EMPTY": "Journaux postés sans aucune ligne",
+    "SINGLE_PASS_ONLY": "Références comptées par une seule équipe",
+    "UNCOUNTED_WITH_BOOK_STOCK": "Articles en stock ERP jamais comptés en GENERIQUE",
+    "UNIT_MISMATCH": "Unités incohérentes avec le référentiel",
+    "UNKNOWN_ITEM": "Comptages GENERIQUE hors référentiel articles",
+    "WIP_OK_NOT_ASSEMBLY": "WIP assemblé déclaré sur un article qui n'en est pas un",
+    "WIP_WITHOUT_BOM": "WIP comptés sans nomenclature exploitable",
+    "ZONE_MISSING_SHEET": "Zones sans feuille de comptage",
+    "ZONE_WITHOUT_LINES": "Zones sans ligne à compter",
+}
+
+#: Blockers first, then warnings: within a screen the order is the reading order.
+_SEVERITY_RANK = {
+    ControlSeverity.BLOCKER: 0,
+    ControlSeverity.WARNING: 1,
+    ControlSeverity.INFO: 2,
+}
+
+
+def group_findings(findings: Iterable[ControlFinding]) -> list[FindingGroup]:
+    """One entry per control, carrying its occurrences.
+
+    Fifty lines saying the same thing about fifty different articles is not
+    fifty pieces of information — it is one, buried under its own repetitions,
+    and it pushes everything else off the screen. What the reader needs first is
+    *which* control fired and *how often*; the list of articles is the second
+    question, and it belongs behind a « voir plus ».
+
+    Grouping is by code rather than by message text: the messages differ, since
+    each names its own article, and that difference is exactly what has to stop
+    being shown forty times.
+
+    Groups come back blockers first, then by size — the loudest control at the
+    top — and the occurrences keep the order the engine produced them in, which
+    is already sorted by article.
+    """
+    buckets: dict[str, list[ControlFinding]] = defaultdict(list)
+    for finding in findings:
+        buckets[finding.code].append(finding)
+
+    groups = [
+        FindingGroup(
+            code=code,
+            label=CONTROL_LABELS.get(code, code),
+            # The worst of the bucket. A code whose severity depends on the case
+            # must not be filed under the milder of the two.
+            severity=min(
+                (f.severity for f in occurrences),
+                key=lambda s: _SEVERITY_RANK.get(s, 3),
+            ),
+            findings=list(occurrences),
+        )
+        for code, occurrences in buckets.items()
+    ]
+    groups.sort(
+        key=lambda g: (_SEVERITY_RANK.get(g.severity, 3), -len(g.findings), g.code)
+    )
+    return groups
 
 
 def summarise(findings: Iterable[ControlFinding]) -> dict[str, object]:

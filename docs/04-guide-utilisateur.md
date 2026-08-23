@@ -8,14 +8,95 @@ Ce guide suit le déroulement réel d'une campagne, de la préparation à la cl�
 
 Toute la navigation tient dans la **barre latérale**, sur trois niveaux :
 
-- la **phase** — Pilotage, Préparation, Comptage, Analyse, Traçabilité — qui
-  indique aussi où en est la campagne ;
+- la **phase** — Préparation, Comptage, Analyse — qui indique aussi où en est la
+  campagne ;
 - la **section**, c'est-à-dire l'écran ;
 - la **sous-section**, dépliée sous la section ouverte. Elle figure dans
   l'adresse : un lien vers « la grille des seuils » se copie et s'envoie.
 
 L'en-tête porte, sur tous les écrans, le carrousel d'indicateurs, l'interrupteur
 « Mon périmètre » et le passage à la phase suivante.
+
+Chaque **bloc** — filtres, graphique, grille — se replie par le chevron placé
+devant son titre. Le pli est mémorisé par bloc et par navigateur : ce que vous
+n'utilisez pas reste fermé d'une visite à l'autre, et ce que vous utilisez
+remonte en haut de l'écran.
+
+---
+
+## Les grilles
+
+Toutes les tables de l'application — articles, nomenclatures, zones, écarts,
+ajustements — se manœuvrent de la même façon. Trois commandes, à droite au-dessus
+de chaque grille.
+
+**Choisir les colonnes** (l'icône à curseurs). Décochez ce dont vous n'avez pas
+besoin ; *Tout afficher* revient au réglage d'origine. Le choix est mémorisé par
+grille et par navigateur, et il vaut aussi pour l'**export Excel** : ce que vous
+avez masqué à l'écran ne part pas dans le fichier. Seules les colonnes masquées
+sont retenues, jamais la liste complète — une colonne ajoutée par une mise à
+jour apparaît donc d'elle-même, au lieu de rester invisible parce qu'un réglage
+d'il y a six mois ne la connaissait pas.
+
+**Filtrer** (l'entonnoir). Chaque colonne reçoit le filtre qui correspond à ce
+qu'elle contient :
+
+| Contenu de la colonne | Filtre |
+|---|---|
+| Un nombre, une quantité, un prix | **De … à …** — l'une des deux bornes suffit |
+| Un petit nombre de valeurs qui se répètent (type, unité, statut, programme) | **Liste à cocher**, chaque valeur avec son nombre de lignes |
+| Une référence, une désignation, un commentaire | **Texte contenu**, insensible à la casse et aux accents |
+
+Le classement est automatique et se fait sur les données affichées : une colonne
+dont presque chaque ligne a une valeur différente — une référence article — reste
+une recherche texte plutôt qu'une liste à cocher de mille entrées. Les filtres se
+cumulent, la barre de recherche s'y ajoute, et le pied de grille rappelle combien
+de lignes restent.
+
+Chaque colonne est une **puce d'une ligne** ; le détail s'ouvre au clic,
+au-dessus du tableau, sans le déplacer :
+
+- une **liste à cocher** porte le nombre de lignes de chaque valeur — « Terminée
+  412 / En cours 3 » dit d'un coup d'œil où est la matière — avec une recherche
+  au-delà de sept valeurs, et *Tout cocher* / *Effacer* ;
+- les valeurs proposées sont celles que la colonne **affiche** : on coche
+  « Composant », pas `COMPONENT` ;
+- une **fourchette** rappelle les bornes réellement présentes dans la colonne,
+  de quoi savoir quoi taper ;
+- un filtre posé colore sa puce et porte une croix qui le retire seule.
+
+Une fois la barre refermée, les critères en cours restent affichés en **puces
+retirables** au-dessus du tableau. Un compteur « Filtres (3) » dit qu'il y a
+trois critères ; il ne dit pas lesquels, et un tableau amputé des deux tiers de
+ses lignes reste alors inexplicable tant qu'on n'a pas rouvert le panneau.
+
+**Les totaux** s'affichent en pied de grille, sur les colonnes qui s'additionnent
+— quantités, valeurs, écarts. Ils portent sur les **lignes affichées** : filtrez
+sur un entrepôt et le total devient celui de cet entrepôt. C'est le chiffre qu'on
+recopie dans un compte rendu, et il correspond à ce qu'on a sous les yeux.
+
+---
+
+## Retrouver une campagne
+
+**Toutes les campagnes.**
+
+La barre de filtres restreint la liste par **code ou libellé**, **statut**,
+**propriétaire** et **date de comptage** (celle de l'inventaire, pas celle de
+création). L'interrupteur **Mes campagnes** ne garde que celles que vous avez
+créées.
+
+Deux affichages, au choix, mémorisé : **icônes** — une carte par campagne, avec
+l'état du gel du stock ERP — et **liste** — une grille triable et filtrable, qui
+tient à deux cents campagnes.
+
+**Supprimer** retire une campagne de la liste. Deux règles :
+
+- seul **l'auteur** d'une campagne peut la supprimer ; le bouton est désactivé
+  pour les autres, et dit qui contacter ;
+- la suppression est **logique** : comptages, journaux, ajustements et journal
+  d'audit restent en base, la suppression y est elle-même tracée, et le code
+  redevient disponible.
 
 ---
 
@@ -24,7 +105,7 @@ L'en-tête porte, sur tous les écrans, le carrousel d'indicateurs, l'interrupte
 ```
 PRÉPARATION ──────► COMPTAGE ──────► ANALYSE & AJUSTEMENTS ──────► CLÔTURE
      │                  │                      │                      │
- référentiels     stock livre gelé       journaux gelés          tout gelé
+ référentiels     stock ERP gelé       journaux gelés          tout gelé
  seuils           journaux + feuilles    ajustements
  zones            consolidation          causes
 ```
@@ -59,10 +140,10 @@ de transition liste précisément ce qui sera gelé et ce qui bloque encore.
   nombre de comptages** : une salle réglée sur un comptage unique ne redevient
   pas une zone à double comptage parce que le défaut de campagne le dit ;
 - les gestionnaires, leurs identités et leurs périmètres — le personnel est
-  stable d'une campagne à l'autre, et retaper cinq noms et quarante affectations
+  stable d'une campagne à l'autre, et retaper neuf noms et quarante affectations
   chaque trimestre est exactement le travail que cette application supprime.
 
-**Rien de mesuré n'est copié** : ni stock livre, ni comptage, ni journal, ni
+**Rien de mesuré n'est copié** : ni stock ERP, ni comptage, ni journal, ni
 ajustement. Une campagne est une photographie d'un instant ; copier ses mesures
 n'aurait aucun sens.
 
@@ -96,6 +177,12 @@ Ce que la lecture ERP traduit pour vous :
 | `std_cost_price` ÷ `std_price_unit` | Prix standard | Ramené au prix d'**une** unité |
 | `item_name` / `name_alias` / `item_description` | Désignation | La première renseignée |
 
+La grille se filtre colonne par colonne — **type**, **programme**, **unité** et
+**exclusion** par liste à cocher, **prix standard** par fourchette — ce qui rend
+praticable le travail par lot sur un référentiel de plusieurs milliers de lignes :
+isoler les semi-finis d'un programme, ou les articles au-dessus de mille euros,
+puis agir sur la sélection.
+
 Un groupe non stockable (`SSTRA` sous-traitance, `PRESTA` prestation) reste en
 type *inconnu* plutôt que d'être rangé au jugé : valoriser une prestation comme
 un composant fausserait l'écart. L'**exclusion** n'est jamais déduite de l'ERP —
@@ -107,6 +194,10 @@ c'est une décision de campagne, prise ici.
 la table `emotors_data_champions.silver_erp_ye.silver_bom` fournit chaque lien
 parent → composant avec sa quantité, la désignation de l'assemblage étant jointe
 au passage.
+
+Les mêmes filtres qu'en Articles : **assemblage** et **composant** par recherche
+texte, **quantité par assemblage** par fourchette, **unité** et **version** par
+liste à cocher.
 
 L'onglet **Santé des nomenclatures** signale immédiatement :
 
@@ -128,9 +219,7 @@ Un écart est *matériel* — c'est-à-dire digne d'attention — lorsqu'il fran
 | Barrière | Signification |
 |---|---|
 | Valeur absolue (€) | Impact financier minimal |
-| Écart relatif | \|Δqté\| / qté livre minimal |
-| Plancher quantité | En deçà, jamais d'exception |
-| Tolérance IRA | Tolérance de l'indicateur d'exactitude des enregistrements |
+| Écart relatif | \|Δqté\| / quantité ERP minimal |
 
 Exiger la **conjonction** (et non l'une ou l'autre) garde la liste d'exceptions
 à une taille qu'une équipe peut réellement traiter le jour J.
@@ -184,26 +273,53 @@ vide : le compteur écrit ce qu'il trouve. Elle est marquée comme telle, ce qui
 évite que les contrôles ne la signalent comme une préparation oubliée. Charger
 une liste d'articles lève automatiquement la mention.
 
+**Supprimer une zone.** La corbeille en bout de ligne retire une zone ; cochez
+plusieurs lignes et *Supprimer* les retire d'un coup. Les feuilles de comptage de
+la zone partent avec elle, et le message de confirmation dit combien : une zone
+préparée par erreur ne laisse pas derrière elle des feuilles orphelines qu'on
+retrouverait le jour J. La suppression est **logique** — la zone quitte les
+listes, son historique reste en base.
+
+Cette opération n'existe **qu'en Préparation**. Passé en comptage, une zone porte
+des quantités saisies, et la faire disparaître effacerait un travail de terrain :
+elle se ramène alors à un seul comptage, ou ses emplacements se désactivent (2.3),
+mais elle ne s'efface plus.
+
 ### 1.7 Répartir le travail entre gestionnaires
 
 **Référentiels & seuils → Gestionnaires**, puis **Affectation journaux** et
 **Affectation zones**.
 
-Cinq postes par campagne. Renseignez pour chacun son libellé et **son adresse
-e-mail** : c'est elle qui permet à l'interrupteur « Mon périmètre » de savoir
-qui demande, sans que le navigateur n'ait jamais à nommer un gestionnaire.
+Neuf postes par campagne. Renseignez pour chacun son libellé et **son adresse
+e-mail**. Cette adresse fait deux choses, à ne pas confondre.
+
+**Elle donne le droit de modifier la campagne.** Une campagne se consulte par
+tout le monde et ne se modifie que par son créateur et les gestionnaires qu'il a
+déclarés ici. Pour les autres, les écrans restent lisibles et exportables, mais
+tous les boutons d'écriture sont désactivés et une bande le dit. Décocher
+**Actif** retire le droit sans effacer la trace du passage de la personne.
+
+**Elle résout « Mon périmètre »** sans que le navigateur n'ait jamais à nommer
+un gestionnaire.
+
+Deux choses restent au seul créateur de la campagne : cette page — un
+gestionnaire qui pourrait en déclarer d'autres s'accorderait le droit d'en
+accorder — et la suppression de la campagne. Tout le reste, y compris le passage
+d'une phase à la suivante, appartient aux gestionnaires autant qu'à lui : le jour
+J commence à six heures, et le créateur n'est pas toujours devant son écran.
 
 - *Affectation journaux* rattache les entrepôts. Un journal de comptage suit son
   entrepôt. La ligne **AUTRES** n'est pas un entrepôt : elle rattache d'un coup
   tous ceux sans affectation explicite, pour qu'un entrepôt découvert par un
-  nouvel import de stock livre ne tombe pas hors de tout périmètre.
+  nouvel import de stock ERP ne tombe pas hors de tout périmètre.
 - *Affectation zones* rattache les feuilles GENERIQUE, sur une sélection.
 
-> **Un périmètre n'est pas une habilitation.** L'interrupteur « Mon périmètre »
-> de l'en-tête réduit le bruit ; il ne cloisonne rien. Chacun garde le
-> droit d'agir hors de son périmètre — indispensable quand il faut couvrir un
-> collègue à 6 h du matin. Le filtrage se fait côté serveur : ce que le
-> périmètre exclut n'est jamais envoyé au poste.
+> **Un périmètre n'est pas un cloisonnement.** L'interrupteur « Mon périmètre »
+> de l'en-tête réduit le bruit ; un gestionnaire garde le droit d'agir hors du
+> sien — indispensable quand il faut couvrir un collègue à 6 h du matin. Ce qui
+> décide du droit d'écrire, c'est d'être déclaré sur cette page, pas l'étendue
+> du périmètre. Le filtrage se fait côté serveur : ce que le périmètre exclut
+> n'est jamais envoyé au poste.
 
 ### 1.8 Imprimer les feuilles
 
@@ -247,19 +363,56 @@ articles, nomenclatures, seuils. Les zones GENERIQUE, elles, restent créables.
 
 ## 2. Comptage — le jour J
 
-### 2.1 Charger le stock livre
+### 2.1 Charger le stock ERP
 
-**Référentiels & seuils → Stock livre.**
+**Référentiels & seuils → Stock ERP.** Le référentiel articles doit être chargé
+avant — l'écran le refuse et le dit, parce que chaque ligne de stock est vérifiée
+contre lui (voir plus bas).
 
-Chargez l'export ERP « Stock physique par emplacement ». Ce chargement fait
-**trois choses en une transaction** :
+Trois sources, comme pour les articles et les nomenclatures, dans cet ordre :
+
+1. **Lire depuis l'ERP** — la table
+   `emotors_data_champions.silver_erp_ye.stock_snapshot` publie une photographie
+   quotidienne du stock physique du site, une ligne par article × entrepôt ×
+   emplacement.
+2. **Charger un fichier** — l'export « Stock physique par emplacement », quand
+   l'ERP n'est pas joignable.
+3. **Copier / Coller**.
+
+**Choisissez la photo.** La liste « Photo du », à côté du bouton, propose les
+journées effectivement publiées, la plus récente en tête et sélectionnée par
+défaut. Une seule est chargée, jamais deux : une campagne se compare à *un* état
+du système à *un* instant, pas à un stock additionné sur trois mois.
+
+> Le défaut n'est pas la règle. La journée de comptage a commencé samedi matin,
+> la reprise se fait le lundi : c'est la photo de **samedi** qui fait foi, et
+> c'est elle qu'il faut désigner. Charger celle du lundi compterait comme écarts
+> deux jours de mouvements normaux.
+
+**Le référentiel articles fait foi**, comme pour les feuilles de comptage, et
+**quel que soit le mode d'import**. Deux refus, chacun avec son geste :
+
+| La ligne porte | Elle est rejetée parce que | À faire |
+|---|---|---|
+| une référence inconnue | sans article, elle n'a ni désignation, ni prix, ni type — son écart s'afficherait en quantité nue, hors de toute règle de matérialité | compléter la grille **Articles** ; un import de stock ne crée jamais d'article |
+| un article **exclu** du périmètre | l'exclusion est une décision de campagne ; charger son stock la reprendrait par la fenêtre, et l'écart vaudrait la totalité du stock | lever l'exclusion sur la grille **Articles**, si elle n'a plus lieu d'être |
+
+Les lignes refusées sont listées avec leur numéro et leur raison, comme pour tout
+import — le reste du fichier passe.
+
+Quelle que soit la source, le chargement fait **trois choses en une
+transaction** :
 
 1. il remplace intégralement le snapshot (une photographie ne se fusionne pas) ;
 2. il construit le **référentiel entrepôts/emplacements** à partir des données,
    en conservant les décisions d'activation déjà prises ;
 3. il crée **un journal de comptage par emplacement actif**.
 
-Puis **Geler le stock livre**. À partir de là, tout écart est reproductible.
+L'historique des imports nomme la source **et la photo** : « … stock_snapshot au
+2026-08-29 ». Six mois plus tard, savoir à quel jour la campagne s'est comparée
+n'est plus une question qu'on pose à quelqu'un.
+
+Puis **Geler le stock ERP**. À partir de là, tout écart est reproductible.
 
 ### 2.2 Ne voir que son périmètre
 
@@ -273,8 +426,8 @@ autrement :
 - périmètre garni — les listes sont filtrées ;
 - **périmètre vide** — « aucun objet ne vous est affecté », et non une liste
   vide qu'on prendrait pour une campagne sans données ;
-- **identité non déclarée** — vous n'êtes rattaché à aucun des cinq
-  gestionnaires ; le filtre ne laisse alors rien passer.
+- **identité non déclarée** — vous n'êtes rattaché à aucun gestionnaire ; le
+  filtre ne laisse alors rien passer.
 
 Le filtrage se fait côté serveur : ce que le périmètre exclut n'est jamais
 envoyé au poste. Et il reste un filtre : coupez l'interrupteur et vous revoyez —
@@ -299,7 +452,7 @@ Chargez l'export OData des lignes de journaux. À chaque rechargement :
 - les **corrections manuelles sont préservées** — c'est tout l'intérêt de garder
   les deux colonnes séparées ;
 - un journal présent dans le fichier mais absent du référentiel est **créé
-  automatiquement** (cas typique : stock livre à zéro, stock compté positif) ;
+  automatiquement** (cas typique : stock ERP à zéro, stock compté positif) ;
 - une ligne portant sur un emplacement **désactivé** est ignorée avec un
   avertissement explicite, jamais silencieusement ;
 - un journal dont toutes les lignes sont marquées postées passe en **Posté**.
@@ -318,33 +471,60 @@ Le bandeau de campagne affiche deux jauges :
 Ouvrez un journal, saisissez la quantité dans la colonne **Corrigé**. La valeur
 importée reste visible à côté, et le badge de source passe à *Saisie manuelle*.
 
-L'écran affiche aussi les **articles du stock livre que personne n'a comptés**
+L'écran affiche aussi les **articles du stock ERP que personne n'a comptés**
 sur cet emplacement, avec leur valeur : ce sont eux qui seront soldés à zéro à
 la clôture. Ils n'apparaissaient auparavant que trois semaines plus tard.
 
 ### 2.7 Emplacements inventoriés avant le snapshot
 
-Sélectionnez les journaux concernés → **Forcer au stock livre**. Leur quantité
-comptée devient celle du stock livre : l'écart est nul **par construction**, et
+Sélectionnez les journaux concernés → **Forcer au stock ERP**. Leur quantité
+comptée devient celle du stock ERP : l'écart est nul **par construction**, et
 non par accident. Les lignes sont matérialisées et tracées.
 
 ### 2.8 Compter les zones GENERIQUE
 
-Pour chaque zone, le cycle est :
+**Deux affichages, au choix, mémorisé.** *Icônes* donne une carte par zone, ses
+feuilles l'une sous l'autre — la lecture qui va bien jusqu'à une dizaine de
+zones. *Liste* donne une grille triable, filtrable et exportable, qui tient
+encore à quatre-vingts. La ligne y est la **feuille**, et la colonne « Zone »
+les regroupe. Les boutons restent épinglés au bord droit, atteignables sans
+faire défiler.
 
-```
-En attente → Comptage en cours → Encodage en cours → Terminée
-```
+**Une feuille n'a pas d'état.** Deux boutons suffisent, sur chaque feuille :
 
-- **Comptage en cours** : la feuille est remise au compteur.
-- **Encodage en cours** : la feuille est revenue ; on saisit ou on scanne.
-- **Terminée** : l'encodage est validé. Réversible d'un cran pour corriger.
+| Bouton | Ce qu'il fait |
+|---|---|
+| ✏️ **Crayon** | Ouvre la feuille pour saisir, coller ou scanner. Actif pendant toute la phase Comptage |
+| 🖨️ **Imprimante** | Imprime la feuille — vierge ou remplie |
 
-> Le **comptage n°2 ne peut pas démarrer** tant que le comptage n°1 n'est pas
-> revenu. Deux comptages simultanés ne sont pas deux comptages indépendants.
+Il fallait auparavant cliquer *Commencer le comptage*, puis *Commencer
+l'encodage*, avant de pouvoir écrire la première quantité, puis *Valider* pour
+finir — quatre clics par feuille, huit par zone à double comptage. Aucune
+écriture n'en dépendait : le papier partait au comptage que le bouton ait été
+cliqué ou non, et les quantités s'enregistraient dans tous les cas.
 
-Une zone réglée sur **un seul comptage** n'a qu'une feuille et se termine dès
-qu'elle est encodée : sans second avis, il n'y a rien à arbitrer.
+**Une zone a trois états**, et c'est le seul suivi qui reste :
+
+| État | Ce qu'il veut dire |
+|---|---|
+| **À compter** | Aucune quantité relevée dans la zone |
+| **En cours** | Des quantités sont là ; la zone n'est pas déclarée finie |
+| **Terminée** | Quelqu'un l'a déclarée finie : elle entre dans la consolidation |
+
+Les deux premiers se **déduisent des quantités** : rien à cliquer, saisir la
+première quantité *est* le démarrage. Le troisième est une décision, prise sur
+la carte de la zone par **Terminer la zone**, et **Rouvrir** la défait. Cette
+décision-là ne peut pas se déduire : une ligne qu'on ne peut légitimement pas
+compter — l'article a disparu, l'emplacement est inaccessible — laisserait sinon
+la zone ouverte pour toujours, et avec elle le passage de la campagne en analyse.
+
+> Terminer une zone dont les deux comptages se contredisent encore est
+> **refusé**, en le disant : sans arbitrage, la consolidation ne sait pas quelle
+> quantité retenir. Rouvrir, en revanche, ne se refuse jamais — c'est le geste
+> qui répare une clôture trop rapide.
+
+Une zone réglée sur **un seul comptage** n'a qu'une feuille : sans second avis,
+il n'y a rien à arbitrer, et rien ne s'oppose à sa clôture.
 
 À l'ouverture de la **feuille n°2**, une colonne « Comptage n°1 » affiche la
 quantité du premier passage. Voir la divergence pendant la saisie transforme
@@ -364,13 +544,75 @@ Le modèle lit la feuille **en s'appuyant sur la liste d'articles pré-imprimée
 - chaque valeur porte une **confiance** ; celles sous 75 % sont mises en avant ;
 - les articles attendus mais non lus apparaissent en ligne vide, à saisir.
 
+Le rapprochement se fait sur le trio **feuille + article + section**, jamais sur
+la seule référence. Un même article figure légitimement deux fois sur une
+feuille — en bord de ligne pour les bacs, en WIP non déclaré pour ce qui est
+monté sur un assemblage — et ce sont deux comptages distincts, posés sur deux
+tableaux différents du papier. Quand la référence ne figure qu'une fois, la
+section lue ne sert à rien et n'est pas exigée ; quand elle figure deux fois et
+que la section est illisible, la ligne est **signalée plutôt que posée au
+hasard** : se tromper de tableau fausse deux quantités d'un coup, et rien en
+aval ne peut le rattraper.
+
 Une feuille de **saisie libre** se scanne aussi, bien qu'elle n'ait aucune liste
 à confronter : le modèle recopie alors la référence telle qu'elle est écrite, et
 la garde se déplace d'un cran — c'est le **référentiel articles** qui tranche.
 Une référence qu'il ne connaît pas est signalée, jamais créée.
 
+La lecture **dit où elle en est** : le bouton passe en « Lecture en cours… » et
+une barre affiche l'étape — archivage de la pièce, rendu des pages, lecture par
+le modèle (avec le nombre de pages et de lignes attendues), écriture des
+quantités. Cette lecture dure de dix secondes à plus d'une minute selon la
+longueur de la liste pré-imprimée, et un bouton grisé ne distingue pas un
+travail qui avance d'un appel qui a calé. La barre est **indéterminée** parce
+que l'essentiel du temps part dans un seul appel au modèle, dont personne ne
+connaît l'avancement : afficher un pourcentage qui saute de 0 à 100 % ne
+mesurerait rien. Si vous rechargez la page pendant la lecture, l'écran retrouve
+le travail en cours et reprend son suivi, au lieu de vous inviter à relancer un
+scan qui tourne déjà.
+
 Tout atterrit dans une grille modifiable, avec le badge *Extraction IA*.
 **Rien n'est posté automatiquement.**
+
+**Toute la pile d'un coup.** *Compil B06VRAC → Importer un scan multi-feuilles*
+accepte le PDF sorti du scanner avec l'ensemble des feuilles dedans — jusqu'à
+deux cent cinquante pages, soit environ cent vingt feuilles recto-verso. Chaque
+page est rattachée à sa feuille par ce que l'application a imprimé en pied de
+page. Le modèle **recopie** ce pied — identifiant, zone, numéro de comptage —
+sans rien vérifier ; c'est l'application qui rapproche ensuite la lecture des
+feuilles de la campagne. L'identifiant suffit à lui seul ; s'il est illisible,
+la paire **zone + numéro de comptage** rattrape la page dès qu'elle ne désigne
+qu'une feuille. Deux lectures qui se contredisent, ou un pied vraiment
+illisible, sont **signalés, jamais devinés** : une page classée dans la mauvaise
+zone verse un comptage sur du stock qui n'y a jamais été. Le rapport affiche ce
+qui a été lu (`lu : feuille … · zone … · comptage n°…`), de quoi voir tout de
+suite s'il s'agit d'un pied abîmé ou d'une page étrangère à la pile.
+
+Le dépôt répond **tout de suite**, et la lecture continue derrière. Vous pouvez
+fermer la fenêtre : les feuilles se remplissent au fur et à mesure, et l'écran
+affiche l'étape en cours et le nombre de feuilles lues. Ce qui se passe ensuite
+n'a pas changé — les quantités arrivent en *Extraction IA*, dans des grilles
+modifiables, et rien n'est posté.
+
+Trois refus explicites, plutôt qu'un silence :
+
+| Cas | Ce qui se passe |
+|---|---|
+| Une feuille dont vous avez **déjà corrigé** les valeurs lues par l'IA | Elle est **préservée**. Cette relecture est l'étape la plus coûteuse de la chaîne. « Lire et écraser » la relit quand même, et le rapport dit combien de corrections cela a coûté |
+| Une feuille que le modèle n'a pas pu lire | Nommée dans le rapport, avec ses pages et la raison. Les autres aboutissent : une feuille perdue ne perd pas la pile |
+| Une pile au-delà du plafond | **Refusée en le disant**, avec les deux nombres. Scannez en deux fois : chaque page porte son identité, l'ordre des piles n'a aucune importance |
+
+Les pages partent au routage **par lots**. Un lot qui revient en erreur n'est
+plus perdu : il est **recoupé en deux et redemandé**, jusqu'à la page seule. Ce
+qui fait échouer un appel — une réponse trop longue, une bande qui fait dérailler
+le modèle — disparaît presque toujours à la moitié, et seule la page qui échoue
+encore, seule dans son appel, part en non attribuée. Une pile de soixante-quinze
+pages dont six lots sur sept échouaient rendait soixante-douze pages à la main ;
+elle passe désormais entière, au prix de quelques appels de plus.
+
+> Si l'application redémarre pendant la lecture, le travail est marqué en échec
+> et vous invite à recharger le scan. Les feuilles déjà lues avant
+> l'interruption sont enregistrées ; elles seront simplement relues.
 
 ### 2.10 Arbitrer
 
@@ -466,8 +708,13 @@ absolu — typiquement moins de trente sur plusieurs centaines.
 **Écarts & analyses → Ajustements.**
 
 Chargez l'export des transactions de stock, ou saisissez les ajustements postés
-dans l'ERP. Quantité et valeur sont **signées** : négatif = diminution. Chaque
-mouvement réduit l'**écart résiduel** — ce qui reste inexpliqué.
+dans l'ERP. Quantité et valeur sont **signées** : négatif = diminution.
+
+Un ajustement est un **mouvement de stock**, pas une correction d'écart : il
+s'ajoute au comptage pour former le **stock physique**, et c'est ce dernier que
+l'écart mesure face à l'ERP gelé. Un comptage de 100 suivi d'un ajustement de
+−50 donne donc un physique de 50 et, contre un ERP de 150, un écart de −100.
+Ce que le comptage seul montrait reste lisible à côté, sous **Avant ajust.**
 
 Le cycle *analyser → agir sur le terrain → ajuster → recharger* se répète
 autant de fois que nécessaire ; les indicateurs se mettent à jour à chaque fois.
@@ -509,12 +756,76 @@ diffusion.
 ### 3.7 Exporter
 
 **Exporter le dossier** produit un classeur complet : indicateurs, écarts par
-article et par emplacement, stock livre, journaux, consolidation GENERIQUE,
+article et par emplacement, stock ERP, journaux, consolidation GENERIQUE,
 décomposition WIP, ajustements, causes, contrôles et journal d'audit.
 
 Le classeur porte un onglet **Provenance** : campagne, dates de gel, version du
 moteur de calcul, auteur et date de génération — et l'avertissement que le
 fichier est une photographie en lecture seule.
+
+### 3.8 Comparer deux campagnes
+
+**Comparaison.** Deux inventaires encadrent une période ; entre les deux, le
+stock a été reçu, produit, expédié, consommé et rebuté. La question est fermée :
+
+```
+stock attendu = stock initial + réceptions + production
+                              − expéditions − conso. théorique − rebuts
+```
+
+Choisissez la **campagne de départ** — la plus ancienne par date d'inventaire —
+puis alimentez les cinq mesures de la période.
+
+**Tout charger de l'ERP** les lit toutes d'un coup. Elles viennent désormais
+d'une seule table de mouvements, à raison d'une colonne par flux :
+
+| Mesure | Ce qu'elle compte |
+|---|---|
+| Réceptions | Ce qui est entré en stock sur la période |
+| Expéditions | Ce qui est sorti vers le client |
+| Rebuts | Ce qui a été mis au rebut |
+| Production | Ce que l'usine a déclaré produire |
+| Conso. théorique | Ce que les nomenclatures disent avoir été consommé |
+
+Elles étant sur la même ligne, la lecture est **tout ou rien** : ou bien les
+cinq sont écrites ensemble, ou bien elle échoue et le message dit pourquoi, les
+quantités précédentes restant alors intactes. Chaque mesure garde son propre
+bouton pour la recharger seule, et le chargement par fichier ou par collage
+reste disponible pour les réceptions, les expéditions et les rebuts.
+
+Seules les références **du référentiel de la campagne et non exclues du
+périmètre** sont retenues ; le message de lecture indique combien de lignes ont
+été écartées à ce titre.
+
+**Les sous-sections** — Réceptions, Production & conso., Expéditions, Rebuts —
+montrent chaque mesure ligne par ligne, dans une grille filtrable, exportable et
+**éditable**. Un stock attendu qui dérape se débogue par la ligne, et corriger
+une quantité repérée ne doit pas obliger à reconstruire tout un export.
+
+Deux règles y valent d'être connues :
+
+- **enregistrer remplace l'étape** : une ligne supprimée à l'écran disparaît, ce
+  qui est le seul moyen pour la grille d'exprimer une suppression ;
+- la colonne **Provenance** dit d'où vient chaque quantité — *lu dans l'ERP*,
+  *chargé par fichier* ou *saisi à la main*. Enregistrer une grille marque toute
+  l'étape comme saisie : une main y est passée et l'a validée.
+
+**Quels stocks sont comparés** se choisit ensuite, et se change à tout moment :
+
+| Paire | Ce qu'elle répond |
+|---|---|
+| Physique → Physique | Ce que l'usine a réellement perdu ou gagné. |
+| ERP → ERP | Ce que le système croit avoir perdu. |
+| ERP → Physique | L'écart accumulé depuis le solde ERP de départ. |
+| Physique → ERP | Ce que l'ERP n'a pas suivi. |
+
+« Physique » veut dire **compté, ajustements compris** — la même définition que
+partout ailleurs. Basculer d'une paire à l'autre ne recharge rien : les
+quantités saisies et l'instantané ERP gelé sont les mêmes dans les quatre cas.
+
+Un article présent dans une seule des deux campagnes n'est pas un zéro : ces
+lignes sont sorties des totaux et regroupées derrière la pastille **Présents
+d'un seul côté**.
 
 ---
 
@@ -568,6 +879,22 @@ montre est, par construction, ce qui s'est passé.
 
 L'onglet **Historique des imports** conserve la provenance de chaque chargement :
 fichier, empreinte, volumes acceptés et rejetés.
+
+### Retrouver le fichier d'origine
+
+Le nom du fichier y est **cliquable** quand l'original a été conservé : il se
+retélécharge tel qu'il a été reçu, avant toute interprétation. C'est ce qui
+permet de rejouer un chargement contesté — les lignes en base sont le résultat
+d'une lecture, le fichier en est la source.
+
+Un nom affiché en texte simple signifie qu'il n'y a pas de pièce. Trois cas :
+un collage, dont le texte est déjà dans les lignes chargées ; une lecture ERP,
+qui se rejoue par sa requête ; ou une campagne antérieure à la mise en service
+de l'archive.
+
+De la même façon, une feuille lue par l'IA garde **son scan**. Une quantité
+extraite d'une image se défend en montrant l'image, et c'est la pile entière
+qui est conservée quand plusieurs feuilles ont été scannées d'un coup.
 
 ---
 

@@ -18,6 +18,7 @@ from inventory.ai.sheet_extraction import (
     ExtractionResult,
     SheetCandidate,
     SheetExtractor,
+    _routing_tokens,
 )
 from inventory.errors import ValidationError
 
@@ -39,11 +40,19 @@ class _FakeClient:
         return self.payload, LlmResponse(text="", prompt_tokens=1, completion_tokens=1)
 
 
-def route(payload: dict[str, Any], pages: int = 2, candidates=CANDIDATES):
+def route(
+    payload: dict[str, Any],
+    pages: int = 2,
+    candidates=CANDIDATES,
+    batch_size: int = 12,
+):
     client = _FakeClient(payload)
     extractor = SheetExtractor(client=client)
     routing = extractor.route_pages(
-        images=[b"page"] * pages, candidates=candidates
+        footers=[b"bande"] * pages,
+        candidates=candidates,
+        batch_size=batch_size,
+        max_workers=1,
     )
     return routing, client
 
@@ -61,13 +70,17 @@ class TestRouting:
         assert routing.unrouted == []
 
     def test_several_pages_of_one_sheet_stay_in_reading_order(self):
+        """Le modèle a répondu dans le désordre ; les pages, non.
+
+        Une feuille sur deux pages dont la liste d'articles continue au verso,
+        envoyée à l'extraction verso d'abord, se lit à l'envers. Rien ne le
+        signale : le modèle rend des lignes plausibles, dans le mauvais ordre.
+        """
         routing, _ = route({"pages": [
             {"page": 2, "sheet": "aaaaaaaa"},
             {"page": 1, "sheet": "aaaaaaaa"},
         ]})
-        # The model answered out of order; the pages are still fed to the
-        # extractor in the order they were scanned.
-        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == [1, 0]
+        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == [0, 1]
 
     def test_the_candidate_list_is_what_the_model_is_shown(self):
         _, client = route({"pages": []})
@@ -84,7 +97,7 @@ class TestRefusalToGuess:
         ]})
         assert routing.pages_by_sheet == {"bbbbbbbb-3333-4444": [1]}
         assert routing.unrouted[0]["page"] == 1
-        assert routing.unrouted[0]["read"] == "aaaaaaab"
+        assert "aaaaaaab" in routing.unrouted[0]["read"]
 
     def test_a_null_identifier_is_reported(self):
         routing, _ = route({"pages": [
@@ -142,10 +155,287 @@ class TestPreconditions:
     def test_no_pages_is_refused(self):
         extractor = SheetExtractor(client=_FakeClient({}))
         with pytest.raises(ValidationError):
-            extractor.route_pages(images=[], candidates=CANDIDATES)
+            extractor.route_pages(footers=[], candidates=CANDIDATES)
 
     def test_no_candidate_sheet_is_refused(self):
         """With nothing to route to, the model would have to invent a target."""
         extractor = SheetExtractor(client=_FakeClient({}))
         with pytest.raises(ValidationError, match="Aucune feuille"):
-            extractor.route_pages(images=[b"page"], candidates=[])
+            extractor.route_pages(footers=[b"bande"], candidates=[])
+
+
+class _BatchClient:
+    """Répond par lot, et note ce que chaque appel portait.
+
+    Le routage d'une pile de cent pages est découpé : cette doublure sert à
+    vérifier que le découpage rend les mêmes numéros de page qu'un appel
+    unique — c'est là que le décalage d'un lot se voit, ou pas.
+    """
+
+    def __init__(self, per_batch: list[dict[str, Any]] | None = None) -> None:
+        self.per_batch = per_batch or []
+        self.calls: list[int] = []
+        self.prompts: list[str] = []
+        #: Le plafond de jetons demandé par appel — c'est lui qui a coupé les
+        #: réponses en production, et il ne se voit nulle part ailleurs.
+        self.ceilings: list[int] = []
+
+    def complete_json(self, *, system: str, user: str, images=(), **kwargs: Any):
+        index = len(self.calls)
+        self.calls.append(len(images))
+        self.prompts.append(user)
+        self.ceilings.append(kwargs.get("max_tokens", 0))
+        payload = (
+            self.per_batch[index] if index < len(self.per_batch)
+            else {"pages": [
+                {"page": n + 1, "sheet": "aaaaaaaa"} for n in range(len(images))
+            ]}
+        )
+        return payload, LlmResponse(text="", prompt_tokens=1, completion_tokens=1)
+
+
+class _FailingBatchClient(_BatchClient):
+    """Le deuxième lot échoue ; les autres aboutissent."""
+
+    def complete_json(self, **kwargs: Any):
+        index = len(self.calls)
+        if index == 1:
+            self.calls.append(len(kwargs.get("images") or ()))
+            raise RuntimeError("endpoint saturé")
+        return super().complete_json(**kwargs)
+
+
+class _PoisonPageClient(_BatchClient):
+    """Un appel qui porte la bande empoisonnée échoue, toujours.
+
+    C'est le cas dont on ne se relève pas en recoupant : quelque chose dans
+    cette page-là fait dérailler le modèle. Le découpage doit alors isoler
+    cette page et **elle seule**.
+    """
+
+    POISON = b"POISON"
+
+    def complete_json(self, **kwargs: Any):
+        images = list(kwargs.get("images") or ())
+        if self.POISON in images:
+            self.calls.append(len(images))
+            raise RuntimeError("bande illisible")
+        return super().complete_json(**kwargs)
+
+
+class TestBatching:
+    """Une pile de cent pages ne tient pas dans un appel.
+
+    Un appel unique portant toutes les pages est une charge utile que l'endpoint
+    refuse bien avant que le modèle ait un problème de lecture — et une réponse
+    tronquée y perdait le routage de la pile entière.
+    """
+
+    def test_the_pages_are_split_into_batches(self):
+        client = _BatchClient()
+        SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 25, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
+        )
+        assert client.calls == [10, 10, 5]
+
+    def test_a_batch_numbers_its_pages_from_the_stack_not_from_itself(self):
+        """Le décalage du lot : sans lui, les pages 11 à 20 s'écrivent 1 à 10."""
+        client = _BatchClient()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 25, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
+        )
+        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == list(range(25))
+        assert routing.unrouted == []
+
+    def test_a_failed_batch_is_cut_in_two_and_retried(self):
+        """Dix pages nettes ne se perdent pas sur un appel qui a mal tourné.
+
+        C'est ce qui s'est produit en production : six lots de douze revenus en
+        erreur, soixante-douze pages déclarées non attribuées alors que leurs
+        pieds de page étaient parfaitement lisibles. La cause de l'échec est
+        rarement dans les pages ; la moitié redemandée passe.
+        """
+        client = _FailingBatchClient()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 25, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
+        )
+        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == list(range(25))
+        assert routing.unrouted == []
+        # Le lot de dix perdu revient en deux appels de cinq, dans l'ordre.
+        assert client.calls == [10, 10, 5, 5, 5]
+
+    def test_only_the_page_that_keeps_failing_is_lost(self):
+        """Le découpage s'arrête à la page seule, et ne perd qu'elle."""
+        footers = [b"b"] * 25
+        footers[12] = _PoisonPageClient.POISON
+        client = _PoisonPageClient()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=footers, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
+        )
+        assert [u["page"] for u in routing.unrouted] == [13]
+        assert "illisible" in routing.unrouted[0]["note"]
+        expected = [n for n in range(25) if n != 12]
+        assert routing.pages_by_sheet["aaaaaaaa-1111-2222"] == expected
+
+    def test_the_cutting_terminates_when_every_call_fails(self):
+        """Une panne totale rend la pile entière, sans boucler."""
+        class _Down(_BatchClient):
+            def complete_json(self, **kwargs: Any):
+                self.calls.append(len(kwargs.get("images") or ()))
+                raise RuntimeError("endpoint indisponible")
+
+        client = _Down()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 8, candidates=CANDIDATES,
+            batch_size=8, max_workers=1,
+        )
+        assert [u["page"] for u in routing.unrouted] == list(range(1, 9))
+        assert routing.pages_by_sheet == {}
+
+    def test_the_tokens_of_every_batch_are_counted(self):
+        client = _BatchClient()
+        routing = SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 25, candidates=CANDIDATES,
+            batch_size=10, max_workers=1,
+        )
+        assert routing.tokens_used == 6  # trois lots × (1 + 1)
+
+
+class TestTheCodeMatchesNotTheModel:
+    """Rapprocher est le travail du programme, pas celui du modèle.
+
+    Le prompt lui demandait de ne rendre qu'un identifiant « présent dans la
+    liste fournie » — une recherche, alors qu'il est là pour lire. Il s'y est
+    contredit en production : une bande parfaitement lisible est revenue avec
+    l'identifiant correct recopié dans sa *note* et ``null`` dans le champ, et
+    la page est tombée en non attribuée alors que rien, sur le papier, ne
+    clochait.
+
+    Le pied de page imprime **deux** identités — le jeton, et le couple zone +
+    comptage. Le modèle recopie les deux, le programme cherche.
+    """
+
+    def test_the_token_alone_routes_the_page(self):
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": "aaaaaaaa", "zone": None, "pass": None},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {"aaaaaaaa-1111-2222": [0]}
+
+    def test_the_zone_and_pass_alone_route_it_too(self):
+        """Le cas signalé : le modèle a lu la ligne mais rendu null au jeton."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": None, "zone": "FI ASSY", "pass": 1,
+             "note": "Lu « zone FI ASSY · comptage n°1 · feuille aaaaaaaa »"},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {"aaaaaaaa-1111-2222": [0]}
+        assert routing.unrouted == []
+
+    def test_a_misread_token_is_rescued_by_the_zone(self):
+        """Un « O » lu pour un « 0 » ne doit pas coûter une page."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": "aaaaaaaO", "zone": "FI ASSY", "pass": 1},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {"aaaaaaaa-1111-2222": [0]}
+
+    def test_the_zone_is_matched_regardless_of_case_and_spacing(self):
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": None, "zone": "  fi   assy ", "pass": 1},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {"aaaaaaaa-1111-2222": [0]}
+
+    def test_two_readings_that_disagree_are_not_arbitrated(self):
+        """L'une des deux est fausse, et rien ici ne dit laquelle."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": "bbbbbbbb", "zone": "FI ASSY", "pass": 1},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {}
+        assert "contradictoires" in routing.unrouted[0]["note"]
+
+    def test_a_zone_without_a_pass_is_not_enough(self):
+        """Une zone a deux feuilles : sans le n° de comptage, on ne tranche pas."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": None, "zone": "FI ASSY", "pass": None},
+        ]}, pages=1)
+        assert routing.pages_by_sheet == {}
+
+    def test_an_unreadable_band_still_says_so(self):
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": None, "zone": None, "pass": None},
+        ]}, pages=1)
+        assert routing.unrouted[0]["note"] == "Pied de page illisible."
+
+    def test_what_was_read_is_reported(self):
+        """« Pied de page illisible » ne distingue pas une bande abîmée d'une
+        bande lisible que le programme n'a pas su rapprocher."""
+        routing, _ = route({"pages": [
+            {"page": 1, "sheet": "zzzzzzzz", "zone": "ZONE INCONNUE", "pass": 2},
+        ]}, pages=1)
+        read = routing.unrouted[0]["read"]
+        assert "zzzzzzzz" in read and "ZONE INCONNUE" in read and "2" in read
+
+
+class TestTheRoutingPromptAsksForATranscription:
+    def test_it_asks_for_the_three_printed_fields(self):
+        _, client = route({"pages": []})
+        for field in ('"sheet"', '"zone"', '"pass"'):
+            assert field in client.prompts[0]
+
+    def test_it_does_not_ask_the_model_to_check_the_list(self):
+        """C'est la consigne qui a produit la contradiction en production."""
+        _, client = route({"pages": []})
+        assert "aucune" in client.prompts[0].lower()
+
+
+class TestTheAnswerFitsItsCeiling:
+    """Ce qu'on demande d'écrire et ce qu'on autorise à écrire vont ensemble.
+
+    Le routage demandait au modèle, pour chaque page, de recopier la ligne
+    entière du pied de page et d'y ajouter un indice de confiance — deux champs
+    que le rapprochement n'utilise pas. Le plafond, lui, était resté calibré sur
+    une réponse plus courte, et plafonnait en plus à 4096 jetons. Résultat en
+    production : les lots de douze revenaient coupés, et douze pages parfaitement
+    lisibles tombaient en « non attribuées » par appel.
+    """
+
+    def test_the_ceiling_follows_the_size_of_the_batch(self):
+        assert (_routing_tokens(24) - _routing_tokens(12)
+                == _routing_tokens(12) - _routing_tokens(0))
+
+    def test_no_cap_truncates_a_legitimate_batch(self):
+        """Un plafond fixe redevient trop court dès qu'on agrandit le lot."""
+        assert _routing_tokens(100) > _routing_tokens(50) > _routing_tokens(12)
+
+    def test_the_budget_covers_a_long_accented_zone_name(self):
+        """Le pire cas réel : « ZONE INTÉRIEUR MÉTROLOGIE », qui se découpe mal.
+
+        Un caractère accentué compte souvent pour un jeton à lui seul ; compter
+        en caractères ÷ 4, comme pour de l'anglais, est précisément l'erreur qui
+        a produit la troncature.
+        """
+        line = ('{"page":12,"sheet":"e14f9b93",'
+                '"zone":"ZONE INTÉRIEUR MÉTROLOGIE","pass":1},')
+        worst_case = len(line)  # un jeton par caractère : la borne haute
+        assert _routing_tokens(12) > worst_case * 12
+
+    def test_the_prompt_asks_for_three_fields_and_no_prose(self):
+        client = _BatchClient()
+        SheetExtractor(client=client).route_pages(
+            footers=[b"b"], candidates=CANDIDATES, batch_size=1, max_workers=1,
+        )
+        prompt = client.prompts[0]
+        for field in ('"page"', '"sheet"', '"zone"', '"pass"'):
+            assert field in prompt
+        # Les deux champs qui faisaient déborder la réponse, pour rien.
+        assert '"note"' not in prompt
+        assert '"confidence"' not in prompt
+
+    def test_the_ceiling_sent_to_the_model_matches_the_batch(self):
+        client = _BatchClient()
+        SheetExtractor(client=client).route_pages(
+            footers=[b"b"] * 12, candidates=CANDIDATES, batch_size=12, max_workers=1,
+        )
+        assert client.ceilings == [_routing_tokens(12)]

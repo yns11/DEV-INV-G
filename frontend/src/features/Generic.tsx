@@ -5,69 +5,98 @@
  * Power Query chain and the copy/paste into the ERP.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { api, downloads } from '../lib/api'
+import { api } from '../lib/api'
 import { useSubSection } from '../lib/subsection'
 import type {
   Arbitration,
   ConsolidationLine,
+  Finding,
   MultiScanReport,
   Overview,
+  ScanJob,
+  SheetScanReport,
   PrintMode,
   Sheet,
-  SheetStatus,
+  ZoneStatus,
   Zone,
 } from '../lib/types'
-import { PRINT_MODE_LABELS } from '../lib/types'
 import {
   SECTION_HINTS,
   SECTION_LABELS,
-  SHEET_STATUS_LABELS,
+  SOURCE_LABELS,
   ZONE_STATUS_LABELS,
   moneyShort,
-  numShort,
+  qty,
   percent,
   signedNum,
   label as toLabel,
 } from '../lib/format'
 import { CompositionBar } from '../components/charts'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
+import { BreakdownModal, DrillCell, type BreakdownAspect } from '../components/BreakdownModal'
+import { PrintModal } from '../components/PrintModal'
+import { SubSectionTabs } from '../components/SubSectionTabs'
 import { parseSheetLines } from '../lib/pasteSheetLines'
 import { useFocusMode } from '../lib/focus'
 import { CreateZoneModal } from './zones'
 import {
-  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Field, Icons, Modal, Skeleton, Switch, useDownload, useErrorToast, useToast,
+  Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Progress,
+  Skeleton, useErrorToast, useToast,
 } from '../components/ui'
 
 type Tab = 'zones' | 'arbitration' | 'consolidation'
 
 const ZONE_TONE: Record<string, string> = {
   PENDING: 'neutral',
-  PASS_1_RUNNING: 'accent',
-  PASS_2_RUNNING: 'accent',
-  ARBITRATION: 'warning',
-  DONE: 'success',
-}
-
-const SHEET_TONE: Record<SheetStatus, string> = {
-  PENDING: 'neutral',
-  COUNTING: 'accent',
-  ENCODING: 'warning',
+  IN_PROGRESS: 'accent',
   DONE: 'success',
 }
 
 const TABS: Tab[] = ['zones', 'arbitration', 'consolidation']
 
+/**
+ * Les trois états d'une zone, dans l'ordre du déroulement.
+ *
+ * Il y en avait six, calculés à partir du statut des deux feuilles — 1er
+ * comptage en cours, 1er encodage en cours, 2ème comptage, 2ème encodage,
+ * arbitrage requis, terminé — et six pastilles à parcourir pour savoir où en
+ * était une campagne de quarante zones. Deux de ces six ne se distinguaient
+ * que par un bouton que quelqu'un avait pensé à cliquer.
+ */
+const ZONE_STAGES: Array<{ id: ZoneStatus; label: string; hint: string }> = [
+  {
+    id: 'PENDING',
+    label: 'À compter',
+    hint: 'Aucune quantité relevée dans cette zone.',
+  },
+  {
+    id: 'IN_PROGRESS',
+    label: 'En cours',
+    hint: 'Des quantités sont saisies ; la zone n’est pas déclarée terminée.',
+  },
+  {
+    id: 'DONE',
+    label: 'Terminée',
+    hint: 'Déclarée finie : elle entre dans la consolidation.',
+  },
+]
+
 export function Generic() {
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
-  // The sidebar draws this level, so the screen only reads it.
-  const [tab] = useSubSection<Tab>('zones', TABS)
+  const [tab, setTab] = useSubSection<Tab>('zones', TABS)
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
+      <SubSectionTabs
+        section="compil"
+        overview={overview}
+        value={tab}
+        onChange={setTab}
+      />
       {tab === 'zones' && <ZonesTab campaignId={campaignId} overview={overview} />}
       {tab === 'arbitration' && <ArbitrationTab campaignId={campaignId} overview={overview} />}
       {tab === 'consolidation' && (
@@ -91,6 +120,18 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   const [multiScan, setMultiScan] = useState<File | null>(null)
   const [scanning, setScanning] = useState(false)
   const [openSheet, setOpenSheet] = useState<{ zone: Zone; sheet: Sheet } | null>(null)
+  const [stage, setStage] = useState<ZoneStatus | ''>('')
+  const [display, setDisplay] = useState<ZoneDisplay>(readZoneDisplay)
+
+  const chooseDisplay = (next: ZoneDisplay) => {
+    setDisplay(next)
+    try {
+      window.localStorage.setItem(ZONE_DISPLAY_KEY, next)
+    } catch {
+      // Navigation privée ou stockage plein : le choix vaut pour la session,
+      // ce qui reste mieux que de refuser de l'appliquer.
+    }
+  }
 
   const [focus] = useFocusMode()
   // A zone created here needs its manager straight away: with the focus switch
@@ -121,17 +162,37 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
     return { modes, counts }
   }, [query.data])
 
-  const transition = useMutation({
-    mutationFn: ({ sheetId, target, counterName }: {
-      sheetId: string
-      target: SheetStatus
-      counterName?: string
-    }) => api.transitionSheet(campaignId, sheetId, target, counterName),
-    onSuccess: () => {
+  // Combien de zones par étape, et lesquelles sont à l'écran. Les deux se
+  // calculent d'un coup : une pilule qui annoncerait un nombre différent de ce
+  // qu'elle affiche une fois cliquée serait pire que pas de pilule du tout.
+  const { byStage, visible } = useMemo(() => {
+    const zones = query.data ?? []
+    const tally = {} as Record<ZoneStatus, number>
+    for (const zone of zones) {
+      tally[zone.status] = (tally[zone.status] ?? 0) + 1
+    }
+    return {
+      byStage: tally,
+      visible: stage === '' ? zones : zones.filter((z) => z.status === stage),
+    }
+  }, [query.data, stage])
+
+  // La seule décision d'état du parcours. Elle a remplacé quatre transitions
+  // par feuille, qu'il fallait faire avancer à la main sans qu'aucune écriture
+  // n'en dépende.
+  const closure = useMutation({
+    mutationFn: ({ zoneId, closed }: { zoneId: string; closed: boolean }) =>
+      api.setZoneClosed(campaignId, zoneId, closed),
+    onSuccess: (_result, { closed }) => {
       void queryClient.invalidateQueries()
-      toast.success('Statut de la feuille mis à jour')
+      toast.success(
+        closed ? 'Zone terminée' : 'Zone rouverte',
+        closed
+          ? 'Elle entre dans la consolidation.'
+          : 'Les quantités redeviennent modifiables.',
+      )
     },
-    onError: (error) => showError(error, 'Transition impossible'),
+    onError: (error) => showError(error, 'Changement impossible'),
   })
 
   const editable = overview.permissions.countSheets
@@ -191,107 +252,219 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
         }
       >
         {(zones) => (
-          <div className="grid grid--2">
-            {zones.map((zone) => (
-              <Card
-                key={zone.id}
-                title={
-                  <span className="row" style={{ gap: 'var(--space-3)' }}>
-                    <span className="truncate">{zone.label || zone.code}</span>
-                    <Badge tone={ZONE_TONE[zone.status] ?? 'neutral'} dot>
-                      {toLabel(ZONE_STATUS_LABELS, zone.status)}
-                    </Badge>
-                    {zone.passes === 1 && (
-                      <Badge tone="warning" title="Un seul comptage : aucun arbitrage possible">
-                        comptage unique
-                      </Badge>
-                    )}
-                    {zone.free_entry && (
-                      <Badge tone="info" title="Feuille volontairement vide : le compteur écrit ce qu’il trouve">
-                        saisie libre
-                      </Badge>
-                    )}
-                  </span>
-                }
-                message={zone.sector || undefined}
+          <div className="stack">
+            <div className="chips">
+              <button
+                className={`chip${stage === '' ? ' chip--active' : ''}`}
+                onClick={() => setStage('')}
               >
-                <div className="stack" style={{ gap: 'var(--space-3)' }}>
-                  {zone.sheets.map((sheet) => (
-                    <div
-                      key={sheet.id}
-                      className="row-wrap"
-                      style={{
-                        padding: 'var(--space-3)',
-                        background: 'var(--bg-inset)',
-                        borderRadius: 'var(--radius-md)',
-                      }}
-                    >
-                      <strong style={{ fontSize: 'var(--text-sm)', minWidth: 90 }}>
-                        Comptage n°{sheet.pass_no === 'PASS_1' ? 1 : 2}
-                      </strong>
-                      <Badge tone={SHEET_TONE[sheet.status]}>
-                        {toLabel(SHEET_STATUS_LABELS, sheet.status)}
-                      </Badge>
-                      <span className="subtle num">
-                        {sheet.countedLines} / {sheet.lineCount} lignes comptées
-                      </span>
-                      {sheet.counter_name && (
-                        <span className="subtle">· {sheet.counter_name}</span>
-                      )}
-                      {sheet.extraction_confidence !== null && (
-                        <Badge tone={sheet.extraction_confidence < 0.75 ? 'danger' : 'neutral'}>
-                          IA {percent(sheet.extraction_confidence)}
-                        </Badge>
-                      )}
-                      {sheet.correctedLines > 0 && (
-                        <Badge
-                          tone="success"
-                          title="Un scan multi-feuilles préservera cette feuille plutôt que d’écraser ces corrections."
-                        >
-                          {sheet.correctedLines} corrigée(s) à la main
-                        </Badge>
-                      )}
-                      <span className="spacer" />
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        icon={<Icons.printer size={13} />}
-                        onClick={() => setPrintSheet({ sheetId: sheet.id, zone })}
-                        aria-label="Imprimer"
-                        title="Imprimer cette feuille — vierge ou remplie"
-                      />
-                      <Button
-                        size="sm"
-                        onClick={() => setOpenSheet({ zone, sheet })}
+                Tous <span className="num">{zones.length}</span>
+              </button>
+              {ZONE_STAGES.map(({ id, label, hint }) => (
+                <button
+                  key={id}
+                  className={`chip${stage === id ? ' chip--active' : ''}`}
+                  title={hint}
+                  onClick={() => setStage(stage === id ? '' : id)}
+                >
+                  {label} <span className="num">{byStage[id] ?? 0}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="row-wrap">
+              <span className="subtle num">
+                {visible.length} / {zones.length} zone(s)
+              </span>
+              <span className="spacer" />
+              <div className="row" style={{ gap: 0 }}>
+                <Button
+                  variant={display === 'cards' ? 'primary' : 'ghost'}
+                  size="sm"
+                  icon={<Icons.dashboard size={14} />}
+                  title="Affichage en icônes"
+                  onClick={() => chooseDisplay('cards')}
+                >
+                  Icônes
+                </Button>
+                <Button
+                  variant={display === 'list' ? 'primary' : 'ghost'}
+                  size="sm"
+                  icon={<Icons.grid size={14} />}
+                  title="Affichage en liste — triable, filtrable, exportable"
+                  onClick={() => chooseDisplay('list')}
+                >
+                  Liste
+                </Button>
+              </div>
+            </div>
+
+            {visible.length === 0 ? (
+              <Card>
+                <EmptyState
+                  title="Aucune zone à cette étape"
+                  action={
+                    <Button variant="ghost" onClick={() => setStage('')}>
+                      Voir toutes les zones
+                    </Button>
+                  }
+                />
+              </Card>
+            ) : display === 'list' ? (
+              <ZoneTable
+                zones={visible}
+                editable={editable}
+                busy={closure.isPending}
+                onOpen={setOpenSheet}
+                onPrint={setPrintSheet}
+                onClose={(zoneId, closed) => closure.mutate({ zoneId, closed })}
+              />
+            ) : (
+              <div className="grid grid--2">
+                {visible.map((zone) => (
+                  <Card
+                    key={zone.id}
+                    title={
+                      // Le nom d'abord : trois badges à côté d'un titre non
+                      // prioritaire réduisaient « Zone MÉTROLOGIE » à « Z.. ».
+                      <span
+                        className="row-wrap"
+                        style={{ gap: 'var(--space-2)', rowGap: 'var(--space-1)' }}
                       >
-                        Ouvrir
-                      </Button>
-                      {editable && NEXT_SHEET_STATUS[sheet.status] && (
-                        <Button
-                          size="sm"
-                          variant="primary"
-                          disabled={transition.isPending}
-                          onClick={() =>
-                            transition.mutate({
-                              sheetId: sheet.id,
-                              target: NEXT_SHEET_STATUS[sheet.status]!,
-                            })
-                          }
+                        <span className="truncate" style={{ minWidth: '8ch', flex: '1 1 auto' }}>
+                          {zone.label || zone.code}
+                        </span>
+                        <Badge tone={ZONE_TONE[zone.status] ?? 'neutral'} dot>
+                          {toLabel(ZONE_STATUS_LABELS, zone.status)}
+                        </Badge>
+                        {zone.passes === 1 && (
+                          <Badge tone="warning" title="Un seul comptage : aucun arbitrage possible">
+                            comptage unique
+                          </Badge>
+                        )}
+                        {zone.free_entry && (
+                          <Badge tone="info" title="Feuille volontairement vide : le compteur écrit ce qu’il trouve">
+                            saisie libre
+                          </Badge>
+                        )}
+                      </span>
+                    }
+                    message={zone.sector || undefined}
+                  >
+                    <div className="stack" style={{ gap: 'var(--space-3)' }}>
+                      {/* Une feuille tient sur une ligne : son numéro, ce
+                          qu'elle porte, et deux boutons. Elle affichait aussi
+                          son propre statut et le bouton qui le faisait avancer,
+                          ce qui la mettait sur deux lignes pour une donnée que
+                          personne ne lisait. */}
+                      {zone.sheets.map((sheet) => (
+                        <div
+                          key={sheet.id}
+                          className="row"
+                          style={{
+                            padding: 'var(--space-2) var(--space-3)',
+                            background: 'var(--bg-inset)',
+                            borderRadius: 'var(--radius-md)',
+                            gap: 'var(--space-2)',
+                          }}
                         >
-                          {NEXT_SHEET_LABEL[sheet.status]}
-                        </Button>
+                          <strong
+                            className="truncate"
+                            style={{ fontSize: 'var(--text-sm)', minWidth: 92 }}
+                          >
+                            Comptage n°{sheet.pass_no === 'PASS_1' ? 1 : 2}
+                          </strong>
+                          <span className="subtle num">
+                            {sheet.countedLines} / {sheet.lineCount} lignes
+                          </span>
+                          {sheet.counter_name && (
+                            <span className="subtle truncate">· {sheet.counter_name}</span>
+                          )}
+                          {sheet.extraction_confidence !== null && (
+                            <Badge tone={sheet.extraction_confidence < 0.75 ? 'danger' : 'neutral'}>
+                              IA {percent(sheet.extraction_confidence)}
+                            </Badge>
+                          )}
+                          {sheet.correctedLines > 0 && (
+                            <Badge
+                              tone="success"
+                              title="Un scan multi-feuilles préservera cette feuille plutôt que d’écraser ces corrections."
+                            >
+                              {sheet.correctedLines} corrigée(s)
+                            </Badge>
+                          )}
+                          <span className="spacer" />
+                          {/* Toujours actif pendant le comptage. Il l'était
+                              auparavant au seul état « encodage en cours », ce
+                              qui obligeait à cliquer deux boutons avant de
+                              pouvoir saisir la première quantité. */}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon={<Icons.pencil size={13} />}
+                            disabled={!editable}
+                            onClick={() => setOpenSheet({ zone, sheet })}
+                            aria-label="Ouvrir la feuille"
+                            title={
+                              editable
+                                ? 'Ouvrir la feuille pour saisir ou scanner'
+                                : 'Les quantités ne sont modifiables qu’en phase Comptage'
+                            }
+                          />
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon={<Icons.printer size={13} />}
+                            onClick={() => setPrintSheet({ sheetId: sheet.id, zone })}
+                            aria-label="Imprimer"
+                            title="Imprimer cette feuille — vierge ou remplie"
+                          />
+                        </div>
+                      ))}
+                      {zone.pendingArbitrations > 0 && (
+                        <Alert tone="warning" title={`${zone.pendingArbitrations} écart(s) à arbitrer`}>
+                          La consolidation reste bloquée tant qu’une quantité n’est pas
+                          retenue.
+                        </Alert>
+                      )}
+                      {/* La seule décision d'état du parcours, et elle porte
+                          sur la zone. Rouvrir ne se refuse jamais : c'est le
+                          geste qui répare une clôture trop rapide. */}
+                      {editable && (
+                        <div className="row">
+                          <span className="spacer" />
+                          <Button
+                            size="sm"
+                            variant={zone.status === 'DONE' ? 'ghost' : 'primary'}
+                            icon={
+                              zone.status === 'DONE' ? (
+                                <Icons.undo size={13} />
+                              ) : (
+                                <Icons.check size={13} />
+                              )
+                            }
+                            disabled={closure.isPending}
+                            onClick={() =>
+                              closure.mutate({
+                                zoneId: zone.id,
+                                closed: zone.status !== 'DONE',
+                              })
+                            }
+                            title={
+                              zone.status === 'DONE'
+                                ? 'Rouvrir cette zone pour corriger une quantité'
+                                : 'Déclarer cette zone terminée : elle entre dans la consolidation'
+                            }
+                          >
+                            {zone.status === 'DONE' ? 'Rouvrir' : 'Terminer la zone'}
+                          </Button>
+                        </div>
                       )}
                     </div>
-                  ))}
-                  {zone.pendingArbitrations > 0 && (
-                    <Alert tone="warning" title={`${zone.pendingArbitrations} écart(s) à arbitrer`}>
-                      La consolidation reste bloquée tant qu’une quantité n’est pas
-                      retenue.
-                    </Alert>
-                  )}
-                </div>
-              </Card>
-            ))}
+                  </Card>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </AsyncBoundary>
@@ -341,18 +514,230 @@ function ZonesTab({ campaignId, overview }: { campaignId: string; overview: Over
   )
 }
 
-const NEXT_SHEET_STATUS: Partial<Record<SheetStatus, SheetStatus>> = {
-  PENDING: 'COUNTING',
-  COUNTING: 'ENCODING',
-  ENCODING: 'DONE',
+/**
+ * Cartes ou lignes — le même choix que sur « Toutes les campagnes ».
+ *
+ * Les deux lectures sont légitimes et aucune ne gagne en général : la carte
+ * porte les feuilles d'une zone côte à côte et se lit bien à dix zones, la
+ * grille trie, filtre et totalise et tient encore à quatre-vingts. Le choix est
+ * donc celui de l'utilisateur, et il est retenu — une préférence d'affichage
+ * qui se réinitialise à chaque visite est une préférence que l'application fait
+ * redire au lieu de la tenir.
+ *
+ * **Une ligne par feuille, pas par zone.** C'est la feuille qui porte un état,
+ * un compteur et une action ; une ligne de zone devrait dédoubler chaque
+ * colonne ou renvoyer aux cartes pour agir, ce qui retirerait à la grille son
+ * intérêt. La colonne « Zone » les regroupe, et le tri par zone rend la lecture
+ * par zone.
+ */
+type ZoneDisplay = 'cards' | 'list'
+
+const ZONE_DISPLAY_KEY = 'campagnes-inventaire.zones.display'
+
+function readZoneDisplay(): ZoneDisplay {
+  try {
+    return window.localStorage.getItem(ZONE_DISPLAY_KEY) === 'list' ? 'list' : 'cards'
+  } catch {
+    return 'cards'
+  }
 }
 
-const NEXT_SHEET_LABEL: Partial<Record<SheetStatus, string>> = {
-  PENDING: 'Remettre au compteur',
-  COUNTING: 'Feuille rendue',
-  ENCODING: 'Terminer l’encodage',
+/** Une feuille et la zone qui la porte, mises à plat pour la grille. */
+interface SheetRow extends Record<string, unknown> {
+  id: string
+  zone: Zone
+  sheet: Sheet
 }
 
+function ZoneTable({
+  zones,
+  editable,
+  busy,
+  onOpen,
+  onPrint,
+  onClose,
+}: {
+  zones: Zone[]
+  editable: boolean
+  busy: boolean
+  onOpen: (row: { zone: Zone; sheet: Sheet }) => void
+  onPrint: (row: { sheetId: string; zone: Zone }) => void
+  onClose: (zoneId: string, closed: boolean) => void
+}) {
+  const rows: SheetRow[] = zones.flatMap((zone) =>
+    zone.sheets.map((sheet) => ({ id: sheet.id, zone, sheet })),
+  )
+
+  const columns: Column<SheetRow>[] = [
+    {
+      key: 'zone',
+      label: 'Zone',
+      width: 200,
+      render: (row) => (
+        <span className="truncate" title={row.zone.code}>
+          {row.zone.label || row.zone.code}
+        </span>
+      ),
+      value: (row) => row.zone.label || row.zone.code,
+    },
+    {
+      key: 'sector',
+      label: 'Secteur',
+      width: 130,
+      filter: 'choice',
+      value: (row) => row.zone.sector || '',
+    },
+    {
+      key: 'zoneStatus',
+      label: 'État de la zone',
+      width: 150,
+      filter: 'choice',
+      choiceLabel: (value) => toLabel(ZONE_STATUS_LABELS, value),
+      render: (row) => (
+        <Badge tone={ZONE_TONE[row.zone.status] ?? 'neutral'} dot>
+          {toLabel(ZONE_STATUS_LABELS, row.zone.status)}
+        </Badge>
+      ),
+      value: (row) => row.zone.status,
+    },
+    {
+      key: 'pass',
+      label: 'Comptage',
+      width: 110,
+      filter: 'choice',
+      value: (row) => (row.sheet.pass_no === 'PASS_1' ? 'n°1' : 'n°2'),
+    },
+    {
+      key: 'countedLines',
+      label: 'Lignes comptées',
+      numeric: true,
+      width: 150,
+      render: (row) => (
+        <span className="num">
+          {row.sheet.countedLines} / {row.sheet.lineCount}
+        </span>
+      ),
+      value: (row) => row.sheet.countedLines,
+    },
+    {
+      key: 'counter',
+      label: 'Compteur',
+      width: 150,
+      value: (row) => row.sheet.counter_name || '',
+    },
+    {
+      key: 'confidence',
+      label: 'Confiance IA',
+      numeric: true,
+      width: 130,
+      render: (row) =>
+        row.sheet.extraction_confidence === null ? (
+          <span className="subtle">—</span>
+        ) : (
+          <Badge tone={row.sheet.extraction_confidence < 0.75 ? 'danger' : 'neutral'}>
+            {percent(row.sheet.extraction_confidence)}
+          </Badge>
+        ),
+      value: (row) => row.sheet.extraction_confidence ?? 0,
+    },
+    {
+      key: 'corrected',
+      label: 'Corrigées à la main',
+      numeric: true,
+      width: 160,
+      help: 'Un scan multi-feuilles préserve ces feuilles plutôt que d’écraser les corrections.',
+      value: (row) => row.sheet.correctedLines,
+    },
+    {
+      key: 'arbitrations',
+      label: 'À arbitrer',
+      numeric: true,
+      width: 120,
+      help: 'La consolidation reste bloquée tant qu’une quantité n’est pas retenue.',
+      value: (row) => row.zone.pendingArbitrations,
+    },
+    {
+      key: 'actions',
+      label: '',
+      width: 130,
+      sortable: false,
+      filter: false,
+      sticky: 'right',
+      render: (row) => {
+        const done = row.zone.status === 'DONE'
+        return (
+          <span className="row" style={{ gap: 'var(--space-2)' }}>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Icons.pencil size={13} />}
+              disabled={!editable}
+              onClick={() => onOpen(row)}
+              aria-label="Ouvrir la feuille"
+              title={
+                editable
+                  ? 'Ouvrir la feuille pour saisir ou scanner'
+                  : 'Les quantités ne sont modifiables qu’en phase Comptage'
+              }
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Icons.printer size={13} />}
+              onClick={() => onPrint({ sheetId: row.sheet.id, zone: row.zone })}
+              aria-label="Imprimer"
+              title="Imprimer cette feuille — vierge ou remplie"
+            />
+            {/* Porte sur la **zone**, pas sur la feuille : les deux lignes
+                d'une zone à deux comptages montrent donc le même état, et
+                l'une ou l'autre la termine. */}
+            {editable && (
+              <Button
+                size="sm"
+                variant={done ? 'ghost' : 'secondary'}
+                icon={done ? <Icons.undo size={13} /> : <Icons.check size={13} />}
+                disabled={busy}
+                onClick={() => onClose(row.zone.id, !done)}
+                aria-label={done ? 'Rouvrir la zone' : 'Terminer la zone'}
+                title={
+                  done
+                    ? `Rouvrir la zone ${row.zone.code}`
+                    : `Déclarer la zone ${row.zone.code} terminée`
+                }
+              />
+            )}
+          </span>
+        )
+      },
+    },
+  ]
+
+  return (
+    <Card>
+      <DataGrid
+        columns={columns}
+        rows={rows}
+        getRowId={(row) => row.id}
+        searchable
+        searchPlaceholder="Filtrer par zone, secteur ou compteur…"
+        emptyTitle="Aucune feuille"
+        maxHeight={640}
+      />
+    </Card>
+  )
+}
+
+
+/**
+ * Le bouton bleu d'une feuille : ce qu'il fait, et comment il s'appelle.
+ *
+ * Il porte l'action suivante, jamais l'état courant — « Commencer le comptage »
+ * tant que rien n'a commencé, « Valider » quand la saisie est faite. Une
+ * feuille terminée n'est pas close pour autant : « Modifier » la ramène en
+ * encodage, et le couple Modifier / Valider se répète autant de fois qu'il le
+ * faut. C'est le seul bouton bleu de la ligne, donc le seul endroit où
+ * quelqu'un a besoin de regarder pour savoir quoi faire.
+ */
 function SheetModal({
   campaignId,
   zone,
@@ -397,6 +782,9 @@ function SheetModal({
           displayOrder: index,
         })),
         true,
+        // La version lue à l'ouverture. Le serveur refuse si la feuille a bougé
+        // entre-temps, plutôt que d'effacer ce que l'autre vient d'y saisir.
+        Number(query.data?.sheet?.row_version) || undefined,
       ),
     onSuccess: (result) => {
       void queryClient.invalidateQueries()
@@ -406,32 +794,81 @@ function SheetModal({
     onError: (error) => showError(error, 'Enregistrement impossible'),
   })
 
+  // --- le scan, mené comme un travail suivi ---------------------------------
+  //
+  // Le dépôt rend un identifiant, pas un rapport : la lecture d'une feuille dure
+  // de dix secondes à plus d'une minute, et l'attendre dans la requête ne
+  // laissait rien à regarder — un bouton grisé qui ne distingue pas un travail
+  // qui avance d'un appel qui a calé. On interroge donc le travail, comme le
+  // fait déjà le scan multi-feuilles.
+  const [jobId, setJobId] = useState<string | null>(null)
+
+  // À l'ouverture, on cherche un scan déjà en cours sur cette feuille. Sans
+  // cela, un rafraîchissement pendant la lecture rend la feuille inerte et
+  // invite à relancer un travail qui tourne déjà.
+  useQuery({
+    queryKey: ['sheet-scan-job', campaignId, sheet.id],
+    queryFn: async () => {
+      const running = await api.sheetScanJob(campaignId, sheet.id)
+      if (running && !running.isDone) {
+        setJobId(running.id)
+        setScanning(true)
+      }
+      return running
+    },
+    staleTime: Infinity,
+  })
+
+  const job = useQuery({
+    queryKey: ['scan-job', campaignId, jobId],
+    queryFn: () => api.scanJob(campaignId, jobId!),
+    enabled: jobId !== null,
+    refetchInterval: (query) => (query.state.data?.isDone ? false : 2000),
+  })
+
   const scan = useMutation({
     mutationFn: (file: File) => api.scanSheet(campaignId, sheet.id, file),
-    onSuccess: (result) => {
-      void queryClient.invalidateQueries()
-      setDraft(null)
-      setScanning(false)
-      const report = result.report as Record<string, unknown>
-      const low = (report.lowConfidence as string[]) ?? []
-      const unexpected = (report.unexpected as unknown[]) ?? []
-      toast.push({
-        tone: low.length || unexpected.length ? 'warning' : 'success',
-        title: `Scan lu : ${report.counted} quantité(s) extraite(s)`,
-        body: [
-          low.length ? `${low.length} valeur(s) à confiance faible` : null,
-          unexpected.length ? `${unexpected.length} lecture(s) hors liste attendue` : null,
-          'Vérifiez et validez avant de terminer l’encodage.',
-        ]
-          .filter(Boolean)
-          .join(' · '),
-      })
-    },
+    onSuccess: (queued) => setJobId(queued.id),
     onError: (error) => {
       setScanning(false)
-      showError(error, 'Extraction impossible')
+      showError(error, 'Dépôt du scan impossible')
     },
   })
+
+  // Le travail est terminé : on annonce le résultat une fois, et on recharge.
+  const finished = job.data?.isDone ?? false
+  const announced = useRef<string | null>(null)
+  useEffect(() => {
+    const state = job.data
+    if (!finished || !state || announced.current === state.id) return
+    announced.current = state.id
+    setScanning(false)
+    setJobId(null)
+    if (state.status === 'FAILED') {
+      toast.push({
+        tone: 'danger',
+        title: 'La lecture du scan n’a pas abouti',
+        body: state.error || 'Raison inconnue.',
+      })
+      return
+    }
+    void queryClient.invalidateQueries()
+    setDraft(null)
+    const report = state.report as SheetScanReport
+    const low = report.lowConfidence ?? []
+    const unexpected = report.unexpected ?? []
+    toast.push({
+      tone: low.length || unexpected.length ? 'warning' : 'success',
+      title: `Scan lu : ${report.counted} quantité(s) extraite(s)`,
+      body: [
+        low.length ? `${low.length} valeur(s) à confiance faible` : null,
+        unexpected.length ? `${unexpected.length} lecture(s) hors liste attendue` : null,
+        'Vérifiez et validez avant de terminer l’encodage.',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    })
+  }, [finished, job.data, queryClient, toast])
 
   const rows = draft ?? (query.data?.lines as Array<Record<string, unknown>>) ?? []
 
@@ -490,6 +927,7 @@ function SheetModal({
       width: 160,
       editable: true,
       choices: ['LINE_SIDE', 'WIP', 'WIP_OK'],
+      choiceLabel: (value) => toLabel(SECTION_LABELS, value),
       render: draft
         ? undefined
         : (row) => (
@@ -512,7 +950,7 @@ function SheetModal({
         ? undefined
         : (row) =>
             row.isCounted ? (
-              <span className="num">{numShort(Number(row.qty))}</span>
+              <span className="num">{qty(Number(row.qty))}</span>
             ) : (
               <span className="subtle" title="Vide ≠ zéro : la ligne n’a pas été comptée">
                 non compté
@@ -546,7 +984,7 @@ function SheetModal({
                     ? 'Les deux comptages divergent : un arbitrage sera demandé.'
                     : undefined
                 }>
-                  {numShort(first)}
+                  {qty(first)}
                 </span>
               )
             },
@@ -563,6 +1001,7 @@ function SheetModal({
       label: 'Source',
       width: 190,
       editable: false,
+      choiceLabel: (value) => toLabel(SOURCE_LABELS, value),
       render: (row) => (
         <SourceBadge
           source={String(row.source)}
@@ -579,8 +1018,10 @@ function SheetModal({
       title={
         <span className="row" style={{ gap: 'var(--space-3)' }}>
           {zone.label || zone.code} — comptage n°{sheet.pass_no === 'PASS_1' ? 1 : 2}
-          <Badge tone={SHEET_TONE[sheet.status]}>
-            {toLabel(SHEET_STATUS_LABELS, sheet.status)}
+          {/* L'état affiché est celui de la **zone** : la feuille n'en a plus,
+              et c'est la zone qu'on déclare terminée. */}
+          <Badge tone={ZONE_TONE[zone.status] ?? 'neutral'} dot>
+            {toLabel(ZONE_STATUS_LABELS, zone.status)}
           </Badge>
         </span>
       }
@@ -636,6 +1077,15 @@ function SheetModal({
               </span>
             </div>
 
+            {/* Ce que fait la lecture, pendant qu'elle le fait. Un bouton grisé
+                ne distingue pas un travail qui avance d'un appel qui a calé, et
+                cette lecture-là dure jusqu'à une minute. */}
+            {scanning && (
+              <Card>
+                <ScanProgress state={job.data} />
+              </Card>
+            )}
+
             <Alert tone="info" title="Case vide = non compté">
               Pour déclarer une absence de stock, saisissez explicitement 0.
               {isPass2 && ' La colonne « Comptage n°1 » n’est affichée qu’à l’écran.'}
@@ -690,6 +1140,8 @@ function SheetModal({
             <DataGrid
               columns={columns}
               rows={rows}
+              exportTitle="Arbitrages"
+              campaignId={campaignId}
               getRowId={(row, index) => String(row.id ?? index)}
               editable={editable && Boolean(draft)}
               onRowsChange={setDraft}
@@ -878,8 +1330,8 @@ function ArbitrationTable({
                   {SECTION_LABELS[row.section] ?? row.section}
                 </Badge>
               </td>
-              <td className="num">{row.qty_pass_1 === null ? '—' : numShort(row.qty_pass_1)}</td>
-              <td className="num">{row.qty_pass_2 === null ? '—' : numShort(row.qty_pass_2)}</td>
+              <td className="num">{row.qty_pass_1 === null ? '—' : qty(row.qty_pass_1)}</td>
+              <td className="num">{row.qty_pass_2 === null ? '—' : qty(row.qty_pass_2)}</td>
               <td className={`num ${row.gap === 0 ? 'neutral' : row.gap > 0 ? 'pos' : 'neg'}`}>
                 {signedNum(row.gap)}
               </td>
@@ -889,10 +1341,10 @@ function ArbitrationTable({
                   <span className="subtle">à décider</span>
                 ) : row.isProposed ? (
                   <span className="subtle" title="Pré-rempli, pas encore validé">
-                    {numShort(row.qty_arbitrated)} · proposé
+                    {qty(row.qty_arbitrated)} · proposé
                   </span>
                 ) : (
-                  <strong>{numShort(row.qty_arbitrated)}</strong>
+                  <strong>{qty(row.qty_arbitrated)}</strong>
                 )}
               </td>
               <td>
@@ -1053,7 +1505,7 @@ function ConsolidationTab({
                     <td>{row.zoneCode}</td>
                     <td className="mono">{row.itemNumber}</td>
                     <td className="num">
-                      {numShort(row.qty)} {row.unit}
+                      {qty(row.qty)} {row.unit}
                     </td>
                   </tr>
                 ))}
@@ -1103,7 +1555,7 @@ function ConsolidationTab({
                 <dt>Articles au journal (aperçu)</dt>
                 <dd className="num">{data.lines.length.toLocaleString('fr-FR')}</dd>
                 <dt>Quantité totale</dt>
-                <dd className="num">{numShort(data.totalQty)}</dd>
+                <dd className="num">{qty(data.totalQty)}</dd>
                 <dt>Zones incluses</dt>
                 <dd>{data.zonesIncluded.join(', ') || '—'}</dd>
               </dl>
@@ -1111,6 +1563,8 @@ function ConsolidationTab({
           )}
         </AsyncBoundary>
       </Card>
+
+      <ConsolidationExceptions findings={preview.data?.findings ?? []} />
 
       <AsyncBoundary
         query={current}
@@ -1126,7 +1580,13 @@ function ConsolidationTab({
           </Card>
         }
       >
-        {(data) => <ConsolidationResult lines={data.lines} onExploreWip={setWipItem} />}
+        {(data) => (
+          <ConsolidationResult
+            campaignId={campaignId}
+            lines={data.lines}
+            onExploreWip={setWipItem}
+          />
+        )}
       </AsyncBoundary>
 
       {wipItem && (
@@ -1136,13 +1596,122 @@ function ConsolidationTab({
   )
 }
 
+/**
+ * Ce que la consolidation a écarté, ou ajouté de sa propre initiative.
+ *
+ * Trois listes que le journal seul ne montre pas, et qui sont précisément
+ * celles qu'on doit pouvoir relire :
+ *
+ *  - un produit fini compté en bord de ligne est une erreur de section, et sa
+ *    quantité n'entre pas dans le stock — il faut aller chercher la feuille ;
+ *  - compté en WIP assemblé il est noté à titre indicatif, ses composants étant
+ *    déjà comptés par l'éclatement ;
+ *  - un article que l'ERP porte et que personne n'a compté est soldé à zéro,
+ *    et cette décision-là mérite d'être vue avant d'être postée.
+ *
+ * Chacune est une pilule plutôt qu'un tableau de plus, parce que les trois
+ * partagent les mêmes colonnes et qu'empilées elles se noieraient.
+ */
+const EXCEPTION_PILLS: Array<{ code: string; label: string; hint: string }> = [
+  {
+    code: 'FINISHED_ON_LINE_SIDE',
+    label: 'Produits finis en bord de ligne',
+    hint: 'Erreur de section : la quantité n’est pas retenue. À corriger sur la feuille.',
+  },
+  {
+    code: 'FINISHED_IN_WIP_OK',
+    label: 'Produits finis en WIP assemblé',
+    hint: 'Noté à titre indicatif : les composants sont déjà comptés par l’éclatement.',
+  },
+  {
+    code: 'UNCOUNTED_WITH_BOOK_STOCK',
+    label: 'Soldés à zéro',
+    hint: 'Stock ERP en GENERIQUE que personne n’a compté : le journal le solde explicitement.',
+  },
+]
+
+function ConsolidationExceptions({ findings }: { findings: Finding[] }) {
+  const [code, setCode] = useState(EXCEPTION_PILLS[0]!.code)
+  const counts = useMemo(() => {
+    const tally: Record<string, number> = {}
+    for (const finding of findings) {
+      tally[finding.code] = (tally[finding.code] ?? 0) + 1
+    }
+    return tally
+  }, [findings])
+
+  const total = EXCEPTION_PILLS.reduce((sum, p) => sum + (counts[p.code] ?? 0), 0)
+  if (total === 0) return null
+
+  const rows = findings.filter((f) => f.code === code)
+  const active = EXCEPTION_PILLS.find((p) => p.code === code)
+
+  return (
+    <Card
+      title="Signalements de la consolidation"
+      message={active?.hint}
+      flush
+    >
+      <div className="chips" style={{ padding: '0 var(--space-4)' }}>
+        {EXCEPTION_PILLS.map((pill) => (
+          <button
+            key={pill.code}
+            className={`chip${code === pill.code ? ' chip--active' : ''}`}
+            title={pill.hint}
+            onClick={() => setCode(pill.code)}
+          >
+            {pill.label} <span className="num">{counts[pill.code] ?? 0}</span>
+          </button>
+        ))}
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState title="Rien à signaler dans cette catégorie" />
+      ) : (
+        <div className="table-wrap" style={{ maxHeight: 320 }}>
+          <table className="data">
+            <thead>
+              <tr>
+                <th style={{ width: 170 }}>Article</th>
+                <th style={{ width: 170 }}>Zone</th>
+                <th style={{ width: 190 }}>Feuille</th>
+                <th className="num" style={{ width: 130 }}>Quantité</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 300).map((finding, index) => (
+                <tr key={`${finding.item_number}-${index}`}>
+                  <td className="mono">{finding.item_number || '—'}</td>
+                  <td>{String(finding.context?.zone ?? '—')}</td>
+                  <td>{String(finding.context?.sheets || '—')}</td>
+                  <td className="num">
+                    {qty(Number(finding.context?.qty ?? finding.context?.bookQty ?? 0))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 function ConsolidationResult({
+  campaignId,
   lines,
   onExploreWip,
 }: {
+  campaignId: string
   lines: ConsolidationLine[]
   onExploreWip: (itemNumber: string) => void
 }) {
+  // Les trois colonnes d'origine s'ouvrent comme le WIP le faisait déjà : une
+  // quantité qu'on ne peut pas expliquer est une quantité qu'on ne peut pas
+  // défendre, et c'est en réunion que la question se pose.
+  const [drill, setDrill] = useState<
+    { itemNumber: string; aspect: BreakdownAspect } | null
+  >(null)
   const totals = useMemo(() => {
     return lines.reduce(
       (acc, line) => ({
@@ -1162,7 +1731,14 @@ function ConsolidationResult({
       label: 'Quantité totale',
       numeric: true,
       width: 150,
-      render: (row) => <strong className="num">{numShort(row.qty)}</strong>,
+      render: (row) => (
+        <DrillCell
+          disabled={row.qty === 0}
+          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'counted' })}
+        >
+          <strong className="num">{qty(row.qty)}</strong>
+        </DrillCell>
+      ),
       value: (row) => row.qty,
     },
     {
@@ -1170,7 +1746,14 @@ function ConsolidationResult({
       label: 'Bord de ligne',
       numeric: true,
       width: 140,
-      render: (row) => <span className="num">{numShort(row.qty_line_side)}</span>,
+      render: (row) => (
+        <DrillCell
+          disabled={row.qty_line_side === 0}
+          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'line_side' })}
+        >
+          <span className="num">{qty(row.qty_line_side)}</span>
+        </DrillCell>
+      ),
       value: (row) => row.qty_line_side,
     },
     {
@@ -1178,7 +1761,14 @@ function ConsolidationResult({
       label: 'WIP assemblé',
       numeric: true,
       width: 140,
-      render: (row) => <span className="num">{numShort(row.qty_wip_ok)}</span>,
+      render: (row) => (
+        <DrillCell
+          disabled={row.qty_wip_ok === 0}
+          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'wip_ok' })}
+        >
+          <span className="num">{qty(row.qty_wip_ok)}</span>
+        </DrillCell>
+      ),
       value: (row) => row.qty_wip_ok,
     },
     {
@@ -1193,7 +1783,7 @@ function ConsolidationResult({
             onClick={() => onExploreWip(row.item_number)}
             title="Voir de quoi se compose ce WIP"
           >
-            {numShort(row.qty_wip_exploded)}
+            {qty(row.qty_wip_exploded)}
             <Icons.chevronRight size={12} />
           </button>
         ) : (
@@ -1225,7 +1815,7 @@ function ConsolidationResult({
         message="Le WIP éclaté n’est plus une valeur agrégée opaque : chaque quantité est traçable jusqu’à l’assemblage qui l’a produite."
       >
         <CompositionBar
-          format={numShort}
+          format={qty}
           segments={[
             { label: 'Bord de ligne', value: totals.lineSide, color: 'var(--cat-1)' },
             { label: 'WIP assemblé', value: totals.wipOk, color: 'var(--cat-2)' },
@@ -1238,12 +1828,23 @@ function ConsolidationResult({
         <DataGrid
           columns={columns}
           rows={lines}
+          exportTitle="Consolidation"
+          campaignId={campaignId}
           getRowId={(row) => row.item_number}
           searchPlaceholder="Filtrer par article…"
           maxHeight={560}
           initialSort={{ key: 'value', direction: 'desc' }}
         />
       </Card>
+
+      {drill && (
+        <BreakdownModal
+          campaignId={campaignId}
+          itemNumber={drill.itemNumber}
+          aspect={drill.aspect}
+          onClose={() => setDrill(null)}
+        />
+      )}
     </div>
   )
 }
@@ -1287,10 +1888,10 @@ function WipModal({
                   <tr key={index}>
                     <td>{row.zone_code || '—'}</td>
                     <td className="mono">{row.parent_item}</td>
-                    <td className="num">{numShort(row.parent_qty)}</td>
-                    <td className="num">{numShort(row.qty_per_parent)}</td>
+                    <td className="num">{qty(row.parent_qty)}</td>
+                    <td className="num">{qty(row.qty_per_parent)}</td>
                     <td className="num">
-                      <strong>{numShort(row.child_qty)}</strong>
+                      <strong>{qty(row.child_qty)}</strong>
                     </td>
                   </tr>
                 ))}
@@ -1315,160 +1916,6 @@ function WipModal({
  * to a counter, the record of what came back, and the free-entry sheet with
  * nothing pre-printed at all.
  */
-/**
- * Printing a counting sheet.
- *
- * A sheet is three different documents and only some of them exist at any given
- * moment: a zone with a pre-printed list has nothing to gain from a blank grid,
- * a free-entry zone has no list to print, and the record with quantities does
- * not exist before anything has been counted. Which modes apply is decided
- * server-side and arrives as `zone.printModes`; this dialog offers exactly
- * those, so a choice on screen is never one the endpoint will refuse.
- */
-function PrintModal({
-  campaignId,
-  sheetId,
-  modes,
-  zonesByMode,
-  onClose,
-}: {
-  campaignId: string
-  sheetId?: string
-  modes: PrintMode[]
-  /** For the batch print: how many zones each mode would produce a sheet for. */
-  zonesByMode?: Record<PrintMode, number>
-  onClose: () => void
-}) {
-  const startDownload = useDownload()
-  const [passNo, setPassNo] = useState<1 | 2>(1)
-  const [mode, setMode] = useState<PrintMode>(modes[0] ?? 'list')
-  const [withSources, setWithSources] = useState(false)
-  const [blankLines, setBlankLines] = useState('40')
-
-  const lines = Number(blankLines)
-  const linesInvalid =
-    mode === 'blank' && (!Number.isInteger(lines) || lines < 10 || lines > 180)
-
-  const print = () => {
-    const options = {
-      mode,
-      withSources: mode === 'filled' && withSources,
-      blankLines: mode === 'blank' ? lines : undefined,
-    }
-    startDownload(
-      sheetId
-        ? downloads.countingSheet(campaignId, sheetId, options)
-        : downloads.allCountingSheets(campaignId, passNo, options),
-    )
-    onClose()
-  }
-
-  if (modes.length === 0) {
-    return (
-      <Modal
-        title="Impression"
-        onClose={onClose}
-        width={520}
-        footer={<Button onClick={onClose}>Fermer</Button>}
-      >
-        <Alert tone="info" title="Rien à imprimer pour l’instant">
-          Aucune zone n’a de liste d’articles ni de saisie libre déclarée.
-        </Alert>
-      </Modal>
-    )
-  }
-
-  return (
-    <Modal
-      title={sheetId ? 'Imprimer cette feuille' : 'Imprimer les feuilles'}
-      onClose={onClose}
-      width={600}
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>
-            Annuler
-          </Button>
-          <Button
-            variant="primary"
-            icon={<Icons.printer size={14} />}
-            disabled={linesInvalid}
-            onClick={print}
-          >
-            Imprimer
-          </Button>
-        </>
-      }
-    >
-      <div className="stack">
-        {!sheetId && (
-          <Field label="Comptage">
-            <div className="segmented">
-              {([1, 2] as const).map((value) => (
-                <button
-                  key={value}
-                  className={`segmented__item${passNo === value ? ' segmented__item--active' : ''}`}
-                  onClick={() => setPassNo(value)}
-                >
-                  Comptage n°{value}
-                </button>
-              ))}
-            </div>
-          </Field>
-        )}
-
-        <Field label="Document">
-          <div className="chips">
-            {modes.map((value) => (
-              <button
-                key={value}
-                className={`chip${mode === value ? ' chip--active' : ''}`}
-                onClick={() => setMode(value)}
-              >
-                {PRINT_MODE_LABELS[value]}
-                {zonesByMode && (
-                  <Badge tone="neutral">{zonesByMode[value] ?? 0} zone(s)</Badge>
-                )}
-              </button>
-            ))}
-          </div>
-        </Field>
-
-        {mode === 'blank' && (
-          <Field
-            label="Nombre de lignes"
-            hint="Entre 10 et 180."
-            error={linesInvalid ? 'Entier entre 10 et 180.' : undefined}
-          >
-            <input
-              className="input num"
-              inputMode="numeric"
-              value={blankLines}
-              onChange={(event) => setBlankLines(event.target.value.trim())}
-            />
-          </Field>
-        )}
-
-        {mode === 'filled' && (
-          <Switch
-            checked={withSources}
-            onChange={setWithSources}
-            label="Ajouter les colonnes Source et Commentaire"
-          />
-        )}
-
-        <Alert tone="info" title={PRINT_MODE_LABELS[mode]}>
-          {mode === 'blank' && 'Une grille vide : le compteur écrit la référence et la quantité.'}
-          {mode === 'list' && 'La liste à parcourir, plus 5 lignes libres en bord de ligne, 3 en WIP et 2 en WIP terminé.'}
-          {mode === 'filled' && 'Toutes les lignes portant une référence, y compris « non compté ». Aucune ligne vide ajoutée.'}
-        </Alert>
-      </div>
-    </Modal>
-  )
-}
-
-// --------------------------------------------------------------------------- //
-// Multi-sheet scan
-// --------------------------------------------------------------------------- //
 
 /**
  * Reading a whole stack of sheets in one go.
@@ -1478,6 +1925,71 @@ function PrintModal({
  * a silent import would bury: a page nobody could attribute, and a sheet whose
  * AI reading somebody has already corrected by hand.
  */
+/**
+ * L'avancement d'une lecture de pile, en clair.
+ *
+ * Six minutes de silence sont indistinguables d'une panne : c'est l'étape en
+ * cours et le compteur de feuilles qui font la différence, pas le pourcentage
+ * seul — « 0 % » pendant deux minutes de rendu n'apprend rien, « Préparation
+ * des pages » si.
+ */
+/**
+ * Où en est la lecture d'un scan — une pile, ou une feuille seule.
+ *
+ * **Deux barres, parce qu'il y a deux vérités.** Sur une pile, « douze feuilles
+ * sur cent » est une mesure : la barre se remplit et le pourcentage veut dire
+ * quelque chose. Sur une feuille seule, l'essentiel du temps part dans **un**
+ * appel au modèle, dont personne ne connaît l'avancement : une barre qui
+ * sauterait de 0 à 100 % ne mesurerait rien et laisserait croire à une panne
+ * pendant toute la minute qu'elle passe à zéro. C'est donc une barre
+ * indéterminée, doublée de l'étape en cours — qui, elle, avance vraiment.
+ */
+function ScanProgress({ state }: { state: ScanJob | undefined }) {
+  if (!state) return <p className="subtle">Mise en file…</p>
+  const running = state.status === 'RUNNING' || state.status === 'QUEUED'
+  const measurable = state.sheetsTotal > 1
+  return (
+    <div className="stack" style={{ gap: 'var(--space-2)' }}>
+      <div className="row">
+        <Badge tone={running ? 'info' : 'success'}>{state.step || 'En file'}</Badge>
+        {state.totalPages > 0 && (
+          <span className="subtle">{state.totalPages} page(s)</span>
+        )}
+        {measurable && (
+          <span className="subtle">
+            {state.sheetsDone}/{state.sheetsTotal} feuille(s) lue(s)
+          </span>
+        )}
+      </div>
+      {measurable ? (
+        <Progress
+          total={state.sheetsTotal}
+          segments={[
+            {
+              label: 'Feuilles lues',
+              value: state.sheetsDone,
+              color: 'var(--accent)',
+            },
+          ]}
+          caption={running ? `${state.percent} %` : null}
+        />
+      ) : (
+        <div
+          className={`progress__track${running ? ' progress__track--pending' : ''}`}
+          role="progressbar"
+          aria-label="Lecture du scan"
+          aria-valuetext={state.step || 'En file'}
+        >
+          {!running && (
+            <div className="progress__fill" style={{ width: '100%', background: 'var(--accent)' }} />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 function MultiScanModal({
   campaignId,
   file,
@@ -1493,7 +2005,7 @@ function MultiScanModal({
 }) {
   const queryClient = useQueryClient()
   const showError = useErrorToast()
-  const [report, setReport] = useState<MultiScanReport | null>(null)
+  const [jobId, setJobId] = useState<string | null>(null)
 
   const atRisk = zones.flatMap((zone) =>
     zone.sheets
@@ -1501,21 +2013,76 @@ function MultiScanModal({
       .map((sheet) => ({ zone, sheet })),
   )
 
+  // Le dépôt rend un travail, pas un rapport : la lecture d'une pile de cent
+  // feuilles dure des minutes, et l'attendre dans la requête de chargement
+  // faisait couper la passerelle avant la fin.
   const scan = useMutation({
     mutationFn: (overwrite: boolean) =>
       api.scanMultipleSheets(campaignId, file, overwrite),
     onMutate: () => onBusy(true),
-    onSuccess: (result) => {
-      onBusy(false)
-      void queryClient.invalidateQueries()
-      setReport(result)
-    },
+    onSuccess: (queued) => setJobId(queued.id),
     onError: (error) => {
       onBusy(false)
-      showError(error, 'Lecture du scan impossible')
+      showError(error, 'Dépôt du scan impossible')
       onClose()
     },
   })
+
+  // Tant que le travail tourne, on redemande où il en est. Deux secondes : assez
+  // souvent pour que la barre bouge, assez rare pour ne pas peser sur une base
+  // qui écrit en même temps cent feuilles de comptage.
+  const job = useQuery({
+    queryKey: ['scan-job', campaignId, jobId],
+    queryFn: () => api.scanJob(campaignId, jobId!),
+    enabled: jobId !== null,
+    refetchInterval: (query) => (query.state.data?.isDone ? false : 2000),
+  })
+
+  const finished = job.data?.isDone ?? false
+  useEffect(() => {
+    if (!finished) return
+    onBusy(false)
+    void queryClient.invalidateQueries()
+  }, [finished, onBusy, queryClient])
+
+  // --- la lecture est en cours : on montre où elle en est ---------------------
+  if (jobId && !finished) {
+    const state = job.data
+    return (
+      <Modal title="Lecture du scan en cours" onClose={onClose} width={620}>
+        <div className="stack">
+          <p>
+            <strong className="mono">{file.name}</strong> — vous pouvez fermer
+            cette fenêtre : la lecture continue et les feuilles se remplissent au
+            fur et à mesure.
+          </p>
+          <ScanProgress state={state} />
+        </div>
+      </Modal>
+    )
+  }
+
+  // --- terminé en échec ------------------------------------------------------
+  if (finished && job.data?.status === 'FAILED') {
+    return (
+      <Modal
+        title="Scan multi-feuilles — échec"
+        onClose={onClose}
+        width={620}
+        footer={
+          <Button variant="primary" onClick={onClose}>
+            Fermer
+          </Button>
+        }
+      >
+        <Alert tone="danger" title="La lecture n’a pas abouti">
+          {job.data.error || 'Raison inconnue.'}
+        </Alert>
+      </Modal>
+    )
+  }
+
+  const report = (finished ? job.data?.report : null) as MultiScanReport | null
 
   if (report) {
     return (
@@ -1611,12 +2178,22 @@ function MultiScanModal({
               tone="warning"
               title={`${report.unroutedPages.length} page(s) non attribuée(s)`}
             >
-              Pied de page illisible : signalées plutôt que devinées. Ouvrez la
-              feuille concernée et importez ces pages une par une.
+              Signalées plutôt que devinées. Ouvrez la feuille concernée et
+              importez ces pages une par une.
               <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: '1.1rem' }}>
                 {report.unroutedPages.map((page) => (
                   <li key={page.page}>
                     Page {page.page} — {page.note}
+                    {/* Ce que le modèle dit avoir lu, à côté de la raison :
+                        « pied de page illisible » ne distingue pas une bande
+                        abîmée d'une bande lisible que le rapprochement n'a pas
+                        su résoudre, et les deux appellent des gestes opposés. */}
+                    {page.read && (
+                      <>
+                        {' '}
+                        <span className="subtle mono">(lu : {page.read})</span>
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>

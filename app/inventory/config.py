@@ -35,14 +35,58 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ runtime
     env: Literal["local", "dev", "prod"] = Field(default="local", alias="INV_ENV")
     log_level: str = Field(default="INFO", alias="INV_LOG_LEVEL")
-    app_port: int = Field(default=8000, alias="DATABRICKS_APP_PORT")
     app_name: str = Field(default="campagnes-inventaire", alias="DATABRICKS_APP_NAME")
 
     # ------------------------------------------------------------- databricks
-    databricks_host: str | None = Field(default=None, alias="DATABRICKS_HOST")
     warehouse_id: str | None = Field(default=None, alias="DATABRICKS_WAREHOUSE_ID")
+    #: The application's own service principal, injected by Databricks Apps.
+    #: Unity Catalog grants are made to *it*, not to the signed-in user, so a
+    #: permissions refusal can name the exact principal an admin has to grant.
+    service_principal_id: str | None = Field(
+        default=None, alias="DATABRICKS_CLIENT_ID"
+    )
     llm_endpoint: str = Field(
         default="databricks-claude-opus-4-8", alias="INV_LLM_ENDPOINT"
+    )
+    #: Endpoint vision dédié à la lecture des scans. Vide, c'est
+    #: :attr:`llm_endpoint` qui sert — le comportement d'avant, sans surprise.
+    #:
+    #: Séparé parce que les deux tâches n'ont rien en commun : l'assistant
+    #: raisonne sur un dossier de campagne, la lecture d'un scan transcrit des
+    #: chiffres manuscrits en JSON. Payer un modèle de raisonnement pour
+    #: recopier des nombres coûte du temps sur chacune des cent feuilles d'une
+    #: pile, et c'est le temps qui fait renoncer à scanner.
+    scan_llm_endpoint: str = Field(default="", alias="INV_SCAN_LLM_ENDPOINT")
+    #: Combien de feuilles sont lues en même temps. Le gain est réel mais borné
+    #: par le débit de l'endpoint : au-delà, les appels font la queue côté
+    #: serving et les 429 apparaissent. Quatre est un point de départ à mesurer,
+    #: pas une valeur optimale — c'est pourquoi elle est en configuration.
+    scan_max_workers: int = Field(default=4, ge=1, le=16, alias="INV_SCAN_MAX_WORKERS")
+    #: Plafond de pages d'une pile scannée. Cent feuilles recto-verso en font
+    #: deux cents. Au-delà, le chargement est **refusé en le disant** : tronquer
+    #: en silence, ce que faisait la version précédente, perd des comptages sans
+    #: que personne ne l'apprenne.
+    scan_max_pages: int = Field(default=250, ge=1, alias="INV_SCAN_MAX_PAGES")
+    #: Combien de pieds de page partent dans un même appel de routage. Un seul
+    #: appel pour deux cents pages dépasse la charge utile acceptée ; un appel
+    #: par page multiplie les allers-retours.
+    scan_routing_batch: int = Field(
+        default=12, ge=1, le=50, alias="INV_SCAN_ROUTING_BATCH"
+    )
+    #: Résolution de rastérisation des pages scannées.
+    scan_dpi: int = Field(default=150, ge=72, le=400, alias="INV_SCAN_DPI")
+    #: Plafond de pixels d'**une** page rendue.
+    #:
+    #: `render(scale=dpi/72)` alloue le bitmap lui-même, hors de portée de la
+    #: garde anti-bombe de PIL. Une page dont le PDF déclare un MediaBox de deux
+    #: cents pouces de côté produit, à 150 dpi, un bitmap de 30 000 × 30 000 —
+    #: neuf cents mégaoctets pour une seule page, sur un conteneur qui en a six
+    #: mille et les partage. Un A4 à 600 dpi tient dans 35 mégapixels ; au-delà,
+    #: la résolution est réduite plutôt que la page refusée, parce qu'un
+    #: MediaBox démesuré est le plus souvent un artefact de scanner et non une
+    #: attaque.
+    scan_max_pixels: int = Field(
+        default=40_000_000, ge=1_000_000, alias="INV_SCAN_MAX_PIXELS"
     )
     #: How the campaign assistant is framed (see :mod:`inventory.ai.assistant`).
     #: A runtime setting rather than a code decision, so tightening or loosening
@@ -60,6 +104,42 @@ class Settings(BaseSettings):
         default="silver_base_article", alias="INV_ERP_ITEMS_TABLE"
     )
     erp_bom_table: str = Field(default="silver_bom", alias="INV_ERP_BOM_TABLE")
+    #: Snapshot quotidien du stock physique du site, une ligne par article ×
+    #: entrepôt × emplacement, partitionné par date. La campagne en lit la
+    #: photo la plus récente : c'est un état, pas un historique.
+    erp_stock_table: str = Field(
+        default="stock_snapshot", alias="INV_ERP_STOCK_TABLE"
+    )
+    #: Gold table holding the backflush variance, at parent × child × week grain.
+    #: Its own schema: it is published by a different pipeline than the silver
+    #: referential, and pinning both to one setting would make a rename of either
+    #: break the other.
+    erp_backflush_schema: str = Field(
+        default="emotors_data_champions.backflush", alias="INV_ERP_BACKFLUSH_SCHEMA"
+    )
+    erp_backflush_table: str = Field(
+        default="fact_ecart_backflush", alias="INV_ERP_BACKFLUSH_TABLE"
+    )
+    #: Silver table holding every stock flow at article × day grain: receipts,
+    #: shipments, production, theoretical and actual consumption, scrap. One
+    #: column per flow, already consolidated from the bronze layer — the legal
+    #: entity, the `IsDelete` filter, the scrap bin and the de-duplication of a
+    #: parent's output across its components are all applied upstream.
+    #:
+    #: In the referential's own schema, so it sits behind the grant the
+    #: application already needs. Reading the bronze tables directly meant a
+    #: second catalogue and a second `USE CATALOG` from a second owner.
+    erp_movements_table: str = Field(
+        default="mouvements", alias="INV_ERP_MOVEMENTS_TABLE"
+    )
+    #: Where the referential is read from. ``uc`` queries the silver tables
+    #: directly and needs USE CATALOG on the ERP's catalog for the application's
+    #: service principal — a grant only a catalog owner can make. ``mirror``
+    #: reads a local copy in the application's own database, refreshed by the
+    #: « Synchronisation du miroir ERP » job, which runs with an identity that
+    #: already has that access. Same rows, same translation, same editable grid;
+    #: what changes is who needed the grant.
+    erp_source: Literal["uc", "mirror"] = Field(default="uc", alias="INV_ERP_SOURCE")
 
     # ------------------------------------------------------------ unity catalog
     uc_catalog: str = Field(default="emotors_data_champions", alias="INV_UC_CATALOG")
@@ -98,10 +178,6 @@ class Settings(BaseSettings):
     max_import_rows: int = Field(default=200_000, alias="INV_MAX_IMPORT_ROWS")
     max_upload_bytes: int = Field(default=64 * 1024 * 1024, alias="INV_MAX_UPLOAD_BYTES")
 
-    #: The Databricks Apps reverse proxy hard-caps a request at 120 s. Anything
-    #: heavier must run as a background task, so we budget below that.
-    request_budget_seconds: float = Field(default=100.0, alias="INV_REQUEST_BUDGET_S")
-
     # ------------------------------------------------------------------ helpers
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -112,24 +188,31 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def uc_volume_path(self) -> str:
-        """POSIX path of the UC volume used for evidence and exports."""
+        """Racine du volume où sont archivées les pièces justificatives."""
         return f"/Volumes/{self.uc_catalog}/{self.uc_schema}/{self.uc_volume}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def evidence_configured(self) -> bool:
+        """Les trois noms qui composent le chemin du volume sont renseignés.
+
+        Vide, l'archivage se tait au lieu d'échouer : une pièce justificative
+        n'est pas une condition du chargement, et refuser un import de deux
+        cent mille lignes parce que le volume n'est pas configuré coûterait
+        infiniment plus que de ne pas archiver le fichier.
+        """
+        return bool(self.uc_catalog and self.uc_schema and self.uc_volume)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def scan_endpoint(self) -> str:
+        """L'endpoint qui lit les scans : le dédié s'il existe, sinon l'autre."""
+        return self.scan_llm_endpoint or self.llm_endpoint
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def lakebase_configured(self) -> bool:
         return bool(self.pg_host and self.pg_database and self.pg_user)
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def warehouse_http_path(self) -> str | None:
-        if not self.warehouse_id:
-            return None
-        return f"/sql/1.0/warehouses/{self.warehouse_id}"
-
-    def uc_table(self, name: str) -> str:
-        """Fully-qualified name of a Delta table owned by this application."""
-        return f"{self.uc_schema_fqn}.{name}"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -140,6 +223,21 @@ class Settings(BaseSettings):
     @property
     def erp_bom_fqn(self) -> str:
         return f"{self.erp_schema}.{self.erp_bom_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_stock_fqn(self) -> str:
+        return f"{self.erp_schema}.{self.erp_stock_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_backflush_fqn(self) -> str:
+        return f"{self.erp_backflush_schema}.{self.erp_backflush_table}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def erp_movements_fqn(self) -> str:
+        return f"{self.erp_schema}.{self.erp_movements_table}"
 
 
 @functools.lru_cache(maxsize=1)

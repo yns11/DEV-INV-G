@@ -278,6 +278,10 @@ PGPASSWORD=inventaire
 PGSSLMODE=disable
 ```
 
+Le fichier se pose à la racine du dépôt, et c'est là qu'il est lu quel que soit
+le répertoire d'où l'application démarre — `make run` fait `cd app`. Un `.env`
+placé dans `app/` reste lu et l'emporte, pour ceux qui en ont déjà un.
+
 Laissez `DATABRICKS_WAREHOUSE_ID` et `INV_LLM_ENDPOINT` vides : l'application
 démarre en mode dégradé pour ces deux fonctions (l'extraction IA et les lectures
 Delta) et signale clairement lesquelles sont indisponibles.
@@ -326,7 +330,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1308 tests, ~17 s ; 8 ignorés sans PostgreSQL
+make test      # 1880 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```

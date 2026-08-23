@@ -8,12 +8,13 @@ On Databricks Apps the platform injects the resource-backed variables
 ``value_from`` in the latter).
 
 Local development uses the same names, loaded from a ``.env`` file — see
-``.env.example`` and ``docs/03-deployment-guide.md``.
+``.env.example`` et ``docs/03-guide-deploiement.md``.
 """
 
 from __future__ import annotations
 
 import functools
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, computed_field
@@ -21,12 +22,30 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = ["Settings", "get_settings"]
 
+#: La racine du dépôt, déduite du module et non du répertoire courant.
+#: ``app/inventory/config.py`` → ``app/inventory`` → ``app`` → la racine.
+_ROOT = Path(__file__).resolve().parents[2]
+
+#: Les fichiers ``.env`` lus, du moins prioritaire au plus prioritaire.
+#:
+#: ``env_file=".env"`` seul se résout contre le répertoire courant du
+#: processus. Or l'application démarre depuis ``app/`` — ``make run`` fait
+#: ``cd app && python main.py``, et ``app.yaml`` lance ``python main.py``
+#: depuis la charge utile — tandis que le démarrage rapide documenté place le
+#: fichier à la racine du dépôt. Le fichier était donc écrit là où personne ne
+#: le lisait : l'application démarrait en mode dégradé, sans Lakebase, sans
+#: rien dire de plus qu'un ``lakebaseConfigured: false`` dans ``/api/health``.
+#:
+#: Les deux emplacements sont lus, le répertoire courant l'emportant, pour que
+#: le fichier trouvé jusqu'ici continue de l'être.
+ENV_FILES = (_ROOT / ".env", Path(".env"))
+
 
 class Settings(BaseSettings):
     """Typed, validated view of the process environment."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

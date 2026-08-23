@@ -330,7 +330,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1880 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 1888 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1179,6 +1179,7 @@ l'historique des imports nomme.
 | `La migration 001 a été modifiée après application` | Un fichier de migration déjà appliqué a été édité | Restaurez le fichier ; créez une **nouvelle** migration |
 | L'app démarre puis s'arrête | Dépassement des 10 min de démarrage | Épinglez les versions, réduisez les dépendances |
 | **Pas d'espace disque** pendant le build | Quota du conteneur atteint | Supprimez `frontend/node_modules` et les caches, relancez |
+| `NameError: name '__file__' is not defined` au lancement d'un job | Le calcul serverless n'*importe* pas le fichier : il l'exécute par `exec(compile(source, chemin, "exec"))`, dans un espace de noms où ce global n'existe pas | Corrigé : les deux jobs déduisent leur répertoire du chemin de compilation (`co_filename`), et ne l'ajoutent au chemin d'import qu'après avoir vérifié que `lakebase.py` s'y trouve |
 
 ### 8.1 Commandes de diagnostic
 

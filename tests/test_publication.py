@@ -261,9 +261,26 @@ class TestOneImplementationTwoCallers:
 
     @pytest.mark.parametrize("job", [JOB, SYNC], ids=["publish", "sync"])
     def test_both_jobs_make_the_sibling_importable(self, job):
-        """Un `spark_python_task` ne met pas toujours ce dossier sur le chemin."""
+        """Un `spark_python_task` ne met pas toujours ce dossier sur le chemin.
+
+        Ce contrôle épinglait la ligne, mot pour mot. Il a donc certifié
+        pendant tout ce temps une ligne qui ne s'exécutait pas : sur le calcul
+        serverless, ``__file__`` n'existe pas et les deux jobs mouraient
+        dessus. Une ligne présente n'est pas une ligne qui marche.
+
+        Ce qui est vérifié ici est la propriété — le dossier devient
+        atteignable — et `test_jobs_bootstrap.py` la vérifie en lançant les
+        fichiers comme la plateforme le fait.
+        """
         source = job.read_text()
-        assert "sys.path.insert(0, str(Path(__file__).resolve().parent))" in source
+        reads_the_global = any(
+            isinstance(node, ast.Name)
+            and node.id == "__file__"
+            and isinstance(node.ctx, ast.Load)
+            for node in ast.walk(ast.parse(source))
+        )
+        assert "sys.path.insert" in source
+        assert not reads_the_global
 
     def test_the_discovery_lives_in_one_place_only(self):
         """Deux copies dérivent, et c'est ainsi que le défaut était né."""

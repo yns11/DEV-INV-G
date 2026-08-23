@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends, Query
 
 from ...domain.enums import CampaignStatus
 from ...domain.models import CampaignConfig, Thresholds
-from ...services import CampaignService
-from ..deps import CampaignDep, campaign_service
+from ...services import BoardService, CampaignService
+from ..deps import CampaignDep, board_service, campaign_service
 from ..schemas import (
     CloneCampaignRequest,
     CreateCampaignRequest,
@@ -20,6 +20,7 @@ from ..schemas import (
 router = APIRouter(prefix="/campaigns", tags=["campagnes"])
 
 Service = Annotated[CampaignService, Depends(campaign_service)]
+Board = Annotated[BoardService, Depends(board_service)]
 
 
 @router.get("", summary="Lister les campagnes")
@@ -116,6 +117,25 @@ def transition_readiness(
 ) -> dict[str, Any]:
     """What still blocks a transition, without attempting it."""
     return service.transition_readiness(campaign.id, target)
+
+
+@router.get("/{campaign_id}/work-queues", summary="Files de travail du jour")
+def work_queues(
+    campaign: CampaignDep,
+    board: Board,
+    focus: Annotated[bool, Query()] = False,
+) -> dict[str, Any]:
+    """Ce qui attend quelqu'un, maintenant.
+
+    Un pourcentage répond à « où en est-on », jamais à « que faire ». Ces files
+    répondent aux trois questions d'un matin d'inventaire : ce qui attend une
+    décision, ce qu'on peut fermer tout de suite, et qui n'a pas commencé.
+
+    ``focus=true`` applique le périmètre du gestionnaire connecté. C'est là que
+    le périmètre gagne sa place : quarante zones réparties sur neuf
+    responsables donnent un tableau illisible si chacun voit tout.
+    """
+    return board.work_queues(campaign, focus=focus)
 
 
 @router.get(

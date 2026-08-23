@@ -832,6 +832,29 @@ export interface ChecklistItem {
   where: string | null
 }
 
+/**
+ * Une file de travail du jour d'inventaire.
+ *
+ * `names` porte les premiers noms — codes de zone, clés de journal — parce
+ * qu'un nombre seul oblige à ouvrir un écran pour savoir sur quoi agir.
+ * `hidden` dit ce que la liste ne montre pas.
+ */
+export interface WorkQueue {
+  code: string
+  label: string
+  action: string
+  count: number
+  names: string[]
+  hidden: number
+  where: string
+}
+
+export interface WorkQueues {
+  focus: boolean
+  queues: WorkQueue[]
+  waiting: number
+}
+
 export interface ClosureChecklist {
   ready: boolean
   allowed: boolean

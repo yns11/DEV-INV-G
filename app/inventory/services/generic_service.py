@@ -683,7 +683,6 @@ class GenericService:
                     "zoneCode": zone.code if zone else "",
                     "zoneLabel": zone.label if zone else "",
                     "passNo": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
-                    "sheetStatus": str(sheet.status),
                     "name": items[line.item_number].name
                     if line.item_number in items else "",
                     "known": line.item_number in items,

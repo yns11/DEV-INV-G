@@ -194,6 +194,23 @@ export const SECTIONS: Section[] = [
     locked: (o) => blocked(o, 'backflush') ?? '',
   },
   {
+    to: 'journee',
+    label: 'La journée',
+    icon: 'clipboard',
+    phase: 'COUNTING',
+    lede: 'Ce qui attend quelqu’un, maintenant.',
+    // Aucune garde de séquencement : c'est une lecture, et la seule chose
+    // qu'elle puisse dire d'une campagne qui n'a rien commencé est justement
+    // « rien n'a commencé ».
+    enabled: () => true,
+    // Le nombre de zones et de journaux qui attendent encore. Il descend à
+    // zéro au fil de la journée, ce qui est la seule chose qu'on lui demande.
+    badge: (o) =>
+      o.genericProgress.zones -
+        o.genericProgress.done +
+        (o.journalProgress.total - o.journalProgress.complete) || null,
+  },
+  {
     to: 'compil',
     label: 'Compil',
     labelFor: (o) => `Compil ${generic(o)}`,

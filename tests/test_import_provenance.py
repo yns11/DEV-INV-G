@@ -135,7 +135,7 @@ def book_stock_service(monkeypatch):
     # L'archivage et la lecture du fichier ne sont pas le sujet ici : ce test
     # porte sur l'identifiant, et le faire passer par un vrai CSV n'y ajouterait
     # que du bruit.
-    service._archive = lambda *a, **k: "/Volumes/x/stock.csv"  # type: ignore[method-assign]
+    service.batches.archive = lambda *a, **k: "/Volumes/x/stock.csv"  # type: ignore[method-assign]
     return service, recorder, module
 
 
@@ -147,7 +147,7 @@ class TestLeStockErp:
             "qty": "10", "unit": "PCE",
         }]
         monkeypatch.setattr(
-            service, "parse",
+            service.parser, "parse",
             lambda target, **kw: (
                 None,
                 ParseResult(contract_key=target, rows=rows, rows_received=1),
@@ -197,7 +197,7 @@ def backflush_service(monkeypatch):
     with_access(ctx)
 
     service = module.ImportService(ctx)
-    service._archive = lambda *a, **k: "/Volumes/x/backflush.csv"  # type: ignore[method-assign]
+    service.batches.archive = lambda *a, **k: "/Volumes/x/backflush.csv"  # type: ignore[method-assign]
     return service, recorder, module
 
 
@@ -206,7 +206,7 @@ class TestLEcartBackflush:
         """Il n'y apparaissait pas du tout : aucune ligne n'était écrite."""
         service, recorder, module = backflush_service(monkeypatch)
         monkeypatch.setattr(
-            service, "parse",
+            service.parser, "parse",
             lambda target, **kw: (
                 None,
                 ParseResult(contract_key=target, rows=[{"item_number": "P-1"}], rows_received=1),
@@ -266,7 +266,7 @@ def test_aucun_import_marqueur_ne_laisse_le_depot_tirer_son_propre_lot(
     if service_builder == "book_stock":
         service, recorder, module = book_stock_service(monkeypatch)
         monkeypatch.setattr(
-            service, "parse",
+            service.parser, "parse",
             lambda target, **kw: (
                 None,
                 ParseResult(contract_key=target, rows=[{"item_number": "P-1"}], rows_received=1),
@@ -286,7 +286,7 @@ def test_aucun_import_marqueur_ne_laisse_le_depot_tirer_son_propre_lot(
     else:
         service, recorder, module = backflush_service(monkeypatch)
         monkeypatch.setattr(
-            service, "parse",
+            service.parser, "parse",
             lambda target, **kw: (
                 None,
                 ParseResult(contract_key=target, rows=[{"item_number": "P-1"}], rows_received=1),

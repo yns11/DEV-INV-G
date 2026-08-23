@@ -251,6 +251,12 @@ class TestNoWritePathBypassesTheRule:
         "GenericService.delete_sheet_line":
             "délègue à delete_sheet_lines, qui garde",
         "ManagerService.perimeter": "lecture",
+        # L'historique d'un import est la **trace** d'une écriture déjà
+        # autorisée : les six importeurs franchissent la porte avant de
+        # l'appeler. La mettre derrière la porte ferait qu'un import refusé
+        # faute de droits ne laisserait aucune trace de la tentative — soit
+        # l'inverse de ce qu'un historique sert à établir.
+        "ImportBatches.record_batch": "trace d'une écriture déjà autorisée",
     }
 
     def offenders(self) -> dict[str, str]:

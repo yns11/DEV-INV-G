@@ -12,11 +12,9 @@ which ones were rejected and why. Nothing is ever loaded blind.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from ..db import new_id
 from ..domain.enums import (
@@ -27,7 +25,6 @@ from ..domain.enums import (
     LocationStatus,
     LocationType,
 )
-from ..domain.imports import refuse_partial_write
 from ..domain.models import (
     Campaign,
     CountJournalLine,
@@ -43,7 +40,6 @@ from ..ingest import (
     ParseResult,
     PreparedSheetRow,
     RowError,
-    get_contract,
     map_adjustments,
     map_backflush,
     map_bom_links,
@@ -52,12 +48,20 @@ from ..ingest import (
     map_items,
     map_journal_lines,
     map_locations,
-    parse_clipboard,
-    parse_rows,
-    parse_tabular_bytes,
 )
-from ..ingest.erp import validate_period
 from .context import ServiceContext, utcnow
+from .import_batches import (
+    ImportBatches,
+    ImportOutcome,
+    _hash_of,
+    _source_of,
+)
+from .import_parsing import (
+    ImportParser,
+    InputMode,
+    _base_outcome,
+    _require_period,
+)
 
 log = logging.getLogger(__name__)
 
@@ -66,51 +70,6 @@ __all__ = [
     "suggested_period",
 ]
 
-InputMode = Literal["file", "paste", "rows", "erp"]
-
-
-@dataclass(slots=True)
-class ImportOutcome:
-    """Result of one import, shaped for direct display."""
-
-    target: str
-    rows_received: int = 0
-    rows_accepted: int = 0
-    rows_rejected: int = 0
-    errors: list[RowError] = field(default_factory=list)
-    warnings: list[RowError] = field(default_factory=list)
-    missing_columns: list[str] = field(default_factory=list)
-    unknown_columns: list[str] = field(default_factory=list)
-    duplicate_keys: list[str] = field(default_factory=list)
-    batch_id: str | None = None
-    #: Chemin du fichier archivé dans le volume, quand il a pu l'être. ``None``
-    #: dit « pas de pièce » : collage, lecture ERP, ou archivage indisponible.
-    storage_path: str | None = None
-    #: Free-form facts the specific import wants to surface (journals created,
-    #: locations discovered, …).
-    details: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def ok(self) -> bool:
-        return self.rows_rejected == 0 and not self.missing_columns
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "target": self.target,
-            "rowsReceived": self.rows_received,
-            "rowsAccepted": self.rows_accepted,
-            "rowsRejected": self.rows_rejected,
-            "ok": self.ok,
-            "errors": [e.as_dict() for e in self.errors[:200]],
-            "warnings": [w.as_dict() for w in self.warnings[:200]],
-            "truncatedErrors": max(0, len(self.errors) - 200),
-            "missingColumns": self.missing_columns,
-            "unknownColumns": self.unknown_columns,
-            "duplicateKeys": self.duplicate_keys[:50],
-            "batchId": self.batch_id,
-            "archived": self.storage_path is not None,
-            "details": self.details,
-        }
 
 
 class ImportService:
@@ -118,135 +77,14 @@ class ImportService:
 
     def __init__(self, ctx: ServiceContext) -> None:
         self.ctx = ctx
+        #: La provenance et l'idempotence, tenues à côté plutôt que dedans :
+        #: elles accompagnent les six importeurs sans appartenir à aucun.
+        self.batches = ImportBatches(ctx)
+        #: La lecture d'une entrée, tenue à côté aussi : elle ne écrit rien, et
+        #: les six importeurs s'en servent tous de la même façon.
+        self.parser = ImportParser(ctx)
 
     # ---------------------------------------------------------------- parsing
-
-    def parse(
-        self,
-        contract_key: str,
-        *,
-        mode: InputMode,
-        payload: bytes | None = None,
-        filename: str = "",
-        sheet: str | None = None,
-        text: str | None = None,
-        rows: Sequence[dict[str, Any]] | None = None,
-        period_start: dt.date | None = None,
-        period_end: dt.date | None = None,
-        snapshot_date: dt.date | None = None,
-    ) -> tuple[GridContract, ParseResult]:
-        """Parse input in any of the supported modes.
-
-        ``erp`` reads the source tables in Unity Catalog and produces rows in the
-        grid's own shape, so it joins the pipeline at exactly the same point as a
-        spreadsheet: same validation, same dry run, same mappers, same audit,
-        same editable grid afterwards. That is deliberate — an ERP load must not
-        be a second, less-checked path into the referential.
-        """
-        contract = get_contract(contract_key)
-        limit = self.ctx.settings.max_import_rows
-
-        match mode:
-            case "erp":
-                result = parse_rows(
-                    contract,
-                    self._read_erp(
-                        contract_key, limit=limit,
-                        period_start=period_start, period_end=period_end,
-                        snapshot_date=snapshot_date,
-                    ),
-                    max_rows=limit,
-                )
-            case "file":
-                if payload is None:
-                    raise ValidationError("Aucun fichier reçu.")
-                if len(payload) > self.ctx.settings.max_upload_bytes:
-                    raise ValidationError(
-                        "Fichier trop volumineux "
-                        f"({len(payload) / 1e6:.1f} Mo, maximum "
-                        f"{self.ctx.settings.max_upload_bytes / 1e6:.0f} Mo)."
-                    )
-                result = parse_tabular_bytes(
-                    contract, payload, filename=filename, sheet=sheet, max_rows=limit
-                )
-            case "paste":
-                if not text:
-                    raise ValidationError("Le presse-papiers est vide.")
-                result = parse_clipboard(contract, text, max_rows=limit)
-            case "rows":
-                result = parse_rows(contract, rows or [], max_rows=limit)
-            case _:
-                raise ValidationError(f"Mode d'import inconnu : {mode!r}")
-
-        return contract, result
-
-    def _read_erp(
-        self,
-        contract_key: str,
-        *,
-        limit: int,
-        period_start: dt.date | None = None,
-        period_end: dt.date | None = None,
-        snapshot_date: dt.date | None = None,
-    ) -> list[dict[str, Any]]:
-        """Rows from the ERP tables, in the grid's shape.
-
-        The two period arguments are only meaningful for the grids that read a
-        *fact* table rather than a referential: a referential has a state, a fact
-        table has a history, and reading the second without bounds would answer
-        a question nobody asked.
-
-        ``snapshot_date`` est de la troisième espèce : le stock n'est ni un état
-        courant ni un historique à parcourir, mais une suite de photos dont on en
-        charge **une**, nommée.
-        """
-        from ..ingest.erp import ErpReader
-
-        reader = ErpReader()
-        match contract_key:
-            case "items":
-                return reader.fetch_items(limit=limit)
-            case "boms":
-                return reader.fetch_bom_links(limit=limit)
-            case "book_stock":
-                # Une photo, celle que l'écran a nommée. Sans date, la plus
-                # récente — c'est le défaut, pas la seule possibilité.
-                return reader.fetch_book_stock(
-                    limit=limit, snapshot_date=snapshot_date
-                )
-            case "backflush":
-                start, end = _require_period(period_start, period_end)
-                return reader.fetch_backflush(
-                    period_start=start, period_end=end, limit=limit
-                )
-            case _:
-                raise ValidationError(
-                    f"La grille « {contract_key} » n'a pas de source ERP. "
-                    "Seuls les articles, les nomenclatures et l'écart backflush "
-                    "en ont une."
-                )
-
-    def preview(
-        self, contract_key: str, *, limit: int = 50, **kwargs: Any
-    ) -> dict[str, Any]:
-        """Dry-run an import: validate everything, persist nothing.
-
-        The user always sees what will happen before it happens — the single
-        biggest behavioural difference from pasting into a spreadsheet.
-
-        The payload is built by :meth:`ImportOutcome.as_dict`, exactly like the
-        commit path. Serialising a dry run through a second, similar-looking
-        function is how the two shapes silently diverged once already: the
-        preview omitted ``warnings``, and the client — which cannot tell the two
-        responses apart — crashed on the missing key.
-        """
-        _, result = self.parse(contract_key, **kwargs)
-        outcome = _base_outcome(contract_key, result)
-        outcome.rows_accepted = len(result.rows)
-        return {
-            **outcome.as_dict(),
-            "sample": [_jsonable(r) for r in result.rows[:limit]],
-        }
 
     def _retire_stale_locations(
         self,
@@ -322,14 +160,29 @@ class ImportService:
             )
         return removed, kept
 
+    # ---------------------------------------------------------------- parsing
+
+    def parse(self, *args: Any, **kwargs: Any) -> tuple[GridContract, ParseResult]:
+        """Lit une entrée — voir :class:`ImportParser`.
+
+        Le travail est à côté ; le point d'entrée reste ici parce que c'est
+        celui que l'API et les contrôles connaissent, et qu'une façade d'une
+        ligne coûte moins qu'un renommage de vingt-six appels.
+        """
+        return self.parser.parse(*args, **kwargs)
+
+    def preview(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Essai à blanc — voir :class:`ImportParser`."""
+        return self.parser.preview(*args, **kwargs)
+
     # -------------------------------------------------------------- importers
 
     def import_items(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
         ctx = self.ctx
         ctx.guard(campaign, "items")
-        _, parsed = self.parse("items", **kwargs)
+        _, parsed = self.parser.parse("items", **kwargs)
         outcome = _base_outcome("items", parsed)
-        outcome.storage_path = self._archive(campaign, "items", kwargs)
+        outcome.storage_path = self.batches.archive(campaign, "items", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -341,7 +194,7 @@ class ImportService:
         outcome.rows_accepted = len(items)
         with ctx.db.transaction() as conn:
             ctx.referentials.upsert_items(items, actor=ctx.actor, conn=conn)
-            outcome.batch_id = self._record_batch(
+            outcome.batch_id = self.batches.record_batch(
                 campaign.id, "items", outcome, conn=conn, **kwargs
             )
             ctx.record(
@@ -364,9 +217,9 @@ class ImportService:
     ) -> ImportOutcome:
         ctx = self.ctx
         ctx.guard(campaign, "boms")
-        _, parsed = self.parse("boms", **kwargs)
+        _, parsed = self.parser.parse("boms", **kwargs)
         outcome = _base_outcome("boms", parsed)
-        outcome.storage_path = self._archive(campaign, "boms", kwargs)
+        outcome.storage_path = self.batches.archive(campaign, "boms", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -379,7 +232,7 @@ class ImportService:
             # Seul le mode remplacement est concerné : un chargement qui
             # complète n'efface rien, et trois lignes refusées sur quatre mille
             # y sont trois lignes manquantes, pas trois lignes supprimées.
-            self._refuse_if_partial(
+            self.batches.refuse_if_partial(
                 outcome, accepted=len(links), allow_partial=allow_partial,
                 what="Cette nomenclature",
             )
@@ -390,7 +243,7 @@ class ImportService:
                 )
                 outcome.details["replacedLinks"] = removed
             ctx.referentials.upsert_bom_links(links, actor=ctx.actor, conn=conn)
-            outcome.batch_id = self._record_batch(
+            outcome.batch_id = self.batches.record_batch(
                 campaign.id, "boms", outcome, conn=conn, **kwargs
             )
             ctx.record(
@@ -419,9 +272,9 @@ class ImportService:
     def import_adjustments(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
         ctx = self.ctx
         ctx.guard(campaign, "adjustments")
-        _, parsed = self.parse("adjustments", **kwargs)
+        _, parsed = self.parser.parse("adjustments", **kwargs)
         outcome = _base_outcome("adjustments", parsed)
-        outcome.storage_path = self._archive(campaign, "adjustments", kwargs)
+        outcome.storage_path = self.batches.archive(campaign, "adjustments", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -435,7 +288,7 @@ class ImportService:
         outcome.rows_accepted = len(lines)
         with ctx.db.transaction() as conn:
             ctx.adjustments.upsert(lines, actor=ctx.actor, conn=conn)
-            outcome.batch_id = self._record_batch(
+            outcome.batch_id = self.batches.record_batch(
                 campaign.id, "adjustments", outcome, conn=conn, **kwargs
             )
             ctx.record(
@@ -451,9 +304,9 @@ class ImportService:
     def import_locations(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
         ctx = self.ctx
         ctx.guard(campaign, "locations")
-        _, parsed = self.parse("locations", **kwargs)
+        _, parsed = self.parser.parse("locations", **kwargs)
         outcome = _base_outcome("locations", parsed)
-        outcome.storage_path = self._archive(campaign, "locations", kwargs)
+        outcome.storage_path = self.batches.archive(campaign, "locations", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -473,7 +326,7 @@ class ImportService:
                 warehouses.values(), actor=ctx.actor, conn=conn
             )
             ctx.referentials.upsert_locations(locations, actor=ctx.actor, conn=conn)
-            outcome.batch_id = self._record_batch(
+            outcome.batch_id = self.batches.record_batch(
                 campaign.id, "locations", outcome, conn=conn, **kwargs
             )
             ctx.record(
@@ -509,9 +362,9 @@ class ImportService:
                 frozenAt=campaign.book_stock_frozen_at.isoformat(),
             )
 
-        _, parsed = self.parse("book_stock", **kwargs)
+        _, parsed = self.parser.parse("book_stock", **kwargs)
         outcome = _base_outcome("book_stock", parsed)
-        outcome.storage_path = self._archive(campaign, "book_stock", kwargs)
+        outcome.storage_path = self.batches.archive(campaign, "book_stock", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -580,7 +433,7 @@ class ImportService:
         # Le pire cas du rapport d'audit : un snapshot amputé qui se présente
         # comme complet. Chaque article manquant produit ensuite un écart de
         # 100 % contre un stock que l'ERP n'a jamais annoncé nul.
-        self._refuse_if_partial(
+        self.batches.refuse_if_partial(
             outcome, accepted=len(lines), allow_partial=allow_partial,
             what="Le stock ERP",
         )
@@ -626,7 +479,7 @@ class ImportService:
                 # n'en a pas, et la colonne restait vide — c'est-à-dire que
                 # l'historique ne disait pas d'où venait le stock, ce qui est
                 # précisément le seul travail de cet historique.
-                filename=self._origin_of("book_stock", kwargs),
+                filename=self.batches.origin_of("book_stock", kwargs),
                 content_hash=_hash_of(kwargs),
                 storage_path=outcome.storage_path,
                 rows_received=outcome.rows_received,
@@ -728,11 +581,11 @@ class ImportService:
         ctx.guard(campaign, "backflush")
 
         start, end = _require_period(period_start, period_end)
-        _, parsed = self.parse(
+        _, parsed = self.parser.parse(
             "backflush", period_start=start, period_end=end, **kwargs
         )
         outcome = _base_outcome("backflush", parsed)
-        outcome.storage_path = self._archive(campaign, "backflush", kwargs)
+        outcome.storage_path = self.batches.archive(campaign, "backflush", kwargs)
 
         # Même règle que les flux de la comparaison : la table couvre toute
         # l'usine, et un article exclu du périmètre n'a pas d'écart à porter.
@@ -747,7 +600,7 @@ class ImportService:
         # `replace` : l'écart de la période remplace le précédent. Un article
         # refusé disparaît donc de l'écart au lieu d'y manquer, et la
         # consommation qu'il portait cesse d'exister pour l'analyse.
-        self._refuse_if_partial(
+        self.batches.refuse_if_partial(
             outcome, accepted=len(lines), allow_partial=allow_partial,
             what="L'écart backflush",
         )
@@ -763,7 +616,7 @@ class ImportService:
             ctx.imports.create(
                 campaign_id=campaign.id,
                 target="backflush",
-                filename=self._origin_of("backflush", kwargs),
+                filename=self.batches.origin_of("backflush", kwargs),
                 content_hash=_hash_of(kwargs),
                 storage_path=outcome.storage_path,
                 rows_received=outcome.rows_received,
@@ -821,9 +674,9 @@ class ImportService:
         """
         ctx = self.ctx
         ctx.guard(campaign, "count_journals")
-        _, parsed = self.parse("count_journal_lines", **kwargs)
+        _, parsed = self.parser.parse("count_journal_lines", **kwargs)
         outcome = _base_outcome("count_journal_lines", parsed)
-        outcome.storage_path = self._archive(campaign, "count_journal_lines", kwargs)
+        outcome.storage_path = self.batches.archive(campaign, "count_journal_lines", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -943,7 +796,7 @@ class ImportService:
                     )
 
             outcome.rows_accepted = len(lines)
-            outcome.batch_id = self._record_batch(
+            outcome.batch_id = self.batches.record_batch(
                 campaign.id, "count_journal_lines", outcome, conn=conn, **kwargs
             )
             ctx.record(
@@ -997,9 +850,9 @@ class ImportService:
         """
         ctx = self.ctx
         ctx.guard(campaign, "count_sheets")
-        _, parsed = self.parse("count_sheets", **kwargs)
+        _, parsed = self.parser.parse("count_sheets", **kwargs)
         outcome = _base_outcome("count_sheets", parsed)
-        outcome.storage_path = self._archive(campaign, "count_sheets", kwargs)
+        outcome.storage_path = self.batches.archive(campaign, "count_sheets", kwargs)
         if not parsed.rows:
             return outcome
 
@@ -1098,7 +951,7 @@ class ImportService:
                 "zonesCompleted": sorted(set(completed_zones)),
                 "sheetLinesCreated": lines_created,
             }
-            outcome.batch_id = self._record_batch(
+            outcome.batch_id = self.batches.record_batch(
                 campaign.id, "count_sheets", outcome, conn=conn, **kwargs
             )
             ctx.record(
@@ -1117,224 +970,11 @@ class ImportService:
 
     # --------------------------------------------------------------- helpers
 
-    def _origin_of(self, target: str, kwargs: dict[str, Any]) -> str:
-        """What the import history should name as the origin of a batch.
-
-        A file has a filename; an ERP read has a table. Leaving the column blank
-        for ERP loads would make half the history unreadable six months later,
-        which is the one job that history has.
-        """
-        if kwargs.get("mode") != "erp":
-            return kwargs.get("filename", "")
-        settings = self.ctx.settings
-        table = {
-            "items": settings.erp_items_fqn,
-            "book_stock": settings.erp_stock_fqn,
-        }.get(target, settings.erp_bom_fqn)
-        # Pour le stock, la photo chargée compte plus que la table : deux
-        # campagnes lisant la même table à deux jours d'écart ne comparent pas
-        # leur comptage au même état du système.
-        day = kwargs.get("snapshot_date")
-        if target == "book_stock" and day is not None:
-            table = f"{table} au {day.isoformat()}"
-        if settings.erp_source != "mirror":
-            return table
-        # Naming the ERP table alone would claim a live read that did not
-        # happen. Which copy was loaded, and how old it was, is the whole
-        # question six months later.
-        from ..ingest.erp import mirror_state
-
-        synced = (mirror_state().get(target) or {}).get("syncedAt")
-        return f"{table} (miroir du {synced[:10]})" if synced else f"{table} (miroir)"
-
-    def _archive(
-        self, campaign: Campaign, target: str, kwargs: dict[str, Any]
-    ) -> str | None:
-        """Dépose le fichier chargé dans le volume, et renvoie son chemin.
-
-        Appelée **avant** d'ouvrir la transaction : le dépôt part sur le réseau,
-        et tenir une transaction ouverte pendant un aller-retour vers le volume
-        garderait une connexion du pool immobilisée pour une écriture qui ne la
-        concerne pas.
-
-        Seuls les fichiers sont archivés. Un collage n'a pas d'original à
-        conserver — le texte collé est déjà dans les lignes chargées — et une
-        lecture ERP se rejoue par sa requête, que l'historique nomme déjà.
-        """
-        payload = kwargs.get("payload")
-        if not isinstance(payload, bytes):
-            return None
-        archived = self.ctx.evidence.put(
-            payload,
-            campaign_code=campaign.code,
-            kind=target,
-            filename=kwargs.get("filename") or f"{target}.bin",
-        )
-        return archived.path if archived else None
-
-    def _refuse_if_partial(
-        self,
-        outcome: ImportOutcome,
-        *,
-        accepted: int,
-        allow_partial: bool,
-        what: str,
-    ) -> None:
-        """Refuse un remplacement amputé, sauf dérogation explicite.
-
-        Appelée **avant** d'ouvrir la transaction : le refus n'a rien à défaire,
-        et une transaction ouverte pour être immédiatement annulée immobilise
-        une connexion du pool pour rien.
-
-        La dérogation, quand elle est prise, est écrite dans le rapport du lot :
-        « 3 997 lignes chargées » ne veut pas dire la même chose selon qu'il y
-        en avait 3 997 ou 4 000, et six mois plus tard c'est cette ligne
-        d'historique qui répond.
-        """
-        refusal = refuse_partial_write(
-            wholesale=True,
-            rejected=outcome.rows_rejected,
-            accepted=accepted,
-            allow_partial=allow_partial,
-            what=what,
-            reasons=tuple(e.message for e in outcome.errors),
-        )
-        if refusal is not None:
-            raise ValidationError(
-                refusal.message,
-                rejected=refusal.rejected,
-                accepted=refusal.accepted,
-                errors=[e.as_dict() for e in outcome.errors[:50]],
-            )
-        if allow_partial and outcome.rows_rejected:
-            outcome.details["partialAccepted"] = True
-            outcome.details["partialRejected"] = outcome.rows_rejected
-
-    def _record_batch(
-        self,
-        campaign_id: str,
-        target: str,
-        outcome: ImportOutcome,
-        *,
-        conn: Any = None,
-        **kwargs: Any,
-    ) -> str:
-        """Persist the provenance of one import.
-
-        Call this **after** ``outcome.rows_accepted`` is set: the batch row is
-        the permanent record of what a file actually loaded, and a zero there
-        would make the import history useless.
-        """
-        batch_id = self.ctx.imports.create(
-            campaign_id=campaign_id,
-            target=target,
-            filename=self._origin_of(target, kwargs),
-            content_hash=_hash_of(kwargs),
-            storage_path=outcome.storage_path,
-            rows_received=outcome.rows_received,
-            rows_accepted=outcome.rows_accepted,
-            rows_rejected=outcome.rows_rejected,
-            report=outcome.as_dict(),
-            imported_by=self.ctx.actor,
-            conn=conn,
-        )
-        # The counts the sequencing guard reads have just changed: a request
-        # that loads the referential and then creates the sheets must not be
-        # judged on the counts taken before the load.
-        self.ctx.forget_progress(campaign_id)
-        return batch_id
-
-    def check_duplicate(
-        self, campaign_id: str, target: str, **kwargs: Any
-    ) -> dict[str, Any] | None:
-        """Warn when the exact same payload was already imported."""
-        digest = _hash_of(kwargs)
-        if not digest:
-            return None
-        return self.ctx.imports.find_duplicate(campaign_id, target, digest)
-
-
-def _base_outcome(target: str, parsed: ParseResult) -> ImportOutcome:
-    return ImportOutcome(
-        target=target,
-        rows_received=parsed.rows_received,
-        rows_rejected=len(parsed.errors),
-        errors=list(parsed.errors),
-        missing_columns=list(parsed.missing_columns),
-        unknown_columns=list(parsed.unknown_columns),
-        duplicate_keys=list(parsed.duplicate_keys),
-    )
-
-
-def _source_of(mode: str) -> DataSource:
-    """Where a row came from, kept on every article for the rest of the campaign.
-
-    Worth distinguishing: an article read from the ERP and one typed by hand
-    carry different confidence, and the analysis screen shows the provenance.
-    """
-    match mode:
-        case "erp":
-            return DataSource.ERP_IMPORT
-        case "paste" | "rows":
-            return DataSource.MANUAL
-        case _:
-            return DataSource.FILE_IMPORT
-
-
-def _hash_of(kwargs: dict[str, Any]) -> str:
-    payload = kwargs.get("payload")
-    if isinstance(payload, bytes):
-        return hashlib.sha256(payload).hexdigest()
-    text = kwargs.get("text")
-    if isinstance(text, str):
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return ""
-
-
 def _journal_by_id(journals: dict[LocationKey, Any], journal_id: str) -> Any:
     for journal in journals.values():
         if journal.id == journal_id:
             return journal
     return None
-
-
-def _jsonable(row: dict[str, Any]) -> dict[str, Any]:
-    import datetime as _dt
-    from decimal import Decimal
-
-    out: dict[str, Any] = {}
-    for key, value in row.items():
-        if isinstance(value, Decimal):
-            out[key] = float(value)
-        elif isinstance(value, (_dt.date, _dt.datetime)):
-            out[key] = value.isoformat()
-        else:
-            out[key] = value
-    return out
-
-
-def _require_period(
-    start: dt.date | None, end: dt.date | None
-) -> tuple[dt.date, dt.date]:
-    """The two bounds, refused rather than guessed when they are missing.
-
-    A default period would be the worst of both worlds here: the figure would
-    look computed, the header would show bounds nobody chose, and the number
-    would be wrong for every campaign whose period is not the default. The
-    screen proposes a period; it is the user who fixes it.
-    """
-    if start is None or end is None:
-        raise ValidationError(
-            "L'écart backflush se lit sur une période : indiquez la borne de "
-            "début et la borne de fin (des lundis ISO, fin exclue).",
-            borneDebut=start.isoformat() if start else None,
-            borneFin=end.isoformat() if end else None,
-        )
-    # Validated here rather than in the query builder, so a file or a paste is
-    # held to the same rule as an ERP read. It was not, and a Wednesday typed
-    # into the form was stored as a bound the source could never have produced.
-    validate_period(start, end)
-    return start, end
 
 
 def monday_of(day: dt.date) -> dt.date:

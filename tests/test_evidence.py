@@ -381,12 +381,12 @@ class TestWhichPathsArchive:
     def test_every_importer_archives_its_file(self):
         guilty = [
             name for name, body in self.importers().items()
-            if "self._archive(" not in body
+            if "self.batches.archive(" not in body
         ]
         assert not guilty, (
             "Ces importeurs ne déposent jamais leur fichier dans le volume : "
             + ", ".join(sorted(guilty))
-            + ". Ajoutez `outcome.storage_path = self._archive(campaign, "
+            + ". Ajoutez `outcome.storage_path = self.batches.archive(campaign, "
             "\"<cible>\", kwargs)` après la construction de l'issue."
         )
 
@@ -418,19 +418,19 @@ class TestWhatIsNotWorthArchiving:
     def test_a_pasted_block_has_no_original_to_keep(self):
         """Le texte collé est déjà dans les lignes chargées."""
         svc, files = self.service()
-        assert svc._archive(
+        assert svc.batches.archive(
             self.campaign(), "items", {"mode": "paste", "text": "A\t1"}
         ) is None
         assert files.stored == {}
 
     def test_an_erp_read_is_replayed_by_its_query_not_by_a_file(self):
         svc, files = self.service()
-        assert svc._archive(self.campaign(), "items", {"mode": "erp"}) is None
+        assert svc.batches.archive(self.campaign(), "items", {"mode": "erp"}) is None
         assert files.stored == {}
 
     def test_an_uploaded_file_is_kept(self):
         svc, files = self.service()
-        path = svc._archive(
+        path = svc.batches.archive(
             self.campaign(), "items",
             {"mode": "file", "payload": b"xlsx", "filename": "articles.xlsx"},
         )
@@ -440,7 +440,7 @@ class TestWhatIsNotWorthArchiving:
     def test_the_piece_is_filed_under_the_campaign_code(self):
         """Un humain qui parcourt le volume cherche par campagne, pas par UUID."""
         svc, _ = self.service()
-        path = svc._archive(
+        path = svc.batches.archive(
             self.campaign(), "items",
             {"mode": "file", "payload": b"x", "filename": "a.xlsx"},
         )

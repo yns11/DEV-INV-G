@@ -319,8 +319,8 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
     from inventory.ai.sheet_extraction import ExtractionResult, PageRouting
     from inventory.config import Settings
     from inventory.domain.enums import CampaignStatus, SheetPass
-    from inventory.domain.models import Campaign, CountSheet, Zone
-    from inventory.services import generic_service as module
+    from inventory.domain.models import Campaign, CountSheet, CountSheetLine, Zone
+    from inventory.services import scan_service as module
 
     campaign = Campaign(
         id="camp-1", code="INV-2026-09", label="Inventaire",
@@ -335,7 +335,7 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
     ]
     lines_by_sheet = {
         s.id: [
-            module.CountSheetLine(
+            CountSheetLine(
                 id=f"{s.id}-l1", sheet_id=s.id, campaign_id="camp-1",
                 item_number="MASS-1",
             )
@@ -394,7 +394,7 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
     )
     with_transactions(ctx)
     with_access(ctx)
-    service = module.GenericService(cast(object, ctx))
+    service = module.ScanService(cast(object, ctx))
     service._archive_spy = archive  # type: ignore[attr-defined]
     service._sheet_updates = sheet_updates  # type: ignore[attr-defined]
     return service, campaign, written, ExtractionResult
@@ -615,8 +615,8 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
     from inventory.ai.sheet_extraction import ExtractionResult
     from inventory.config import Settings
     from inventory.domain.enums import CampaignStatus, SheetPass
-    from inventory.domain.models import Campaign, CountSheet, Zone
-    from inventory.services import generic_service as module
+    from inventory.domain.models import Campaign, CountSheet, CountSheetLine, Zone
+    from inventory.services import scan_service as module
 
     campaign = Campaign(
         id="camp-1", code="INV-2026-09", label="Inventaire",
@@ -632,7 +632,7 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
         []
         if free_entry
         else [
-            module.CountSheetLine(
+            CountSheetLine(
                 id="s-1-l1", sheet_id="s-1", campaign_id="camp-1",
                 item_number="MASS-1",
             )
@@ -684,7 +684,7 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
     )
     with_transactions(ctx)
     with_access(ctx)
-    service = module.GenericService(cast(object, ctx))
+    service = module.ScanService(cast(object, ctx))
     service._archive_spy = archive  # type: ignore[attr-defined]
     service._sheet_updates = sheet_updates  # type: ignore[attr-defined]
     return service, campaign

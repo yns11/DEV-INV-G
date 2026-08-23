@@ -9,6 +9,7 @@ from .analysis_service import AnalysisService
 from .assistant_service import AssistantService
 from .board_service import BoardService
 from .campaign_service import DEFAULT_THRESHOLDS, CampaignService
+from .consolidation_service import ConsolidationService
 from .context import ENGINE_VERSION, ServiceContext, utcnow
 from .counting_service import CountingService
 from .evidence_service import ArchivedEvidence, EvidenceService
@@ -22,6 +23,7 @@ from .scan_jobs import (
     abandon_orphan_jobs,
     shutdown_workers,
 )
+from .scan_service import ScanService
 from .stock_flow_service import StockFlowService
 
 __all__ = [
@@ -36,7 +38,9 @@ __all__ = [
     "EvidenceService",
     "LocationView",
     "ENGINE_VERSION",
+    "ConsolidationService",
     "GenericService",
+    "ScanService",
     "ImportOutcome",
     "ImportService",
     "ManagerService",

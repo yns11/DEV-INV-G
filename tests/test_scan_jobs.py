@@ -440,7 +440,7 @@ class TestTheWorkerReadsWhatTheJobNames:
                 return {"sheetsProcessed": [1, 2]}
 
         monkeypatch.setattr(
-            "inventory.services.generic_service.GenericService", FakeGeneric
+            "inventory.services.scan_service.ScanService", FakeGeneric
         )
         monkeypatch.setattr(
             scan_jobs, "ServiceContext",

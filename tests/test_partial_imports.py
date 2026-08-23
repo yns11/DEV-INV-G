@@ -152,9 +152,11 @@ def import_service(monkeypatch, *, rows, mapped, errors, target):
     with_access(ctx)
 
     service = module.ImportService(ctx)
-    service._archive = lambda *a, **k: None  # type: ignore[method-assign]
+    service.batches.archive = lambda *a, **k: None  # type: ignore[method-assign]
+    # La lecture est doublée là où elle se fait désormais : sur le lecteur que
+    # le service compose, pas sur la façade d'une ligne qu'il expose.
     monkeypatch.setattr(
-        service, "parse",
+        service.parser, "parse",
         lambda t, **kw: (
             None,
             ParseResult(contract_key=t, rows=rows, rows_received=len(rows),

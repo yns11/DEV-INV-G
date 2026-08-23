@@ -7,10 +7,11 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from ...errors import ValidationError
-from ...services import GenericService, ScanJobService
+from ...services import ConsolidationService, GenericService, ScanJobService
 from ..deps import (
     CampaignDep,
     Ctx,
+    consolidation_service,
     generic_service,
     resolve_perimeter,
     scan_job_service,
@@ -32,6 +33,10 @@ from ..uploads import offload, read_upload
 router = APIRouter(prefix="/campaigns/{campaign_id}/generic", tags=["GENERIQUE"])
 
 Service = Annotated[GenericService, Depends(generic_service)]
+
+#: La consolidation a son propre service : elle lit les feuilles, elle ne les
+#: écrit pas, et elle est la seule à parler d'ERP, de nomenclatures et de valeur.
+Consolidation = Annotated[ConsolidationService, Depends(consolidation_service)]
 ScanJobs = Annotated[ScanJobService, Depends(scan_job_service)]
 
 #: Scans are read by a vision model; anything else would be silently misread.
@@ -410,32 +415,32 @@ def prefill_with_pass_2(
 # --------------------------------------------------------------------------- #
 
 @router.get("/consolidation/preview", summary="Prévisualiser la consolidation")
-def preview_consolidation(campaign: CampaignDep, service: Service) -> dict[str, Any]:
+def preview_consolidation(campaign: CampaignDep, consolidation: Consolidation) -> dict[str, Any]:
     """Run the consolidation including unfinished zones, without saving.
 
     This is the live view during counting: it shows what the GENERIQUE journal
     would contain right now, and which zones are still missing.
     """
-    return service.preview_consolidation(campaign)
+    return consolidation.preview_consolidation(campaign)
 
 
 @router.post("/consolidation", summary="Consolider et alimenter le journal GENERIQUE")
-def run_consolidation(campaign: CampaignDep, service: Service) -> dict[str, Any]:
+def run_consolidation(campaign: CampaignDep, consolidation: Consolidation) -> dict[str, Any]:
     """Consolidate every finished zone and post the result to the INVV journal.
 
     Replaces the Excel macro plus the manual copy/paste into the ERP: the
     resulting journal is downloadable in the ERP import format.
     """
-    return service.consolidate_and_save(campaign)
+    return consolidation.consolidate_and_save(campaign)
 
 
 @router.get("/consolidation", summary="Dernière consolidation enregistrée")
-def current_consolidation(campaign: CampaignDep, service: Service) -> dict[str, Any]:
-    return service.current_consolidation(campaign)
+def current_consolidation(campaign: CampaignDep, consolidation: Consolidation) -> dict[str, Any]:
+    return consolidation.current_consolidation(campaign)
 
 
 @router.get("/wip-without-bom", summary="Lignes WIP sans nomenclature")
-def wip_without_bom(campaign: CampaignDep, service: Service) -> list[dict[str, Any]]:
+def wip_without_bom(campaign: CampaignDep, consolidation: Consolidation) -> list[dict[str, Any]]:
     """WIP lines whose assembly has no bill of materials.
 
     They block the consolidation on purpose: exploding an assembly with no
@@ -443,16 +448,16 @@ def wip_without_bom(campaign: CampaignDep, service: Service) -> list[dict[str, A
     referential is frozen during counting, the remedy is to reclassify the line
     as *WIP assemblé* — which is what ``POST /reclassify-wip`` does.
     """
-    return service.wip_without_bom(campaign)
+    return consolidation.wip_without_bom(campaign)
 
 
 @router.post("/reclassify-wip", summary="Reclasser des lignes de comptage")
 def reclassify_wip(
-    campaign: CampaignDep, payload: ReclassifyRequest, service: Service
+    campaign: CampaignDep, payload: ReclassifyRequest, consolidation: Consolidation
 ) -> dict[str, int]:
     """Move counting-sheet lines to another section, as an explicit decision."""
     return {
-        "updated": service.reclassify_wip(
+        "updated": consolidation.reclassify_wip(
             campaign, payload.line_ids, section=payload.section
         )
     }
@@ -460,11 +465,11 @@ def reclassify_wip(
 
 @router.get("/wip/{item_number}", summary="Décomposition du WIP d'un composant")
 def wip_breakdown(
-    campaign: CampaignDep, item_number: str, service: Service
+    campaign: CampaignDep, item_number: str, consolidation: Consolidation
 ) -> list[dict[str, Any]]:
     """Answer "where does this component's WIP quantity come from?".
 
     The specification asks for the WIP to be explorable rather than shown as one
     aggregated number; this is the data behind that drill-down.
     """
-    return service.wip_breakdown(campaign, item_number.strip().upper())
+    return consolidation.wip_breakdown(campaign, item_number.strip().upper())

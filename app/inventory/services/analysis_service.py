@@ -143,9 +143,9 @@ class AnalysisService:
         if journal is not None and journal.status is JournalStatus.POSTED:
             return counted
 
-        from .generic_service import GenericService
+        from .consolidation_service import ConsolidationService
 
-        result = GenericService(ctx).consolidate(campaign, preview=True, provisional=True)
+        result = ConsolidationService(ctx).consolidate(campaign, preview=True, provisional=True)
         kept = [
             c for c in counted
             if not (c.warehouse_id == warehouse and c.location_id == location)
@@ -584,9 +584,9 @@ class AnalysisService:
                 "qty": float(row["qty"]),
             })
 
-        from .generic_service import GenericService
+        from .consolidation_service import ConsolidationService
 
-        result = GenericService(ctx).consolidate(
+        result = ConsolidationService(ctx).consolidate(
             campaign, preview=True, provisional=True
         )
         line = next(
@@ -721,12 +721,12 @@ class AnalysisService:
         readable, where a raw occurrence count reads as noise the moment one
         control fires on four hundred articles.
         """
-        from .generic_service import GenericService
+        from .consolidation_service import ConsolidationService
 
         controls = len(group_findings(self._all_findings(campaign)))
         consolidation = 0
         if self.ctx.sheets.list_zones(campaign.id):
-            result = GenericService(self.ctx).consolidate(campaign, preview=True)
+            result = ConsolidationService(self.ctx).consolidate(campaign, preview=True)
             consolidation = len(group_findings(result.findings))
         return {"controls": controls, "consolidation": consolidation}
 

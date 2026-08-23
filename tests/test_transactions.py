@@ -39,6 +39,7 @@ from inventory.domain.enums import (
     SheetPass,
 )
 from inventory.domain.models import CountSheetLine, Zone
+from inventory.services.consolidation_service import ConsolidationService
 from inventory.services.counting_service import CountingService
 from inventory.services.generic_service import GenericService
 
@@ -282,7 +283,7 @@ class TestLaConsolidationEtSonJournal:
         camp = campaign()
         camp.config = SimpleNamespace(generic_passes=2, generic_key=key)
 
-        service = GenericService(ctx)
+        service = ConsolidationService(ctx)
         service.consolidate = lambda campaign, preview=False: ConsolidationResult(  # type: ignore[method-assign]
             campaign_id=CAMPAIGN_ID,
             lines=[

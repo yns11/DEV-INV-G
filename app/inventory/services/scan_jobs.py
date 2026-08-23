@@ -146,7 +146,7 @@ def _run(*, job_id: str, campaign_id: str, actor: str, request_id: str) -> None:
     après leur fermeture. L'identité, elle, est celle du déposant — c'est bien
     son import, et le journal d'audit doit le dire.
     """
-    from .generic_service import GenericService
+    from .scan_service import ScanService
 
     with _lock:
         payload = _payloads.get(job_id)
@@ -169,7 +169,7 @@ def _run(*, job_id: str, campaign_id: str, actor: str, request_id: str) -> None:
                 # doit pas faire perdre une lecture de cent feuilles.
                 log.warning("Avancement du scan %s non écrit : %s", job_id, exc)
 
-        service = GenericService(ctx)
+        service = ScanService(ctx)
         sheet_id = row.get("sheet_id")
         common = {
             "payload": payload,

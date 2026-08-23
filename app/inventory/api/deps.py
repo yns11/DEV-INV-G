@@ -15,6 +15,7 @@ from ..services import (
     AnalysisService,
     BoardService,
     CampaignService,
+    ConsolidationService,
     CountingService,
     EvidenceService,
     GenericService,
@@ -136,6 +137,10 @@ def counting_service(ctx: Ctx) -> CountingService:
 
 def generic_service(ctx: Ctx) -> GenericService:
     return GenericService(ctx)
+
+
+def consolidation_service(ctx: Ctx) -> ConsolidationService:
+    return ConsolidationService(ctx)
 
 
 def analysis_service(ctx: Ctx) -> AnalysisService:

@@ -242,6 +242,26 @@ def main() -> int:
     spark = SparkSession.builder.getOrCreate()
     published_at = dt.datetime.now(dt.UTC)
 
+    # Avant d'ouvrir quoi que ce soit : les tables cibles existent-elles ?
+    #
+    # `publication` est écrite en dernier. Une table manquante ne se découvrait
+    # donc qu'après avoir lu la campagne entière et écrit les neuf autres —
+    # l'échec le plus coûteux possible, puisqu'il arrive au bout du travail
+    # utile. Le job de synchronisation vérifie la forme du miroir avant de lire
+    # l'ERP, pour exactement cette raison ; celui-ci ne vérifiait rien.
+    missing = _missing_tables(spark, args, [*QUERIES, "publication"])
+    if missing:
+        log.error(
+            "Tables absentes de %s.%s : %s. Le schéma Unity Catalog n'est pas à "
+            "jour. Rejouez « make uc WAREHOUSE_ID=<id> PROFILE=<profil> » : "
+            "sql/00_unity_catalog.sql est en CREATE TABLE IF NOT EXISTS, les "
+            "tables déjà présentes ne sont pas touchées.",
+            args.catalog,
+            args.schema,
+            ", ".join(missing),
+        )
+        return 3
+
     conninfo = _lakebase_conninfo(args)
     log.info("Publishing campaign %s to %s.%s", code, args.catalog, args.schema)
 
@@ -433,6 +453,20 @@ def _write(
         .option("replaceWhere", replace_predicate)
         .saveAsTable(fqn)
     )
+
+
+def _missing_tables(spark: Any, args: Any, tables: list[str]) -> list[str]:
+    """Celles qui n'existent pas encore dans Unity Catalog, dans l'ordre.
+
+    Toutes sont interrogées, jamais seulement la première : un exploitant qui
+    doit rejouer le script veut savoir ce qui manque, pas le découvrir table
+    après table.
+    """
+    return [
+        table
+        for table in tables
+        if not spark.catalog.tableExists(f"{args.catalog}.{args.schema}.{table}")
+    ]
 
 
 def _always_null(rows: list[dict[str, Any]]) -> set[str]:

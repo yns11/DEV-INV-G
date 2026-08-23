@@ -330,7 +330,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1911 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 1917 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1191,6 +1191,7 @@ l'historique des imports nomme.
 | `Hôte Lakebase inconnu, et le SDK … ne connaît pas l'API Lakebase Autoscaling` | Le runtime serverless fige `databricks-sdk` (0.49 ici) ; `w.postgres` n'apparaît qu'en 0.81 et la version ne peut pas être relevée | Corrigé : le job appelle l'API Lakebase en direct (`GET /api/2.0/postgres/{branche}/endpoints`) quand la façade typée manque. La découverte ne dépend plus de la version du SDK ; `--pg-host` reste le dernier recours |
 | `[CAST_INVALID_INPUT] The value 'count_date' … cannot be cast to "DATE"` — la valeur est le **nom** de la colonne | La connexion est ouverte en `row_factory=dict_row` ; `fetch` rezippait ces dictionnaires avec les noms de colonnes, et itérer un dictionnaire rend ses clés | Corrigé : `fetch` rend les lignes telles quelles quand elles sont déjà des dictionnaires. Sur un schéma entièrement textuel, le défaut aurait publié une archive de noms de colonnes en se déclarant réussie |
 | `CANNOT_DETERMINE_TYPE` à la publication d'une table | Une colonne vide sur **toutes** les lignes n'a pas de type déductible, et Spark refuse le DataFrame entier — cas ordinaire : une campagne en comptage n'a pas de date de clôture | Corrigé : ces colonnes sont retirées avant la construction et remises avec le type de la table. La valeur écrite reste NULL, mais typée |
+| `TABLE_OR_VIEW_NOT_FOUND … inventory.publication` à la publication | Le schéma Unity Catalog du workspace est antérieur à la table demandée : `make uc` a été joué avant qu'elle n'entre dans `sql/00_unity_catalog.sql` | Rejouez `make uc WAREHOUSE_ID=<id> PROFILE=<profil>`. Le script est en `CREATE TABLE IF NOT EXISTS` : seules les tables manquantes sont créées. Le job vérifie désormais les dix tables **avant** d'écrire quoi que ce soit, et les nomme toutes d'un coup |
 
 ### 8.1 Commandes de diagnostic
 

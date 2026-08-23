@@ -198,6 +198,107 @@ class TestColumnsWithNothingInThem:
         }
 
 
+class FakeCatalog:
+    """Le catalogue Unity, réduit à la seule question posée."""
+
+    def __init__(self, present: set[str]) -> None:
+        self.present = present
+        self.asked: list[str] = []
+
+    def tableExists(self, fqn: str) -> bool:  # noqa: N802 — nom de l'API Spark
+        self.asked.append(fqn)
+        return fqn in self.present
+
+
+class FakeSpark:
+    def __init__(self, present: set[str]) -> None:
+        self.catalog = FakeCatalog(present)
+
+
+class Args:
+    catalog = "emotors_data_champions"
+    schema = "inventory"
+
+
+def fqn(table: str) -> str:
+    return f"{Args.catalog}.{Args.schema}.{table}"
+
+
+class TestTheTablesAreThereBeforeAnythingIsWritten:
+    """`publication` est écrite en dernier : son absence coûtait tout le travail.
+
+    Le job a lu la campagne entière, écrit les neuf tables de données, puis
+    s'est arrêté sur la dixième — absente du catalogue. C'est l'échec le plus
+    cher qui soit, puisqu'il arrive au bout du travail utile. Le job de
+    synchronisation vérifie la forme du miroir avant de lire l'ERP, pour
+    exactement cette raison.
+    """
+
+    def test_rien_ne_manque_quand_tout_est_la(self):
+        toutes = ["campaign", "publication"]
+        spark = FakeSpark({fqn(t) for t in toutes})
+
+        assert publish._missing_tables(spark, Args, toutes) == []
+
+    def test_la_table_absente_est_nommee(self):
+        spark = FakeSpark({fqn("campaign")})
+
+        assert publish._missing_tables(spark, Args, ["campaign", "publication"]) == [
+            "publication"
+        ]
+
+    def test_toutes_les_absentes_sont_nommees_d_un_coup(self):
+        """Découvrir ce qui manque table après table fait autant d'allers-retours."""
+        spark = FakeSpark(set())
+        manquantes = publish._missing_tables(
+            spark, Args, ["campaign", "count_result", "publication"]
+        )
+
+        assert manquantes == ["campaign", "count_result", "publication"]
+
+    def test_le_nom_interroge_est_pleinement_qualifie(self):
+        """Sans catalogue ni schéma, la recherche part sur `hive_metastore`."""
+        spark = FakeSpark(set())
+        publish._missing_tables(spark, Args, ["publication"])
+
+        assert spark.catalog.asked == ["emotors_data_champions.inventory.publication"]
+
+    def test_le_manifeste_fait_partie_des_tables_verifiees(self):
+        """C'est celle qui manquait, et la seule que `QUERIES` ne nomme pas."""
+        import ast
+
+        arbre = ast.parse(JOB.read_text(encoding="utf-8"))
+        principale = next(
+            noeud
+            for noeud in ast.walk(arbre)
+            if isinstance(noeud, ast.FunctionDef) and noeud.name == "main"
+        )
+        appel = next(
+            noeud
+            for noeud in ast.walk(principale)
+            if isinstance(noeud, ast.Call)
+            and isinstance(noeud.func, ast.Name)
+            and noeud.func.id == "_missing_tables"
+        )
+        verifiees = ast.unparse(appel.args[2])
+
+        assert "QUERIES" in verifiees
+        assert "publication" in verifiees
+
+
+def test_toutes_les_tables_ecrites_sont_declarees_dans_le_ddl():
+    """Le script Unity Catalog et le job ne peuvent pas diverger.
+
+    Une table que le job écrit sans que le DDL la crée est un déploiement qui
+    échoue chez l'exploitant, jamais ici.
+    """
+    ddl = (JOB.parents[1] / "sql" / "00_unity_catalog.sql").read_text(encoding="utf-8")
+    ecrites = [*publish.QUERIES, "publication"]
+
+    absentes = [t for t in ecrites if f"CREATE TABLE IF NOT EXISTS {t} (" not in ddl]
+    assert absentes == []
+
+
 def test_l_ecriture_consulte_bien_les_colonnes_vides():
     """La garde structurelle, faute de pouvoir lancer Spark ici.
 

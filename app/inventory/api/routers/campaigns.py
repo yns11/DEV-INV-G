@@ -38,7 +38,7 @@ def list_campaigns(
     l'interface de proposer les suivantes plutôt que de faire comme si elles
     n'existaient pas.
     """
-    campaigns, total = service.list(
+    campaigns, total = service.page(
         include_closed=include_closed, limit=limit, offset=offset
     )
     return {

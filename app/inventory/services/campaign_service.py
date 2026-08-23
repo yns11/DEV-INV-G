@@ -55,11 +55,11 @@ class CampaignService:
     #: savoir qu'il y en avait davantage.
     PAGE = 100
 
-    def list(
+    def page(
         self, *, include_closed: bool = True, limit: int | None = None, offset: int = 0
     ) -> tuple[list[Campaign], int]:
         """Une page de campagnes, et le total. Voir le dépôt pour le pourquoi."""
-        return self.ctx.campaigns.list(
+        return self.ctx.campaigns.page(
             include_closed=include_closed,
             limit=self.PAGE if limit is None else max(1, min(limit, 500)),
             offset=max(0, offset),

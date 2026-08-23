@@ -163,6 +163,23 @@ class CampaignRepository(_Base):
 
     def list(
         self, *, include_closed: bool = True, limit: int = 100, offset: int = 0
+    ) -> list[Campaign]:
+        """Les campagnes, sans le total.
+
+        ``page`` rend une paire parce qu'un écran qui pagine a besoin des deux.
+        Un service qui cherche « la campagne précédente » n'a que faire du
+        total, et itérer la paire lui donne silencieusement deux éléments dont
+        le premier est une liste — ``other.id`` lève alors sur un ``list``, en
+        production, sur trois écrans à la fois. Le nom dit désormais ce qu'on
+        reçoit.
+        """
+        campaigns, _ = self.page(
+            include_closed=include_closed, limit=limit, offset=offset
+        )
+        return campaigns
+
+    def page(
+        self, *, include_closed: bool = True, limit: int = 100, offset: int = 0
     ) -> tuple[list[Campaign], int]:
         """Une page de campagnes, et combien il y en a en tout.
 

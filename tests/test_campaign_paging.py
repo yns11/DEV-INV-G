@@ -66,13 +66,13 @@ class TestTheQuery:
     def test_it_asks_for_the_total(self):
         """Sans lui, l'interface ne peut pas savoir qu'elle tronque."""
         repo, seen = self.spy(rows=[], total=137)
-        _, total = repo.list()
+        _, total = repo.page()
         assert total == 137
         assert any("count(*)" in q for q, _ in seen)
 
     def test_the_page_carries_a_limit_and_an_offset(self):
         repo, seen = self.spy(rows=[], total=0)
-        repo.list(limit=25, offset=50)
+        repo.page(limit=25, offset=50)
         page = next(q for q, _ in seen if "ORDER BY" in q)
         assert "LIMIT %s OFFSET %s" in page
         params = next(p for q, p in seen if "ORDER BY" in q)
@@ -82,13 +82,13 @@ class TestTheQuery:
         """Un total qui inclurait les clôturées alors que la page les exclut
         annoncerait des campagnes que « charger la suite » ne ramènerait jamais."""
         repo, seen = self.spy(rows=[], total=0)
-        repo.list(include_closed=False)
+        repo.page(include_closed=False)
         queries = [q for q, _ in seen]
         assert all("status <> 'CLOSED'" in q for q in queries), queries
 
     def test_deleted_campaigns_are_in_neither(self):
         repo, seen = self.spy(rows=[], total=0)
-        repo.list()
+        repo.page()
         assert all("deleted_at IS NULL" in q for q, _ in seen)
 
 
@@ -107,7 +107,7 @@ def service(*, rows, total):
         seen.update(include_closed=include_closed, limit=limit, offset=offset)
         return rows, total
 
-    ctx.campaigns = SimpleNamespace(list=listing)
+    ctx.campaigns = SimpleNamespace(page=listing)
     with_access(ctx)
     return CampaignService(ctx), seen
 
@@ -115,7 +115,7 @@ def service(*, rows, total):
 class TestTheServiceBoundsWhatItIsGiven:
     def test_a_default_page_is_asked_for(self):
         svc, seen = service(rows=[], total=0)
-        svc.list()
+        svc.page()
         assert seen["limit"] == svc.PAGE
         assert seen["offset"] == 0
 
@@ -125,17 +125,17 @@ class TestTheServiceBoundsWhatItIsGiven:
     def test_the_limit_is_clamped(self, asked, applied):
         """Une page de cinq mille lignes n'aide personne et immobilise la base."""
         svc, seen = service(rows=[], total=0)
-        svc.list(limit=asked)
+        svc.page(limit=asked)
         assert seen["limit"] == applied
 
     def test_a_negative_offset_starts_at_the_beginning(self):
         svc, seen = service(rows=[], total=0)
-        svc.list(offset=-10)
+        svc.page(offset=-10)
         assert seen["offset"] == 0
 
     def test_the_total_travels_through(self):
         svc, _ = service(rows=[campaign(1)], total=137)
-        page, total = svc.list()
+        page, total = svc.page()
         assert len(page) == 1
         assert total == 137
 
@@ -163,7 +163,7 @@ class TestTheResponseSaysHowManyExist:
         get_settings.cache_clear()
         application = module.create_app()
         application.dependency_overrides[campaign_service] = lambda: SimpleNamespace(
-            list=lambda **kwargs: (rows, total)
+            page=lambda **kwargs: (rows, total)
         )
         return TestClient(application)
 

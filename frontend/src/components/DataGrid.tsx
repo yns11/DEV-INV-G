@@ -12,13 +12,16 @@
  *  - imported values and manually entered values are distinguished visually, and
  *    the source of each value is always shown.
  *
- * It is deliberately virtualisation-free: pages cap the row count server-side,
- * which keeps the component simple and the DOM small.
+ * Au-delà de quelques centaines de lignes, seules celles qu'on voit entrent
+ * dans le DOM. Voir `VIRTUAL_FROM` : en dessous du seuil rien ne change, et
+ * c'est voulu — la fenêtre coûte une hypothèse (des lignes de hauteur égale)
+ * qu'il est inutile de payer sur une grille de quarante lignes.
  */
 
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -145,6 +148,84 @@ const BLANK_LABEL = '(vide)'
 
 /** Au-delà, une liste de valeurs cesse d'être un choix et devient un annuaire. */
 const CHOICE_CEILING = 40
+
+/**
+ * À partir de combien de lignes seules celles qu'on voit entrent dans le DOM.
+ *
+ * Une ligne de dix colonnes fait onze éléments. À vingt mille lignes cela fait
+ * deux cent mille éléments à construire, à styler et à garder en mémoire, pour
+ * en montrer trente : le navigateur passe plusieurs secondes figé, et le
+ * défilement reste saccadé ensuite. C'est le référentiel articles d'une
+ * campagne réelle.
+ *
+ * Le seuil n'est pas zéro, et c'est délibéré. La fenêtre coûte une hypothèse —
+ * des lignes de hauteur égale — et une conséquence : la recherche du navigateur
+ * (Ctrl+F) ne voit plus que les lignes rendues. Sur quarante lignes, ce prix
+ * n'achète rien. Au-delà du seuil il est déjà payé autrement, puisqu'une page
+ * figée ne se cherche pas non plus ; et la grille a sa propre recherche, qui
+ * elle porte sur l'ensemble.
+ */
+const VIRTUAL_FROM = 300
+
+/**
+ * Lignes rendues au-delà de la fenêtre visible, de chaque côté.
+ *
+ * Sans marge, un défilement rapide montre du blanc le temps d'un rendu. Douze
+ * lignes coûtent quelques dizaines d'éléments et suppriment le clignotement.
+ */
+const OVERSCAN = 12
+
+/** Hauteur d'une ligne avant que la première n'ait été mesurée, en pixels. */
+const ROW_HEIGHT_GUESS = 37
+
+/**
+ * Hauteur donnée au cadre défilant quand l'écran n'en impose pas.
+ *
+ * La fenêtre a besoin d'un conteneur qui défile lui-même : si c'est la page
+ * entière qui défile, le cadre ne bouge jamais et la fenêtre reste collée en
+ * haut. La plupart des écrans passent déjà `maxHeight` ; ce repli ne concerne
+ * que les grilles qui n'en donnent pas — et seulement au-delà du seuil.
+ */
+const VIRTUAL_MAX_HEIGHT = 620
+
+/**
+ * Quelles lignes rendre, et quelle hauteur laisser au-dessus et au-dessous.
+ *
+ * Extraite du composant parce que c'est la seule partie qui peut être fausse
+ * sans qu'on le voie : une erreur d'un cran ici affiche les bonnes lignes au
+ * mauvais endroit, ou laisse un blanc en fin de liste — deux défauts qu'on
+ * attribue au navigateur avant de les attribuer au calcul.
+ *
+ * Les deux cales portent la hauteur des lignes absentes. Sans elles, vingt
+ * mille lignes défileraient sur la hauteur de trente : la barre de défilement
+ * mentirait sur la longueur du tableau, et il n'y aurait plus rien à faire
+ * défiler pour atteindre la fin.
+ */
+export function windowOf({
+  total,
+  scrollTop,
+  rowHeight,
+  viewport,
+  overscan = OVERSCAN,
+}: {
+  total: number
+  scrollTop: number
+  rowHeight: number
+  viewport: number
+  overscan?: number
+}): { start: number; end: number; before: number; after: number } {
+  // Une hauteur de ligne nulle viendrait d'une mesure faite avant le premier
+  // rendu ; diviser par elle donnerait l'infini, et la fenêtre serait vide.
+  const height = rowHeight > 0 ? rowHeight : ROW_HEIGHT_GUESS
+  const start = Math.max(0, Math.floor(scrollTop / height) - overscan)
+  const end = Math.min(total, Math.ceil((scrollTop + viewport) / height) + overscan)
+  return {
+    start,
+    end: Math.max(start, end),
+    before: start * height,
+    after: Math.max(0, total - Math.max(start, end)) * height,
+  }
+}
 
 /**
  * Quelle forme de filtre convient à une colonne.
@@ -413,6 +494,64 @@ export function DataGrid<T extends Row>({
       return String(left).localeCompare(String(right), 'fr', { numeric: true }) * factor
     })
   }, [filtered, sort, columns])
+
+  // ---- fenêtre de lignes ---------------------------------------------------
+  //
+  // Ce qui suit ne change que ce qui entre dans le DOM. Tout le reste — le
+  // tri, les filtres, les totaux, l'export, « tout sélectionner » — travaille
+  // sur `sorted`, c'est-à-dire sur l'ensemble. Une fenêtre qui déciderait de ce
+  // qu'on additionne ou de ce qu'on exporte serait un piège, pas une
+  // optimisation.
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLTableSectionElement>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewport, setViewport] = useState(VIRTUAL_MAX_HEIGHT)
+  const [rowHeight, setRowHeight] = useState(ROW_HEIGHT_GUESS)
+  const windowed = sorted.length > VIRTUAL_FROM
+
+  // La hauteur est mesurée sur une ligne réelle plutôt que fixée : `dense`, la
+  // densité du navigateur et le zoom la changent, et une valeur écrite en dur
+  // décalerait progressivement la fenêtre du défilement.
+  useLayoutEffect(() => {
+    const row = bodyRef.current?.querySelector<HTMLElement>('tr[data-row]')
+    const measured = row?.getBoundingClientRect().height
+    if (measured && Math.abs(measured - rowHeight) > 0.5) setRowHeight(measured)
+  }, [windowed, dense, visible.length, sorted.length, rowHeight])
+
+  // La hauteur du cadre, et ses changements : replier un bloc ou redimensionner
+  // la fenêtre modifie le nombre de lignes visibles.
+  useLayoutEffect(() => {
+    const frame = scrollRef.current
+    if (!frame || !windowed) return
+    const measure = () => setViewport(frame.clientHeight || VIRTUAL_MAX_HEIGHT)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(frame)
+    return () => observer.disconnect()
+  }, [windowed])
+
+  // Filtrer ou trier remet en haut. Sans cela, un filtre qui ramène la liste à
+  // dix lignes laisse le cadre défilé à la hauteur de vingt mille : la fenêtre
+  // calculée est alors vide, et l'écran affiche un tableau vide sur un jeu de
+  // résultats qui n'est pas vide.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+    setScrollTop(0)
+  }, [search, sort, filters])
+
+  const { start, before, after, shown } = useMemo(() => {
+    if (!windowed) {
+      return { start: 0, before: 0, after: 0, shown: sorted }
+    }
+    const frame = windowOf({
+      total: sorted.length,
+      scrollTop,
+      rowHeight,
+      viewport,
+    })
+    return { ...frame, shown: sorted.slice(frame.start, frame.end) }
+  }, [windowed, sorted, scrollTop, rowHeight, viewport])
 
   // ---- totaux --------------------------------------------------------------
   //
@@ -738,7 +877,23 @@ export function DataGrid<T extends Row>({
       ) : (
         <div
           className="table-wrap"
-          style={maxHeight ? ({ '--table-max-height': `${maxHeight}px` } as React.CSSProperties) : undefined}
+          ref={scrollRef}
+          onScroll={
+            windowed
+              ? (event) => setScrollTop(event.currentTarget.scrollTop)
+              : undefined
+          }
+          style={
+            // Une grille fenêtrée a besoin d'un cadre qui défile lui-même :
+            // sans hauteur, c'est la page qui défile et la fenêtre ne bouge
+            // jamais. La plupart des écrans en donnent une ; ce repli ne
+            // concerne que les autres.
+            maxHeight || windowed
+              ? ({
+                  '--table-max-height': `${maxHeight ?? VIRTUAL_MAX_HEIGHT}px`,
+                } as React.CSSProperties)
+              : undefined
+          }
         >
           <table className="data">
             <thead>
@@ -781,12 +936,23 @@ export function DataGrid<T extends Row>({
                 {editable && <th style={{ width: 44 }} />}
               </tr>
             </thead>
-            <tbody>
-              {sorted.map((row, index) => {
+            <tbody ref={bodyRef}>
+              {/* Les deux cales portent la hauteur des lignes absentes, pour
+                  que la barre de défilement dise la vérité sur la longueur du
+                  tableau. Sans elles, vingt mille lignes défileraient sur la
+                  hauteur de trente. */}
+              {before > 0 && (
+                <tr aria-hidden="true">
+                  <td style={{ height: before, padding: 0, border: 'none' }} />
+                </tr>
+              )}
+              {shown.map((row, offset) => {
+                const index = start + offset
                 const id = getRowId(row, index)
                 return (
                   <tr
                     key={id}
+                    data-row=""
                     data-selected={selected?.has(id) || undefined}
                     className={rowClassName?.(row)}
                     style={dense ? { fontSize: 'var(--text-xs)' } : undefined}
@@ -871,6 +1037,11 @@ export function DataGrid<T extends Row>({
                   </tr>
                 )
               })}
+              {after > 0 && (
+                <tr aria-hidden="true">
+                  <td style={{ height: after, padding: 0, border: 'none' }} />
+                </tr>
+              )}
             </tbody>
             {totals.length > 0 && (
               <tfoot>

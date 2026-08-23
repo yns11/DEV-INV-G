@@ -90,10 +90,42 @@ def client():
 
 @pytest.fixture(scope="module")
 def campaign_id(client) -> str:
-    body = client.get("/api/campaigns").json()
-    if not body.get("items"):
+    """Une campagne **qui porte des données**, pas la première venue.
+
+    La base de contrôle accumule les campagnes créées par le reste de la
+    suite : des coquilles sans article ni seuil, plus récentes que celle qui
+    est semée. Prendre la première rendait le contrôle dépendant de l'ordre
+    d'exécution — et il s'ignorait au lieu d'échouer, ce qui est la pire des
+    deux issues.
+    """
+    items = client.get("/api/campaigns").json().get("items", [])
+    if not items:
         pytest.skip("aucune campagne dans la base de contrôle")
-    return str(body["items"][0]["id"])
+    for campaign in items:
+        counts = client.get(
+            f"/api/campaigns/{campaign['id']}/overview"
+        ).json().get("counts", {})
+        if counts.get("items"):
+            return str(campaign["id"])
+    pytest.skip("aucune campagne peuplée dans la base de contrôle")
+
+
+@pytest.fixture(scope="module")
+def fresh_campaign(client) -> str:
+    """Une campagne neuve, créée par l'API et retirée ensuite.
+
+    Ce que la base contient déjà ne dit rien de ce qu'une campagne reçoit à sa
+    création — les seuils par défaut, par exemple, que seul le service pose.
+    """
+    created = client.post("/api/campaigns", json={
+        "code": "INV-CONTRAT-NEUVE",
+        "label": "Contrôle du contrat",
+        "countDate": "2026-12-30",
+    })
+    assert created.status_code == 201, created.text[:300]
+    identifier = str(created.json()["id"])
+    yield identifier
+    client.delete(f"/api/campaigns/{identifier}")
 
 
 class TestTheSchemaSaysWhatComesBack:
@@ -184,10 +216,14 @@ class TestTheDeclarationMatchesTheRealPayload:
         response = client.get(url)
         assert response.status_code == 200, response.text[:400]
         payload = response.json()
-        sample = payload[0] if isinstance(payload, list) else payload
-        if isinstance(payload, list) and not payload:
-            pytest.skip(f"{url} n'a renvoyé aucune ligne")
-        model.model_validate(sample)
+        # L'ordre compte : indexer avant de vérifier le vide lève une
+        # IndexError qui ressemble à une panne du contrôle plutôt qu'à une
+        # absence de données.
+        if isinstance(payload, list):
+            if not payload:
+                pytest.skip(f"{url} n'a renvoyé aucune ligne")
+            payload = payload[0]
+        model.model_validate(payload)
 
     def test_health(self, client):
         from inventory.api.responses import HealthResponse
@@ -240,10 +276,17 @@ class TestTheDeclarationMatchesTheRealPayload:
             client, f"/api/campaigns/{campaign_id}/work-queues", WorkQueuesResponse
         )
 
-    def test_the_thresholds(self, client, campaign_id):
+    def test_the_thresholds(self, client, fresh_campaign):
+        """Sur une campagne neuve : les seuils par défaut sont posés à la
+        création, et c'est leur forme qui est déclarée."""
         from inventory.domain.models import Thresholds
 
-        self.check(client, f"/api/campaigns/{campaign_id}/thresholds", Thresholds)
+        response = client.get(f"/api/campaigns/{fresh_campaign}/thresholds")
+        assert response.status_code == 200
+        rows = response.json()
+        assert rows, "une campagne neuve reçoit ses seuils par défaut"
+        for row in rows:
+            Thresholds.model_validate(row)
 
     def test_an_empty_campaign_has_no_ratio_rather_than_zero(self, client):
         """« 0 % fait » et « rien à faire » ne se ressemblent qu'à l'écran.

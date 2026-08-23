@@ -3,8 +3,9 @@
  *
  * It implements, in one place, the interaction the specification asks for:
  *
- *  - the grid is visible **before** any data exists, with the exact column
- *    headers the parser expects, so a user always knows what a file must contain;
+ *  - une grille sans ligne montre ce qui manque et le geste qui l'obtient,
+ *    plutôt qu'un tableau nu : les colonnes attendues d'un fichier se lisent
+ *    dans le panneau d'import, qui les tient du contrat côté serveur ;
  *  - a file can be dropped on it, or a block pasted from Excel into a cell
  *    (Ctrl-C / Ctrl-V) — including a multi-row, multi-column paste;
  *  - rows can be added, edited and deleted inline, with an explicit Save;

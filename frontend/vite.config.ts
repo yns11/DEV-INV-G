@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -21,6 +22,19 @@ export default defineConfig({
         },
       },
     },
+  },
+  test: {
+    // jsdom plutôt que le navigateur : ces contrôles portent sur du calcul et
+    // sur ce que React met dans le DOM. Ce qu'un vrai navigateur apporte —
+    // la mise en page, le défilement réel — relève du parcours de bout en
+    // bout, qui est un banc à part.
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./src/test/setup.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
+    // Le client généré est produit par openapi-typescript : le contrôler
+    // reviendrait à contrôler le générateur.
+    exclude: ['src/lib/schema.d.ts', 'node_modules/**'],
   },
   server: {
     port: 5173,

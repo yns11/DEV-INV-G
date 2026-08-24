@@ -64,7 +64,6 @@ run: build ## Serve the built SPA and the API from one process, like production
 # --- Databricks ---------------------------------------------------------------
 .PHONY: uc
 uc: ## Create the Unity Catalog schema, volume, tables and views
-	@test -n "$(WAREHOUSE_ID)" || { echo "WAREHOUSE_ID=<id> requis"; exit 2; }
 	$(PYTHON) scripts/apply_unity_catalog.py \
 		--warehouse-id $(WAREHOUSE_ID) --profile $(PROFILE)
 

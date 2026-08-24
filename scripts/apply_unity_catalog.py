@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -166,7 +167,16 @@ def main() -> int:
     parser.add_argument("--file", type=Path, default=DEFAULT_FILE)
     args = parser.parse_args()
 
-    from databricks.sdk import WorkspaceClient
+    try:
+        from databricks.sdk import WorkspaceClient
+    except ImportError:
+        print(
+            "databricks-sdk est absent de cet interpréteur. Installez-le :\n"
+            "    python -m pip install databricks-sdk\n"
+            "ou posez toutes les dépendances du projet d'un coup : make install",
+            file=sys.stderr,
+        )
+        return 2
 
     client = WorkspaceClient(profile=args.profile) if args.profile else WorkspaceClient()
     print(f"Application de {args.file.name} sur le warehouse {args.warehouse_id}")

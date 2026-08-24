@@ -504,5 +504,25 @@ def _escape(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _exit(code: int) -> None:
+    """Sortir sans faire passer une réussite pour un échec.
+
+    Le calcul serverless exécute ce fichier dans un espace de noms ipykernel :
+    un ``SystemExit(0)`` n'y est pas une sortie de processus, c'est une
+    exception que le noyau remonte. La tâche était donc marquée FAILED après
+    une publication **complète** — manifeste écrit, ``published_at`` posé dans
+    Lakebase — avec pour seule trace « SystemExit: 0 ».
+
+    Un exploitant qui voit rouge republie. Rejouer est sans risque ici, mais
+    croire l'archive absente alors qu'elle est là ne l'est pas : c'est la
+    clôture qui la consulte.
+
+    Le bloc est recopié dans ``sync_erp_mirror.py``, pour la même raison que le
+    voisinage : chaque fichier est lancé seul.
+    """
+    if code:
+        raise SystemExit(code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _exit(main())

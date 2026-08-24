@@ -572,3 +572,24 @@ def _write_advice(exc: Exception, schema: str) -> str:
     return f"Écriture du miroir impossible : {message}"
 
 
+
+
+def _exit(code: int) -> None:
+    """Sortir sans faire passer une réussite pour un échec.
+
+    Le calcul serverless exécute ce fichier dans un espace de noms ipykernel :
+    un ``SystemExit(0)`` n'y est pas une sortie de processus, c'est une
+    exception que le noyau remonte, et la tâche passe au rouge après un travail
+    complet. Recopié depuis ``publish_campaign_to_delta.py``, où le cas s'est
+    produit — chaque fichier est lancé seul.
+    """
+    if code:
+        raise SystemExit(code)
+
+
+# Sans ce bloc, le fichier ne faisait que **définir** `main` : lancé comme
+# `spark_python_task`, il se terminait aussitôt, sans rien synchroniser et sans
+# rien dire. La tâche passait au vert, le miroir restait tel quel, et
+# l'application lisait un référentiel périmé en croyant l'avoir rafraîchi.
+if __name__ == "__main__":
+    _exit(main())

@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1944 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 1958 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1205,6 +1205,9 @@ l'historique des imports nomme.
 | `CANNOT_DETERMINE_TYPE` à la publication d'une table | Une colonne vide sur **toutes** les lignes n'a pas de type déductible, et Spark refuse le DataFrame entier — cas ordinaire : une campagne en comptage n'a pas de date de clôture | Corrigé : ces colonnes sont retirées avant la construction et remises avec le type de la table. La valeur écrite reste NULL, mais typée |
 | `TABLE_OR_VIEW_NOT_FOUND … inventory.publication` à la publication | Le schéma Unity Catalog du workspace est antérieur à la table demandée : `make uc` a été joué avant qu'elle n'entre dans `sql/00_unity_catalog.sql` | Rejouez `make uc WAREHOUSE_ID=<id> PROFILE=<profil>`. Le script est en `CREATE TABLE IF NOT EXISTS` : seules les tables manquantes sont créées. Le job vérifie désormais les dix tables **avant** d'écrire quoi que ce soit, et les nomme toutes d'un coup |
 | `unknown command "sql" for "databricks"` — « Did you mean this? psql » | `databricks sql query` n'existe pas ; c'est pourtant ce que donnaient le README, le Makefile et l'en-tête du fichier SQL | Corrigé : `make uc` passe par `scripts/apply_unity_catalog.py`, qui découpe le fichier et l'exécute instruction par instruction avec le catalogue et le schéma courants |
+| `SystemExit: 0` et la tâche marquée FAILED | Le calcul serverless exécute le fichier dans un espace de noms ipykernel : un `SystemExit(0)` n'y est pas une sortie de processus mais une exception que le noyau remonte | Corrigé : les jobs ne lèvent que sur un code non nul. **Le travail avait réussi** — vérifiez `inventory.publication` avant de republier (rejouer reste sans risque) |
+| La synchronisation du miroir « réussit » sans rien copier | `sync_erp_mirror.py` n'avait aucun `if __name__ == "__main__"` : lancé comme tâche, il définissait `main` et s'arrêtait là | Corrigé : le point d'entrée manquant est en place. Un contrôle l'exige désormais sur les deux jobs |
+| `ModuleNotFoundError: No module named 'databricks'` sur `make uc` | Le SDK n'est pas dans l'interpréteur qui lance le script | `python -m pip install databricks-sdk`, ou `make install` pour toutes les dépendances du projet. Le script le dit maintenant au lieu de laisser passer la trace |
 
 ### 8.1 Commandes de diagnostic
 

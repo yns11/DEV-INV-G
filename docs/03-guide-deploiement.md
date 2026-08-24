@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1979 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 1992 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1105,12 +1105,26 @@ signé — le conteneur de l'application étant éphémère, le fichier n'y surv
 
 Le volume se crée une fois, dans le schéma de l'application :
 
+`make uc` crée le volume, mais **pas le droit** : un volume créé depuis un
+poste appartient à l'identité qui l'a créé, jamais à l'application. Le grant se
+pose une fois, avec l'identifiant du service principal de l'app :
+
+```bash
+# L'identifiant à mettre dans le GRANT
+databricks apps get campagnes-inventaire --profile PROD  # → service_principal_client_id
+```
+
 ```sql
 CREATE VOLUME IF NOT EXISTS emotors_data_champions.inventory.inventory_evidence;
 GRANT READ VOLUME, WRITE VOLUME
   ON VOLUME emotors_data_champions.inventory.inventory_evidence
-  TO `<sp-de-l-app>`;
+  TO `<service_principal_client_id>`;
 ```
+
+Sans lui, le scan d'une feuille échoue — et il **doit** échouer : le papier
+repart dans l'atelier, et écrire des quantités dont l'image n'a pas été
+archivée fabriquerait un comptage invérifiable. Le refus nomme désormais le
+droit, le principal et le chemin visé.
 
 Il s'organise par campagne, puis par nature de pièce :
 
@@ -1195,6 +1209,7 @@ l'historique des imports nomme.
 | **404 sur toutes les pages sauf `/api/...`** | SPA non construite | `make build-frontend` puis redéployez ; `app/static/index.html` doit exister |
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |
 | `Client de modèle indisponible` | Endpoint LLM non attaché ou sans `CAN_QUERY` | Attachez la ressource `serving-endpoint` |
+| `La pièce justificative n'a pas pu être archivée` au scan d'une feuille | Le dépôt dans le volume a été refusé. Le plus souvent : le service principal de l'app n'a pas `WRITE VOLUME` — `make uc` crée le volume, pas le droit | Le message nomme la cause, le principal et le chemin. Pour un droit manquant, voir §7.4 ; pour un volume absent, rejouez `make uc`. L'échec est volontairement bloquant : sans l'image, la quantité lue n'a plus rien derrière elle |
 | `relation "campaign" does not exist` | Migrations non appliquées | Consultez les journaux de démarrage ; le rôle doit avoir `CREATE` sur le schéma |
 | `La migration 001 a été modifiée après application` | Un fichier de migration déjà appliqué a été édité | Restaurez le fichier ; créez une **nouvelle** migration |
 | L'app démarre puis s'arrête | Dépassement des 10 min de démarrage | Épinglez les versions, réduisez les dépendances |

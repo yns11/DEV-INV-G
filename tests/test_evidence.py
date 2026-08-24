@@ -29,7 +29,7 @@ import pytest
 
 from inventory.config import Settings
 from inventory.errors import NotFoundError, UpstreamError
-from inventory.evidence import EvidenceStore, safe_name
+from inventory.evidence import EvidenceStore, archive_advice, safe_name
 
 AT = dt.datetime(2026, 9, 1, 6, 30, 15, tzinfo=dt.UTC)
 
@@ -40,6 +40,9 @@ class FakeFiles:
     def __init__(self, *, fail: bool = False) -> None:
         self.stored: dict[str, bytes] = {}
         self.fail = fail
+        #: Le message que le dépôt fait remonter. Les causes possibles
+        #: n'appellent pas le même geste, et c'est ce que le refus doit dire.
+        self.boom = "PERMISSION_DENIED: WRITE VOLUME"
         #: Le drapeau reçu à chaque dépôt. Le volume réel refuse un chemin déjà
         #: pris quand il vaut ``False`` ; c'est cette garantie que le magasin
         #: exige désormais, et un test la lit ici.
@@ -47,7 +50,7 @@ class FakeFiles:
 
     def upload(self, path: str, contents: bytes, overwrite: bool = False) -> None:
         if self.fail:
-            raise RuntimeError("PERMISSION_DENIED: WRITE VOLUME")
+            raise RuntimeError(self.boom)
         self.overwrites.append(overwrite)
         if path in self.stored and not overwrite:
             raise RuntimeError(f"ALREADY EXISTS: {path}")
@@ -69,10 +72,13 @@ class _Reader:
 
 def store(*, fail: bool = False, **overrides: Any) -> tuple[EvidenceStore, FakeFiles]:
     files = FakeFiles(fail=fail)
+    if "boom" in overrides:
+        files.boom = overrides.pop("boom")
     settings = Settings(
         INV_UC_CATALOG=overrides.pop("catalog", "cat"),
         INV_UC_SCHEMA=overrides.pop("schema", "inventory"),
         INV_UC_VOLUME=overrides.pop("volume", "inventory_evidence"),
+        DATABRICKS_CLIENT_ID=overrides.pop("principal", "sp-1234"),
     )
     return EvidenceStore(settings, client=SimpleNamespace(files=files)), files
 
@@ -313,6 +319,119 @@ class TestWhenTheArchiveIsNotOptional:
         """Le régime par défaut reste celui que le module défend depuis toujours."""
         s, _ = store(fail=True)
         assert s.put(b"x", campaign_code="C", kind="imports", filename="f") is None
+
+
+class TestTheRefusalNamesItsCause:
+    """« La pièce n'a pas pu être archivée » décrit l'effet et tait la cause.
+
+    Or les causes possibles appellent des gestes sans rapport : accorder un
+    droit, créer le volume, corriger une variable. Le message était le même
+    pour les trois, et l'erreur remonte d'un scan lancé en arrière-plan — dont
+    **seul le message** est conservé. Ce que ce texte ne disait pas était perdu
+    pour de bon, et la panne se diagnostiquait par aller-retour.
+    """
+
+    def refusal(self, boom: str, **extra) -> str:
+        s, _ = store(fail=True, boom=boom, **extra)
+        with pytest.raises(UpstreamError) as raised:
+            s.put(b"x", campaign_code="C", kind="scans", filename="f.pdf",
+                  required=True)
+        return str(raised.value)
+
+    def test_un_droit_manquant_nomme_le_droit_a_accorder(self):
+        message = self.refusal("PERMISSION_DENIED: no WRITE VOLUME")
+
+        assert "WRITE VOLUME" in message
+
+    def test_un_droit_manquant_nomme_le_principal_a_qui_l_accorder(self):
+        """Sans le nom, un administrateur doit encore le chercher — et
+        l'application est la seule à connaître l'identité sous laquelle elle
+        s'exécute."""
+        message = self.refusal("PERMISSION_DENIED", principal="sp-abcdef")
+
+        assert "sp-abcdef" in message
+
+    def test_sans_principal_connu_la_phrase_reste_lisible(self):
+        message = self.refusal("PERMISSION_DENIED", principal="")
+
+        assert "service principal de l'application" in message
+
+    def test_un_volume_absent_renvoie_au_provisionnement(self):
+        """Ce n'est pas un droit qui manque : il n'y a rien à qui l'accorder."""
+        message = self.refusal("NOT_FOUND: volume does not exist")
+
+        assert "make uc" in message
+        assert "WRITE VOLUME" not in message
+
+    def test_une_authentification_refusee_ne_parle_ni_de_droit_ni_de_volume(self):
+        message = self.refusal("UNAUTHENTICATED: invalid token")
+
+        assert "authentifier" in message
+        assert "make uc" not in message
+
+    def test_une_cause_imprevue_est_rapportee_telle_quelle(self):
+        """Ne jamais avaler ce qu'on n'avait pas prévu."""
+        message = self.refusal("connection reset by peer")
+
+        assert "connection reset by peer" in message
+
+    def test_le_chemin_vise_figure_toujours(self):
+        """« Le volume » ne dit pas lequel, ni sous quel catalogue."""
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert "/Volumes/cat/inventory/inventory_evidence/" in message
+
+    def test_le_type_de_l_exception_figure(self):
+        """« RuntimeError » et « PermissionError » n'appellent pas le même geste."""
+        message = self.refusal("quelque chose")
+
+        assert "RuntimeError" in message
+
+    def test_la_phrase_d_origine_est_conservee(self):
+        """Ce qui est ajouté ne remplace pas ce qui était juste."""
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert "rien ne rattacherait au document lu" in message
+
+    def test_le_detail_reste_aussi_dans_la_charge_utile(self):
+        """L'API le rend ; un client qui veut brancher dessus le peut."""
+        s, _ = store(fail=True, boom="PERMISSION_DENIED")
+        with pytest.raises(UpstreamError) as raised:
+            s.put(b"x", campaign_code="C", kind="scans", filename="f.pdf",
+                  required=True)
+
+        details = raised.value.to_payload()["details"]
+        assert details["cause"] == "PERMISSION_DENIED"
+        assert details["path"].endswith(".pdf")
+
+
+class TestTheAdviceOnItsOwn:
+    """La fonction est appelée hors de son magasin par les contrôles ci-dessus,
+    mais elle décide seule : autant l'interroger seule."""
+
+    def test_l_ordre_des_causes_ne_confond_pas_les_deux_premieres(self):
+        """« PERMISSION_DENIED ... not found » doit rester un droit manquant.
+
+        Un message d'API en cite volontiers plusieurs ; le premier motif
+        reconnu est celui qui décide, et c'est le droit qui est le plus
+        actionnable.
+        """
+        avis = archive_advice(
+            RuntimeError("PERMISSION_DENIED: table not found either"),
+            path="/Volumes/x",
+        )
+
+        assert "WRITE VOLUME" in avis
+
+    def test_une_cause_vide_ne_leve_rien(self):
+        assert archive_advice(RuntimeError(""), path="/Volumes/x")
+
+    def test_la_casse_du_message_est_indifferente(self):
+        """Les SDK ne s'accordent pas sur la casse de leurs codes."""
+        for texte in ("Permission Denied", "PERMISSION DENIED", "permission denied"):
+            assert "WRITE VOLUME" in archive_advice(
+                RuntimeError(texte), path="/Volumes/x"
+            )
 
 
 class TestRereading:

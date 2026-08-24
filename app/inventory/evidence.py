@@ -64,7 +64,7 @@ from .errors import NotFoundError, UpstreamError
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ArchivedFile", "EvidenceStore", "safe_name"]
+__all__ = ["ArchivedFile", "EvidenceStore", "archive_advice", "safe_name"]
 
 #: Longueur maximale du nom de fichier conservé dans le chemin. Un scanner
 #: produit volontiers des noms de cent cinquante caractères ; au-delà de
@@ -144,6 +144,47 @@ def _described(path: str, payload: bytes, digest: str, filename: str) -> Archive
         size=len(payload),
         mime=guessed or "application/octet-stream",
     )
+
+
+def archive_advice(exc: Exception, *, path: str, principal: str | None = None) -> str:
+    """Pourquoi le dépôt a échoué, et le geste qui le débloque.
+
+    « La pièce n'a pas pu être archivée » décrit l'effet et tait la cause. Or
+    les causes possibles appellent des gestes qui n'ont rien à voir : accorder
+    un droit, créer le volume, corriger une variable. Sans elle, la panne se
+    diagnostique par aller-retour — et l'erreur remonte d'un scan lancé en
+    arrière-plan, dont seul le message est conservé : ce que ce texte ne dit
+    pas est perdu.
+
+    Le service principal est nommé quand il est connu. Un administrateur qui
+    lit « accordez WRITE VOLUME » sans savoir *à qui* doit encore le chercher,
+    et l'application est la seule à connaître l'identité sous laquelle elle
+    s'exécute — ce n'est pas celle de la personne connectée.
+    """
+    text = str(exc).lower()
+    who = principal or "le service principal de l'application"
+
+    if any(k in text for k in ("permission", "denied", "forbidden", "403")):
+        return (
+            f"Le droit d'écriture manque sur « {path} ». Accordez WRITE VOLUME "
+            f"à {who} sur le volume, depuis Unity Catalog ou par "
+            "« GRANT WRITE VOLUME ON VOLUME <volume> TO `<principal>` ». Un "
+            "volume créé depuis un poste appartient à l'identité qui l'a créé, "
+            "jamais à l'application."
+        )
+    if any(k in text for k in ("not found", "does not exist", "404", "no such")):
+        return (
+            f"Le chemin « {path} » est introuvable. Le volume n'existe pas "
+            "encore — rejouez « make uc » — ou INV_UC_CATALOG / INV_UC_SCHEMA / "
+            "INV_UC_VOLUME ne désignent pas celui qui a été créé."
+        )
+    if any(k in text for k in ("unauthenticated", "401", "invalid token")):
+        return (
+            "L'application n'a pas pu s'authentifier auprès de l'espace de "
+            "travail. Vérifiez que l'app est bien déployée avec son service "
+            "principal ; un jeton expiré se règle en la redémarrant."
+        )
+    return f"Échec du dépôt sur « {path} »."
 
 
 class EvidenceStore:
@@ -236,11 +277,17 @@ class EvidenceStore:
                     "Pièce justificative obligatoire non archivée (%s) : %s — %s",
                     path, type(exc).__name__, exc,
                 )
+                advice = archive_advice(
+                    exc, path=path,
+                    principal=self._settings.service_principal_id,
+                )
                 raise UpstreamError(
                     "La pièce justificative n'a pas pu être archivée. "
                     "L'opération est interrompue : elle produirait des "
-                    "quantités que rien ne rattacherait au document lu.",
+                    f"quantités que rien ne rattacherait au document lu. "
+                    f"{advice} Détail : {type(exc).__name__} : {exc}",
                     cause=str(exc),
+                    path=path,
                 ) from exc
             # Journalisé en avertissement, pas en erreur : ce qui comptait —
             # les lignes chargées — a abouti. L'appelant ne le voit pas passer.

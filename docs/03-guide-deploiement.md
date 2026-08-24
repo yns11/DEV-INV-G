@@ -107,9 +107,15 @@ export WAREHOUSE_ID=4b9b953939869799
 Le fichier `sql/00_unity_catalog.sql` est idempotent (`CREATE ... IF NOT EXISTS`).
 
 ```bash
-databricks sql query --warehouse-id "$WAREHOUSE_ID" \
-    --file sql/00_unity_catalog.sql --profile PROD
+make uc WAREHOUSE_ID="$WAREHOUSE_ID" PROFILE=PROD
 ```
+
+`databricks sql query --file` **n'existe pas** — la CLI répond « unknown
+command "sql" » et propose « psql ». `make uc` passe par
+`scripts/apply_unity_catalog.py`, qui découpe le fichier et l'exécute
+instruction par instruction sur le warehouse, en portant le catalogue et le
+schéma courants (une session par instruction : un `USE CATALOG` n'y survivrait
+pas).
 
 **Sans CLI** : ouvrez **SQL Editor** dans le workspace, collez le contenu du
 fichier, sélectionnez le warehouse, exécutez.
@@ -117,11 +123,17 @@ fichier, sélectionnez le warehouse, exécutez.
 Vérification :
 
 ```bash
-databricks sql query --warehouse-id "$WAREHOUSE_ID" --profile PROD \
-    --query "SHOW TABLES IN emotors_data_champions.inventory"
+databricks api post /api/2.0/sql/statements --profile PROD --json '{
+  "warehouse_id": "'"$WAREHOUSE_ID"'",
+  "statement": "SHOW TABLES IN emotors_data_champions.inventory",
+  "wait_timeout": "30s"
+}'
 ```
 
-Vous devez voir 9 tables et 4 vues (`v_variance`, `v_campaign_kpi`,
+Ou, sans CLI : `SHOW TABLES IN emotors_data_champions.inventory` dans le SQL
+Editor.
+
+Vous devez voir 10 tables et 4 vues (`v_variance`, `v_campaign_kpi`,
 `v_variance_recurrence`, `v_wip_contribution`).
 
 > Si votre catalogue ne s'appelle pas `emotors_data_champions`, remplacez-le en
@@ -330,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1917 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 1944 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1192,6 +1204,7 @@ l'historique des imports nomme.
 | `[CAST_INVALID_INPUT] The value 'count_date' … cannot be cast to "DATE"` — la valeur est le **nom** de la colonne | La connexion est ouverte en `row_factory=dict_row` ; `fetch` rezippait ces dictionnaires avec les noms de colonnes, et itérer un dictionnaire rend ses clés | Corrigé : `fetch` rend les lignes telles quelles quand elles sont déjà des dictionnaires. Sur un schéma entièrement textuel, le défaut aurait publié une archive de noms de colonnes en se déclarant réussie |
 | `CANNOT_DETERMINE_TYPE` à la publication d'une table | Une colonne vide sur **toutes** les lignes n'a pas de type déductible, et Spark refuse le DataFrame entier — cas ordinaire : une campagne en comptage n'a pas de date de clôture | Corrigé : ces colonnes sont retirées avant la construction et remises avec le type de la table. La valeur écrite reste NULL, mais typée |
 | `TABLE_OR_VIEW_NOT_FOUND … inventory.publication` à la publication | Le schéma Unity Catalog du workspace est antérieur à la table demandée : `make uc` a été joué avant qu'elle n'entre dans `sql/00_unity_catalog.sql` | Rejouez `make uc WAREHOUSE_ID=<id> PROFILE=<profil>`. Le script est en `CREATE TABLE IF NOT EXISTS` : seules les tables manquantes sont créées. Le job vérifie désormais les dix tables **avant** d'écrire quoi que ce soit, et les nomme toutes d'un coup |
+| `unknown command "sql" for "databricks"` — « Did you mean this? psql » | `databricks sql query` n'existe pas ; c'est pourtant ce que donnaient le README, le Makefile et l'en-tête du fichier SQL | Corrigé : `make uc` passe par `scripts/apply_unity_catalog.py`, qui découpe le fichier et l'exécute instruction par instruction avec le catalogue et le schéma courants |
 
 ### 8.1 Commandes de diagnostic
 
@@ -1306,9 +1319,11 @@ qu'aucune colonne n'a été supprimée.
 
 ```bash
 # Publier toutes les campagnes ouvertes vers Delta (archive)
-for code in $(databricks sql query --warehouse-id "$WAREHOUSE_ID" --profile PROD \
-    --query "SELECT code FROM emotors_data_champions.inventory.campaign" -o json \
-    | jq -r '.[].code'); do
+for code in $(databricks api post /api/2.0/sql/statements --profile PROD --json '{
+    "warehouse_id": "'"$WAREHOUSE_ID"'",
+    "statement": "SELECT code FROM emotors_data_champions.inventory.campaign",
+    "wait_timeout": "30s"
+  }' | jq -r '.result.data_array[][0]'); do
   databricks bundle run inventory_publish_campaign -t prod --params campaign_code=$code
 done
 ```

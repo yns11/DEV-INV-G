@@ -103,6 +103,10 @@ class HealthResponse(Payload):
     lakebase_configured: bool = Field(alias="lakebaseConfigured")
     warehouse_configured: bool = Field(alias="warehouseConfigured")
     evidence_configured: bool = Field(alias="evidenceConfigured")
+    #: « volume » ou « lakebase » — laquelle des deux archives reçoit les
+    #: pièces. Les deux pannes possibles n'ont rien en commun, et
+    #: ``evidenceConfigured`` seul ne dit pas laquelle chercher.
+    evidence_store: str = Field(alias="evidenceStore")
     frontend_built: bool = Field(alias="frontendBuilt")
     frontend: FrontendBuild
     llm_endpoint: str = Field(alias="llmEndpoint")
@@ -111,10 +115,10 @@ class HealthResponse(Payload):
 
 
 class EvidenceProbeResponse(Payload):
-    """Ce que le volume répond quand on essaie vraiment d'y écrire.
+    """Ce que l'archive répond quand on essaie vraiment d'y écrire.
 
     ``configured`` distingue les deux pannes, qui n'appellent pas le même
-    geste : aucun volume déclaré, ou un volume déclaré mais fermé.
+    geste : aucune archive déclarée, ou une archive déclarée mais fermée.
     """
 
     ok: bool

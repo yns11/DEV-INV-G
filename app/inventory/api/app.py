@@ -400,6 +400,10 @@ def create_app() -> FastAPI:
             # avant qu'on le découvre en cherchant une feuille six mois plus
             # tard.
             "evidenceConfigured": settings.evidence_configured,
+            # Laquelle des deux archives. « evidenceConfigured: true » sans
+            # cette ligne ne dit pas si les pièces partent au volume Unity
+            # Catalog ou dans la base, et les deux pannes n'ont rien en commun.
+            "evidenceStore": settings.evidence_store,
             # False means the deployment shipped without `app/static/`, i.e.
             # the API answers but the browser gets no interface.
             "frontendBuilt": STATIC_DIR.exists(),
@@ -428,7 +432,7 @@ def create_app() -> FastAPI:
         responses={200: {"model": EvidenceProbeResponse}},
     )
     def health_evidence() -> dict[str, Any]:
-        """Dépose un octet dans le volume, et le retire.
+        """Dépose un octet là où les pièces vont, et le retire.
 
         ``evidenceConfigured`` du diagnostic complet ne lit que la
         configuration. Elle répondait donc « oui » à un conteneur dont le
@@ -440,6 +444,10 @@ def create_app() -> FastAPI:
         d'écriture sur le volume sont trois refus distincts ; aucun ne se
         déduit d'une variable d'environnement. Écrire est la seule question qui
         les pose tous les trois.
+
+        En ``INV_EVIDENCE_STORE=lakebase`` la question change — il n'y a plus
+        de privilège à traverser, seulement une table à avoir créée — mais la
+        réponse se prend de la même façon : en écrivant.
 
         À part, et jamais dans les sondes que la plateforme interroge : un
         aller-retour vers le volume serait payé à chaque seconde, pour une

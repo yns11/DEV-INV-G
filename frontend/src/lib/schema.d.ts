@@ -2439,7 +2439,7 @@ export interface paths {
         };
         /**
          * L'archivage des pièces marche-t-il ?
-         * @description Dépose un octet dans le volume, et le retire.
+         * @description Dépose un octet là où les pièces vont, et le retire.
          *
          *     ``evidenceConfigured`` du diagnostic complet ne lit que la
          *     configuration. Elle répondait donc « oui » à un conteneur dont le
@@ -2451,6 +2451,10 @@ export interface paths {
          *     d'écriture sur le volume sont trois refus distincts ; aucun ne se
          *     déduit d'une variable d'environnement. Écrire est la seule question qui
          *     les pose tous les trois.
+         *
+         *     En ``INV_EVIDENCE_STORE=lakebase`` la question change — il n'y a plus
+         *     de privilège à traverser, seulement une table à avoir créée — mais la
+         *     réponse se prend de la même façon : en écrivant.
          *
          *     À part, et jamais dans les sondes que la plateforme interroge : un
          *     aller-retour vers le volume serait payé à chaque seconde, pour une
@@ -3065,10 +3069,10 @@ export interface components {
         };
         /**
          * EvidenceProbeResponse
-         * @description Ce que le volume répond quand on essaie vraiment d'y écrire.
+         * @description Ce que l'archive répond quand on essaie vraiment d'y écrire.
          *
          *     ``configured`` distingue les deux pannes, qui n'appellent pas le même
-         *     geste : aucun volume déclaré, ou un volume déclaré mais fermé.
+         *     geste : aucune archive déclarée, ou une archive déclarée mais fermée.
          */
         EvidenceProbeResponse: {
             /** Configured */
@@ -3186,6 +3190,8 @@ export interface components {
             env: string;
             /** Evidenceconfigured */
             evidenceConfigured: boolean;
+            /** Evidencestore */
+            evidenceStore: string;
             frontend: components["schemas"]["FrontendBuild"];
             /** Frontendbuilt */
             frontendBuilt: boolean;

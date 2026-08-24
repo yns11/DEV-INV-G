@@ -76,6 +76,13 @@ variables:
   uc_volume:
     description: UC volume holding scans, imports and generated reports.
     default: inventory_evidence
+  evidence_store:
+    description: >-
+      Where scans and imported files are archived: `volume` (the UC volume,
+      which needs USE CATALOG + USE SCHEMA + WRITE VOLUME on the app's own
+      service principal) or `lakebase` (the evidence_blob table in the
+      application's own schema, which needs no grant from anyone).
+    default: volume
 
 resources:
   apps:
@@ -130,6 +137,12 @@ resources:
             value: ${var.uc_schema}
           - name: INV_UC_VOLUME
             value: ${var.uc_volume}
+          # `volume` dépose les pièces dans le volume UC : trois GRANT au SP de
+          # l'App, dont USE CATALOG que seul le propriétaire du catalogue peut
+          # accorder. `lakebase` les garde dans la base de l'application, sans
+          # aucun grant. La bascule est sûre dans les deux sens.
+          - name: INV_EVIDENCE_STORE
+            value: ${var.evidence_store}
           # `uc` lit les tables silver en direct (exige USE CATALOG pour le
           # service principal de l'App) ; `mirror` lit la copie locale
           # alimentée par le job de synchronisation, sans aucun grant.

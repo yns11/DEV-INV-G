@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 2012 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 2107 contrôles, ~45 s ; 63 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1141,7 +1141,7 @@ GRANT READ VOLUME, WRITE VOLUME
 > `USE CATALOG` doit être posé par le propriétaire du catalogue, que
 > `DESCRIBE CATALOG EXTENDED emotors_data_champions` nomme. C'est le cas
 > ordinaire d'un catalogue partagé, où le projet n'a le droit que d'ajouter des
-> schémas.
+> schémas. **Quand ce propriétaire est hors d'atteinte, voir §7.4 bis.**
 
 **Vérifier sans attendre le jour de l'inventaire :**
 
@@ -1209,12 +1209,61 @@ jamais vérifier. Si le volume n'est pas configuré, la lecture de scans est don
 indisponible et le dit, au lieu de produire des chiffres sans pièce.
 
 `<url-de-lapp>/api/health` répond `"evidenceConfigured": true` quand les trois
-noms qui composent le chemin sont renseignés. Les droits, eux, ne se vérifient
-qu'au premier dépôt.
+noms qui composent le chemin sont renseignés — ou, en mode `lakebase`, quand la
+base est configurée — et `"evidenceStore"` dit laquelle des deux archives reçoit
+les pièces. Les droits, eux, ne se vérifient qu'au premier dépôt : c'est ce que
+`/api/health/evidence` fait à la demande.
 
 Ni les collages ni les lectures ERP ne produisent de pièce : le texte collé est
 déjà dans les lignes chargées, et une lecture ERP se rejoue par sa requête, que
 l'historique des imports nomme.
+
+### 7.4 bis — Quand le `USE CATALOG` du volume ne peut pas être obtenu
+
+`GRANT USE CATALOG` exige `MANAGE` sur le catalogue, c'est-à-dire d'en être
+propriétaire. Sur un catalogue partagé, ce propriétaire peut être injoignable —
+et l'inventaire garde sa date. `INV_EVIDENCE_STORE=lakebase` renverse alors la
+contrainte : les pièces sont archivées dans la base de l'application, qu'elle
+possède et où elle écrit déjà tout le reste. **Aucun administrateur n'est
+impliqué.** C'est le même renversement que `INV_ERP_SOURCE=mirror` (§8.3 bis),
+appliqué aux pièces plutôt qu'aux lignes.
+
+| `INV_EVIDENCE_STORE` | Où la pièce est écrite | Ce qu'il faut |
+|---|---|---|
+| `volume` (défaut) | le volume Unity Catalog | les trois GRANT du §7.4, dont un du propriétaire du catalogue |
+| `lakebase` | `evidence_blob`, dans le schéma de l'application (migration 022) | rien : l'application possède ce schéma |
+
+```bash
+databricks apps deploy -t prod --profile PROD --var=evidence_store=lakebase
+curl -s https://<app>/api/health/evidence | jq
+# {"ok": true, "configured": true, "path": "lakebase:/_diagnostic/ecriture.probe"}
+```
+
+La migration 022 s'applique au démarrage de l'app ; `/api/health` en donne la
+liste sous `migrations.applied`.
+
+**La garantie ne change pas.** Un scan est archivé avant que ses quantités
+soient écrites, ou l'opération est refusée — c'est le point, et une archive de
+secours qui le perdrait ne serait pas une solution mais un renoncement. Ce qui
+change tient en deux lignes :
+
+- **Ce qu'on y perd.** Un volume se parcourt depuis l'espace de travail ; la
+  table ne se lit qu'à travers l'application ou en SQL. Qui peut obtenir les
+  trois GRANT a intérêt à les obtenir.
+- **Ce qu'on n'y perd pas.** Le chemin garde la même forme —
+  `lakebase:/<campagne>/<nature>/<horodatage>-<empreinte>-<nom>` — donc un
+  `SELECT path FROM inventory.evidence_blob` reste lisible, et les pièces
+  pourront être ressorties vers le volume le jour où le grant arrive.
+
+**Basculer est sûr dans les deux sens.** La relecture s'aiguille sur le chemin
+enregistré, jamais sur le réglage du jour : ce qui est déjà dans le volume y
+reste lisible après la bascule, et ce qui est en base le reste après le retour.
+Rien n'est déplacé, rien n'est perdu.
+
+Une pièce archivée en base compte dans la taille de la base Lakebase, à hauteur
+de ce qu'elle pèse — quelques centaines de kilo-octets par feuille scannée, la
+taille du fichier pour un export ERP, plafonnée par `INV_MAX_UPLOAD_BYTES`
+(64 Mo par défaut).
 
 ---
 
@@ -1245,7 +1294,7 @@ l'historique des imports nomme.
 | `Client de modèle indisponible` | Endpoint LLM non attaché ou sans `CAN_QUERY` | Attachez la ressource `serving-endpoint` |
 | `La pièce justificative n'a pas pu être archivée` au scan d'une feuille | Le dépôt dans le volume a été refusé. Le plus souvent : le service principal de l'app n'a pas `WRITE VOLUME` — `make uc` crée le volume, pas le droit | Le message nomme la cause, le principal et le chemin. Pour un droit manquant, voir §7.4 ; pour un volume absent, rejouez `make uc`. L'échec est volontairement bloquant : sans l'image, la quantité lue n'a plus rien derrière elle |
 | `PERMISSION_DENIED … USE CATALOG` au dépôt, « pourtant c'est le même catalogue que les tables » | Même catalogue, autre identité : les tables sont écrites par le job sous l'identité qui le lance, le volume par l'application sous son service principal. Et `WRITE VOLUME` seul ne suffit jamais — Unity Catalog traverse `USE CATALOG` → `USE SCHEMA` → `WRITE VOLUME` | Posez les **trois** grants (§7.4). Le message d'erreur les écrit désormais copiables tels quels, catalogue, schéma et volume tirés du chemin visé |
-| `PERMISSION_DENIED: User does not have MANAGE on Catalog` en posant le GRANT | Vous n'êtes pas propriétaire du catalogue — cas ordinaire d'un catalogue partagé | `USE SCHEMA` et les droits du volume restent à votre portée ; le `USE CATALOG` doit être posé par le propriétaire, que `DESCRIBE CATALOG EXTENDED <catalogue>` nomme |
+| `PERMISSION_DENIED: User does not have MANAGE on Catalog` en posant le GRANT | Vous n'êtes pas propriétaire du catalogue — cas ordinaire d'un catalogue partagé | `USE SCHEMA` et les droits du volume restent à votre portée ; le `USE CATALOG` doit être posé par le propriétaire, que `DESCRIBE CATALOG EXTENDED <catalogue>` nomme. **Propriétaire injoignable : `INV_EVIDENCE_STORE=lakebase` (§7.4 bis) archive dans la base de l'application, sans aucun grant** |
 | `AttributeError : 'bytes' object has no attribute 'seekable'` au dépôt | `files.upload` déclare `contents: BinaryIO` ; le SDK appelle `seekable()` dessus pour savoir s'il peut rejouer la requête | Corrigé : la charge utile part en flux. **Aucune pièce n'avait jamais été archivée** — en silence pour les imports, `storage_path` restant nul. Les pièces des campagnes antérieures sont définitivement perdues, le conteneur étant éphémère |
 | `relation "campaign" does not exist` | Migrations non appliquées | Consultez les journaux de démarrage ; le rôle doit avoir `CREATE` sur le schéma |
 | `La migration 001 a été modifiée après application` | Un fichier de migration déjà appliqué a été édité | Restaurez le fichier ; créez une **nouvelle** migration |

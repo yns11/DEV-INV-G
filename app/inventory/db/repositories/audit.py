@@ -171,7 +171,7 @@ class ImportBatchRepository(_Base):
         """
         return self._fetch_all(
             "SELECT DISTINCT ON (target) target, rows_rejected, rows_accepted, "
-            "filename, imported_at "
+            "filename, imported_at, report "
             "FROM import_batch WHERE campaign_id = %s "
             "ORDER BY target, imported_at DESC",
             (campaign_id,),

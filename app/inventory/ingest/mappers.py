@@ -271,39 +271,52 @@ def map_book_stock(
     rows: Iterable[Mapping[str, Any]],
     *,
     items: Mapping[str, Item],
-) -> tuple[list[BookStockLine], list[RowError], list[RowError]]:
+) -> tuple[list[BookStockLine], list[RowError], list[RowError], list[RowError]]:
     """Build the frozen snapshot.
+
+    Rend quatre listes : les lignes retenues, les lignes **refusées**, les
+    lignes **écartées faute de périmètre**, et les lignes **écartées faute de
+    référence**. Les trois dernières ont l'air de la même chose et n'appellent
+    pas le même geste, d'où trois listes plutôt qu'un champ à relire.
 
     Duplicate ``(item, warehouse, location)`` triples are **summed**, not
     overwritten: the ERP export legitimately splits one location's stock across
     several rows when batch or status dimensions differ, and dropping all but
     the last would understate the book.
 
-    **Le référentiel articles fait foi**, comme pour les feuilles de comptage, et
-    quel que soit le mode d'import. Une ligne dont la référence lui est inconnue
-    est une erreur de ligne : le snapshot sert de base à tous les écarts de la
-    campagne, et une référence qu'aucun article ne décrit n'a ni désignation, ni
-    prix, ni type — son écart serait affiché en quantité nue, non valorisé, et
-    hors de toute règle de matérialité.
+    **Rien de ce que dit le référentiel articles ne refuse le fichier.** Un
+    chargement de stock remplace l'ensemble existant : une seule ligne rejetée
+    annule donc toute l'écriture. Faire dépendre l'écriture entière de l'état du
+    référentiel avait une conséquence simple et fâcheuse — plus le référentiel
+    était incomplet ou le périmètre restreint, moins le stock était chargeable,
+    et le geste proposé (« corrigez le fichier ») n'avait aucun sens puisque le
+    fichier ERP, lui, est juste.
 
-    Un article **hors périmètre** n'est pas une erreur de ligne : c'est une
-    décision de campagne, déjà prise, sur laquelle le fichier ERP n'a pas d'avis.
-    Sa ligne est donc **écartée** et signalée, jamais refusée. Son stock ne peut
-    pas entrer — l'inventaire ne compte pas cet article, son stock ERP
-    produirait un écart égal à la totalité du stock — mais faire d'un choix
-    délibéré une ligne rejetée avait une conséquence bien pire : le stock ERP
-    remplace l'ensemble existant, donc une seule ligne rejetée annule toute
-    l'écriture. Un périmètre restreint rendait le chargement impossible.
+    Les deux cas sont donc **écartés et signalés**, jamais refusés, mais ils
+    restent distincts parce qu'ils ne se corrigent pas au même endroit :
 
-    C'est la règle que la lecture du backflush applique déjà, et le contraire de
-    l'article inconnu : l'un est un manque de données, l'autre une décision.
+    * **hors périmètre** — une décision de campagne, déjà prise, sur laquelle le
+      fichier ERP n'a pas d'avis. Son stock ne peut pas entrer : l'inventaire ne
+      compte pas cet article, et son stock ERP produirait un écart égal à la
+      totalité du stock. Se lève sur la grille Articles.
+    * **référence inconnue** — un manque de données. Le snapshot sert de base à
+      tous les écarts, et une référence qu'aucun article ne décrit n'a ni
+      désignation, ni prix, ni type : son écart s'afficherait en quantité nue,
+      non valorisé, hors de toute règle de matérialité. Se corrige en complétant
+      le référentiel articles, puis en rechargeant — un import de stock ne crée
+      jamais d'article.
+
+    Ce qui reste dans ``errors`` est ce que le fichier lui-même a de faux : une
+    quantité illisible, une colonne obligatoire absente. Là, « corrigez le
+    fichier » est le bon conseil, et le refus a un sens.
 
     When the export carries no unit cost, the referential's standard price is
     used so that every line is valued.
     """
     aggregated: dict[tuple[str, str, str], BookStockLine] = {}
     errors: list[RowError] = []
-    skipped: list[RowError] = []
+    out_of_scope: list[RowError] = []
+    unknown: list[RowError] = []
 
     for index, row in enumerate(rows, start=2):
         try:
@@ -322,16 +335,17 @@ def map_book_stock(
 
         item = items.get(line.item_number)
         if item is None:
-            errors.append(
-                RowError(index, "item_number", row.get("item_number"),
+            unknown.append(
+                RowError(index, "item_number", line.item_number,
                          f"L'article {line.item_number} est absent du référentiel "
-                         "de la campagne. Complétez le référentiel articles : un "
+                         "de la campagne : sa ligne de stock n'est pas chargée. "
+                         "Complétez le référentiel articles puis rechargez — un "
                          "import de stock ne crée jamais d'article.")
             )
             continue
         if item.excluded_everywhere:
-            skipped.append(
-                RowError(index, "item_number", row.get("item_number"),
+            out_of_scope.append(
+                RowError(index, "item_number", line.item_number,
                          f"L'article {line.item_number} est hors du périmètre de "
                          "la campagne : sa ligne de stock n'est pas chargée. "
                          "Levez l'exclusion sur la grille Articles pour "
@@ -351,7 +365,7 @@ def map_book_stock(
             if existing.unit_cost == 0:
                 existing.unit_cost = line.unit_cost
 
-    return list(aggregated.values()), errors, skipped
+    return list(aggregated.values()), errors, out_of_scope, unknown
 
 
 # --------------------------------------------------------------------------- #

@@ -23,6 +23,7 @@ from ..domain.controls import (
     check_book_stock,
     check_items,
     check_referentials,
+    check_stock_import,
     check_variances,
     check_zones,
     group_findings,
@@ -452,6 +453,18 @@ class AnalysisService:
         bom_links = ctx.referentials.list_bom_links(campaign.id)
         findings = check_referentials(items=items, bom_links=bom_links)
         findings += check_items(items=items)
+
+        # Ce que le dernier chargement de stock a écarté. Lu du rapport du lot
+        # et non des lignes chargées : ce sont précisément les lignes qui n'y
+        # sont pas. Hors de la garde `if book_stock`, pour la même raison — un
+        # chargement dont *toutes* les lignes ont été écartées ne laisse rien
+        # derrière lui, et c'est le cas où le constat compte le plus.
+        latest = {
+            row["target"]: row for row in ctx.imports.latest_per_target(campaign.id)
+        }
+        findings += check_stock_import(
+            report=(latest.get("book_stock") or {}).get("report")
+        )
 
         zones = ctx.sheets.list_zones(campaign.id)
         if zones:

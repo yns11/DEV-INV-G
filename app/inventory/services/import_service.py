@@ -70,6 +70,19 @@ __all__ = [
     "suggested_period",
 ]
 
+#: Combien de références écartées sont **nommées** dans le rapport d'un lot.
+#:
+#: Le rapport part en JSONB dans ``import_batch`` et se relit à chaque affichage
+#: des contrôles. Un fichier ERP chargé contre un référentiel vide en produirait
+#: des dizaines de milliers : ce n'est plus un constat, c'est une copie du
+#: fichier. Deux cents suffisent à reconnaître ce qui manque et à décider.
+#:
+#: Le **compte**, lui, n'est jamais tronqué : ``unknownItems`` et
+#: ``outOfScopeItems`` portent le total, et la vue Contrôles dit explicitement
+#: qu'elle n'en détaille qu'une partie. Une liste tronquée qui se lirait comme
+#: complète ferait croire le référentiel à jour à deux cents références près.
+UNKNOWN_ITEMS_KEPT = 200
+
 
 
 class ImportService:
@@ -369,18 +382,29 @@ class ImportService:
             return outcome
 
         items = ctx.referentials.items_by_number(campaign.id)
-        lines, errors, skipped = map_book_stock(campaign.id, parsed.rows, items=items)
+        lines, errors, out_of_scope, unknown = map_book_stock(
+            campaign.id, parsed.rows, items=items
+        )
         outcome.errors.extend(errors)
         outcome.rows_rejected += len(errors)
-        # Les lignes hors périmètre ne sont pas des refus : les compter comme
-        # tels annulait toute l'écriture, puisque le stock ERP remplace
-        # l'ensemble. Elles sont dites, et le décompte est en tête pour qu'un
-        # périmètre trop large ou trop étroit se voie du premier coup d'œil.
-        outcome.warnings.extend(skipped)
-        outcome.details["outOfScopeLines"] = len(skipped)
-        outcome.details["outOfScopeItems"] = len(
-            {w.value for w in skipped if w.value}
-        )
+        # Ni le hors-périmètre ni la référence inconnue ne sont des refus : les
+        # compter comme tels annulait toute l'écriture, puisque le stock ERP
+        # remplace l'ensemble. Plus le référentiel était incomplet, moins le
+        # stock était chargeable — et le fichier ERP, lui, n'avait rien de faux.
+        # Les lignes sont donc dites, et les décomptes sont en tête pour qu'un
+        # périmètre trop étroit ou un référentiel en retard se voie du premier
+        # coup d'œil.
+        outcome.warnings.extend(out_of_scope)
+        outcome.warnings.extend(unknown)
+        # Les références elles-mêmes, et pas seulement leur nombre : c'est ce que
+        # la vue Contrôles relit pour dire lesquelles manquent. Le rapport du lot
+        # est le bon endroit — il est remplacé au chargement suivant, exactement
+        # la durée de vie que ce constat doit avoir.
+        for prefix, rows in (("outOfScope", out_of_scope), ("unknown", unknown)):
+            refs = sorted({r.value for r in rows if r.value})
+            outcome.details[f"{prefix}Lines"] = len(rows)
+            outcome.details[f"{prefix}Items"] = len(refs)
+            outcome.details[f"{prefix}ItemNumbers"] = refs[:UNKNOWN_ITEMS_KEPT]
         if not lines:
             return outcome
 

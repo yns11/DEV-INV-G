@@ -111,3 +111,78 @@ describe('Les lignes signalées', () => {
     expect(screen.getByText(/Ligne 7 — hors du périmètre/)).toBeTruthy()
   })
 })
+
+describe('Les références inconnues du référentiel', () => {
+  /* L'autre moitié du même choix. Elles étaient refusées, ce qui annulait tout
+     le chargement : plus le référentiel était en retard, moins le stock était
+     chargeable. Elles sont désormais écartées — et donc, elles aussi, à dire. */
+
+  it('sont annoncées avec leur décompte', () => {
+    show({ details: { unknownLines: 42, unknownItems: 17 } })
+
+    expect(screen.getByText(/42 ligne\(s\) sur des références inconnues/)).toBeTruthy()
+  })
+
+  it('nomment quelques références, pour reconnaître ce qui manque', () => {
+    show({
+      details: {
+        unknownLines: 3, unknownItems: 3,
+        unknownItemNumbers: ['N-1', 'N-2', 'N-3'],
+      },
+    })
+
+    expect(screen.getByText(/N-1 · N-2 · N-3/)).toBeTruthy()
+  })
+
+  it('n’en nomment qu’un échantillon, et le disent', () => {
+    /* Douze mille références dans un bandeau ne sont plus un message. */
+    show({
+      details: {
+        unknownLines: 12_000, unknownItems: 12_000,
+        unknownItemNumbers: Array.from({ length: 200 }, (_, n) => `N-${n}`),
+      },
+    })
+
+    expect(screen.getByText(/N-0 · N-1 · N-2 · N-3 · N-4 · N-5 …/)).toBeTruthy()
+  })
+
+  it('renvoient vers Contrôles, où la liste survit à ce panneau', () => {
+    show({ details: { unknownLines: 1, unknownItems: 1 } })
+
+    expect(screen.getByText('Contrôles')).toBeTruthy()
+  })
+
+  it('disent le geste qui les chargerait', () => {
+    show({ details: { unknownLines: 1, unknownItems: 1 } })
+
+    expect(screen.getByText(/Complétez le référentiel articles/)).toBeTruthy()
+  })
+
+  it('ne se confondent pas avec les lignes hors périmètre', () => {
+    /* Deux causes, deux gestes : compléter le référentiel, ou lever une
+       exclusion. Les afficher sous un même bandeau enverrait la moitié des cas
+       au mauvais écran. */
+    show({
+      details: {
+        outOfScopeLines: 5, outOfScopeItems: 2,
+        unknownLines: 3, unknownItems: 1,
+      },
+    })
+
+    expect(screen.getByText(/5 ligne\(s\) hors périmètre/)).toBeTruthy()
+    expect(screen.getByText(/3 ligne\(s\) sur des références inconnues/)).toBeTruthy()
+  })
+
+  it('ne disent rien quand il n’y en a pas', () => {
+    show({ details: { unknownLines: 0, unknownItems: 0 } })
+
+    expect(screen.queryByText(/références inconnues/)).toBeNull()
+  })
+
+  it('ne sont pas comptées comme rejetées', () => {
+    show({ rowsRejected: 0, details: { unknownLines: 42 } })
+
+    const rejetees = screen.getByText('Rejetées').parentElement
+    expect(rejetees?.textContent).toContain('0')
+  })
+})

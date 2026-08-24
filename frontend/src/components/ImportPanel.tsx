@@ -415,6 +415,13 @@ export function ImportReport({
   const blocked = missingColumns.length > 0
   const outOfScopeLines = Number(details.outOfScopeLines ?? 0)
   const outOfScopeItems = Number(details.outOfScopeItems ?? 0)
+  const unknownLines = Number(details.unknownLines ?? 0)
+  const unknownItems = Number(details.unknownItems ?? 0)
+  // Quelques-unes seulement : le panneau sert à décider tout de suite, pas à
+  // relire douze mille références. La liste entière est dans Contrôles.
+  const unknownSample = (
+    Array.isArray(details.unknownItemNumbers) ? details.unknownItemNumbers : []
+  ).slice(0, 6).map(String)
   const sample = (result as unknown as { sample?: Array<Record<string, unknown>> }).sample ?? []
 
   return (
@@ -492,6 +499,29 @@ export function ImportReport({
             Leur stock n’entre pas dans l’inventaire — c’est ce que l’exclusion
             veut dire. Pour en inventorier un, levez son exclusion sur la grille
             Articles puis rechargez le stock.
+          </Alert>
+        )}
+
+        {/* L'autre moitié du même choix : une référence que le référentiel ne
+            connaît pas encore. Écartée elle aussi, et pour la même raison — un
+            refus annulerait tout le chargement — mais ce n'est pas une décision,
+            c'est un manque, d'où le ton et le geste différents. Le constat
+            survit à ce panneau : la vue Contrôles le reprend, avec la liste. */}
+        {unknownLines > 0 && (
+          <Alert
+            tone="warning"
+            title={`${unknownLines.toLocaleString('fr-FR')} ligne(s) sur des références inconnues, non chargée(s)`}
+          >
+            {unknownItems > 0 && (
+              <>
+                {unknownItems.toLocaleString('fr-FR')} référence(s) absente(s) du
+                référentiel articles{unknownSample.length > 0 && <> : {unknownSample.join(' · ')}
+                {unknownItems > unknownSample.length && ' …'}</>}.{' '}
+              </>
+            )}
+            Aucun écart ne sera calculé dessus. Complétez le référentiel articles
+            puis rechargez le stock — un import de stock ne crée jamais d’article.
+            La liste complète reste dans <strong>Contrôles</strong>.
           </Alert>
         )}
 

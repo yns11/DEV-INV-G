@@ -163,12 +163,16 @@ def import_service(monkeypatch, *, rows, mapped, errors, target):
                         errors=list(errors)),
         ),
     )
-    # `map_book_stock` rend une troisième liste : les lignes écartées parce que
-    # hors périmètre. Elles ne sont pas des refus — voir le mappeur — et ce
-    # doublure doit donc rendre la même forme, sans quoi le test dirait le
-    # contraire du code qu'il couvre.
+    # `map_book_stock` rend quatre listes : les lignes retenues, les refus, et
+    # deux familles d'écartées — hors périmètre, et référence inconnue. Ces
+    # deux-là ne sont pas des refus, voir le mappeur ; la doublure doit rendre
+    # la même forme, sans quoi le test dirait le contraire du code qu'il couvre.
+    #
+    # Ce qui est refusé ici vient donc du **fichier** (`ParseResult.errors`), et
+    # c'est bien ce que ces contrôles visent : le remplacement amputé.
     monkeypatch.setattr(
-        module, "map_book_stock", lambda *a, **k: (mapped, [], []), raising=False
+        module, "map_book_stock", lambda *a, **k: (mapped, [], [], []),
+        raising=False,
     )
     for name in ("map_bom_links", "map_backflush"):
         monkeypatch.setattr(

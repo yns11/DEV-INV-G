@@ -263,8 +263,15 @@ export const SECTIONS: Section[] = [
     icon: 'alert',
     phase: 'ANALYSIS',
     lede: 'Ce qui empêcherait de clôturer, et pourquoi.',
-    enabled: (o) => o.campaign.book_stock_frozen_at !== null,
-    locked: () => 'Disponible une fois le stock ERP gelé.',
+    // Jamais verrouillée, contrairement aux autres vues d'analyse. Les
+    // contrôles ne calculent pas d'écart : ils relisent le dossier tel qu'il
+    // est, et la moitié d'entre eux — référentiel, nomenclatures, zones —
+    // portent sur ce qui se prépare *avant* le gel. Les verrouiller jusqu'au
+    // gel revenait à cacher les défauts pendant toute la phase où ils se
+    // corrigent encore, puis à les révéler tous d'un coup au moment où il est
+    // le plus coûteux d'y revenir. C'est aussi là que le stock ERP signale les
+    // références qu'il n'a pas pu charger, ce qui se lit le jour de l'import.
+    enabled: () => true,
     badge: (_o, _focus, alerts) => alerts.controls || null,
   },
   {

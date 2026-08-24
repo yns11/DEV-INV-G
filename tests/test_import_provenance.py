@@ -161,6 +161,7 @@ class TestLeStockErp:
                     warehouse_id="B06", location_id="VRAC", qty=Decimal("10"),
                 )],
                 [],
+                [],
             ),
         )
         outcome = service.import_book_stock(CAMPAIGN, payload=b"x", filename="s.csv")
@@ -279,6 +280,7 @@ def test_aucun_import_marqueur_ne_laisse_le_depot_tirer_son_propre_lot(
                     campaign_id=cid, item_number="P-1",
                     warehouse_id="B06", location_id="VRAC", qty=Decimal("10"),
                 )],
+                [],
                 [],
             ),
         )

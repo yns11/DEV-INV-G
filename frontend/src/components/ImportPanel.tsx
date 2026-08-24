@@ -387,7 +387,7 @@ export function ImportPanel({
   )
 }
 
-function ImportReport({
+export function ImportReport({
   result,
   contract,
   onCancel,
@@ -413,6 +413,8 @@ function ImportReport({
     details = {},
   } = result
   const blocked = missingColumns.length > 0
+  const outOfScopeLines = Number(details.outOfScopeLines ?? 0)
+  const outOfScopeItems = Number(details.outOfScopeItems ?? 0)
   const sample = (result as unknown as { sample?: Array<Record<string, unknown>> }).sample ?? []
 
   return (
@@ -471,8 +473,30 @@ function ImportReport({
           </Alert>
         )}
 
+        {/* Le stock ERP couvre toute l'usine ; la campagne choisit son
+            périmètre. Les lignes des articles exclus ne sont pas chargées —
+            elles ne sont pas non plus refusées, sans quoi l'écriture entière
+            serait annulée. Le décompte est en tête, parce qu'un périmètre trop
+            large ou trop étroit se voit à ce chiffre-là et à aucun autre. */}
+        {outOfScopeLines > 0 && (
+          <Alert
+            tone="info"
+            title={`${outOfScopeLines.toLocaleString('fr-FR')} ligne(s) hors périmètre, non chargée(s)`}
+          >
+            {outOfScopeItems > 0 && (
+              <>
+                {outOfScopeItems.toLocaleString('fr-FR')} article(s) exclu(s) de
+                cette campagne.{' '}
+              </>
+            )}
+            Leur stock n’entre pas dans l’inventaire — c’est ce que l’exclusion
+            veut dire. Pour en inventorier un, levez son exclusion sur la grille
+            Articles puis rechargez le stock.
+          </Alert>
+        )}
+
         {warnings.length > 0 && (
-          <Alert tone="warning" title={`${warnings.length} correction(s) automatique(s)`}>
+          <Alert tone="warning" title={`${warnings.length} ligne(s) signalée(s)`}>
             <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
               {warnings.slice(0, 8).map((warning, index) => (
                 <li key={index}>

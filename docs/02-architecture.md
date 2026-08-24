@@ -48,7 +48,7 @@ inventory.domain     règles métier pures — n'importe aucun driver, aucun fra
 **`inventory.domain` n'importe rien du reste.** C'est ce qui permet de tester
 l'intégralité des règles métier — éclatement BOM, consolidation, écarts,
 contrôles, machine à états, matrice d'impression — en une fraction de seconde
-sans base de données. La suite compte 1962 contrôles ; c'est la propriété que le
+sans base de données. La suite compte 1979 contrôles ; c'est la propriété que le
 classeur Excel n'avait pas.
 
 Dernier arrivé dans cette couche : `domain/printing.py`, qui décide lequel des

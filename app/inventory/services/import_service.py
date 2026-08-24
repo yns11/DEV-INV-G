@@ -369,9 +369,18 @@ class ImportService:
             return outcome
 
         items = ctx.referentials.items_by_number(campaign.id)
-        lines, errors = map_book_stock(campaign.id, parsed.rows, items=items)
+        lines, errors, skipped = map_book_stock(campaign.id, parsed.rows, items=items)
         outcome.errors.extend(errors)
         outcome.rows_rejected += len(errors)
+        # Les lignes hors périmètre ne sont pas des refus : les compter comme
+        # tels annulait toute l'écriture, puisque le stock ERP remplace
+        # l'ensemble. Elles sont dites, et le décompte est en tête pour qu'un
+        # périmètre trop large ou trop étroit se voie du premier coup d'œil.
+        outcome.warnings.extend(skipped)
+        outcome.details["outOfScopeLines"] = len(skipped)
+        outcome.details["outOfScopeItems"] = len(
+            {w.value for w in skipped if w.value}
+        )
         if not lines:
             return outcome
 

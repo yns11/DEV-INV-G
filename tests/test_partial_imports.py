@@ -163,7 +163,14 @@ def import_service(monkeypatch, *, rows, mapped, errors, target):
                         errors=list(errors)),
         ),
     )
-    for name in ("map_book_stock", "map_bom_links", "map_backflush"):
+    # `map_book_stock` rend une troisième liste : les lignes écartées parce que
+    # hors périmètre. Elles ne sont pas des refus — voir le mappeur — et ce
+    # doublure doit donc rendre la même forme, sans quoi le test dirait le
+    # contraire du code qu'il couvre.
+    monkeypatch.setattr(
+        module, "map_book_stock", lambda *a, **k: (mapped, [], []), raising=False
+    )
+    for name in ("map_bom_links", "map_backflush"):
         monkeypatch.setattr(
             module, name,
             (lambda *a, **k: (mapped, [])) if hasattr(module, name) else None,

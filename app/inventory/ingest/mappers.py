@@ -271,7 +271,7 @@ def map_book_stock(
     rows: Iterable[Mapping[str, Any]],
     *,
     items: Mapping[str, Item],
-) -> tuple[list[BookStockLine], list[RowError]]:
+) -> tuple[list[BookStockLine], list[RowError], list[RowError]]:
     """Build the frozen snapshot.
 
     Duplicate ``(item, warehouse, location)`` triples are **summed**, not
@@ -286,16 +286,24 @@ def map_book_stock(
     prix, ni type — son écart serait affiché en quantité nue, non valorisé, et
     hors de toute règle de matérialité.
 
-    Un article **exclu du périmètre** est refusé pour la raison symétrique :
-    l'exclusion est une décision de campagne, et laisser entrer son stock la
-    reprendrait par la fenêtre — l'inventaire ne compte pas cet article, donc son
-    stock ERP produirait un écart égal à la totalité du stock.
+    Un article **hors périmètre** n'est pas une erreur de ligne : c'est une
+    décision de campagne, déjà prise, sur laquelle le fichier ERP n'a pas d'avis.
+    Sa ligne est donc **écartée** et signalée, jamais refusée. Son stock ne peut
+    pas entrer — l'inventaire ne compte pas cet article, son stock ERP
+    produirait un écart égal à la totalité du stock — mais faire d'un choix
+    délibéré une ligne rejetée avait une conséquence bien pire : le stock ERP
+    remplace l'ensemble existant, donc une seule ligne rejetée annule toute
+    l'écriture. Un périmètre restreint rendait le chargement impossible.
+
+    C'est la règle que la lecture du backflush applique déjà, et le contraire de
+    l'article inconnu : l'un est un manque de données, l'autre une décision.
 
     When the export carries no unit cost, the referential's standard price is
     used so that every line is valued.
     """
     aggregated: dict[tuple[str, str, str], BookStockLine] = {}
     errors: list[RowError] = []
+    skipped: list[RowError] = []
 
     for index, row in enumerate(rows, start=2):
         try:
@@ -322,11 +330,12 @@ def map_book_stock(
             )
             continue
         if item.excluded_everywhere:
-            errors.append(
+            skipped.append(
                 RowError(index, "item_number", row.get("item_number"),
-                         f"L'article {line.item_number} est exclu du périmètre de "
-                         "la campagne. Levez l'exclusion sur la grille Articles "
-                         "pour que son stock soit chargé.")
+                         f"L'article {line.item_number} est hors du périmètre de "
+                         "la campagne : sa ligne de stock n'est pas chargée. "
+                         "Levez l'exclusion sur la grille Articles pour "
+                         "l'inventorier.")
             )
             continue
 
@@ -342,7 +351,7 @@ def map_book_stock(
             if existing.unit_cost == 0:
                 existing.unit_cost = line.unit_cost
 
-    return list(aggregated.values()), errors
+    return list(aggregated.values()), errors, skipped
 
 
 # --------------------------------------------------------------------------- #

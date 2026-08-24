@@ -9,10 +9,112 @@ import { ZonesAdminGrid } from './zones'
 import { Alert, AsyncBoundary, Badge, Button, Card, Skeleton, useErrorToast, useToast } from '../components/ui'
 
 // --------------------------------------------------------------------------- //
+// Paramètres
+// --------------------------------------------------------------------------- //
+
+/**
+ * « Accepter des formules dans les comptages ».
+ *
+ * Devant trois palettes de quarante-huit et un fond de bac de sept, un compteur
+ * écrit `3*48+7` — et c'est la bonne façon de compter : le calcul reste devant
+ * les yeux de qui relira, ce qu'un « 151 » nu ne permet plus. L'application ne
+ * savait lire qu'un nombre : la saisie refusait la ligne, le scan rendait une
+ * case vide sur une feuille pourtant ni vierge ni douteuse.
+ *
+ * Réglage, et non comportement d'office : une usine qui veut que ses feuilles
+ * portent un nombre et un seul a raison de l'exiger. Ce qui ne se défendait
+ * pas, c'est que le refus parlait d'une quantité illisible sans jamais dire
+ * qu'un réglage existait.
+ *
+ * Ouvert plus longtemps que les seuils, et pour une raison précise : les seuils
+ * gèlent à l'entrée en comptage parce qu'ils décident ce qui sera signalé comme
+ * exception ; celui-ci décide seulement de ce qu'un champ accepte, et le besoin
+ * apparaît le jour de l'inventaire.
+ */
+function FormulaSetting({
+  campaignId,
+  overview,
+}: {
+  campaignId: string
+  overview: Overview
+}) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+  const editable = overview.permissions.settings
+  const allowed = overview.campaign.config.allow_formulas
+
+  const save = useMutation({
+    mutationFn: (allowFormulas: boolean) =>
+      api.saveSettings(campaignId, { allowFormulas }),
+    onSuccess: (_data, allowFormulas) => {
+      void queryClient.invalidateQueries()
+      toast.success(
+        allowFormulas
+          ? 'Les formules sont acceptées dans les comptages'
+          : 'Les formules ne sont plus acceptées',
+      )
+    },
+    onError: (error) => showError(error, 'Enregistrement impossible'),
+  })
+
+  return (
+    <Card
+      title="Accepter des formules dans les comptages"
+      message="Une quantité peut s’écrire comme l’opération qui la produit. Elle est évaluée comme dans un tableur, et le texte d’origine est conservé à côté du résultat."
+    >
+      <div className="stack" style={{ gap: 'var(--space-3)' }}>
+        <label className="row" style={{ gap: 'var(--space-2)', alignItems: 'center' }}>
+          <input
+            type="checkbox"
+            checked={allowed}
+            disabled={!editable || save.isPending}
+            onChange={(e) => save.mutate(e.target.checked)}
+          />
+          <span>
+            <strong>{allowed ? 'Activé' : 'Désactivé'}</strong> —{' '}
+            {allowed
+              ? 'les opérations saisies ou lues sur un scan sont calculées.'
+              : 'seuls des nombres sont acceptés ; une opération est refusée.'}
+          </span>
+        </label>
+
+        <div className="subtle">
+          Accepté : <code>3*48+7</code>, <code>=(10+2)/4</code>,{' '}
+          <code>2,5*4</code>, <code>1 200 + 30</code>. Les quatre opérations, les
+          parenthèses et le signe moins — rien d’autre.
+        </div>
+
+        {!editable && (
+          <Alert tone="info" title="Réglage gelé">
+            Les comptages de cette campagne sont terminés : ce réglage ne change
+            plus ce qu’ils contiennent.
+          </Alert>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+// --------------------------------------------------------------------------- //
 // Thresholds
 // --------------------------------------------------------------------------- //
 
-export function ThresholdsTab({
+/**
+ * Les paramètres de la campagne : ce qu'elle accepte, puis à partir de quand
+ * un écart compte.
+ *
+ * L'onglet s'appelait « Seuils » et ne portait qu'eux. Le premier réglage venu
+ * qui n'était pas un seuil n'avait donc aucun endroit où aller — et un onglet
+ * nommé d'après son unique contenu ne peut pas en accueillir un second sans
+ * mentir sur ce qu'il contient.
+ *
+ * L'ordre n'est pas neutre. Les formules décident de ce qu'un champ de saisie
+ * accepte, et la question se pose le jour de l'inventaire, devant la première
+ * feuille qui porte « 3*48+7 ». Les seuils décident de ce qui sera signalé à
+ * l'analyse, trois semaines plus tard. Le plus urgent est en tête.
+ */
+export function SettingsTab({
   campaignId,
   overview,
 }: {
@@ -59,6 +161,8 @@ export function ThresholdsTab({
   }
 
   return (
+    <div className="stack" style={{ gap: 'var(--space-4)' }}>
+    <FormulaSetting campaignId={campaignId} overview={overview} />
     <Card
       title="Seuils de matérialité"
       message="Un écart est « matériel » lorsqu’il franchit toutes les barrières de son type, jamais une seule."
@@ -145,6 +249,7 @@ export function ThresholdsTab({
         )}
       </AsyncBoundary>
     </Card>
+    </div>
   )
 }
 

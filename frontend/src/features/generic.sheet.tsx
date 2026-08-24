@@ -13,6 +13,29 @@ import { ZONE_TONE } from './generic.zones'
 import { ScanProgress } from './generic.scan'
 
 /**
+ * Ce qui part au serveur pour une cellule de quantité.
+ *
+ * Un nombre quand c'en est un, et **le texte tel quel** sinon. C'est ce second
+ * cas qui compte : la cellule accepte « 3*48+7 », et `Number()` en fait `NaN`,
+ * que `JSON.stringify` écrit `null`. La formule ne devenait donc pas une erreur
+ * — elle devenait une case vide, sur une ligne que quelqu'un venait de compter.
+ *
+ * Ce n'est pas au navigateur de décider si l'opération est acceptable : le
+ * réglage vit sur la campagne, et le refus doit pouvoir le nommer. Le texte
+ * traverse, le serveur tranche.
+ *
+ * Vide reste vide : on ne compte pas zéro parce qu'on n'a pas compté.
+ */
+export function quantityToSend(value: unknown): number | string | null {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  const text = String(value).trim()
+  if (text === '') return null
+  const asNumber = Number(text.replace(',', '.'))
+  return Number.isFinite(asNumber) ? asNumber : text
+}
+
+/**
  * Le bouton bleu d'une feuille : ce qu'il fait, et comment il s'appelle.
  *
  * Il porte l'action suivante, jamais l'état courant — « Commencer le comptage »
@@ -57,10 +80,7 @@ export function SheetModal({
           id: row.id ?? null,
           itemNumber: String(row.item_number ?? ''),
           section: String(row.section ?? 'LINE_SIDE'),
-          qty:
-            row.qty === null || row.qty === undefined || row.qty === ''
-              ? null
-              : Number(String(row.qty).replace(',', '.')),
+          qty: quantityToSend(row.qty),
           unit: String(row.unit ?? 'PCE'),
           comment: String(row.comment ?? ''),
           displayOrder: index,
@@ -234,7 +254,19 @@ export function SheetModal({
         ? undefined
         : (row) =>
             row.isCounted ? (
-              <span className="num">{qty(Number(row.qty))}</span>
+              // L'opération sous le résultat quand il y en avait une. Sans
+              // elle, « 151 » calculé et « 151 » tapé seraient identiques à
+              // l'écran, et la seule chose que cette fonctionnalité apporte
+              // par-dessus une calculatrice — pouvoir recompter — disparaîtrait
+              // à l'affichage.
+              <span className="stack" style={{ gap: 0 }}>
+                <span className="num">{qty(Number(row.qty))}</span>
+                {row.qty_formula ? (
+                  <span className="subtle mono" title="Écrit sur la feuille">
+                    {String(row.qty_formula)}
+                  </span>
+                ) : null}
+              </span>
             ) : (
               <span className="subtle" title="Vide ≠ zéro : la ligne n’a pas été comptée">
                 non compté

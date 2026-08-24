@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 2107 contrôles, ~45 s ; 63 ignorés sans PostgreSQL
+make test      # 2210 contrôles, ~45 s ; 63 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1087,7 +1087,8 @@ ment.
 2. **Référentiels & seuils → Articles** : charger l'export articles.
 3. **Nomenclatures** : charger la BOM effective, vérifier l'onglet *Santé des
    nomenclatures* (cycles, assemblages sans structure).
-4. **Seuils** : ajuster les seuils de matérialité par type d'article.
+4. **Paramètres** : accepter ou non les formules dans les comptages, puis
+   ajuster les seuils de matérialité par type d'article.
 5. **GENERIQUE → Créer une zone** pour chaque aire physique, puis saisir la
    liste d'articles pré-imprimée de chaque zone.
 6. **Imprimer toutes les feuilles n°1** la veille de l'inventaire.

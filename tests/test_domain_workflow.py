@@ -81,6 +81,35 @@ class TestFreezeMatrix:
         }
         assert open_aspects == {"stockFlow"}
 
+    def test_les_parametres_restent_ouverts_pendant_le_comptage(self):
+        """Et c'est toute la raison de ne pas les avoir groupés aux seuils.
+
+        Les seuils gèlent à l'entrée en comptage parce qu'ils décident ce qui
+        sera signalé comme exception : les changer en cours de route changerait
+        la liste sous les yeux de qui la traite.
+
+        « Accepter des formules dans les comptages » décide seulement de ce
+        qu'un champ de saisie accepte, et le besoin apparaît **le jour de
+        l'inventaire**, devant la première feuille qui porte « 3*48+7 ». Gelé
+        avec les seuils, ce réglage serait inatteignable au seul moment où il
+        sert — c'est-à-dire inutile.
+        """
+        counting = mutability_of(CampaignStatus.COUNTING)
+
+        assert counting.settings is True
+        assert counting.thresholds is False, (
+            "les deux ne gèlent pas au même moment ; s'ils convergent, ce "
+            "contrôle n'a plus rien à dire"
+        )
+
+    def test_les_parametres_gelent_quand_la_saisie_s_arrete(self):
+        """Plus rien n'est saisi en analyse : le réglage ne change plus rien à
+        ce que la campagne contient, et le laisser ouvert promettrait un effet
+        qu'il n'a pas."""
+        assert mutability_of(CampaignStatus.PREPARATION).settings is True
+        assert mutability_of(CampaignStatus.ANALYSIS).settings is False
+        assert mutability_of(CampaignStatus.CLOSED).settings is False
+
 
 class TestTransitionBlockers:
     def test_counting_has_no_structural_prerequisite(self):

@@ -106,6 +106,18 @@ class Editable:
     #: of the feature, which is how this was found — a chip that would not
     #: click, on a campaign where the comparison was the whole point.
     stock_flow: bool = True
+    #: Les paramètres de campagne autres que les seuils — aujourd'hui le seul
+    #: réglage « Accepter des formules dans les comptages ».
+    #:
+    #: Ouvert tant qu'on saisit, fermé ensuite, et **pas au même moment que les
+    #: seuils**. Les seuils gèlent à l'entrée en comptage parce qu'ils décident
+    #: ce qui sera signalé comme exception : les changer en cours de route
+    #: changerait la liste sous les yeux de qui la traite. Ce réglage-là décide
+    #: seulement de ce qu'un champ de saisie accepte, et le besoin apparaît
+    #: précisément le jour de l'inventaire, devant la première feuille qui porte
+    #: un calcul. Le geler avec les seuils l'aurait rendu inatteignable au seul
+    #: moment où il sert.
+    settings: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -122,6 +134,7 @@ class Editable:
             "analysis": self.analysis,
             "backflush": self.backflush,
             "stockFlow": self.stock_flow,
+            "settings": self.settings,
         }
 
 
@@ -136,6 +149,7 @@ class Editable:
 #: CLOSED       everything is frozen.
 _EDITABILITY: dict[CampaignStatus, Editable] = {
     CampaignStatus.PREPARATION: Editable(
+        settings=True,
         thresholds=True,
         items=True,
         boms=True,
@@ -149,6 +163,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         analysis=False,
     ),
     CampaignStatus.COUNTING: Editable(
+        settings=True,
         thresholds=False,
         items=False,
         boms=False,

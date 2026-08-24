@@ -181,6 +181,11 @@ class ScanService:
             "pass_no": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
             "images": images,
             "image_mime": mime,
+            # Une case peut porter « 3*48+7 » : trois palettes et un fond de bac.
+            # Le réglage de la campagne décide si c'est une quantité ou une case
+            # vide — jamais un refus, une lecture ne fait pas échouer les cent
+            # autres lignes pour une case douteuse.
+            "allow_formulas": campaign.config.allow_formulas,
             "id_factory": new_id,
         }
         say(

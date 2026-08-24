@@ -616,6 +616,41 @@ class CampaignService:
             )
         return ctx.campaigns.list_thresholds(campaign_id)
 
+    def update_settings(self, campaign_id: str, *, allow_formulas: bool) -> Campaign:
+        """Change les réglages de campagne autres que les seuils.
+
+        Ouvert tant qu'on saisit — voir ``Editable.settings`` : le besoin de
+        formules apparaît le jour de l'inventaire, devant la première feuille
+        qui porte « 3*48+7 », et un réglage gelé avec les seuils serait
+        inatteignable au seul moment où il sert.
+
+        Tracé comme le reste : ce réglage change la façon dont des quantités
+        entrent dans le dossier, et « depuis quand les formules étaient-elles
+        acceptées » est une question qu'un contrôle posera.
+        """
+        ctx = self.ctx
+        campaign = ctx.campaigns.get(campaign_id)
+        ctx.guard(campaign, "settings")
+        before = campaign.config.model_dump(mode="json")
+        config = campaign.config.model_copy(update={"allow_formulas": allow_formulas})
+        with ctx.db.transaction() as conn:
+            ctx.campaigns.update_config(campaign_id, config, actor=ctx.actor, conn=conn)
+            ctx.record(
+                campaign_id=campaign_id,
+                action=AuditAction.UPDATE,
+                entity_type="campaign",
+                entity_id=campaign_id,
+                summary=(
+                    "Formules acceptées dans les comptages"
+                    if allow_formulas
+                    else "Formules refusées dans les comptages"
+                ),
+                before=before,
+                after=config.model_dump(mode="json"),
+                conn=conn,
+            )
+        return ctx.campaigns.get(campaign_id)
+
     # --------------------------------------------------------------- helpers
 
     def _unexplained_material(self, campaign: Campaign) -> int:

@@ -1981,6 +1981,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Paramètres de la campagne
+         * @description Les réglages autres que les seuils.
+         *
+         *     Rend la campagne entière : le réglage vit dans sa configuration, et un écran
+         *     qui devrait recoller un fragment à ce qu'il avait déjà finirait par afficher
+         *     l'un pendant que la base porte l'autre.
+         */
+        put: operations["update_settings_api_campaigns__campaign_id__settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/sheets/{sheet_id}/evidence": {
         parameters: {
             query?: never;
@@ -2861,6 +2885,11 @@ export interface components {
          */
         CampaignConfig: {
             /**
+             * Allow Formulas
+             * @default false
+             */
+            allow_formulas: boolean;
+            /**
              * Arbitration Tolerance
              * @default 0
              */
@@ -2949,6 +2978,20 @@ export interface components {
             total: number;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * CampaignSettingsRequest
+         * @description Les réglages de campagne autres que les seuils.
+         *
+         *     Un seul aujourd'hui. Une requête dédiée plutôt qu'un champ ajouté à la
+         *     configuration complète : celle-ci porte l'emplacement générique, le nombre
+         *     de comptages et la devise, qui sont gelés bien plus tôt, et les faire
+         *     voyager ensemble obligerait l'écran à renvoyer des valeurs qu'il n'a pas le
+         *     droit de changer.
+         */
+        CampaignSettingsRequest: {
+            /** Allowformulas */
+            allowFormulas: boolean;
         };
         /**
          * CampaignStatus
@@ -3542,6 +3585,8 @@ export interface components {
             items: boolean;
             /** Locations */
             locations: boolean;
+            /** Settings */
+            settings: boolean;
             /** Stockflow */
             stockFlow: boolean;
             /** Thresholds */
@@ -7615,6 +7660,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_settings_api_campaigns__campaign_id__settings_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CampaignSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Campaign"];
                 };
             };
             /** @description Validation Error */

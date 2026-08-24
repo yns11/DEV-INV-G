@@ -18,6 +18,7 @@ from ..responses import (
     WorkQueuesResponse,
 )
 from ..schemas import (
+    CampaignSettingsRequest,
     CloneCampaignRequest,
     CreateCampaignRequest,
     TransitionRequest,
@@ -212,6 +213,25 @@ def update_thresholds(
         campaign.id, [Thresholds(**t.model_dump()) for t in payload.thresholds]
     )
     return [t.model_dump(mode="json") for t in updated]
+
+
+@router.put(
+    "/{campaign_id}/settings", summary="Paramètres de la campagne",
+    responses={200: {"model": Campaign}},
+)
+def update_settings(
+    campaign: CampaignDep, payload: CampaignSettingsRequest, service: Service
+) -> dict[str, Any]:
+    """Les réglages autres que les seuils.
+
+    Rend la campagne entière : le réglage vit dans sa configuration, et un écran
+    qui devrait recoller un fragment à ce qu'il avait déjà finirait par afficher
+    l'un pendant que la base porte l'autre.
+    """
+    updated = service.update_settings(
+        campaign.id, allow_formulas=payload.allow_formulas
+    )
+    return updated.model_dump(mode="json")
 
 
 @router.get("/{campaign_id}/audit", summary="Journal d'audit")

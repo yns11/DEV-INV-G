@@ -10,7 +10,7 @@ import { ItemsTab } from './preparation.items'
 import { BomsTab } from './preparation.boms'
 import { BookStockTab } from './preparation.bookStock'
 import { CountSheetsTab } from './preparation.sheets'
-import { JournalScopeTab, ManagersTab, ThresholdsTab, ZoneScopeTab } from './preparation.gestion'
+import { JournalScopeTab, ManagersTab, SettingsTab, ZoneScopeTab } from './preparation.gestion'
 
 /**
  * The screens this file serves, one per navigation entry.
@@ -28,10 +28,10 @@ export type PreparationView =
   | 'count_sheets'
   | 'gestion'
 
-type GestionTab = 'managers' | 'zone_scope' | 'journal_scope' | 'thresholds'
+type GestionTab = 'managers' | 'zone_scope' | 'journal_scope' | 'settings'
 
 const GESTION_TABS: GestionTab[] = [
-  'managers', 'zone_scope', 'journal_scope', 'thresholds',
+  'managers', 'zone_scope', 'journal_scope', 'settings',
 ]
 
 export function Preparation({ view }: { view: PreparationView }) {
@@ -77,8 +77,8 @@ export function Preparation({ view }: { view: PreparationView }) {
           overview={overview}
         />
       )}
-      {tab === 'gestion' && gestion === 'thresholds' && (
-        <ThresholdsTab campaignId={campaignId} overview={overview} />
+      {tab === 'gestion' && gestion === 'settings' && (
+        <SettingsTab campaignId={campaignId} overview={overview} />
       )}
       {tab === 'gestion' && gestion === 'managers' && (
         <ManagersTab campaignId={campaignId} overview={overview} />

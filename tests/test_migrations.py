@@ -48,6 +48,7 @@ SHIPPED = {
     "020_audit_truncate_guard": "7ddfcb890f32",
     "021_campaign_published_at": "84865dcef4f3",
     "022_evidence_blob": "1953889cb85a",
+    "023_count_sheet_line_formula": "e7cbaa4c82f9",
 }
 
 

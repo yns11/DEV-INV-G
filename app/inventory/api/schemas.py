@@ -210,6 +210,19 @@ class UpdateThresholdsRequest(ApiModel):
     thresholds: list[ThresholdPayload]
 
 
+class CampaignSettingsRequest(ApiModel):
+    """Les réglages de campagne autres que les seuils.
+
+    Un seul aujourd'hui. Une requête dédiée plutôt qu'un champ ajouté à la
+    configuration complète : celle-ci porte l'emplacement générique, le nombre
+    de comptages et la devise, qui sont gelés bien plus tôt, et les faire
+    voyager ensemble obligerait l'écran à renvoyer des valeurs qu'il n'a pas le
+    droit de changer.
+    """
+
+    allow_formulas: bool = Field(alias="allowFormulas")
+
+
 # --------------------------------------------------------------------------- #
 # Imports
 # --------------------------------------------------------------------------- #
@@ -365,7 +378,18 @@ class SheetLineRow(ApiModel):
     id: str | None = None
     item_number: str = Field(alias="itemNumber")
     section: CountSection = CountSection.LINE_SIDE
-    qty: Decimal | None = None
+    #: Un nombre, ou l'opération que le compteur a écrite (« 3*48+7 »).
+    #:
+    #: Le type accepte le texte pour que l'expression **arrive jusqu'au
+    #: service**, seul endroit qui connaisse la campagne et donc le réglage
+    #: « Accepter des formules dans les comptages ». Déclarée ``Decimal`` seule,
+    #: la validation Pydantic refusait l'opération ici, avec un message de
+    #: contrat — « input should be a valid decimal » — qui ne dit rien à qui
+    #: recopie une feuille et ne mentionne aucun réglage.
+    #:
+    #: La conversion reste obligatoire, elle a seulement lieu un cran plus loin :
+    #: voir :func:`inventory.domain.formula.resolve_quantity`.
+    qty: Decimal | str | None = None
     unit: str = "PCE"
     comment: str = ""
     display_order: int | None = Field(default=None, alias="displayOrder")

@@ -229,6 +229,10 @@ class Permissions(Payload):
     analysis: bool
     backflush: bool
     stock_flow: bool = Field(alias="stockFlow")
+    #: Les paramètres de campagne autres que les seuils — aujourd'hui le seul
+    #: réglage « Accepter des formules dans les comptages ». Ouvert plus
+    #: longtemps que ``thresholds``, et délibérément : voir ``Editable``.
+    settings: bool
 
 
 class Access(Payload):

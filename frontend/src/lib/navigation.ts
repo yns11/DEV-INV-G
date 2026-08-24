@@ -166,7 +166,7 @@ export const SECTIONS: Section[] = [
       { id: 'managers', label: 'Gestionnaires' },
       { id: 'zone_scope', label: 'Affectation zones' },
       { id: 'journal_scope', label: 'Affectation journaux' },
-      { id: 'thresholds', label: 'Seuils' },
+      { id: 'settings', label: 'Paramètres' },
     ],
   },
 

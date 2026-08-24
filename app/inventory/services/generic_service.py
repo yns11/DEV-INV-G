@@ -536,8 +536,12 @@ class GenericService:
         for order, row in enumerate(rows):
             line_id = str(row.get("id") or "") or new_id()
             previous = existing.get(line_id)
-            qty = row.get("qty")
-            if not allow_negative and qty not in (None, "") and Decimal(str(qty)) < 0:
+            # « 3*48+7 » plutôt que « 151 » : trois palettes de quarante-huit et
+            # un fond de bac. La conversion a lieu ici et non dans le contrat
+            # d'entrée parce que c'est ici qu'on connaît la campagne — donc le
+            # réglage — et que le refus doit pouvoir nommer ce réglage.
+            qty, formula = _quantity_of(row, campaign=campaign)
+            if not allow_negative and qty is not None and qty < 0:
                 # One does not find minus twenty screws in a bin: a negative is
                 # a typo until a human says otherwise, zone by zone. Catching it
                 # at the keyboard costs a second; catching it at the variance
@@ -561,10 +565,11 @@ class GenericService:
                     # A value typed by a human always lands in qty_manual so the
                     # AI reading it replaced stays visible next to it.
                     qty_imported=previous.qty_imported if previous else None,
-                    qty_manual=None if qty in (None, "") else Decimal(str(qty)),
+                    qty_manual=qty,
                     unit=str(row.get("unit") or "PCE"),
                     source=DataSource.MANUAL,
                     confidence=previous.confidence if previous else None,
+                    qty_formula=formula,
                     comment=str(row.get("comment") or ""),
                     display_order=int(row.get("display_order") or order),
                 )
@@ -923,6 +928,34 @@ def _section(value: Any) -> CountSection:
     return resolved
 
 
+def _quantity_of(
+    row: dict[str, Any], *, campaign: Campaign
+) -> tuple[Decimal | None, str]:
+    """La quantité d'une ligne, et l'opération qui l'a produite s'il y en a une.
+
+    Une case vide reste vide : on ne compte pas zéro parce qu'on n'a pas compté.
+
+    Le réglage de la campagne décide si « 3*48+7 » est une quantité ou une
+    erreur, et le refus le nomme — c'est tout l'objet de
+    :func:`~inventory.domain.formula.resolve_quantity`. L'erreur remontée porte
+    la référence : sur une feuille de cent lignes, « quantité invalide » sans
+    dire laquelle oblige à toutes les relire.
+    """
+    from ..domain.formula import FormulaError, resolve_quantity
+
+    raw = row.get("qty")
+    if raw in (None, ""):
+        return None, ""
+    try:
+        return resolve_quantity(raw, allow_formulas=campaign.config.allow_formulas)
+    except FormulaError as exc:
+        raise ValidationError(
+            f"Ligne « {row.get('item_number') or '?'} » : {exc}",
+            itemNumber=row.get("item_number"),
+            qty=str(raw),
+        ) from exc
+
+
 def _touches_quantities(
     rows: Sequence[dict[str, Any]], existing: dict[str, CountSheetLine]
 ) -> bool:
@@ -931,12 +964,28 @@ def _touches_quantities(
     Only a *change* counts. A preparation screen re-saving a sheet sends back the
     quantities it was given, and treating that echo as a count would freeze the
     list the moment one line happened to carry a figure.
+
+    Appelée **avant** que les opérations soient évaluées, et volontairement :
+    c'est elle qui décide si la garde de phase s'applique, et une campagne dont
+    les comptages sont gelés doit répondre « c'est gelé » plutôt que de discuter
+    la syntaxe de ce qu'on tente d'y écrire. Une opération y est donc comparée
+    telle qu'écrite, à celle que la ligne portait déjà.
     """
     for row in rows:
         qty = row.get("qty")
         previous = existing.get(str(row.get("id") or ""))
         before = previous.qty_manual if previous else None
-        after = None if qty in (None, "") else Decimal(str(qty))
+        if qty in (None, ""):
+            if before is not None:
+                return True
+            continue
+        try:
+            after = Decimal(str(qty))
+        except (ArithmeticError, ValueError):
+            written = str(qty).strip()
+            if previous is None or previous.qty_formula != written:
+                return True
+            continue
         if after != before:
             return True
     return False

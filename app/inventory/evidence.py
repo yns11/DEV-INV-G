@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import io
 import logging
 import mimetypes
 import re
@@ -264,7 +265,15 @@ class EvidenceStore:
             # contenu, donc un chemin déjà pris ne peut l'être que par un
             # fichier **identique**. Écraser n'apporterait rien et masquerait le
             # jour où cette propriété cesserait d'être vraie.
-            self._files().upload(path, payload, overwrite=False)
+            #
+            # Un flux, pas des octets. `files.upload` déclare `contents:
+            # BinaryIO` et certaines versions du SDK appellent `seekable()`
+            # dessus pour savoir si elles peuvent rejouer la requête : des
+            # octets nus y échouent sur un `AttributeError`, et l'archivage
+            # n'aboutissait donc **jamais**. En silence pour un import — le
+            # régime non bloquant journalise et rend `None` — et par un refus
+            # pour un scan.
+            self._files().upload(path, io.BytesIO(payload), overwrite=False)
         except Exception as exc:
             if _looks_like_already_there(exc):
                 # Le même fichier, déposé deux fois. C'est le cas nominal d'un

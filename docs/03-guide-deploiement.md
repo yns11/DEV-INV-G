@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1992 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 1996 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1210,6 +1210,7 @@ l'historique des imports nomme.
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |
 | `Client de modèle indisponible` | Endpoint LLM non attaché ou sans `CAN_QUERY` | Attachez la ressource `serving-endpoint` |
 | `La pièce justificative n'a pas pu être archivée` au scan d'une feuille | Le dépôt dans le volume a été refusé. Le plus souvent : le service principal de l'app n'a pas `WRITE VOLUME` — `make uc` crée le volume, pas le droit | Le message nomme la cause, le principal et le chemin. Pour un droit manquant, voir §7.4 ; pour un volume absent, rejouez `make uc`. L'échec est volontairement bloquant : sans l'image, la quantité lue n'a plus rien derrière elle |
+| `AttributeError : 'bytes' object has no attribute 'seekable'` au dépôt | `files.upload` déclare `contents: BinaryIO` ; le SDK appelle `seekable()` dessus pour savoir s'il peut rejouer la requête | Corrigé : la charge utile part en flux. **Aucune pièce n'avait jamais été archivée** — en silence pour les imports, `storage_path` restant nul. Les pièces des campagnes antérieures sont définitivement perdues, le conteneur étant éphémère |
 | `relation "campaign" does not exist` | Migrations non appliquées | Consultez les journaux de démarrage ; le rôle doit avoir `CREATE` sur le schéma |
 | `La migration 001 a été modifiée après application` | Un fichier de migration déjà appliqué a été édité | Restaurez le fichier ; créez une **nouvelle** migration |
 | L'app démarre puis s'arrête | Dépassement des 10 min de démarrage | Épinglez les versions, réduisez les dépendances |

@@ -47,14 +47,35 @@ class FakeFiles:
         #: pris quand il vaut ``False`` ; c'est cette garantie que le magasin
         #: exige désormais, et un test la lit ici.
         self.overwrites: list[bool] = []
+        #: Ce qui a été transmis au dernier dépôt, avant lecture. C'est la
+        #: forme — flux ou octets — qui est en cause, pas seulement le contenu.
+        self.last_contents: Any = None
 
-    def upload(self, path: str, contents: bytes, overwrite: bool = False) -> None:
+    def upload(self, path: str, contents: Any, overwrite: bool = False) -> None:
+        """Le contrat réel : ``contents: BinaryIO``, pas des octets.
+
+        Cette doublure acceptait des octets. Elle était donc **plus permissive
+        que l'API qu'elle représente**, et elle a certifié pendant toute la vie
+        de la fonctionnalité un appel qui ne pouvait pas aboutir : le SDK
+        appelle ``seekable()`` sur ce qu'on lui passe pour savoir s'il peut
+        rejouer la requête, et des octets nus y échouent sur un
+        ``AttributeError``. Aucune pièce n'a jamais été archivée.
+
+        Une doublure qui accepte plus que l'original ne double pas l'original.
+        """
+        self.last_contents = contents
+        if not hasattr(contents, "read"):
+            raise AttributeError(
+                f"'{type(contents).__name__}' object has no attribute 'seekable'"
+            )
+        if not contents.seekable():
+            raise AttributeError("le flux doit être rejouable")
         if self.fail:
             raise RuntimeError(self.boom)
         self.overwrites.append(overwrite)
         if path in self.stored and not overwrite:
             raise RuntimeError(f"ALREADY EXISTS: {path}")
-        self.stored[path] = contents
+        self.stored[path] = contents.read()
 
     def download(self, path: str) -> Any:
         if path not in self.stored:
@@ -403,6 +424,50 @@ class TestTheRefusalNamesItsCause:
         details = raised.value.to_payload()["details"]
         assert details["cause"] == "PERMISSION_DENIED"
         assert details["path"].endswith(".pdf")
+
+
+class TestWhatIsHandedToTheSdk:
+    """``files.upload`` déclare ``contents: BinaryIO``, et le prend au mot.
+
+    Le SDK appelle ``seekable()`` sur ce qu'on lui passe, pour savoir s'il peut
+    rejouer la requête après un incident réseau. Des octets nus y échouent sur
+    un « 'bytes' object has no attribute 'seekable' » — et l'archivage
+    n'aboutissait donc jamais : en silence pour un import, par un refus pour un
+    scan.
+
+    La doublure de cette suite acceptait pourtant des octets. Elle était plus
+    permissive que l'API qu'elle représente, et c'est ainsi qu'un appel
+    impossible est resté vert pendant toute la vie de la fonctionnalité.
+    """
+
+    def test_le_contenu_transmis_est_un_flux(self):
+        s, files = store()
+        s.put(b"contenu", campaign_code="C", kind="scans", filename="f.pdf")
+
+        assert files.last_contents is not None
+        assert hasattr(files.last_contents, "read")
+
+    def test_le_flux_est_rejouable(self):
+        """Sans quoi le SDK ne peut pas retenter après un incident réseau."""
+        s, files = store()
+        s.put(b"contenu", campaign_code="C", kind="scans", filename="f.pdf")
+
+        assert files.last_contents.seekable()
+
+    def test_les_octets_deposes_sont_bien_ceux_recus(self):
+        """Un flux mal construit déposerait un fichier vide, sans rien dire."""
+        s, files = store()
+        s.put(b"contenu exact", campaign_code="C", kind="scans", filename="f.pdf")
+
+        assert list(files.stored.values()) == [b"contenu exact"]
+
+    def test_un_gros_fichier_passe_entier(self):
+        """Une pile scannée fait plusieurs mégaoctets."""
+        gros = b"\x00" * (3 * 1024 * 1024)
+        s, files = store()
+        s.put(gros, campaign_code="C", kind="scans", filename="pile.pdf")
+
+        assert len(next(iter(files.stored.values()))) == len(gros)
 
 
 class TestTheAdviceOnItsOwn:

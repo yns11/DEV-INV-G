@@ -417,7 +417,6 @@ class CampaignService:
         # comptage reviendrait à payer l'analyse complète à chaque clic sur le
         # panneau « ce qui manque pour avancer ».
         unexplained = 0
-        rejected_imports: list[tuple[str, int]] = []
         publication_done = True
         if target is CampaignStatus.CLOSED:
             # Posé par le job de publication après son manifeste Delta. Le lire
@@ -425,10 +424,6 @@ class CampaignService:
             # pour une réponse qui ne change qu'une fois par campagne.
             publication_done = campaign.published_at is not None
             unexplained = self._unexplained_material(campaign)
-            rejected_imports = [
-                (str(b["target"]), int(b["rows_rejected"] or 0))
-                for b in ctx.imports.latest_per_target(campaign_id)
-            ]
 
         blockers = campaign_transition_blockers(
             campaign.status,
@@ -437,7 +432,6 @@ class CampaignService:
             zone_statuses=zone_statuses,
             book_stock_frozen=campaign.book_stock_frozen_at is not None,
             unexplained_material=unexplained,
-            rejected_imports=rejected_imports,
             publication_done=publication_done,
         )
         return {
@@ -465,10 +459,6 @@ class CampaignService:
             campaign.status,
             CampaignStatus.CLOSED,
             unexplained_material=self._unexplained_material(campaign),
-            rejected_imports=[
-                (str(b["target"]), int(b["rows_rejected"] or 0))
-                for b in ctx.imports.latest_per_target(campaign_id)
-            ],
             publication_done=campaign.published_at is not None,
         )
 
@@ -477,6 +467,12 @@ class CampaignService:
         last_change = ctx.sheets.last_line_change(campaign_id)
         items = build(
             blockers=blockers,
+            # Lu ici et plus par la fonction qui refuse : les lignes refusées
+            # ne bloquent plus, elles se regardent.
+            rejected_imports=[
+                (str(b["target"]), int(b["rows_rejected"] or 0))
+                for b in ctx.imports.latest_per_target(campaign_id)
+            ],
             accepted_without_comment=sum(
                 1 for a in analyses if a.accepted and not a.comment.strip()
             ),

@@ -6,10 +6,16 @@ Le paramètre ``blocking_controls`` existait dans la fonction du domaine ; le
 service ne le remplissait jamais, et aucune branche ``CLOSED`` n'y était écrite.
 
 Une campagne pouvait donc être scellée avec ses écarts matériels sans
-explication et ses référentiels issus d'un chargement amputé. Après quoi plus
-rien ne se corrige : c'est la définition de la clôture.
+explication et sans copie opposable. Après quoi plus rien ne se corrige : c'est
+la définition de la clôture.
 
-Trois exigences s'ajoutent, et chacune doit suffire seule à refuser.
+Deux exigences s'ajoutent, et chacune doit suffire seule à refuser.
+
+Une troisième a été retirée. Les lignes refusées à l'import ont bloqué la
+clôture un temps, et c'était trop : un chargement en laisse pour des raisons
+que l'exploitant connaît et assume, et exiger zéro refus rendait la clôture
+impossible sur un manque que personne n'avait le pouvoir de combler. Le constat
+reste affiché, en « à regarder » — voir `test_closure_checklist.py`.
 """
 
 from __future__ import annotations
@@ -50,52 +56,34 @@ class TestTheClosureGate:
         assert codes(blockers) == {"MATERIAL_VARIANCES_UNEXPLAINED"}
         assert "4 écart(s)" in blockers[0].message
 
-    def test_a_partial_import_alone_refuses(self):
-        blockers = campaign_transition_blockers(
-            ANALYSIS, CLOSED, rejected_imports=[("items", 3)]
-        )
-        assert codes(blockers) == {"IMPORTS_WITH_REJECTS"}
-        assert "items (3 ligne(s))" in blockers[0].message
-
     def test_a_missing_publication_alone_refuses(self):
         blockers = campaign_transition_blockers(
             ANALYSIS, CLOSED, publication_done=False
         )
         assert codes(blockers) == {"PUBLICATION_NOT_DONE"}
 
-    def test_a_clean_import_is_not_a_blocker(self):
-        """Zéro ligne refusée n'est pas « des lignes refusées »."""
-        assert campaign_transition_blockers(
-            ANALYSIS, CLOSED, rejected_imports=[("items", 0), ("boms", 0)]
-        ) == []
-
-    def test_the_three_accumulate(self):
+    def test_the_two_accumulate(self):
         blockers = campaign_transition_blockers(
             ANALYSIS, CLOSED,
             unexplained_material=1,
-            rejected_imports=[("boms", 2)],
             publication_done=False,
         )
         assert codes(blockers) == {
             "MATERIAL_VARIANCES_UNEXPLAINED",
-            "IMPORTS_WITH_REJECTS",
             "PUBLICATION_NOT_DONE",
         }
 
-    def test_the_refusal_names_the_grids_concerned(self):
-        """« Un import a des rejets » n'est pas actionnable ; le nom l'est."""
-        blockers = campaign_transition_blockers(
-            ANALYSIS, CLOSED, rejected_imports=[("items", 1), ("book_stock", 9)]
-        )
-        assert set(blockers[0].context["targets"]) == {"items", "book_stock"}
+    def test_les_lignes_refusees_ne_refusent_plus(self):
+        """Elles se regardent, elles n'arrêtent pas.
 
-    def test_it_stops_naming_after_five_grids(self):
-        blockers = campaign_transition_blockers(
-            ANALYSIS, CLOSED,
-            rejected_imports=[(f"grille{n}", 1) for n in range(8)],
-        )
-        assert "grille6" not in blockers[0].message
-        assert "8 chargement(s)" in blockers[0].message
+        La fonction ne les reçoit même plus : ce qui ne bloque pas n'a rien à
+        faire dans celle qui décide des refus. Le constat vit dans la liste de
+        contrôle, en « à regarder ».
+        """
+        import inspect
+
+        parametres = inspect.signature(campaign_transition_blockers).parameters
+        assert "rejected_imports" not in parametres
 
 
 class TestTheseChecksBelongToClosureOnly:
@@ -113,13 +101,11 @@ class TestTheseChecksBelongToClosureOnly:
             else CampaignStatus.COUNTING,
             target,
             unexplained_material=40,
-            rejected_imports=[("items", 12)],
             publication_done=False,
             book_stock_frozen=True,
         )
         assert not (codes(blockers) & {
             "MATERIAL_VARIANCES_UNEXPLAINED",
-            "IMPORTS_WITH_REJECTS",
             "PUBLICATION_NOT_DONE",
         })
 
@@ -182,6 +168,10 @@ def service(*, variances, analyses, batches, published: bool = True):
     )
     ctx.analysis = SimpleNamespace(list_analyses=lambda cid: analyses)
     ctx.imports = SimpleNamespace(latest_per_target=lambda cid: batches)
+    # La liste de contrôle lit deux dépôts de plus que le panneau « ce qui
+    # manque » : c'est elle qui porte désormais les lignes refusées.
+    ctx.consolidation = SimpleNamespace(current_run=lambda cid: None)
+    ctx.sheets.last_line_change = lambda cid: None
     ctx.progress = lambda c: SimpleNamespace(
         items=10, zones=1, book_stock_lines=5, book_stock_frozen=True
     )
@@ -282,13 +272,24 @@ class TestOnlyTheLatestLoadOfEachGridCounts:
         )
         assert svc.transition_readiness("camp-1", CLOSED)["blockers"] == []
 
-    def test_a_grid_still_on_a_partial_load_blocks_it(self):
+    def test_a_grid_still_on_a_partial_load_no_longer_blocks_it(self):
+        """Elle n'arrête plus la clôture — mais la liste la montre.
+
+        Les deux moitiés sont vérifiées ici, parce que la moitié qui compte est
+        la seconde : ne plus bloquer sans plus rien dire serait une régression
+        déguisée en correctif.
+        """
         svc = service(
             variances=[], analyses=[],
             batches=[{"target": "items", "rows_rejected": 3}],
         )
-        blockers = svc.transition_readiness("camp-1", CLOSED)["blockers"]
-        assert [b["code"] for b in blockers] == ["IMPORTS_WITH_REJECTS"]
+
+        assert svc.transition_readiness("camp-1", CLOSED)["blockers"] == []
+
+        items = svc.closure_checklist("camp-1")["items"]
+        refuses = next(i for i in items if i["code"] == "IMPORTS_WITH_REJECTS")
+        assert refuses["state"] == "ATTENTION"
+        assert "items (3 ligne(s))" in refuses["detail"]
 
 
 class TestTheArchiveMustExistBeforeTheSeal:

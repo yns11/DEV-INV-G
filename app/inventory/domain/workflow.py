@@ -226,7 +226,6 @@ def campaign_transition_blockers(
     book_stock_frozen: bool = False,
     blocking_controls: Sequence[ControlFinding] = (),
     unexplained_material: int = 0,
-    rejected_imports: Sequence[tuple[str, int]] = (),
     publication_done: bool = True,
 ) -> list[ControlFinding]:
     """Business preconditions that must hold before *target* can be entered.
@@ -234,6 +233,20 @@ def campaign_transition_blockers(
     Returns the findings that *block* the transition (empty list == go ahead).
     Kept separate from :func:`assert_campaign_transition` so the UI can display
     a live "what is missing to move on" panel without attempting the move.
+
+    Les lignes refusées à l'import n'y figurent pas
+    ----------------------------------------------
+    Elles ont bloqué la clôture un temps. C'était trop : un chargement laisse
+    des lignes refusées pour des raisons que l'exploitant connaît et assume —
+    un article sorti du référentiel, une ligne d'export corrompue à la source,
+    un fichier partiel volontairement chargé. Exiger zéro refus rendait la
+    clôture impossible sur un manque que personne n'avait le pouvoir de
+    combler, et poussait à recharger un fichier pour faire taire un point plutôt
+    que pour corriger quelque chose.
+
+    Le constat reste affiché — la liste de contrôle le porte en « à regarder »,
+    voir :mod:`inventory.domain.closure`. Ce qui change est le pouvoir d'arrêt,
+    pas la visibilité.
     """
     blockers: list[ControlFinding] = []
 
@@ -305,23 +318,6 @@ def campaign_transition_blockers(
                     ),
                     entity_type="variance_analysis",
                     context={"unexplained": unexplained_material},
-                )
-            )
-        partial = [(t, n) for t, n in rejected_imports if n > 0]
-        if partial:
-            detail = ", ".join(f"{t} ({n} ligne(s))" for t, n in partial[:5])
-            blockers.append(
-                ControlFinding(
-                    code="IMPORTS_WITH_REJECTS",
-                    severity=ControlSeverity.BLOCKER,
-                    message=(
-                        f"{len(partial)} chargement(s) ont laissé des lignes "
-                        f"refusées : {detail}. Rechargez le fichier corrigé, ou "
-                        "assumez le manque en le documentant — mais pas en "
-                        "clôturant par-dessus."
-                    ),
-                    entity_type="import_batch",
-                    context={"targets": [t for t, _ in partial]},
                 )
             )
         if not publication_done:

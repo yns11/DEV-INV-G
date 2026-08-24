@@ -61,10 +61,9 @@ class TestTheListAndTheRefusalAgree:
             CampaignStatus.ANALYSIS,
             CampaignStatus.CLOSED,
             unexplained_material=3,
-            rejected_imports=[("items", 12)],
             publication_done=False,
         )
-        assert len(found) == 3
+        assert len(found) == 2
         by_code = states(closure_checklist(blockers=found))
         for finding in found:
             assert by_code[finding.code] is ChecklistState.BLOCKING
@@ -125,6 +124,89 @@ class TestWhatIsAlreadyDoneIsShown:
         by_code = states(closure_checklist(blockers=[]))
         for code in ("BOOK_STOCK_FROZEN", "JOURNALS_POSTED", "ZONES_DONE"):
             assert by_code[code] is ChecklistState.DONE
+
+
+class TestRejectedImportLinesAreLookedAtNotBlocked:
+    """Elles ont bloqué la clôture un temps, et c'était trop.
+
+    Un chargement laisse des lignes refusées pour des raisons que l'exploitant
+    connaît et assume : un article sorti du référentiel, une ligne d'export
+    corrompue à la source, un fichier partiel chargé exprès. Exiger zéro refus
+    rendait la clôture impossible sur un manque que personne n'avait le pouvoir
+    de combler, et poussait à recharger un fichier pour faire taire un point
+    plutôt que pour corriger quelque chose.
+
+    Ce qui change est le pouvoir d'arrêt, pas la visibilité.
+    """
+
+    def test_des_lignes_refusees_meritent_un_regard(self):
+        items = closure_checklist(blockers=[], rejected_imports=[("items", 3)])
+        entry = next(i for i in items if i.code == "IMPORTS_WITH_REJECTS")
+
+        assert entry.state is ChecklistState.ATTENTION
+
+    def test_elles_n_arretent_plus_rien(self):
+        items = closure_checklist(
+            blockers=[], rejected_imports=[(f"grille{n}", 40) for n in range(9)]
+        )
+
+        assert all(i.state is not ChecklistState.BLOCKING for i in items)
+
+    def test_les_grilles_concernees_sont_nommees(self):
+        """« Un chargement a des rejets » n'est pas actionnable ; le nom l'est."""
+        items = closure_checklist(
+            blockers=[], rejected_imports=[("items", 1), ("book_stock", 9)]
+        )
+        entry = next(i for i in items if i.code == "IMPORTS_WITH_REJECTS")
+
+        assert "items (1 ligne(s))" in entry.detail
+        assert "book_stock (9 ligne(s))" in entry.detail
+
+    def test_la_liste_des_grilles_s_arrete_a_cinq(self):
+        """Le détail doit rester lisible ; le décompte, lui, reste complet."""
+        items = closure_checklist(
+            blockers=[], rejected_imports=[(f"grille{n}", 1) for n in range(8)]
+        )
+        entry = next(i for i in items if i.code == "IMPORTS_WITH_REJECTS")
+
+        assert "grille6" not in entry.detail
+        assert "8 chargement(s)" in entry.detail
+
+    def test_le_point_dit_ou_aller(self):
+        items = closure_checklist(blockers=[], rejected_imports=[("items", 3)])
+        entry = next(i for i in items if i.code == "IMPORTS_WITH_REJECTS")
+
+        assert entry.where == "articles"
+
+    def test_zero_ligne_refusee_reste_vert(self):
+        """« Zéro refusée » n'est pas « des refusées » — et se dit."""
+        items = closure_checklist(
+            blockers=[], rejected_imports=[("items", 0), ("boms", 0)]
+        )
+        entry = next(i for i in items if i.code == "IMPORTS_WITH_REJECTS")
+
+        assert entry.state is ChecklistState.DONE
+        assert entry.where is None
+
+    def test_aucun_chargement_du_tout_reste_vert(self):
+        """Une campagne sans import n'a rien laissé de côté."""
+        by_code = states(closure_checklist(blockers=[]))
+
+        assert by_code["IMPORTS_WITH_REJECTS"] is ChecklistState.DONE
+
+    def test_le_point_ne_parait_qu_une_fois(self):
+        """Un appelant qui le passerait encore en bloquant l'a déjà vu ajouté.
+
+        Bloquant *et* à regarder serait la lecture la plus fausse possible.
+        """
+        items = closure_checklist(
+            blockers=[blocker("IMPORTS_WITH_REJECTS", "un ennui")],
+            rejected_imports=[("items", 3)],
+        )
+        entries = [i for i in items if i.code == "IMPORTS_WITH_REJECTS"]
+
+        assert len(entries) == 1
+        assert entries[0].state is ChecklistState.BLOCKING
 
 
 class TestWhatDeservesALook:
@@ -199,7 +281,6 @@ class TestEachItemSaysWhereToGo:
         "code,where",
         [
             ("MATERIAL_VARIANCES_UNEXPLAINED", "ecarts"),
-            ("IMPORTS_WITH_REJECTS", "articles"),
             ("PUBLICATION_NOT_DONE", "compil"),
         ],
     )

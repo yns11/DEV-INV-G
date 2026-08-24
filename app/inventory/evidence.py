@@ -65,7 +65,9 @@ from .errors import NotFoundError, UpstreamError
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ArchivedFile", "EvidenceStore", "archive_advice", "safe_name"]
+__all__ = [
+    "ArchivedFile", "EvidenceStore", "archive_advice", "safe_name", "volume_of",
+]
 
 #: Longueur maximale du nom de fichier conservé dans le chemin. Un scanner
 #: produit volontiers des noms de cent cinquante caractères ; au-delà de
@@ -147,6 +149,19 @@ def _described(path: str, payload: bytes, digest: str, filename: str) -> Archive
     )
 
 
+def volume_of(path: str) -> tuple[str, str, str] | None:
+    """Le catalogue, le schéma et le volume que ce chemin désigne.
+
+    ``/Volumes/<cat>/<schéma>/<vol>/…`` — trois segments après ``/Volumes``.
+    Les extraire permet d'écrire des GRANT copiables tels quels : « accordez
+    WRITE VOLUME sur le volume » oblige encore à retrouver lequel.
+    """
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 4 or parts[0] != "Volumes":
+        return None
+    return parts[1], parts[2], parts[3]
+
+
 def archive_advice(exc: Exception, *, path: str, principal: str | None = None) -> str:
     """Pourquoi le dépôt a échoué, et le geste qui le débloque.
 
@@ -161,17 +176,38 @@ def archive_advice(exc: Exception, *, path: str, principal: str | None = None) -
     lit « accordez WRITE VOLUME » sans savoir *à qui* doit encore le chercher,
     et l'application est la seule à connaître l'identité sous laquelle elle
     s'exécute — ce n'est pas celle de la personne connectée.
+
+    Les **trois** privilèges sont donnés, jamais le dernier seul. Unity Catalog
+    traverse la hiérarchie : ``WRITE VOLUME`` sans ``USE CATALOG`` ni
+    ``USE SCHEMA`` ne donne rien, et le refus qui suit nomme le maillon
+    manquant, pas celui qu'on vient d'accorder. Ce message a fait exactement
+    cette erreur une fois : il conseillait le troisième, l'exploitant l'a posé,
+    et le refus suivant réclamait le premier.
     """
     text = str(exc).lower()
-    who = principal or "le service principal de l'application"
+    who = principal or "<le service principal de l'application>"
 
     if any(k in text for k in ("permission", "denied", "forbidden", "403")):
+        parts = volume_of(path)
+        if parts:
+            catalog, schema, volume = parts
+            grants = (
+                f"GRANT USE CATALOG ON CATALOG {catalog} TO `{who}` ; "
+                f"GRANT USE SCHEMA ON SCHEMA {catalog}.{schema} TO `{who}` ; "
+                f"GRANT READ VOLUME, WRITE VOLUME ON VOLUME "
+                f"{catalog}.{schema}.{volume} TO `{who}`"
+            )
+        else:
+            grants = (
+                "GRANT USE CATALOG sur le catalogue, USE SCHEMA sur le schéma, "
+                f"puis READ VOLUME, WRITE VOLUME sur le volume, à `{who}`"
+            )
         return (
-            f"Le droit d'écriture manque sur « {path} ». Accordez WRITE VOLUME "
-            f"à {who} sur le volume, depuis Unity Catalog ou par "
-            "« GRANT WRITE VOLUME ON VOLUME <volume> TO `<principal>` ». Un "
-            "volume créé depuis un poste appartient à l'identité qui l'a créé, "
-            "jamais à l'application."
+            f"Le dépôt est refusé sur « {path} ». Unity Catalog exige les "
+            f"**trois** privilèges, et le dernier seul ne donne rien : {grants}. "
+            "Le catalogue a beau être celui des tables, l'identité n'est pas la "
+            "même — les tables sont écrites par le job sous l'identité qui le "
+            "lance, le volume par l'application sous la sienne."
         )
     if any(k in text for k in ("not found", "does not exist", "404", "no such")):
         return (
@@ -186,6 +222,7 @@ def archive_advice(exc: Exception, *, path: str, principal: str | None = None) -
             "principal ; un jeton expiré se règle en la redémarrant."
         )
     return f"Échec du dépôt sur « {path} »."
+
 
 
 class EvidenceStore:

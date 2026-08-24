@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1996 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 2005 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1116,10 +1116,24 @@ databricks apps get campagnes-inventaire --profile PROD  # → service_principal
 
 ```sql
 CREATE VOLUME IF NOT EXISTS emotors_data_champions.inventory.inventory_evidence;
+
+-- Les trois, et dans cet ordre. Unity Catalog traverse la hiérarchie :
+-- accorder le dernier seul ne donne rien, et le refus qui suit nomme le
+-- maillon manquant, pas celui qu'on vient d'accorder.
+GRANT USE CATALOG ON CATALOG emotors_data_champions
+  TO `<service_principal_client_id>`;
+GRANT USE SCHEMA ON SCHEMA emotors_data_champions.inventory
+  TO `<service_principal_client_id>`;
 GRANT READ VOLUME, WRITE VOLUME
   ON VOLUME emotors_data_champions.inventory.inventory_evidence
   TO `<service_principal_client_id>`;
 ```
+
+> **« C'est pourtant le même catalogue que les tables. »** Oui — mais pas la
+> même identité. Les tables sont créées par `make uc` et écrites par le job de
+> publication, tous deux sous l'identité qui lance la commande. Le volume est
+> écrit par l'**application**, sous son service principal. Un droit sur l'un ne
+> dit rien de l'autre.
 
 Sans lui, le scan d'une feuille échoue — et il **doit** échouer : le papier
 repart dans l'atelier, et écrire des quantités dont l'image n'a pas été
@@ -1210,6 +1224,7 @@ l'historique des imports nomme.
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |
 | `Client de modèle indisponible` | Endpoint LLM non attaché ou sans `CAN_QUERY` | Attachez la ressource `serving-endpoint` |
 | `La pièce justificative n'a pas pu être archivée` au scan d'une feuille | Le dépôt dans le volume a été refusé. Le plus souvent : le service principal de l'app n'a pas `WRITE VOLUME` — `make uc` crée le volume, pas le droit | Le message nomme la cause, le principal et le chemin. Pour un droit manquant, voir §7.4 ; pour un volume absent, rejouez `make uc`. L'échec est volontairement bloquant : sans l'image, la quantité lue n'a plus rien derrière elle |
+| `PERMISSION_DENIED … USE CATALOG` au dépôt, « pourtant c'est le même catalogue que les tables » | Même catalogue, autre identité : les tables sont écrites par le job sous l'identité qui le lance, le volume par l'application sous son service principal. Et `WRITE VOLUME` seul ne suffit jamais — Unity Catalog traverse `USE CATALOG` → `USE SCHEMA` → `WRITE VOLUME` | Posez les **trois** grants (§7.4). Le message d'erreur les écrit désormais copiables tels quels, catalogue, schéma et volume tirés du chemin visé |
 | `AttributeError : 'bytes' object has no attribute 'seekable'` au dépôt | `files.upload` déclare `contents: BinaryIO` ; le SDK appelle `seekable()` dessus pour savoir s'il peut rejouer la requête | Corrigé : la charge utile part en flux. **Aucune pièce n'avait jamais été archivée** — en silence pour les imports, `storage_path` restant nul. Les pièces des campagnes antérieures sont définitivement perdues, le conteneur étant éphémère |
 | `relation "campaign" does not exist` | Migrations non appliquées | Consultez les journaux de démarrage ; le rôle doit avoir `CREATE` sur le schéma |
 | `La migration 001 a été modifiée après application` | Un fichier de migration déjà appliqué a été édité | Restaurez le fichier ; créez une **nouvelle** migration |

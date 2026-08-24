@@ -29,7 +29,12 @@ import pytest
 
 from inventory.config import Settings
 from inventory.errors import NotFoundError, UpstreamError
-from inventory.evidence import EvidenceStore, archive_advice, safe_name
+from inventory.evidence import (
+    EvidenceStore,
+    archive_advice,
+    safe_name,
+    volume_of,
+)
 
 AT = dt.datetime(2026, 9, 1, 6, 30, 15, tzinfo=dt.UTC)
 
@@ -359,10 +364,50 @@ class TestTheRefusalNamesItsCause:
                   required=True)
         return str(raised.value)
 
-    def test_un_droit_manquant_nomme_le_droit_a_accorder(self):
+    def test_un_droit_manquant_donne_les_trois_privileges(self):
+        """Unity Catalog traverse la hiérarchie : le dernier seul ne donne rien.
+
+        Ce message a fait l'erreur une fois. Il conseillait `WRITE VOLUME`,
+        l'exploitant l'a posé, et le refus suivant réclamait `USE CATALOG` —
+        un aller-retour de plus, pour un conseil incomplet.
+        """
         message = self.refusal("PERMISSION_DENIED: no WRITE VOLUME")
 
+        assert "USE CATALOG" in message
+        assert "USE SCHEMA" in message
         assert "WRITE VOLUME" in message
+
+    def test_les_grants_sont_copiables_tels_quels(self):
+        """« Sur le volume » oblige encore à retrouver lequel."""
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert "ON CATALOG cat " in message
+        assert "ON SCHEMA cat.inventory " in message
+        assert "ON VOLUME cat.inventory.inventory_evidence " in message
+
+    def test_l_ordre_des_grants_est_celui_de_la_traversee(self):
+        """Les poser dans le désordre marche, mais les lire dans l'ordre aide."""
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert (
+            message.index("USE CATALOG")
+            < message.index("USE SCHEMA")
+            < message.index("WRITE VOLUME")
+        )
+
+    def test_le_message_repond_a_c_est_le_meme_catalogue_que_les_tables(self):
+        """La question que l'exploitant pose en voyant le refus.
+
+        Le catalogue est bien le même ; l'identité ne l'est pas. Les tables
+        sont écrites par le job sous l'identité qui le lance, le volume par
+        l'application sous la sienne.
+        """
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert "l'identité n'est pas la même" in message
+        # La phrase seule ne répond pas : c'est l'explication qui répond.
+        assert "le job" in message
+        assert "sous la sienne" in message
 
     def test_un_droit_manquant_nomme_le_principal_a_qui_l_accorder(self):
         """Sans le nom, un administrateur doit encore le chercher — et
@@ -468,6 +513,38 @@ class TestWhatIsHandedToTheSdk:
         s.put(gros, campaign_code="C", kind="scans", filename="pile.pdf")
 
         assert len(next(iter(files.stored.values()))) == len(gros)
+
+
+class TestReadingTheVolumeOutOfThePath:
+    """Le chemin porte le catalogue, le schéma et le volume ; le GRANT aussi."""
+
+    def test_les_trois_segments_sont_rendus(self):
+        assert volume_of("/Volumes/cat/sch/vol/campagne/scans/x.pdf") == (
+            "cat", "sch", "vol",
+        )
+
+    def test_un_chemin_reduit_au_volume_suffit(self):
+        assert volume_of("/Volumes/cat/sch/vol") == ("cat", "sch", "vol")
+
+    def test_un_chemin_trop_court_ne_rend_rien(self):
+        assert volume_of("/Volumes/cat/sch") is None
+
+    def test_un_chemin_qui_n_est_pas_un_volume_ne_rend_rien(self):
+        """Assez de segments pour tromper un simple décompte, et pourtant non.
+
+        Un GRANT bâti sur « dbfs » ferait perdre plus de temps qu'un silence.
+        """
+        assert volume_of("/dbfs/tmp/cat/sch/vol/x.pdf") is None
+        assert volume_of("/dbfs/tmp/x.pdf") is None
+
+    def test_les_barres_en_trop_ne_decalent_pas_les_segments(self):
+        assert volume_of("/Volumes//cat//sch/vol//x") == ("cat", "sch", "vol")
+
+    def test_sans_chemin_lisible_le_conseil_reste_donne(self):
+        """Dégradé, mais pas muet : les trois privilèges y sont toujours."""
+        avis = archive_advice(RuntimeError("PERMISSION_DENIED"), path="ailleurs")
+
+        assert "USE CATALOG" in avis and "WRITE VOLUME" in avis
 
 
 class TestTheAdviceOnItsOwn:

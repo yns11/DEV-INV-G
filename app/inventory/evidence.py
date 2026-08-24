@@ -207,7 +207,10 @@ def archive_advice(exc: Exception, *, path: str, principal: str | None = None) -
             f"**trois** privilèges, et le dernier seul ne donne rien : {grants}. "
             "Le catalogue a beau être celui des tables, l'identité n'est pas la "
             "même — les tables sont écrites par le job sous l'identité qui le "
-            "lance, le volume par l'application sous la sienne."
+            "lance, le volume par l'application sous la sienne. Si le premier "
+            "GRANT est lui-même refusé faute de MANAGE sur le catalogue, c'est "
+            "son propriétaire qui doit le poser : « DESCRIBE CATALOG EXTENDED "
+            f"{parts[0] if parts else '<catalogue>'} » le nomme."
         )
     if any(k in text for k in ("not found", "does not exist", "404", "no such")):
         return (
@@ -344,6 +347,56 @@ class EvidenceStore:
             return None
         log.info("Pièce archivée : %s (%d octets)", path, len(payload))
         return _described(path, payload, digest, filename)
+
+    def probe(self) -> dict[str, Any]:
+        """L'archivage marchera-t-il ? Vérifié en déposant, pas en supposant.
+
+        ``evidence_configured`` ne lit que la configuration. Elle disait donc
+        « oui » à un conteneur dont le service principal n'a aucun droit sur le
+        catalogue — et la panne n'apparaissait qu'au premier scan, c'est-à-dire
+        le jour de l'inventaire, sur une feuille manuscrite déjà repartie à
+        l'atelier.
+
+        Cette sonde écrit un octet dans le volume et le retire. C'est le seul
+        moyen de répondre : la traversée du catalogue, le droit sur le schéma
+        et le droit d'écriture sur le volume sont trois refus distincts, et
+        aucun ne se déduit de la configuration.
+
+        Rendue par ``/api/health/evidence``, jamais par ``/api/health`` : un
+        aller-retour par sonde de disponibilité serait payé toutes les
+        secondes, pour une réponse qui ne change qu'au jour d'un GRANT.
+        """
+        if not self.available:
+            return {
+                "ok": False,
+                "configured": False,
+                "detail": (
+                    "Aucun volume déclaré : INV_UC_CATALOG, INV_UC_SCHEMA et "
+                    "INV_UC_VOLUME doivent l'être pour que les pièces soient "
+                    "archivées."
+                ),
+            }
+        path = f"{self.root.rstrip('/')}/_diagnostic/ecriture.probe"
+        try:
+            self._files().upload(path, io.BytesIO(b"."), overwrite=True)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "configured": True,
+                "path": path,
+                "detail": (
+                    f"{archive_advice(exc, path=path, principal=self._settings.service_principal_id)} "
+                    f"Détail : {type(exc).__name__} : {exc}"
+                ),
+            }
+        # Le retrait n'est pas la question posée : une sonde qui laisserait son
+        # fichier serait pénible, une sonde qui échouerait *sur le retrait*
+        # dirait « l'archivage ne marche pas » alors qu'il vient de marcher.
+        try:
+            self._files().delete(path)
+        except Exception as exc:  # pragma: no cover - dépend du droit DELETE
+            log.info("Fichier de diagnostic laissé en place (%s) : %s", path, exc)
+        return {"ok": True, "configured": True, "path": path}
 
     def path_for(
         self,

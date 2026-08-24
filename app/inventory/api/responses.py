@@ -110,6 +110,19 @@ class HealthResponse(Payload):
     migrations: MigrationState
 
 
+class EvidenceProbeResponse(Payload):
+    """Ce que le volume répond quand on essaie vraiment d'y écrire.
+
+    ``configured`` distingue les deux pannes, qui n'appellent pas le même
+    geste : aucun volume déclaré, ou un volume déclaré mais fermé.
+    """
+
+    ok: bool
+    configured: bool
+    path: str | None = None
+    detail: str | None = None
+
+
 class MeResponse(Payload):
     actor: str
     authenticated: bool

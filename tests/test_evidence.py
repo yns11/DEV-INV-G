@@ -55,6 +55,9 @@ class FakeFiles:
         #: Ce qui a été transmis au dernier dépôt, avant lecture. C'est la
         #: forme — flux ou octets — qui est en cause, pas seulement le contenu.
         self.last_contents: Any = None
+        #: Les chemins retirés. La sonde d'écriture ne doit pas laisser sa
+        #: trace derrière elle.
+        self.deleted: list[str] = []
 
     def upload(self, path: str, contents: Any, overwrite: bool = False) -> None:
         """Le contrat réel : ``contents: BinaryIO``, pas des octets.
@@ -81,6 +84,10 @@ class FakeFiles:
         if path in self.stored and not overwrite:
             raise RuntimeError(f"ALREADY EXISTS: {path}")
         self.stored[path] = contents.read()
+
+    def delete(self, path: str) -> None:
+        self.deleted.append(path)
+        self.stored.pop(path, None)
 
     def download(self, path: str) -> Any:
         if path not in self.stored:
@@ -513,6 +520,72 @@ class TestWhatIsHandedToTheSdk:
         s.put(gros, campaign_code="C", kind="scans", filename="pile.pdf")
 
         assert len(next(iter(files.stored.values()))) == len(gros)
+
+
+class TestTheProbeAnswersBeforeInventoryDay:
+    """« L'archivage est configuré » n'est pas « l'archivage marche ».
+
+    `evidence_configured` ne lit que des variables d'environnement. Elle
+    répondait donc oui à un conteneur dont le service principal n'a aucun droit
+    sur le catalogue — et la panne n'apparaissait qu'au premier scan, c'est-à-
+    dire le jour de l'inventaire, sur une feuille manuscrite déjà repartie à
+    l'atelier.
+
+    Trois refus distincts se cachent derrière : la traversée du catalogue, le
+    droit sur le schéma, le droit d'écriture sur le volume. Aucun ne se déduit
+    d'une configuration. Écrire est la seule question qui les pose tous.
+    """
+
+    def test_un_volume_accessible_repond_oui(self):
+        s, _ = store()
+
+        assert s.probe()["ok"] is True
+
+    def test_un_refus_repond_non_et_dit_pourquoi(self):
+        s, _ = store(fail=True, boom="PERMISSION_DENIED: no USE CATALOG")
+        rendu = s.probe()
+
+        assert rendu["ok"] is False
+        assert "USE CATALOG" in rendu["detail"]
+
+    def test_le_refus_porte_la_cause_brute(self):
+        s, _ = store(fail=True, boom="quelque chose d'inattendu")
+
+        assert "quelque chose d'inattendu" in s.probe()["detail"]
+
+    def test_un_volume_non_declare_se_distingue_d_un_refus(self):
+        """Deux pannes, deux gestes : déclarer, ou accorder."""
+        s, _ = store(volume="")
+        rendu = s.probe()
+
+        assert rendu["ok"] is False
+        assert rendu["configured"] is False
+        assert "INV_UC_VOLUME" in rendu["detail"]
+
+    def test_la_sonde_ne_laisse_pas_sa_trace(self):
+        s, files = store()
+        s.probe()
+
+        assert files.stored == {}
+        assert len(files.deleted) == 1
+
+    def test_la_sonde_ecrit_sous_le_volume_de_l_application(self):
+        s, files = store()
+        rendu = s.probe()
+
+        assert rendu["path"].startswith(s.root)
+        assert files.deleted == [rendu["path"]]
+
+    def test_un_retrait_refuse_ne_fait_pas_mentir_la_sonde(self):
+        """L'écriture vient d'aboutir : c'était la question posée."""
+        s, files = store()
+
+        def refuse(path: str) -> None:
+            raise RuntimeError("pas le droit de supprimer")
+
+        files.delete = refuse  # type: ignore[method-assign]
+
+        assert s.probe()["ok"] is True
 
 
 class TestReadingTheVolumeOutOfThePath:

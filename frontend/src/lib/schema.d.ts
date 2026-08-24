@@ -2430,6 +2430,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/health/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * L'archivage des pièces marche-t-il ?
+         * @description Dépose un octet dans le volume, et le retire.
+         *
+         *     ``evidenceConfigured`` du diagnostic complet ne lit que la
+         *     configuration. Elle répondait donc « oui » à un conteneur dont le
+         *     service principal n'a aucun droit sur le catalogue, et la panne
+         *     n'apparaissait qu'au premier scan — le jour de l'inventaire, sur une
+         *     feuille manuscrite déjà repartie à l'atelier.
+         *
+         *     La traversée du catalogue, le droit sur le schéma et le droit
+         *     d'écriture sur le volume sont trois refus distincts ; aucun ne se
+         *     déduit d'une variable d'environnement. Écrire est la seule question qui
+         *     les pose tous les trois.
+         *
+         *     À part, et jamais dans les sondes que la plateforme interroge : un
+         *     aller-retour vers le volume serait payé à chaque seconde, pour une
+         *     réponse qui ne change qu'au jour d'un GRANT.
+         */
+        get: operations["health_evidence_api_health_evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health/live": {
         parameters: {
             query?: never;
@@ -3025,6 +3060,25 @@ export interface components {
         DeletedResponse: {
             /** Deleted */
             deleted: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * EvidenceProbeResponse
+         * @description Ce que le volume répond quand on essaie vraiment d'y écrire.
+         *
+         *     ``configured`` distingue les deux pannes, qui n'appellent pas le même
+         *     geste : aucun volume déclaré, ou un volume déclaré mais fermé.
+         */
+        EvidenceProbeResponse: {
+            /** Configured */
+            configured: boolean;
+            /** Detail */
+            detail: string | null;
+            /** Ok */
+            ok: boolean;
+            /** Path */
+            path: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -8510,6 +8564,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    health_evidence_api_health_evidence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidenceProbeResponse"];
                 };
             };
         };

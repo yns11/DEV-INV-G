@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 2005 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
+make test      # 2012 contrôles, ~45 s ; 59 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -1135,6 +1135,26 @@ GRANT READ VOLUME, WRITE VOLUME
 > écrit par l'**application**, sous son service principal. Un droit sur l'un ne
 > dit rien de l'autre.
 
+> **Si le premier GRANT est refusé** — `PERMISSION_DENIED: User does not have
+> MANAGE on Catalog` — c'est que vous n'êtes pas propriétaire du catalogue.
+> Seuls `USE SCHEMA` et les droits sur le volume sont alors à votre portée : le
+> `USE CATALOG` doit être posé par le propriétaire du catalogue, que
+> `DESCRIBE CATALOG EXTENDED emotors_data_champions` nomme. C'est le cas
+> ordinaire d'un catalogue partagé, où le projet n'a le droit que d'ajouter des
+> schémas.
+
+**Vérifier sans attendre le jour de l'inventaire :**
+
+```bash
+curl -s https://<app>/api/health/evidence | jq
+# {"ok": true, "configured": true, "path": "/Volumes/.../_diagnostic/ecriture.probe"}
+```
+
+La sonde dépose un octet dans le volume et le retire. `evidenceConfigured` du
+diagnostic complet ne lit que la configuration : elle répond « oui » à un
+conteneur dont le service principal n'a aucun droit, et la panne n'apparaît
+alors qu'au premier scan — sur une feuille manuscrite déjà repartie à l'atelier.
+
 Sans lui, le scan d'une feuille échoue — et il **doit** échouer : le papier
 repart dans l'atelier, et écrire des quantités dont l'image n'a pas été
 archivée fabriquerait un comptage invérifiable. Le refus nomme désormais le
@@ -1225,6 +1245,7 @@ l'historique des imports nomme.
 | `Client de modèle indisponible` | Endpoint LLM non attaché ou sans `CAN_QUERY` | Attachez la ressource `serving-endpoint` |
 | `La pièce justificative n'a pas pu être archivée` au scan d'une feuille | Le dépôt dans le volume a été refusé. Le plus souvent : le service principal de l'app n'a pas `WRITE VOLUME` — `make uc` crée le volume, pas le droit | Le message nomme la cause, le principal et le chemin. Pour un droit manquant, voir §7.4 ; pour un volume absent, rejouez `make uc`. L'échec est volontairement bloquant : sans l'image, la quantité lue n'a plus rien derrière elle |
 | `PERMISSION_DENIED … USE CATALOG` au dépôt, « pourtant c'est le même catalogue que les tables » | Même catalogue, autre identité : les tables sont écrites par le job sous l'identité qui le lance, le volume par l'application sous son service principal. Et `WRITE VOLUME` seul ne suffit jamais — Unity Catalog traverse `USE CATALOG` → `USE SCHEMA` → `WRITE VOLUME` | Posez les **trois** grants (§7.4). Le message d'erreur les écrit désormais copiables tels quels, catalogue, schéma et volume tirés du chemin visé |
+| `PERMISSION_DENIED: User does not have MANAGE on Catalog` en posant le GRANT | Vous n'êtes pas propriétaire du catalogue — cas ordinaire d'un catalogue partagé | `USE SCHEMA` et les droits du volume restent à votre portée ; le `USE CATALOG` doit être posé par le propriétaire, que `DESCRIBE CATALOG EXTENDED <catalogue>` nomme |
 | `AttributeError : 'bytes' object has no attribute 'seekable'` au dépôt | `files.upload` déclare `contents: BinaryIO` ; le SDK appelle `seekable()` dessus pour savoir s'il peut rejouer la requête | Corrigé : la charge utile part en flux. **Aucune pièce n'avait jamais été archivée** — en silence pour les imports, `storage_path` restant nul. Les pièces des campagnes antérieures sont définitivement perdues, le conteneur étant éphémère |
 | `relation "campaign" does not exist` | Migrations non appliquées | Consultez les journaux de démarrage ; le rôle doit avoir `CREATE` sur le schéma |
 | `La migration 001 a été modifiée après application` | Un fichier de migration déjà appliqué a été édité | Restaurez le fichier ; créez une **nouvelle** migration |

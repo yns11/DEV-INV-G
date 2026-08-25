@@ -57,6 +57,26 @@ export interface Column<T extends Row = Record<string, unknown>> {
   render?: (row: T, index: number) => ReactNode
   /** Value used for sorting and searching when `render` returns a node. */
   value?: (row: T) => string | number | null
+  /**
+   * Les étiquettes d'une colonne qui en porte **plusieurs par ligne**.
+   *
+   * « Signalements » en affiche jusqu'à quatre côte à côte : au-delà des
+   * seuils, hors ERP, non compté, la cause retenue. Avec un `value` unique, il
+   * n'y avait que deux issues, toutes deux fausses. Sans rien — le cas jusqu'ici
+   * — le filtre ne lisait aucune valeur et ne proposait que « (vide) », sur une
+   * colonne pourtant remplie de badges. Avec une chaîne jointe, chaque
+   * *combinaison* serait devenue une entrée : « au-delà des seuils · hors ERP »
+   * à côté de « au-delà des seuils », et cocher la seconde n'aurait pas montré
+   * les lignes de la première.
+   *
+   * Déclarée ici, la facette liste les étiquettes une à une et une ligne est
+   * retenue dès qu'elle en porte **une** de celles cochées. C'est ce que
+   * « montre-moi les hors ERP » veut dire.
+   *
+   * Rend une liste vide pour une ligne sans étiquette : elle se retrouve alors
+   * sous « (vide) », comme partout ailleurs.
+   */
+  tags?: (row: T) => string[]
   help?: string
   /**
    * Filtre propre à cette colonne, en plus de la recherche libre.
@@ -246,6 +266,7 @@ function filterKind<T extends Row>(
   column: Column<T>, distinct: number, rowCount: number,
 ): 'choice' | 'range' | 'text' {
   if (column.filter) return column.filter
+  if (column.tags) return 'choice'
   if (column.numeric) return 'range'
   if (column.choices?.length) return 'choice'
   if (distinct > 0 && distinct <= CHOICE_CEILING && distinct * 2 <= rowCount) {
@@ -258,6 +279,19 @@ function filterKind<T extends Row>(
 /** Untyped read of one cell, used by sorting, filtering and default rendering. */
 function cellOf(row: Row, key: string): unknown {
   return (row as Record<string, unknown>)[key]
+}
+
+/**
+ * Les étiquettes d'une ligne pour cette colonne, ou `null` si elle n'en a pas.
+ *
+ * `null` et non `[]` : l'absence d'étiquette doit se ranger sous « (vide) »
+ * comme une cellule vide, et un tableau vide se serait fondu dans le décompte
+ * sans jamais apparaître dans la liste.
+ */
+function tagsOf<T extends Row>(row: T, column: Column<T>): string[] | null {
+  if (!column.tags) return null
+  const found = column.tags(row).map((tag) => tag.trim()).filter(Boolean)
+  return found.length > 0 ? found : null
 }
 
 function defaultValue<T extends Row>(row: T, column: Column<T>): string | number | null {
@@ -365,7 +399,17 @@ export function DataGrid<T extends Row>({
       if (column.filter === false) continue
       const tally = new Map<string, number>()
       for (const row of rows) {
-        const value = defaultValue(row, column)
+        // Une colonne à étiquettes en compte plusieurs par ligne : c'est
+        // l'étiquette qui est la valeur, jamais la combinaison. Sans quoi
+        // « hors ERP » et « au-delà des seuils · hors ERP » seraient deux
+        // entrées, et cocher la première laisserait la seconde de côté.
+        const tags = tagsOf(row, column)
+        if (tags) {
+          for (const tag of tags) tally.set(tag, (tally.get(tag) ?? 0) + 1)
+          if (tally.size > CHOICE_CEILING) break
+          continue
+        }
+        const value = column.tags ? null : defaultValue(row, column)
         // La case vide est une valeur comme une autre : c'est celle qui répond
         // à « les articles dans le périmètre » ou « les lignes sans
         // commentaire ». L'écarter rendait ces deux questions impossibles à
@@ -446,6 +490,10 @@ export function DataGrid<T extends Row>({
       if (
         needle &&
         !columns.some((column) => {
+          const tags = tagsOf(row, column)
+          if (tags) {
+            return tags.some((tag) => tag.toLowerCase().includes(needle))
+          }
           const value = defaultValue(row, column)
           return value !== null && String(value).toLowerCase().includes(needle)
         })
@@ -455,6 +503,14 @@ export function DataGrid<T extends Row>({
       return active.every(([key, filter]) => {
         const column = byKey.get(key)
         if (!column) return true
+        const tags = column.tags ? tagsOf(row, column) : null
+        if (column.tags && filter.kind === 'choice') {
+          // « Une des étiquettes cochées », et non « toutes » : on demande
+          // « montre-moi les hors ERP », pas « ceux qui ne sont *que* hors ERP ».
+          return tags === null
+            ? filter.values.includes('')
+            : tags.some((tag) => filter.values.includes(tag))
+        }
         const value = defaultValue(row, column)
         if (filter.kind === 'choice') {
           return filter.values.includes(value === null ? '' : String(value))

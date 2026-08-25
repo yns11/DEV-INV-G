@@ -252,6 +252,14 @@ Un écart est *matériel* — c'est-à-dire digne d'attention — lorsqu'il fran
 Exiger la **conjonction** (et non l'une ou l'autre) garde la liste d'exceptions
 à une taille qu'une équipe peut réellement traiter le jour J.
 
+> **Un article exclu du périmètre ne produit aucun écart**, quoi qu'on ait
+> compté dessus. C'est ce que l'exclusion veut dire : ni son stock ERP, ni son
+> comptage, ni ses ajustements n'entrent dans le calcul. Si quelqu'un l'a
+> compté malgré tout, la vue *Contrôles* le signale — « exclu du périmètre mais
+> compté en zone B12 » — avec les deux gestes possibles : lever l'exclusion sur
+> la grille Articles, ou retirer la ligne de la feuille. La quantité n'est
+> jamais perdue en silence.
+
 Exception à cette règle : un article compté **alors que l'ERP n'en connaissait
 aucun stock** est toujours matériel. Du stock inconnu du système n'est jamais
 une différence d'arrondi.

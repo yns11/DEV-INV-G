@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 2225 contrôles, ~45 s ; 63 ignorés sans PostgreSQL
+make test      # 2244 contrôles, ~45 s ; 63 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```

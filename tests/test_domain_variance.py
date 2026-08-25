@@ -314,3 +314,140 @@ class TestAggregation:
         groups = aggregate_by(lines, "item", campaign=campaign)
         head = pareto(groups, coverage=Decimal("0.8"))
         assert [g.key for g in head] == ["I0"]
+
+
+class TestAnExcludedArticleProducesNoVariance:
+    """L'exclusion vaut partout, pas seulement à l'entrée du stock ERP.
+
+    Le cas rencontré en production, capture à l'appui : quatre références
+    `SECONDARY SHIM BEARING C2`, exclues du périmètre, affichées dans la liste
+    des écarts avec un stock ERP à zéro, un comptage à trente-quatre mille et un
+    écart de trente-quatre mille — signalé « au-delà des seuils » et « hors
+    ERP », en tête du classement par montant.
+
+    Les deux moitiés de l'exclusion n'avaient pas été appliquées ensemble. La
+    ligne de **stock ERP** n'était plus chargée, ce qui met le stock à zéro ; le
+    **comptage**, lui, arrivait toujours par les feuilles et les journaux. Le
+    résultat était le pire des deux mondes : une exclusion fabriquait
+    exactement l'écart qu'elle existe pour éviter, et systématiquement matériel,
+    puisqu'un écart sans stock ERP en face l'est toujours.
+
+    `in_perimeter` énonce déjà la règle pour les lectures ERP — « un article
+    délibérément laissé hors du périmètre ne doit pas revenir par les quantités
+    relevées dessus ». Ces contrôles la tiennent là où elle manquait.
+    """
+
+    def excluded(self, *numbers: str) -> dict[str, Item]:
+        from inventory.domain.enums import ExclusionScope
+
+        return {
+            **ITEMS,
+            **{
+                n: Item(
+                    campaign_id="c", item_number=n, item_type=ItemType.COMPONENT,
+                    std_price="10", exclusions={ExclusionScope.ALL},
+                )
+                for n in numbers
+            },
+        }
+
+    def test_compte_sans_stock_erp_il_ne_produit_plus_d_ecart(self, campaign):
+        """Le cas de la capture, à l'identique."""
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[],
+            counted=[counted("X", "B06", "GENERIQUE", 33980)],
+            items=self.excluded("X"),
+        )
+
+        assert lines == []
+
+    def test_il_n_apparait_pas_davantage_avec_du_stock_erp(self, campaign):
+        """Un article exclu dont le stock aurait été chargé avant l'exclusion."""
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[book("X", "B06", "L1", 100)],
+            counted=[counted("X", "B06", "L1", 40)],
+            items=self.excluded("X"),
+        )
+
+        assert lines == []
+
+    def test_un_ajustement_ne_le_ramene_pas_non_plus(self, campaign):
+        """Les trois sources d'une ligne d'écart, et non deux sur trois."""
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[],
+            counted=[],
+            adjustments=[
+                AdjustmentLine(
+                    id="adj-1", campaign_id="c", item_number="X",
+                    warehouse_id="B06", location_id="L1", qty=Decimal("7"),
+                )
+            ],
+            items=self.excluded("X"),
+        )
+
+        assert lines == []
+
+    def test_les_articles_du_perimetre_restent_intacts(self, campaign):
+        """La garde ne doit pas emporter ce qu'on inventorie."""
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[book("A", "B06", "L1", 100)],
+            counted=[counted("A", "B06", "L1", 90), counted("X", "B06", "L1", 500)],
+            items=self.excluded("X"),
+        )
+
+        assert [line.item_number for line in lines] == ["A"]
+        assert lines[0].variance_qty == -10
+
+    def test_une_exclusion_generique_seule_ne_retire_rien(self, campaign):
+        """Elle ne porte que sur la consolidation des zones.
+
+        L'article reste inventorié ailleurs — dans un journal d'emplacement —
+        et son écart y est parfaitement légitime. Confondre les deux portées
+        ferait disparaître des écarts que personne n'a demandé d'exclure.
+        """
+        from inventory.domain.enums import ExclusionScope
+
+        items = {
+            **ITEMS,
+            "G": Item(
+                campaign_id="c", item_number="G", item_type=ItemType.COMPONENT,
+                std_price="10", exclusions={ExclusionScope.GENERIC},
+            ),
+        }
+
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[book("G", "B06", "L1", 100)],
+            counted=[counted("G", "B06", "L1", 90)],
+            items=items,
+        )
+
+        assert [line.item_number for line in lines] == ["G"]
+
+    def test_un_article_inconnu_du_referentiel_reste_signale(self, campaign):
+        """Il n'est pas exclu : il manque. C'est un constat, pas une décision,
+        et le faire disparaître avec les exclusions le rendrait invisible."""
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[],
+            counted=[counted("INCONNU", "B06", "L1", 12)],
+            items=ITEMS,
+        )
+
+        assert [line.item_number for line in lines] == ["INCONNU"]
+        assert lines[0].counted_only is True
+
+    def test_le_total_ne_porte_plus_leur_montant(self, campaign):
+        """Le chiffre du bas de l'écran, celui qu'on lit en réunion."""
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[book("A", "B06", "L1", 100)],
+            counted=[counted("A", "B06", "L1", 100), counted("X", "B06", "L1", 33980)],
+            items=self.excluded("X"),
+        )
+
+        assert sum(line.variance_value for line in lines) == 0

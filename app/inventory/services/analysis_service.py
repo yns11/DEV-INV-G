@@ -472,6 +472,10 @@ class AnalysisService:
                 zones=zones,
                 sheets=ctx.sheets.list_sheets(campaign.id),
                 lines_by_sheet=ctx.sheets.lines_by_sheet(campaign.id),
+                # Le référentiel est déjà chargé ici : c'est lui qui dit qu'un
+                # article compté sur une feuille est hors périmètre, et donc que
+                # sa quantité n'entrera dans aucun écart.
+                items=items,
             )
 
         book_stock = ctx.book_stock.list(campaign.id)

@@ -9,6 +9,7 @@ import { CompositionBar, Pareto, VarianceBars } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { BreakdownModal, DrillCell, type BreakdownAspect } from '../components/BreakdownModal'
 import { Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Skeleton, useErrorToast } from '../components/ui'
+import { FLAGS_COLUMN } from './varianceFlags'
 
 // --------------------------------------------------------------------------- //
 // Variances
@@ -268,25 +269,7 @@ export function VariancesTab({
           } as Column<VarianceRow>,
         ]
       : []),
-    {
-      key: 'flags',
-      label: 'Signalements',
-      width: 200,
-      sortable: false,
-      render: (row) => (
-        <span className="row-wrap" style={{ gap: 'var(--space-1)' }}>
-          {row.isMaterial && <Badge tone="danger">au-delà des seuils</Badge>}
-          {row.bookOnly && <Badge tone="warning">non compté</Badge>}
-          {row.countedOnly && <Badge tone="info">hors ERP</Badge>}
-          {row.causeCode && <Badge tone="success">cause {row.causeCode}</Badge>}
-          {!row.causeCode && row.aiSuggestedCause && (
-            <Badge tone="accent" title={row.aiRationale}>
-              IA : {row.aiSuggestedCause}
-            </Badge>
-          )}
-        </span>
-      ),
-    },
+    FLAGS_COLUMN,
     {
       key: 'explain',
       label: '',

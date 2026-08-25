@@ -25,6 +25,7 @@ from ..db import (
     CampaignRepository,
     ConsolidationRepository,
     Database,
+    EvidenceBlobRepository,
     ImportBatchRepository,
     JournalRepository,
     ReferentialRepository,
@@ -122,9 +123,18 @@ class ServiceContext:
         return ScanJobRepository(self.db)
 
     @functools.cached_property
+    def evidence_blobs(self) -> EvidenceBlobRepository:
+        return EvidenceBlobRepository(self.db)
+
+    @functools.cached_property
     def evidence(self) -> EvidenceStore:
-        """L'archive des pièces justificatives. Pas un dépôt : un volume UC."""
-        return EvidenceStore(self.settings)
+        """L'archive des pièces justificatives : un volume UC, ou la base.
+
+        Le dépôt lui est passé même en mode « volume » — il ne coûte qu'une
+        référence, et le construire ici plutôt qu'à la volée garde l'archive sur
+        la connexion du contexte au lieu d'en ouvrir une seconde.
+        """
+        return EvidenceStore(self.settings, blobs=self.evidence_blobs)
 
     # -- cross-cutting concerns ----------------------------------------------
 

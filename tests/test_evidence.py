@@ -29,7 +29,12 @@ import pytest
 
 from inventory.config import Settings
 from inventory.errors import NotFoundError, UpstreamError
-from inventory.evidence import EvidenceStore, safe_name
+from inventory.evidence import (
+    EvidenceStore,
+    archive_advice,
+    safe_name,
+    volume_of,
+)
 
 AT = dt.datetime(2026, 9, 1, 6, 30, 15, tzinfo=dt.UTC)
 
@@ -40,18 +45,49 @@ class FakeFiles:
     def __init__(self, *, fail: bool = False) -> None:
         self.stored: dict[str, bytes] = {}
         self.fail = fail
+        #: Le message que le dépôt fait remonter. Les causes possibles
+        #: n'appellent pas le même geste, et c'est ce que le refus doit dire.
+        self.boom = "PERMISSION_DENIED: WRITE VOLUME"
         #: Le drapeau reçu à chaque dépôt. Le volume réel refuse un chemin déjà
         #: pris quand il vaut ``False`` ; c'est cette garantie que le magasin
         #: exige désormais, et un test la lit ici.
         self.overwrites: list[bool] = []
+        #: Ce qui a été transmis au dernier dépôt, avant lecture. C'est la
+        #: forme — flux ou octets — qui est en cause, pas seulement le contenu.
+        self.last_contents: Any = None
+        #: Les chemins retirés. La sonde d'écriture ne doit pas laisser sa
+        #: trace derrière elle.
+        self.deleted: list[str] = []
 
-    def upload(self, path: str, contents: bytes, overwrite: bool = False) -> None:
+    def upload(self, path: str, contents: Any, overwrite: bool = False) -> None:
+        """Le contrat réel : ``contents: BinaryIO``, pas des octets.
+
+        Cette doublure acceptait des octets. Elle était donc **plus permissive
+        que l'API qu'elle représente**, et elle a certifié pendant toute la vie
+        de la fonctionnalité un appel qui ne pouvait pas aboutir : le SDK
+        appelle ``seekable()`` sur ce qu'on lui passe pour savoir s'il peut
+        rejouer la requête, et des octets nus y échouent sur un
+        ``AttributeError``. Aucune pièce n'a jamais été archivée.
+
+        Une doublure qui accepte plus que l'original ne double pas l'original.
+        """
+        self.last_contents = contents
+        if not hasattr(contents, "read"):
+            raise AttributeError(
+                f"'{type(contents).__name__}' object has no attribute 'seekable'"
+            )
+        if not contents.seekable():
+            raise AttributeError("le flux doit être rejouable")
         if self.fail:
-            raise RuntimeError("PERMISSION_DENIED: WRITE VOLUME")
+            raise RuntimeError(self.boom)
         self.overwrites.append(overwrite)
         if path in self.stored and not overwrite:
             raise RuntimeError(f"ALREADY EXISTS: {path}")
-        self.stored[path] = contents
+        self.stored[path] = contents.read()
+
+    def delete(self, path: str) -> None:
+        self.deleted.append(path)
+        self.stored.pop(path, None)
 
     def download(self, path: str) -> Any:
         if path not in self.stored:
@@ -69,10 +105,13 @@ class _Reader:
 
 def store(*, fail: bool = False, **overrides: Any) -> tuple[EvidenceStore, FakeFiles]:
     files = FakeFiles(fail=fail)
+    if "boom" in overrides:
+        files.boom = overrides.pop("boom")
     settings = Settings(
         INV_UC_CATALOG=overrides.pop("catalog", "cat"),
         INV_UC_SCHEMA=overrides.pop("schema", "inventory"),
         INV_UC_VOLUME=overrides.pop("volume", "inventory_evidence"),
+        DATABRICKS_CLIENT_ID=overrides.pop("principal", "sp-1234"),
     )
     return EvidenceStore(settings, client=SimpleNamespace(files=files)), files
 
@@ -313,6 +352,301 @@ class TestWhenTheArchiveIsNotOptional:
         """Le régime par défaut reste celui que le module défend depuis toujours."""
         s, _ = store(fail=True)
         assert s.put(b"x", campaign_code="C", kind="imports", filename="f") is None
+
+
+class TestTheRefusalNamesItsCause:
+    """« La pièce n'a pas pu être archivée » décrit l'effet et tait la cause.
+
+    Or les causes possibles appellent des gestes sans rapport : accorder un
+    droit, créer le volume, corriger une variable. Le message était le même
+    pour les trois, et l'erreur remonte d'un scan lancé en arrière-plan — dont
+    **seul le message** est conservé. Ce que ce texte ne disait pas était perdu
+    pour de bon, et la panne se diagnostiquait par aller-retour.
+    """
+
+    def refusal(self, boom: str, **extra) -> str:
+        s, _ = store(fail=True, boom=boom, **extra)
+        with pytest.raises(UpstreamError) as raised:
+            s.put(b"x", campaign_code="C", kind="scans", filename="f.pdf",
+                  required=True)
+        return str(raised.value)
+
+    def test_un_droit_manquant_donne_les_trois_privileges(self):
+        """Unity Catalog traverse la hiérarchie : le dernier seul ne donne rien.
+
+        Ce message a fait l'erreur une fois. Il conseillait `WRITE VOLUME`,
+        l'exploitant l'a posé, et le refus suivant réclamait `USE CATALOG` —
+        un aller-retour de plus, pour un conseil incomplet.
+        """
+        message = self.refusal("PERMISSION_DENIED: no WRITE VOLUME")
+
+        assert "USE CATALOG" in message
+        assert "USE SCHEMA" in message
+        assert "WRITE VOLUME" in message
+
+    def test_les_grants_sont_copiables_tels_quels(self):
+        """« Sur le volume » oblige encore à retrouver lequel."""
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert "ON CATALOG cat " in message
+        assert "ON SCHEMA cat.inventory " in message
+        assert "ON VOLUME cat.inventory.inventory_evidence " in message
+
+    def test_l_ordre_des_grants_est_celui_de_la_traversee(self):
+        """Les poser dans le désordre marche, mais les lire dans l'ordre aide."""
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert (
+            message.index("USE CATALOG")
+            < message.index("USE SCHEMA")
+            < message.index("WRITE VOLUME")
+        )
+
+    def test_le_message_repond_a_c_est_le_meme_catalogue_que_les_tables(self):
+        """La question que l'exploitant pose en voyant le refus.
+
+        Le catalogue est bien le même ; l'identité ne l'est pas. Les tables
+        sont écrites par le job sous l'identité qui le lance, le volume par
+        l'application sous la sienne.
+        """
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert "l'identité n'est pas la même" in message
+        # La phrase seule ne répond pas : c'est l'explication qui répond.
+        assert "le job" in message
+        assert "sous la sienne" in message
+
+    def test_un_droit_manquant_nomme_le_principal_a_qui_l_accorder(self):
+        """Sans le nom, un administrateur doit encore le chercher — et
+        l'application est la seule à connaître l'identité sous laquelle elle
+        s'exécute."""
+        message = self.refusal("PERMISSION_DENIED", principal="sp-abcdef")
+
+        assert "sp-abcdef" in message
+
+    def test_sans_principal_connu_la_phrase_reste_lisible(self):
+        message = self.refusal("PERMISSION_DENIED", principal="")
+
+        assert "service principal de l'application" in message
+
+    def test_un_volume_absent_renvoie_au_provisionnement(self):
+        """Ce n'est pas un droit qui manque : il n'y a rien à qui l'accorder."""
+        message = self.refusal("NOT_FOUND: volume does not exist")
+
+        assert "make uc" in message
+        assert "WRITE VOLUME" not in message
+
+    def test_une_authentification_refusee_ne_parle_ni_de_droit_ni_de_volume(self):
+        message = self.refusal("UNAUTHENTICATED: invalid token")
+
+        assert "authentifier" in message
+        assert "make uc" not in message
+
+    def test_une_cause_imprevue_est_rapportee_telle_quelle(self):
+        """Ne jamais avaler ce qu'on n'avait pas prévu."""
+        message = self.refusal("connection reset by peer")
+
+        assert "connection reset by peer" in message
+
+    def test_le_chemin_vise_figure_toujours(self):
+        """« Le volume » ne dit pas lequel, ni sous quel catalogue."""
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert "/Volumes/cat/inventory/inventory_evidence/" in message
+
+    def test_le_type_de_l_exception_figure(self):
+        """« RuntimeError » et « PermissionError » n'appellent pas le même geste."""
+        message = self.refusal("quelque chose")
+
+        assert "RuntimeError" in message
+
+    def test_la_phrase_d_origine_est_conservee(self):
+        """Ce qui est ajouté ne remplace pas ce qui était juste."""
+        message = self.refusal("PERMISSION_DENIED")
+
+        assert "rien ne rattacherait au document lu" in message
+
+    def test_le_detail_reste_aussi_dans_la_charge_utile(self):
+        """L'API le rend ; un client qui veut brancher dessus le peut."""
+        s, _ = store(fail=True, boom="PERMISSION_DENIED")
+        with pytest.raises(UpstreamError) as raised:
+            s.put(b"x", campaign_code="C", kind="scans", filename="f.pdf",
+                  required=True)
+
+        details = raised.value.to_payload()["details"]
+        assert details["cause"] == "PERMISSION_DENIED"
+        assert details["path"].endswith(".pdf")
+
+
+class TestWhatIsHandedToTheSdk:
+    """``files.upload`` déclare ``contents: BinaryIO``, et le prend au mot.
+
+    Le SDK appelle ``seekable()`` sur ce qu'on lui passe, pour savoir s'il peut
+    rejouer la requête après un incident réseau. Des octets nus y échouent sur
+    un « 'bytes' object has no attribute 'seekable' » — et l'archivage
+    n'aboutissait donc jamais : en silence pour un import, par un refus pour un
+    scan.
+
+    La doublure de cette suite acceptait pourtant des octets. Elle était plus
+    permissive que l'API qu'elle représente, et c'est ainsi qu'un appel
+    impossible est resté vert pendant toute la vie de la fonctionnalité.
+    """
+
+    def test_le_contenu_transmis_est_un_flux(self):
+        s, files = store()
+        s.put(b"contenu", campaign_code="C", kind="scans", filename="f.pdf")
+
+        assert files.last_contents is not None
+        assert hasattr(files.last_contents, "read")
+
+    def test_le_flux_est_rejouable(self):
+        """Sans quoi le SDK ne peut pas retenter après un incident réseau."""
+        s, files = store()
+        s.put(b"contenu", campaign_code="C", kind="scans", filename="f.pdf")
+
+        assert files.last_contents.seekable()
+
+    def test_les_octets_deposes_sont_bien_ceux_recus(self):
+        """Un flux mal construit déposerait un fichier vide, sans rien dire."""
+        s, files = store()
+        s.put(b"contenu exact", campaign_code="C", kind="scans", filename="f.pdf")
+
+        assert list(files.stored.values()) == [b"contenu exact"]
+
+    def test_un_gros_fichier_passe_entier(self):
+        """Une pile scannée fait plusieurs mégaoctets."""
+        gros = b"\x00" * (3 * 1024 * 1024)
+        s, files = store()
+        s.put(gros, campaign_code="C", kind="scans", filename="pile.pdf")
+
+        assert len(next(iter(files.stored.values()))) == len(gros)
+
+
+class TestTheProbeAnswersBeforeInventoryDay:
+    """« L'archivage est configuré » n'est pas « l'archivage marche ».
+
+    `evidence_configured` ne lit que des variables d'environnement. Elle
+    répondait donc oui à un conteneur dont le service principal n'a aucun droit
+    sur le catalogue — et la panne n'apparaissait qu'au premier scan, c'est-à-
+    dire le jour de l'inventaire, sur une feuille manuscrite déjà repartie à
+    l'atelier.
+
+    Trois refus distincts se cachent derrière : la traversée du catalogue, le
+    droit sur le schéma, le droit d'écriture sur le volume. Aucun ne se déduit
+    d'une configuration. Écrire est la seule question qui les pose tous.
+    """
+
+    def test_un_volume_accessible_repond_oui(self):
+        s, _ = store()
+
+        assert s.probe()["ok"] is True
+
+    def test_un_refus_repond_non_et_dit_pourquoi(self):
+        s, _ = store(fail=True, boom="PERMISSION_DENIED: no USE CATALOG")
+        rendu = s.probe()
+
+        assert rendu["ok"] is False
+        assert "USE CATALOG" in rendu["detail"]
+
+    def test_le_refus_porte_la_cause_brute(self):
+        s, _ = store(fail=True, boom="quelque chose d'inattendu")
+
+        assert "quelque chose d'inattendu" in s.probe()["detail"]
+
+    def test_un_volume_non_declare_se_distingue_d_un_refus(self):
+        """Deux pannes, deux gestes : déclarer, ou accorder."""
+        s, _ = store(volume="")
+        rendu = s.probe()
+
+        assert rendu["ok"] is False
+        assert rendu["configured"] is False
+        assert "INV_UC_VOLUME" in rendu["detail"]
+
+    def test_la_sonde_ne_laisse_pas_sa_trace(self):
+        s, files = store()
+        s.probe()
+
+        assert files.stored == {}
+        assert len(files.deleted) == 1
+
+    def test_la_sonde_ecrit_sous_le_volume_de_l_application(self):
+        s, files = store()
+        rendu = s.probe()
+
+        assert rendu["path"].startswith(s.root)
+        assert files.deleted == [rendu["path"]]
+
+    def test_un_retrait_refuse_ne_fait_pas_mentir_la_sonde(self):
+        """L'écriture vient d'aboutir : c'était la question posée."""
+        s, files = store()
+
+        def refuse(path: str) -> None:
+            raise RuntimeError("pas le droit de supprimer")
+
+        files.delete = refuse  # type: ignore[method-assign]
+
+        assert s.probe()["ok"] is True
+
+
+class TestReadingTheVolumeOutOfThePath:
+    """Le chemin porte le catalogue, le schéma et le volume ; le GRANT aussi."""
+
+    def test_les_trois_segments_sont_rendus(self):
+        assert volume_of("/Volumes/cat/sch/vol/campagne/scans/x.pdf") == (
+            "cat", "sch", "vol",
+        )
+
+    def test_un_chemin_reduit_au_volume_suffit(self):
+        assert volume_of("/Volumes/cat/sch/vol") == ("cat", "sch", "vol")
+
+    def test_un_chemin_trop_court_ne_rend_rien(self):
+        assert volume_of("/Volumes/cat/sch") is None
+
+    def test_un_chemin_qui_n_est_pas_un_volume_ne_rend_rien(self):
+        """Assez de segments pour tromper un simple décompte, et pourtant non.
+
+        Un GRANT bâti sur « dbfs » ferait perdre plus de temps qu'un silence.
+        """
+        assert volume_of("/dbfs/tmp/cat/sch/vol/x.pdf") is None
+        assert volume_of("/dbfs/tmp/x.pdf") is None
+
+    def test_les_barres_en_trop_ne_decalent_pas_les_segments(self):
+        assert volume_of("/Volumes//cat//sch/vol//x") == ("cat", "sch", "vol")
+
+    def test_sans_chemin_lisible_le_conseil_reste_donne(self):
+        """Dégradé, mais pas muet : les trois privilèges y sont toujours."""
+        avis = archive_advice(RuntimeError("PERMISSION_DENIED"), path="ailleurs")
+
+        assert "USE CATALOG" in avis and "WRITE VOLUME" in avis
+
+
+class TestTheAdviceOnItsOwn:
+    """La fonction est appelée hors de son magasin par les contrôles ci-dessus,
+    mais elle décide seule : autant l'interroger seule."""
+
+    def test_l_ordre_des_causes_ne_confond_pas_les_deux_premieres(self):
+        """« PERMISSION_DENIED ... not found » doit rester un droit manquant.
+
+        Un message d'API en cite volontiers plusieurs ; le premier motif
+        reconnu est celui qui décide, et c'est le droit qui est le plus
+        actionnable.
+        """
+        avis = archive_advice(
+            RuntimeError("PERMISSION_DENIED: table not found either"),
+            path="/Volumes/x",
+        )
+
+        assert "WRITE VOLUME" in avis
+
+    def test_une_cause_vide_ne_leve_rien(self):
+        assert archive_advice(RuntimeError(""), path="/Volumes/x")
+
+    def test_la_casse_du_message_est_indifferente(self):
+        """Les SDK ne s'accordent pas sur la casse de leurs codes."""
+        for texte in ("Permission Denied", "PERMISSION DENIED", "permission denied"):
+            assert "WRITE VOLUME" in archive_advice(
+                RuntimeError(texte), path="/Volumes/x"
+            )
 
 
 class TestRereading:

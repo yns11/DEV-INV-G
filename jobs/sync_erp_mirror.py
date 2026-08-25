@@ -43,19 +43,51 @@ ou en local, contre les mêmes variables d'environnement que l'application :
 
 from __future__ import annotations
 
+import argparse
+import inspect
+import logging
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 # Un `spark_python_task` matérialise le fichier sur le driver ; son voisin
 # `lakebase.py` est là, mais le répertoire n'est pas toujours sur le chemin
 # d'import selon la façon dont le job est lancé.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+#
+# `__file__` ne sert à rien pour le trouver : le calcul serverless exécute le
+# fichier par `exec(compile(source, chemin, "exec"))` dans un espace de noms
+# ipykernel, où ce global n'existe pas. Le job échouait sur un `NameError` avant
+# d'avoir lu sa première option. Le chemin passé à `compile`, lui, est toujours
+# renseigné — c'est celui qu'affiche la trace — et `co_filename` le porte.
+#
+# Le bloc est recopié dans `publish_campaign_to_delta.py` : c'est lui qui met le
+# répertoire sur le chemin d'import, il ne peut donc pas en venir.
 
-import argparse
-import logging
-import os
-import sys
-from typing import Any
+
+def _neighbourhood(neighbour: str) -> str | None:
+    """Le répertoire de ce fichier, s'il porte bien ``neighbour``.
+
+    Rien n'est ajouté au chemin d'import sur la foi d'un chemin seul : un
+    ``co_filename`` valant ``<string>`` désignerait le répertoire courant, et
+    l'ajouter en tête du chemin d'import est une surprise que personne n'a
+    demandée. La présence du voisin est la preuve qu'on cherche.
+    """
+    for candidate in (
+        globals().get("__file__"),
+        inspect.currentframe().f_code.co_filename,
+    ):
+        if not candidate:
+            continue
+        here = Path(candidate).resolve().parent
+        if (here / neighbour).exists():
+            return str(here)
+    return None
+
+
+_HERE = _neighbourhood("lakebase.py")
+if _HERE is not None and _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 log = logging.getLogger("sync_erp_mirror")
 
@@ -540,3 +572,24 @@ def _write_advice(exc: Exception, schema: str) -> str:
     return f"Écriture du miroir impossible : {message}"
 
 
+
+
+def _exit(code: int) -> None:
+    """Sortir sans faire passer une réussite pour un échec.
+
+    Le calcul serverless exécute ce fichier dans un espace de noms ipykernel :
+    un ``SystemExit(0)`` n'y est pas une sortie de processus, c'est une
+    exception que le noyau remonte, et la tâche passe au rouge après un travail
+    complet. Recopié depuis ``publish_campaign_to_delta.py``, où le cas s'est
+    produit — chaque fichier est lancé seul.
+    """
+    if code:
+        raise SystemExit(code)
+
+
+# Sans ce bloc, le fichier ne faisait que **définir** `main` : lancé comme
+# `spark_python_task`, il se terminait aussitôt, sans rien synchroniser et sans
+# rien dire. La tâche passait au vert, le miroir restait tel quel, et
+# l'application lisait un référentiel périmé en croyant l'avoir rafraîchi.
+if __name__ == "__main__":
+    _exit(main())

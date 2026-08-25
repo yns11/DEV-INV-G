@@ -134,7 +134,7 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      1308 tests, ~17 s ; 8 exigent un PostgreSQL, ignorés sinon
+tests/                      2225 contrôles, ~45 s ; 63 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -159,12 +159,20 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 1308 tests, ~17 s ; 8 ignorés sans PostgreSQL
+make test            # 2225 contrôles, ~45 s ; 63 ignorés sans PostgreSQL
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000
 make dev-ui          # Vite avec proxy vers l'API, port 5173
+
+npm --prefix frontend run test   # 323 contrôles navigateur (vitest + jsdom)
+npm --prefix frontend run e2e    # le parcours complet, Playwright, app démarrée
 ```
+
+Trois bancs, trois portées. Les contrôles Python tiennent les règles et l'API ;
+`vitest` tient le TypeScript — grille, formats, collage — sans démarrer quoi
+que ce soit ; le parcours Playwright traverse une campagne de bout en bout dans
+un vrai navigateur, contre une vraie base.
 
 La couche `inventory.domain` n'importe **rien** du reste du projet : c'est ce
 qui permet de tester l'intégralité des règles métier — éclatement BOM,

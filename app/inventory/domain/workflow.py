@@ -106,6 +106,18 @@ class Editable:
     #: of the feature, which is how this was found — a chip that would not
     #: click, on a campaign where the comparison was the whole point.
     stock_flow: bool = True
+    #: Les paramètres de campagne autres que les seuils — aujourd'hui le seul
+    #: réglage « Accepter des formules dans les comptages ».
+    #:
+    #: Ouvert tant qu'on saisit, fermé ensuite, et **pas au même moment que les
+    #: seuils**. Les seuils gèlent à l'entrée en comptage parce qu'ils décident
+    #: ce qui sera signalé comme exception : les changer en cours de route
+    #: changerait la liste sous les yeux de qui la traite. Ce réglage-là décide
+    #: seulement de ce qu'un champ de saisie accepte, et le besoin apparaît
+    #: précisément le jour de l'inventaire, devant la première feuille qui porte
+    #: un calcul. Le geler avec les seuils l'aurait rendu inatteignable au seul
+    #: moment où il sert.
+    settings: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -122,6 +134,7 @@ class Editable:
             "analysis": self.analysis,
             "backflush": self.backflush,
             "stockFlow": self.stock_flow,
+            "settings": self.settings,
         }
 
 
@@ -136,6 +149,7 @@ class Editable:
 #: CLOSED       everything is frozen.
 _EDITABILITY: dict[CampaignStatus, Editable] = {
     CampaignStatus.PREPARATION: Editable(
+        settings=True,
         thresholds=True,
         items=True,
         boms=True,
@@ -149,6 +163,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         analysis=False,
     ),
     CampaignStatus.COUNTING: Editable(
+        settings=True,
         thresholds=False,
         items=False,
         boms=False,
@@ -226,7 +241,6 @@ def campaign_transition_blockers(
     book_stock_frozen: bool = False,
     blocking_controls: Sequence[ControlFinding] = (),
     unexplained_material: int = 0,
-    rejected_imports: Sequence[tuple[str, int]] = (),
     publication_done: bool = True,
 ) -> list[ControlFinding]:
     """Business preconditions that must hold before *target* can be entered.
@@ -234,6 +248,20 @@ def campaign_transition_blockers(
     Returns the findings that *block* the transition (empty list == go ahead).
     Kept separate from :func:`assert_campaign_transition` so the UI can display
     a live "what is missing to move on" panel without attempting the move.
+
+    Les lignes refusées à l'import n'y figurent pas
+    ----------------------------------------------
+    Elles ont bloqué la clôture un temps. C'était trop : un chargement laisse
+    des lignes refusées pour des raisons que l'exploitant connaît et assume —
+    un article sorti du référentiel, une ligne d'export corrompue à la source,
+    un fichier partiel volontairement chargé. Exiger zéro refus rendait la
+    clôture impossible sur un manque que personne n'avait le pouvoir de
+    combler, et poussait à recharger un fichier pour faire taire un point plutôt
+    que pour corriger quelque chose.
+
+    Le constat reste affiché — la liste de contrôle le porte en « à regarder »,
+    voir :mod:`inventory.domain.closure`. Ce qui change est le pouvoir d'arrêt,
+    pas la visibilité.
     """
     blockers: list[ControlFinding] = []
 
@@ -305,23 +333,6 @@ def campaign_transition_blockers(
                     ),
                     entity_type="variance_analysis",
                     context={"unexplained": unexplained_material},
-                )
-            )
-        partial = [(t, n) for t, n in rejected_imports if n > 0]
-        if partial:
-            detail = ", ".join(f"{t} ({n} ligne(s))" for t, n in partial[:5])
-            blockers.append(
-                ControlFinding(
-                    code="IMPORTS_WITH_REJECTS",
-                    severity=ControlSeverity.BLOCKER,
-                    message=(
-                        f"{len(partial)} chargement(s) ont laissé des lignes "
-                        f"refusées : {detail}. Rechargez le fichier corrigé, ou "
-                        "assumez le manque en le documentant — mais pas en "
-                        "clôturant par-dessus."
-                    ),
-                    entity_type="import_batch",
-                    context={"targets": [t for t, _ in partial]},
                 )
             )
         if not publication_done:

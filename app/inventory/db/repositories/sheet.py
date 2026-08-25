@@ -301,7 +301,7 @@ class SheetRepository(_Base):
 
     _SHEET_LINE_COLUMNS = (
         "id, sheet_id, campaign_id, item_number, section, qty_imported, qty_manual, "
-        "unit, source, confidence, comment, display_order, row_version"
+        "unit, source, confidence, qty_formula, comment, display_order, row_version"
     )
 
     def list_sheet_lines(
@@ -383,20 +383,21 @@ class SheetRepository(_Base):
     ) -> int:
         return self._execute_many(
             "INSERT INTO count_sheet_line (id, sheet_id, campaign_id, item_number, "
-            "section, qty_imported, qty_manual, unit, source, confidence, comment, "
-            "display_order, updated_by, updated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
+            "section, qty_imported, qty_manual, unit, source, confidence, "
+            "qty_formula, comment, display_order, updated_by, updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
             "ON CONFLICT (id) DO UPDATE SET item_number = EXCLUDED.item_number, "
             "section = EXCLUDED.section, qty_imported = EXCLUDED.qty_imported, "
             "qty_manual = EXCLUDED.qty_manual, unit = EXCLUDED.unit, "
             "source = EXCLUDED.source, confidence = EXCLUDED.confidence, "
+            "qty_formula = EXCLUDED.qty_formula, "
             "comment = EXCLUDED.comment, display_order = EXCLUDED.display_order, "
             "updated_by = EXCLUDED.updated_by, updated_at = now(), "
             "row_version = count_sheet_line.row_version + 1, deleted_at = NULL",
             [
                 (l.id, l.sheet_id, l.campaign_id, l.item_number, str(l.section),
                  l.qty_imported, l.qty_manual, l.unit, str(l.source), l.confidence,
-                 l.comment, l.display_order, actor)
+                 l.qty_formula, l.comment, l.display_order, actor)
                 for l in lines
             ],
             conn=conn,
@@ -635,5 +636,6 @@ class SheetRepository(_Base):
             section=CountSection(row["section"]), qty_imported=row["qty_imported"],
             qty_manual=row["qty_manual"], unit=row["unit"],
             source=DataSource(row["source"]), confidence=row["confidence"],
+            qty_formula=row.get("qty_formula") or "",
             comment=row["comment"], display_order=row["display_order"],
         )

@@ -387,7 +387,7 @@ export function ImportPanel({
   )
 }
 
-function ImportReport({
+export function ImportReport({
   result,
   contract,
   onCancel,
@@ -413,6 +413,15 @@ function ImportReport({
     details = {},
   } = result
   const blocked = missingColumns.length > 0
+  const outOfScopeLines = Number(details.outOfScopeLines ?? 0)
+  const outOfScopeItems = Number(details.outOfScopeItems ?? 0)
+  const unknownLines = Number(details.unknownLines ?? 0)
+  const unknownItems = Number(details.unknownItems ?? 0)
+  // Quelques-unes seulement : le panneau sert à décider tout de suite, pas à
+  // relire douze mille références. La liste entière est dans Contrôles.
+  const unknownSample = (
+    Array.isArray(details.unknownItemNumbers) ? details.unknownItemNumbers : []
+  ).slice(0, 6).map(String)
   const sample = (result as unknown as { sample?: Array<Record<string, unknown>> }).sample ?? []
 
   return (
@@ -471,8 +480,53 @@ function ImportReport({
           </Alert>
         )}
 
+        {/* Le stock ERP couvre toute l'usine ; la campagne choisit son
+            périmètre. Les lignes des articles exclus ne sont pas chargées —
+            elles ne sont pas non plus refusées, sans quoi l'écriture entière
+            serait annulée. Le décompte est en tête, parce qu'un périmètre trop
+            large ou trop étroit se voit à ce chiffre-là et à aucun autre. */}
+        {outOfScopeLines > 0 && (
+          <Alert
+            tone="info"
+            title={`${outOfScopeLines.toLocaleString('fr-FR')} ligne(s) hors périmètre, non chargée(s)`}
+          >
+            {outOfScopeItems > 0 && (
+              <>
+                {outOfScopeItems.toLocaleString('fr-FR')} article(s) exclu(s) de
+                cette campagne.{' '}
+              </>
+            )}
+            Leur stock n’entre pas dans l’inventaire — c’est ce que l’exclusion
+            veut dire. Pour en inventorier un, levez son exclusion sur la grille
+            Articles puis rechargez le stock.
+          </Alert>
+        )}
+
+        {/* L'autre moitié du même choix : une référence que le référentiel ne
+            connaît pas encore. Écartée elle aussi, et pour la même raison — un
+            refus annulerait tout le chargement — mais ce n'est pas une décision,
+            c'est un manque, d'où le ton et le geste différents. Le constat
+            survit à ce panneau : la vue Contrôles le reprend, avec la liste. */}
+        {unknownLines > 0 && (
+          <Alert
+            tone="warning"
+            title={`${unknownLines.toLocaleString('fr-FR')} ligne(s) sur des références inconnues, non chargée(s)`}
+          >
+            {unknownItems > 0 && (
+              <>
+                {unknownItems.toLocaleString('fr-FR')} référence(s) absente(s) du
+                référentiel articles{unknownSample.length > 0 && <> : {unknownSample.join(' · ')}
+                {unknownItems > unknownSample.length && ' …'}</>}.{' '}
+              </>
+            )}
+            Aucun écart ne sera calculé dessus. Complétez le référentiel articles
+            puis rechargez le stock — un import de stock ne crée jamais d’article.
+            La liste complète reste dans <strong>Contrôles</strong>.
+          </Alert>
+        )}
+
         {warnings.length > 0 && (
-          <Alert tone="warning" title={`${warnings.length} correction(s) automatique(s)`}>
+          <Alert tone="warning" title={`${warnings.length} ligne(s) signalée(s)`}>
             <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
               {warnings.slice(0, 8).map((warning, index) => (
                 <li key={index}>

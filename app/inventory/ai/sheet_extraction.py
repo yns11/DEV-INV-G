@@ -28,6 +28,7 @@ from threading import Lock
 from typing import Any, TypeVar
 
 from ..domain.enums import CountSection, DataSource, legacy_section_alias
+from ..domain.formula import FormulaError, evaluate, looks_like_formula
 from ..domain.models import CountSheetLine, Item, normalise_key
 from ..domain.quantities import to_decimal
 from ..errors import ValidationError
@@ -94,7 +95,8 @@ Transcris la feuille scannée et renvoie ce JSON :
     {{
       "item_number": "<référence, exactement telle qu'écrite dans la liste attendue>",
       "section": "<la section du tableau où figure cette ligne : {sections}>",
-      "qty": <nombre ou null>,
+      "qty": <nombre, ou l'opération écrite entre guillemets si la case en \
+contient une (ex. "3*48+7"), ou null>,
       "confidence": <nombre entre 0 et 1>,
       "note": "<doute de lecture, ou chaîne vide>"
     }}
@@ -148,7 +150,8 @@ Renvoie ce JSON :
   "lines": [
     {{
       "item_number": "<référence exactement telle qu'écrite>",
-      "qty": <nombre ou null>,
+      "qty": <nombre, ou l'opération écrite entre guillemets si la case en \
+contient une (ex. "3*48+7"), ou null>,
       "section": "<BDL, WIP ou WIP_OK selon le tableau où figure la ligne>",
       "unit": "<unité lue, ou null>",
       "confidence": <nombre entre 0 et 1>,
@@ -296,6 +299,7 @@ class SheetExtractor:
         expected: Sequence[ExpectedLine],
         images: Sequence[bytes],
         image_mime: str = "image/png",
+        allow_formulas: bool = False,
         id_factory,
     ) -> ExtractionResult:
         """Read *images* against the *expected* article list.
@@ -404,7 +408,9 @@ class SheetExtractor:
             expected_line = expected_by_key[key]
             label = _line_label(number, section, ambiguous=len(sections) > 1)
 
-            qty = _clean_qty(raw.get("qty"))
+            qty, formula = _clean_qty(
+                raw.get("qty"), allow_formulas=allow_formulas
+            )
             confidence = _clean_confidence(raw.get("confidence"))
             if qty is not None:
                 confidences.append(confidence)
@@ -423,6 +429,7 @@ class SheetExtractor:
                     unit=expected_line.unit,
                     source=DataSource.SCAN_AI,
                     confidence=confidence,
+                    qty_formula=formula,
                     comment=str(raw.get("note") or "").strip(),
                     display_order=order,
                 )
@@ -481,6 +488,7 @@ class SheetExtractor:
         known_items: Mapping[str, Any],
         images: Sequence[bytes],
         image_mime: str = "image/png",
+        allow_formulas: bool = False,
         id_factory,
     ) -> ExtractionResult:
         """Read a sheet that was printed empty and filled in by hand.
@@ -548,7 +556,9 @@ class SheetExtractor:
                 continue
             seen.add((number, section))
 
-            qty = _clean_qty(raw.get("qty"))
+            qty, formula = _clean_qty(
+                raw.get("qty"), allow_formulas=allow_formulas
+            )
             confidence = _clean_confidence(raw.get("confidence"))
             if qty is not None:
                 confidences.append(confidence)
@@ -567,6 +577,7 @@ class SheetExtractor:
                     unit=str(raw.get("unit") or "") or getattr(item, "unit", "PCE"),
                     source=DataSource.SCAN_AI,
                     confidence=confidence,
+                    qty_formula=formula,
                     comment=str(raw.get("note") or "").strip(),
                     display_order=order,
                 )
@@ -949,16 +960,40 @@ def _resolve_page(
     )
 
 
-def _clean_qty(value: Any) -> Decimal | None:
-    """A blank stays blank. Only a real number becomes a quantity."""
+def _clean_qty(
+    value: Any, *, allow_formulas: bool = False
+) -> tuple[Decimal | None, str]:
+    """A blank stays blank. Only a real number becomes a quantity.
+
+    Rend aussi l'opération telle qu'elle était écrite, quand c'en était une :
+    « 3*48+7 » sur le papier, 151 dans la colonne, et les deux conservés. Sans
+    le texte, une case qui portait un calcul deviendrait indistinguable d'une
+    case où quelqu'un aurait tapé le résultat — et le comptage cesserait d'être
+    recomptable.
+
+    **Une lecture ne refuse jamais.** Le modèle rend ce qu'il a vu, et une case
+    illisible ou une opération alors que le réglage les interdit valent ici ce
+    que valait déjà un gribouillis : une case vide, que quelqu'un ira remplir à
+    l'écran. Lever ferait échouer la lecture des cent autres lignes de la
+    feuille — et c'est précisément la ligne douteuse qui ne doit pas décider du
+    sort des lignes sûres.
+    """
     if value is None:
-        return None
+        return None, ""
     if isinstance(value, str) and value.strip().lower() in ("", "null", "none", "-"):
-        return None
+        return None, ""
     try:
-        return to_decimal(value)
+        return to_decimal(value), ""
     except ValueError:
-        return None
+        pass
+
+    text = str(value).strip()
+    if not (allow_formulas and looks_like_formula(text)):
+        return None, ""
+    try:
+        return evaluate(text), text
+    except FormulaError:
+        return None, ""
 
 
 def _clean_confidence(value: Any) -> float:

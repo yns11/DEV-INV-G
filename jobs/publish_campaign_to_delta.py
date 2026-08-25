@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import inspect
 import logging
 import os
 import sys
@@ -67,7 +68,40 @@ logging.basicConfig(
 # Un `spark_python_task` matérialise le fichier sur le driver ; son voisin
 # `lakebase.py` est là, mais le répertoire n'est pas toujours sur le chemin
 # d'import selon la façon dont le job est lancé.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+#
+# `__file__` ne sert à rien pour le trouver : le calcul serverless exécute le
+# fichier par `exec(compile(source, chemin, "exec"))` dans un espace de noms
+# ipykernel, où ce global n'existe pas. Le job échouait sur un `NameError` avant
+# d'avoir lu sa première option. Le chemin passé à `compile`, lui, est toujours
+# renseigné — c'est celui qu'affiche la trace — et `co_filename` le porte.
+#
+# Le bloc est recopié dans `sync_erp_mirror.py` : c'est lui qui met le
+# répertoire sur le chemin d'import, il ne peut donc pas en venir.
+
+
+def _neighbourhood(neighbour: str) -> str | None:
+    """Le répertoire de ce fichier, s'il porte bien ``neighbour``.
+
+    Rien n'est ajouté au chemin d'import sur la foi d'un chemin seul : un
+    ``co_filename`` valant ``<string>`` désignerait le répertoire courant, et
+    l'ajouter en tête du chemin d'import est une surprise que personne n'a
+    demandée. La présence du voisin est la preuve qu'on cherche.
+    """
+    for candidate in (
+        globals().get("__file__"),
+        inspect.currentframe().f_code.co_filename,
+    ):
+        if not candidate:
+            continue
+        here = Path(candidate).resolve().parent
+        if (here / neighbour).exists():
+            return str(here)
+    return None
+
+
+_HERE = _neighbourhood("lakebase.py")
+if _HERE is not None and _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 log = logging.getLogger("publish")
 
@@ -139,15 +173,41 @@ QUERIES: dict[str, str] = {
 
 
 def fetch(cursor: Any, query: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Les lignes d'une requête, en dictionnaires.
+
+    La connexion est ouverte avec ``row_factory=dict_row`` : le curseur rend
+    **déjà** des dictionnaires. Les rezipper avec les noms de colonnes ne
+    lisait donc pas les valeurs — itérer un dictionnaire rend ses **clés** —
+    et chaque champ recevait le nom de sa propre colonne :
+
+        dict(zip(["code", "count_date"], {"code": "TRY1", "count_date": ...}))
+        → {"code": "code", "count_date": "count_date"}
+
+    Le `strict=True` ne voyait rien, les longueurs étant égales. La publication
+    s'arrêtait sur la première colonne non textuelle — « la valeur
+    'count_date' ne peut pas être convertie en DATE » — après avoir accepté
+    sans broncher toutes les colonnes de texte qui la précédaient. Sur un
+    schéma entièrement textuel, elle aurait publié une archive de noms de
+    colonnes en se déclarant réussie, sur une partition ``campaign_id =
+    'campaign_id'``.
+
+    Les lignes en tuple restent traitées, pour que la fonction ne dépende pas
+    d'un réglage posé ailleurs — c'est cette dépendance tacite qui a produit le
+    défaut.
+    """
     cursor.execute(query, params)
+    rows = cursor.fetchall()
+    if rows and isinstance(rows[0], dict):
+        return [dict(row) for row in rows]
     columns = [c.name for c in cursor.description]
-    return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+    return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--catalog", default=os.environ.get("INV_UC_CATALOG",
-                                                            "emotors_data_champions"))
+    parser.add_argument(
+        "--catalog", default=os.environ.get("INV_UC_CATALOG", "emotors_data_champions")
+    )
     parser.add_argument("--schema", default=os.environ.get("INV_UC_SCHEMA", "inventory"))
     parser.add_argument("--campaign-code", required=True)
     # Ce qu'un job doit recevoir pour joindre Lakebase : la branche, d'où tout
@@ -158,11 +218,15 @@ def main() -> int:
         default=os.environ.get("INV_LAKEBASE_BRANCH", ""),
         help="Branche Lakebase, ex. projects/<projet>/branches/<branche>",
     )
-    parser.add_argument("--lakebase-endpoint", default="",
-                        help="Endpoint en écriture, déduit de la branche sinon")
+    parser.add_argument(
+        "--lakebase-endpoint",
+        default="",
+        help="Endpoint en écriture, déduit de la branche sinon",
+    )
     parser.add_argument("--pg-host", default="", help="Court-circuite la découverte")
-    parser.add_argument("--pg-database", default=os.environ.get("PGDATABASE",
-                                                                "databricks_postgres"))
+    parser.add_argument(
+        "--pg-database", default=os.environ.get("PGDATABASE", "databricks_postgres")
+    )
     parser.add_argument("--pg-user", default="", help="Identité du job sinon")
     args = parser.parse_args()
 
@@ -177,6 +241,26 @@ def main() -> int:
 
     spark = SparkSession.builder.getOrCreate()
     published_at = dt.datetime.now(dt.UTC)
+
+    # Avant d'ouvrir quoi que ce soit : les tables cibles existent-elles ?
+    #
+    # `publication` est écrite en dernier. Une table manquante ne se découvrait
+    # donc qu'après avoir lu la campagne entière et écrit les neuf autres —
+    # l'échec le plus coûteux possible, puisqu'il arrive au bout du travail
+    # utile. Le job de synchronisation vérifie la forme du miroir avant de lire
+    # l'ERP, pour exactement cette raison ; celui-ci ne vérifiait rien.
+    missing = _missing_tables(spark, args, [*QUERIES, "publication"])
+    if missing:
+        log.error(
+            "Tables absentes de %s.%s : %s. Le schéma Unity Catalog n'est pas à "
+            "jour. Rejouez « make uc WAREHOUSE_ID=<id> PROFILE=<profil> » : "
+            "sql/00_unity_catalog.sql est en CREATE TABLE IF NOT EXISTS, les "
+            "tables déjà présentes ne sont pas touchées.",
+            args.catalog,
+            args.schema,
+            ", ".join(missing),
+        )
+        return 3
 
     conninfo = _lakebase_conninfo(args)
     log.info("Publishing campaign %s to %s.%s", code, args.catalog, args.schema)
@@ -216,8 +300,11 @@ def main() -> int:
                     **row,
                     "campaign_code": code,
                     "published_at": published_at,
-                    **({"count_date": count_date}
-                       if table in ("book_stock_snapshot", "count_result") else {}),
+                    **(
+                        {"count_date": count_date}
+                        if table in ("book_stock_snapshot", "count_result")
+                        else {}
+                    ),
                 }
                 for row in rows
             ]
@@ -324,13 +411,32 @@ def _write(
         )
         return
 
-    frame = spark.createDataFrame(rows)
+    # Une colonne vide partout n'a pas de type déductible, et Spark refuse la
+    # construction entière — `CANNOT_DETERMINE_TYPE` — plutôt que de deviner.
+    # Or c'est le cas ordinaire : une campagne en comptage n'a ni `closed_at`,
+    # ni `counting_frozen_at`. Ces colonnes sont donc retirées ici et remises
+    # plus bas par la branche « colonnes absentes », qui leur donne le type de
+    # la table. La valeur écrite est la même — NULL — mais elle est typée.
+    empty_columns = _always_null(rows)
+    if empty_columns:
+        rows = [
+            {name: value for name, value in row.items() if name not in empty_columns}
+            for row in rows
+        ]
+
+    if rows[0]:
+        frame = spark.createDataFrame(rows)
+    else:
+        # Tout est vide : plus rien à inférer, la table décide seule.
+        frame = spark.createDataFrame([{} for _ in rows], target_schema)
     # Align to the table's declared schema: column order and types come from the
     # DDL, not from whatever order the SELECT happened to produce.
     projected = frame.selectExpr(
-        *[f"CAST({field.name} AS {field.dataType.simpleString()}) AS {field.name}"
-          for field in target_schema.fields
-          if field.name in frame.columns]
+        *[
+            f"CAST({field.name} AS {field.dataType.simpleString()}) AS {field.name}"
+            for field in target_schema.fields
+            if field.name in frame.columns
+        ]
     )
     missing = [f.name for f in target_schema.fields if f.name not in frame.columns]
     if missing:
@@ -338,9 +444,7 @@ def _write(
 
         for name in missing:
             field = next(f for f in target_schema.fields if f.name == name)
-            projected = projected.withColumn(
-                name, F.lit(None).cast(field.dataType)
-            )
+            projected = projected.withColumn(name, F.lit(None).cast(field.dataType))
     projected = projected.select(*[f.name for f in target_schema.fields])
 
     (
@@ -349,6 +453,31 @@ def _write(
         .option("replaceWhere", replace_predicate)
         .saveAsTable(fqn)
     )
+
+
+def _missing_tables(spark: Any, args: Any, tables: list[str]) -> list[str]:
+    """Celles qui n'existent pas encore dans Unity Catalog, dans l'ordre.
+
+    Toutes sont interrogées, jamais seulement la première : un exploitant qui
+    doit rejouer le script veut savoir ce qui manque, pas le découvrir table
+    après table.
+    """
+    return [
+        table
+        for table in tables
+        if not spark.catalog.tableExists(f"{args.catalog}.{args.schema}.{table}")
+    ]
+
+
+def _always_null(rows: list[dict[str, Any]]) -> set[str]:
+    """Les colonnes qui ne portent aucune valeur, sur aucune ligne.
+
+    Ce sont celles dont Spark ne peut rien déduire. Une seule suffit à faire
+    refuser la construction du DataFrame entier, et elles sont ordinaires :
+    une campagne en cours de comptage n'a pas de date de clôture.
+    """
+    names = {name for row in rows for name in row}
+    return {name for name in names if all(row.get(name) is None for row in rows)}
 
 
 def _lakebase_conninfo(args: argparse.Namespace) -> str:
@@ -375,5 +504,25 @@ def _escape(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _exit(code: int) -> None:
+    """Sortir sans faire passer une réussite pour un échec.
+
+    Le calcul serverless exécute ce fichier dans un espace de noms ipykernel :
+    un ``SystemExit(0)`` n'y est pas une sortie de processus, c'est une
+    exception que le noyau remonte. La tâche était donc marquée FAILED après
+    une publication **complète** — manifeste écrit, ``published_at`` posé dans
+    Lakebase — avec pour seule trace « SystemExit: 0 ».
+
+    Un exploitant qui voit rouge republie. Rejouer est sans risque ici, mais
+    croire l'archive absente alors qu'elle est là ne l'est pas : c'est la
+    clôture qui la consulte.
+
+    Le bloc est recopié dans ``sync_erp_mirror.py``, pour la même raison que le
+    voisinage : chaque fichier est lancé seul.
+    """
+    if code:
+        raise SystemExit(code)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _exit(main())

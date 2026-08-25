@@ -203,6 +203,27 @@ class CampaignRepository(_Base):
             for r in rows
         ]
 
+    def update_config(
+        self,
+        campaign_id: str,
+        config: CampaignConfig,
+        *,
+        actor: str = "system",
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Réécrit la configuration d'une campagne.
+
+        Le bloc entier, jamais une clé : la colonne est un JSONB, et une
+        écriture partielle laisserait la moitié des réglages à la merci de
+        l'ordre des requêtes. L'appelant charge, modifie, renvoie.
+        """
+        self._execute(
+            "UPDATE campaign SET config = %s, updated_by = %s, updated_at = now(), "
+            "row_version = row_version + 1 WHERE id = %s AND deleted_at IS NULL",
+            (Jsonb(config.model_dump(mode="json")), actor, campaign_id),
+            conn=conn,
+        )
+
     def replace_thresholds(
         self,
         campaign_id: str,

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 from .bom import BomIndex
 from .enums import (
@@ -50,6 +51,7 @@ __all__ = [
     "check_items",
     "check_referentials",
     "check_book_stock",
+    "check_stock_import",
     "check_journals",
     "check_variances",
     "check_zones",
@@ -325,6 +327,112 @@ def check_book_stock(
                     context={"sample": orphans[:20]},
                 )
             )
+    return findings
+
+
+def check_stock_import(*, report: Mapping[str, Any] | None) -> list[ControlFinding]:
+    """Ce que le dernier chargement de stock ERP n'a **pas** chargé.
+
+    Un chargement de stock remplace l'ensemble existant : une seule ligne
+    refusée annulait donc toute l'écriture. Les deux motifs de refus les plus
+    fréquents ne venaient pourtant pas du fichier — une référence absente du
+    référentiel, un article exclu du périmètre — si bien que plus le dossier
+    était en retard, moins le stock était chargeable, et le seul geste proposé
+    (« corrigez le fichier ») portait sur le seul document qui n'avait rien de
+    faux.
+
+    Ces lignes sont désormais écartées, et le chargement aboutit. Écarter en
+    silence serait la même faute sous un autre nom : ce qui n'est pas entré doit
+    se lire quelque part, et ce quelque part doit survivre au rapport d'import,
+    qui disparaît dès qu'on quitte l'écran. C'est ici.
+
+    **Le rapport du lot est la source, et sa durée de vie est la bonne.** Il est
+    remplacé au chargement suivant : recharger après avoir complété le
+    référentiel fait disparaître le constat, ce qui est exactement le
+    comportement attendu d'un contrôle — il décrit l'état actuel, pas
+    l'historique des tentatives.
+
+    ``report`` est le rapport du **dernier** chargement de stock, ou ``None``
+    quand il n'y en a jamais eu. Un rapport antérieur au découpage de ce champ
+    ne porte aucune des clés lues ici : il ne produit alors aucun constat plutôt
+    que de faire échouer la lecture des contrôles.
+    """
+    if not report:
+        return []
+    return _left_out(
+        report,
+        prefix="unknown",
+        code="BOOK_STOCK_UNKNOWN_ITEM",
+        severity=ControlSeverity.WARNING,
+        why=(
+            "est absent du référentiel de la campagne : son stock ERP n'a pas "
+            "été chargé, et aucun écart ne sera calculé sur cette référence. "
+            "Complétez le référentiel articles puis rechargez le stock."
+        ),
+    ) + _left_out(
+        report,
+        prefix="outOfScope",
+        code="BOOK_STOCK_OUT_OF_SCOPE",
+        severity=ControlSeverity.INFO,
+        why=(
+            "est exclu du périmètre : son stock ERP n'a pas été chargé, ce qui "
+            "est le comportement voulu. Levez l'exclusion sur la grille Articles "
+            "puis rechargez le stock pour l'inventorier."
+        ),
+    )
+
+
+def _left_out(
+    report: Mapping[str, Any],
+    *,
+    prefix: str,
+    code: str,
+    severity: ControlSeverity,
+    why: str,
+) -> list[ControlFinding]:
+    """Un constat par référence écartée, plus le compte de ce qui n'est pas nommé.
+
+    Les deux motifs — référence inconnue, article exclu — se lisent dans le
+    rapport sous le même triplet de clés, à leur préfixe près. Les deux appelants
+    nomment leur code en toutes lettres : un code construit à l'exécution
+    n'apparaîtrait dans aucune relecture du fichier, et c'est par cette relecture
+    que la suite vérifie qu'aucun constat ne s'affiche sans titre français.
+    """
+    named = [str(ref) for ref in report.get(f"{prefix}ItemNumbers") or []]
+    total = int(report.get(f"{prefix}Items") or 0)
+    lines = int(report.get(f"{prefix}Lines") or 0)
+    if not total and not named:
+        return []
+
+    findings = [
+        ControlFinding(
+            code=code,
+            severity=severity,
+            message=f"{item_number} {why}",
+            entity_type="book_stock",
+            item_number=item_number,
+        )
+        for item_number in named
+    ]
+
+    # Le rapport ne nomme qu'un échantillon : un fichier ERP chargé contre un
+    # référentiel vide en produirait des dizaines de milliers, et le rapport
+    # deviendrait une copie du fichier. Le total, lui, n'est pas tronqué — et
+    # sans cette ligne, une liste tronquée se lirait comme complète.
+    if total > len(named):
+        findings.append(
+            ControlFinding(
+                code=code,
+                severity=severity,
+                message=(
+                    f"{total} références au total dans ce cas, sur {lines} "
+                    f"ligne(s) de stock ; les {len(named)} premières sont "
+                    "détaillées ci-dessus."
+                ),
+                entity_type="book_stock",
+                context={"total": total, "named": len(named), "lines": lines},
+            )
+        )
     return findings
 
 
@@ -711,6 +819,7 @@ CONTROL_LABELS: dict[str, str] = {
     "BOOK_STOCK_EMPTY": "Stock ERP absent",
     "BOOK_STOCK_NEGATIVE": "Quantités négatives dans le stock ERP",
     "BOOK_STOCK_NOT_COUNTED": "Stock ERP jamais compté",
+    "BOOK_STOCK_OUT_OF_SCOPE": "Stock ERP écarté : articles hors périmètre",
     "BOOK_STOCK_UNKNOWN_ITEM": "Stock ERP sur des articles hors référentiel",
     "BOOK_STOCK_UNKNOWN_LOCATION": "Stock ERP sur des emplacements inconnus",
     "COUNTED_WITHOUT_BOOK_STOCK": "Comptages sans stock ERP en face",

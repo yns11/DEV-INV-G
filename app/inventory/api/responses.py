@@ -103,11 +103,28 @@ class HealthResponse(Payload):
     lakebase_configured: bool = Field(alias="lakebaseConfigured")
     warehouse_configured: bool = Field(alias="warehouseConfigured")
     evidence_configured: bool = Field(alias="evidenceConfigured")
+    #: « volume » ou « lakebase » — laquelle des deux archives reçoit les
+    #: pièces. Les deux pannes possibles n'ont rien en commun, et
+    #: ``evidenceConfigured`` seul ne dit pas laquelle chercher.
+    evidence_store: str = Field(alias="evidenceStore")
     frontend_built: bool = Field(alias="frontendBuilt")
     frontend: FrontendBuild
     llm_endpoint: str = Field(alias="llmEndpoint")
     startup_error: str | None = Field(default=None, alias="startupError")
     migrations: MigrationState
+
+
+class EvidenceProbeResponse(Payload):
+    """Ce que l'archive répond quand on essaie vraiment d'y écrire.
+
+    ``configured`` distingue les deux pannes, qui n'appellent pas le même
+    geste : aucune archive déclarée, ou une archive déclarée mais fermée.
+    """
+
+    ok: bool
+    configured: bool
+    path: str | None = None
+    detail: str | None = None
 
 
 class MeResponse(Payload):
@@ -212,6 +229,10 @@ class Permissions(Payload):
     analysis: bool
     backflush: bool
     stock_flow: bool = Field(alias="stockFlow")
+    #: Les paramètres de campagne autres que les seuils — aujourd'hui le seul
+    #: réglage « Accepter des formules dans les comptages ». Ouvert plus
+    #: longtemps que ``thresholds``, et délibérément : voir ``Editable``.
+    settings: bool
 
 
 class Access(Payload):

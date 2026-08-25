@@ -28,11 +28,18 @@ def forget_ambient_postgres(monkeypatch) -> None:
     À appeler depuis une fixture ``autouse`` du module concerné, jamais
     globalement : les contrôles marqués ``postgres`` ont précisément besoin de
     ces variables.
+
+    Le fichier ``.env`` du dépôt est un environnement comme un autre, et il
+    porte exactement les mêmes noms : le démarrage rapide demande de le créer.
+    Vider les variables sans le neutraliser laissait ces contrôles décrire le
+    poste de celui qui n'a pas suivi le README — quatre d'entre eux échouaient
+    dès que le fichier existait.
     """
     for name in POSTGRES_ENV:
         monkeypatch.delenv(name, raising=False)
-    from inventory.config import get_settings
+    from inventory.config import Settings, get_settings
 
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
     get_settings.cache_clear()
 
 

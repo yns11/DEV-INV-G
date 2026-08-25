@@ -261,6 +261,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ thresholds }),
     }),
+  // Rend la campagne entière : le réglage vit dans sa configuration, et un
+  // écran qui recollerait un fragment à ce qu'il avait déjà finirait par
+  // afficher l'un pendant que la base porte l'autre.
+  saveSettings: (id: string, settings: { allowFormulas: boolean }) =>
+    request<Campaign>(`/campaigns/${id}/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    }),
   audit: (id: string, params: { entityType?: string; limit?: number } = {}) =>
     request<AuditEvent[]>(`/campaigns/${id}/audit${qs(params)}`),
   importHistory: (id: string) =>

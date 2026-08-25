@@ -8,12 +8,13 @@ On Databricks Apps the platform injects the resource-backed variables
 ``value_from`` in the latter).
 
 Local development uses the same names, loaded from a ``.env`` file — see
-``.env.example`` and ``docs/03-deployment-guide.md``.
+``.env.example`` et ``docs/03-guide-deploiement.md``.
 """
 
 from __future__ import annotations
 
 import functools
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, computed_field
@@ -21,12 +22,30 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 __all__ = ["Settings", "get_settings"]
 
+#: La racine du dépôt, déduite du module et non du répertoire courant.
+#: ``app/inventory/config.py`` → ``app/inventory`` → ``app`` → la racine.
+_ROOT = Path(__file__).resolve().parents[2]
+
+#: Les fichiers ``.env`` lus, du moins prioritaire au plus prioritaire.
+#:
+#: ``env_file=".env"`` seul se résout contre le répertoire courant du
+#: processus. Or l'application démarre depuis ``app/`` — ``make run`` fait
+#: ``cd app && python main.py``, et ``app.yaml`` lance ``python main.py``
+#: depuis la charge utile — tandis que le démarrage rapide documenté place le
+#: fichier à la racine du dépôt. Le fichier était donc écrit là où personne ne
+#: le lisait : l'application démarrait en mode dégradé, sans Lakebase, sans
+#: rien dire de plus qu'un ``lakebaseConfigured: false`` dans ``/api/health``.
+#:
+#: Les deux emplacements sont lus, le répertoire courant l'emportant, pour que
+#: le fichier trouvé jusqu'ici continue de l'être.
+ENV_FILES = (_ROOT / ".env", Path(".env"))
+
 
 class Settings(BaseSettings):
     """Typed, validated view of the process environment."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -146,6 +165,31 @@ class Settings(BaseSettings):
     uc_schema: str = Field(default="inventory", alias="INV_UC_SCHEMA")
     uc_volume: str = Field(default="inventory_evidence", alias="INV_UC_VOLUME")
 
+    # -------------------------------------------------------------- evidence
+    #: Where scans and imported files are archived. ``volume`` writes them to
+    #: the Unity Catalog volume, which is where they belong: a volume is
+    #: browsable from the workspace, so the sheet behind a forty-thousand-euro
+    #: variance can be found six months later without this application.
+    #:
+    #: That path needs three privileges on the app's own service principal —
+    #: ``USE CATALOG``, ``USE SCHEMA``, ``WRITE VOLUME`` — and the first one is
+    #: granted only by a principal holding ``MANAGE`` on the catalog, i.e. its
+    #: owner. On a shared catalog that owner may be out of reach, and an
+    #: inventory keeps its date. ``lakebase`` then archives into the
+    #: application's own schema, which it owns and already writes to: **no
+    #: administrator is involved at all**.
+    #:
+    #: Same guarantee either way — a scan is archived before its quantities are
+    #: written, or the operation is refused. What changes is who had to grant
+    #: something, and whether the file is browsable outside the application.
+    #:
+    #: The same reversal as :attr:`erp_source`, applied to evidence rather than
+    #: to rows. Switching is safe in both directions: a path records which
+    #: store holds it, so pieces archived before the switch stay readable.
+    evidence_store: Literal["volume", "lakebase"] = Field(
+        default="volume", alias="INV_EVIDENCE_STORE"
+    )
+
     # ----------------------------------------------------------------- lakebase
     # Injected by the platform when a Lakebase database resource is attached.
     pg_host: str | None = Field(default=None, alias="PGHOST")
@@ -194,13 +238,19 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def evidence_configured(self) -> bool:
-        """Les trois noms qui composent le chemin du volume sont renseignés.
+        """De quoi tenter un archivage : le volume, ou la base.
 
         Vide, l'archivage se tait au lieu d'échouer : une pièce justificative
         n'est pas une condition du chargement, et refuser un import de deux
         cent mille lignes parce que le volume n'est pas configuré coûterait
         infiniment plus que de ne pas archiver le fichier.
+
+        En mode ``lakebase``, la question posée n'est plus « le volume est-il
+        nommé » mais « la base est-elle joignable » : c'est elle qui garde les
+        pièces, et les trois variables du volume n'ont plus de rôle.
         """
+        if self.evidence_store == "lakebase":
+            return self.lakebase_configured
         return bool(self.uc_catalog and self.uc_schema and self.uc_volume)
 
     @computed_field  # type: ignore[prop-decorator]

@@ -1981,6 +1981,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Paramètres de la campagne
+         * @description Les réglages autres que les seuils.
+         *
+         *     Rend la campagne entière : le réglage vit dans sa configuration, et un écran
+         *     qui devrait recoller un fragment à ce qu'il avait déjà finirait par afficher
+         *     l'un pendant que la base porte l'autre.
+         */
+        put: operations["update_settings_api_campaigns__campaign_id__settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/sheets/{sheet_id}/evidence": {
         parameters: {
             query?: never;
@@ -2430,6 +2454,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/health/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * L'archivage des pièces marche-t-il ?
+         * @description Dépose un octet là où les pièces vont, et le retire.
+         *
+         *     ``evidenceConfigured`` du diagnostic complet ne lit que la
+         *     configuration. Elle répondait donc « oui » à un conteneur dont le
+         *     service principal n'a aucun droit sur le catalogue, et la panne
+         *     n'apparaissait qu'au premier scan — le jour de l'inventaire, sur une
+         *     feuille manuscrite déjà repartie à l'atelier.
+         *
+         *     La traversée du catalogue, le droit sur le schéma et le droit
+         *     d'écriture sur le volume sont trois refus distincts ; aucun ne se
+         *     déduit d'une variable d'environnement. Écrire est la seule question qui
+         *     les pose tous les trois.
+         *
+         *     En ``INV_EVIDENCE_STORE=lakebase`` la question change — il n'y a plus
+         *     de privilège à traverser, seulement une table à avoir créée — mais la
+         *     réponse se prend de la même façon : en écrivant.
+         *
+         *     À part, et jamais dans les sondes que la plateforme interroge : un
+         *     aller-retour vers le volume serait payé à chaque seconde, pour une
+         *     réponse qui ne change qu'au jour d'un GRANT.
+         */
+        get: operations["health_evidence_api_health_evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health/live": {
         parameters: {
             query?: never;
@@ -2822,6 +2885,11 @@ export interface components {
          */
         CampaignConfig: {
             /**
+             * Allow Formulas
+             * @default false
+             */
+            allow_formulas: boolean;
+            /**
              * Arbitration Tolerance
              * @default 0
              */
@@ -2910,6 +2978,20 @@ export interface components {
             total: number;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * CampaignSettingsRequest
+         * @description Les réglages de campagne autres que les seuils.
+         *
+         *     Un seul aujourd'hui. Une requête dédiée plutôt qu'un champ ajouté à la
+         *     configuration complète : celle-ci porte l'emplacement générique, le nombre
+         *     de comptages et la devise, qui sont gelés bien plus tôt, et les faire
+         *     voyager ensemble obligerait l'écran à renvoyer des valeurs qu'il n'a pas le
+         *     droit de changer.
+         */
+        CampaignSettingsRequest: {
+            /** Allowformulas */
+            allowFormulas: boolean;
         };
         /**
          * CampaignStatus
@@ -3029,6 +3111,25 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * EvidenceProbeResponse
+         * @description Ce que l'archive répond quand on essaie vraiment d'y écrire.
+         *
+         *     ``configured`` distingue les deux pannes, qui n'appellent pas le même
+         *     geste : aucune archive déclarée, ou une archive déclarée mais fermée.
+         */
+        EvidenceProbeResponse: {
+            /** Configured */
+            configured: boolean;
+            /** Detail */
+            detail: string | null;
+            /** Ok */
+            ok: boolean;
+            /** Path */
+            path: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * ExclusionScope
          * @description Three-level exclusion required by the specification.
          *
@@ -3132,6 +3233,8 @@ export interface components {
             env: string;
             /** Evidenceconfigured */
             evidenceConfigured: boolean;
+            /** Evidencestore */
+            evidenceStore: string;
             frontend: components["schemas"]["FrontendBuild"];
             /** Frontendbuilt */
             frontendBuilt: boolean;
@@ -3482,6 +3585,8 @@ export interface components {
             items: boolean;
             /** Locations */
             locations: boolean;
+            /** Settings */
+            settings: boolean;
             /** Stockflow */
             stockFlow: boolean;
             /** Thresholds */
@@ -7568,6 +7673,45 @@ export interface operations {
             };
         };
     };
+    update_settings_api_campaigns__campaign_id__settings_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CampaignSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Campaign"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     sheet_evidence_api_campaigns__campaign_id__sheets__sheet_id__evidence_get: {
         parameters: {
             query?: never;
@@ -8510,6 +8654,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    health_evidence_api_health_evidence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidenceProbeResponse"];
                 };
             };
         };

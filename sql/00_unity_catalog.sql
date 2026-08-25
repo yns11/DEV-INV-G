@@ -4,8 +4,15 @@
 -- Run once per environment, on a SQL warehouse, as a user with CREATE SCHEMA on
 -- the target catalog.
 --
---   databricks sql query --warehouse-id <ID> --file sql/00_unity_catalog.sql
+--   make uc WAREHOUSE_ID=<ID> PROFILE=<profil>
 --   (or paste into the SQL editor)
+--
+-- `databricks sql query --file` n'existe pas : la CLI répond « unknown command
+-- "sql" ». `make uc` passe par scripts/apply_unity_catalog.py, qui découpe ce
+-- fichier et l'exécute instruction par instruction sur le warehouse.
+--
+-- Rejouable sans risque : tout est en CREATE ... IF NOT EXISTS ou CREATE OR
+-- REPLACE VIEW. Les tables déjà présentes et leurs données ne sont pas touchées.
 --
 -- The catalog itself is NOT created here: this project only has rights to add
 -- schemas, tables and volumes inside the existing `emotors_data_champions`.

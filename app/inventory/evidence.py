@@ -1,4 +1,4 @@
-"""Archivage des pièces justificatives dans un volume Unity Catalog.
+"""Archivage des pièces justificatives : volume Unity Catalog, ou base.
 
 Ce que l'inventaire produit de plus fragile, ce ne sont pas les chiffres : c'est
 ce qui les justifie. Un écart de quarante mille euros signé par un contrôleur se
@@ -37,6 +37,37 @@ sans requête SQL :
 L'horodatage précède le nom pour que l'ordre alphabétique du dossier soit
 l'ordre chronologique — c'est celui dans lequel on cherche.
 
+**Deux archives, pas une.** Écrire dans un volume exige trois privilèges Unity
+Catalog sur le service principal de l'application, et le premier — ``USE
+CATALOG`` — ne s'accorde que par un détenteur de ``MANAGE`` sur le catalogue,
+c'est-à-dire son propriétaire. Sur un catalogue partagé, ce propriétaire peut
+être injoignable ; l'inventaire, lui, garde sa date. ``INV_EVIDENCE_STORE``
+tranche :
+
+===================  =====================================  ===================
+Valeur               Où la pièce est écrite                  Ce qu'il faut
+===================  =====================================  ===================
+``volume`` (défaut)  le volume Unity Catalog                 trois GRANT, dont
+                                                             un du propriétaire
+                                                             du catalogue
+``lakebase``         ``evidence_blob``, dans le schéma de    rien : l'application
+                     l'application (migration 022)           possède ce schéma
+===================  =====================================  ===================
+
+La garantie ne change pas : un scan est archivé avant que ses quantités soient
+écrites, ou l'opération est refusée. Ce qui change est qui devait accorder
+quelque chose — et le fait qu'une pièce en base ne se parcourt plus depuis
+l'espace de travail. C'est un vrai renoncement, et c'est celui qu'on accepte
+quand l'autre voie est fermée. Le même renversement que ``INV_ERP_SOURCE``,
+appliqué aux pièces plutôt qu'aux lignes.
+
+**Le chemin dit lui-même où la pièce est.** ``/Volumes/…`` désigne le volume,
+``lakebase:/…`` la base. La relecture s'aiguille donc sur le chemin enregistré
+et non sur la configuration du jour : basculer d'une archive à l'autre laisse
+lisible tout ce qui a été déposé avant, dans les deux sens. La forme du chemin
+est la même de part et d'autre, ce qui garde un ``SELECT path`` lisible et rend
+possible de ressortir les pièces vers le volume le jour où le grant arrive.
+
 **Le fragment hexadécimal n'est pas décoratif.** Le chemin ne portait que
 l'horodatage à la seconde et le nom du fichier, et le dépôt était fait en
 ``overwrite=True``. Deux scans nommés ``scan.pdf`` déposés dans la même seconde
@@ -52,6 +83,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import io
 import logging
 import mimetypes
 import re
@@ -64,7 +96,16 @@ from .errors import NotFoundError, UpstreamError
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ArchivedFile", "EvidenceStore", "safe_name"]
+__all__ = [
+    "LAKEBASE_ROOT", "ArchivedFile", "EvidenceStore", "archive_advice",
+    "safe_name", "volume_of",
+]
+
+#: Racine des chemins des pièces gardées dans la base. Un préfixe et non un
+#: chemin absolu, pour qu'aucun chemin de pièce ne puisse être confondu avec un
+#: chemin de volume — c'est lui qui aiguille la relecture, et il doit rester
+#: décidable sans consulter la configuration.
+LAKEBASE_ROOT = "lakebase:"
 
 #: Longueur maximale du nom de fichier conservé dans le chemin. Un scanner
 #: produit volontiers des noms de cent cinquante caractères ; au-delà de
@@ -135,27 +176,136 @@ def _looks_like_already_there(exc: Exception) -> bool:
     return "already exists" in text or "existe déjà" in text
 
 
+def _mime_of(filename: str) -> str:
+    """Le type déduit du nom, ou le type générique. Jamais vide.
+
+    Ce qui est rendu au navigateur quand on redemande la pièce : un type vide
+    ferait proposer un téléchargement anonyme là où un PDF s'ouvre.
+    """
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "application/octet-stream"
+
+
 def _described(path: str, payload: bytes, digest: str, filename: str) -> ArchivedFile:
     """Ce qui sera écrit à côté de ce que la pièce a produit."""
-    guessed, _ = mimetypes.guess_type(filename)
     return ArchivedFile(
-        path=path,
-        sha256=digest,
-        size=len(payload),
-        mime=guessed or "application/octet-stream",
+        path=path, sha256=digest, size=len(payload), mime=_mime_of(filename)
     )
+
+
+def volume_of(path: str) -> tuple[str, str, str] | None:
+    """Le catalogue, le schéma et le volume que ce chemin désigne.
+
+    ``/Volumes/<cat>/<schéma>/<vol>/…`` — trois segments après ``/Volumes``.
+    Les extraire permet d'écrire des GRANT copiables tels quels : « accordez
+    WRITE VOLUME sur le volume » oblige encore à retrouver lequel.
+    """
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 4 or parts[0] != "Volumes":
+        return None
+    return parts[1], parts[2], parts[3]
+
+
+def archive_advice(exc: Exception, *, path: str, principal: str | None = None) -> str:
+    """Pourquoi le dépôt a échoué, et le geste qui le débloque.
+
+    « La pièce n'a pas pu être archivée » décrit l'effet et tait la cause. Or
+    les causes possibles appellent des gestes qui n'ont rien à voir : accorder
+    un droit, créer le volume, corriger une variable. Sans elle, la panne se
+    diagnostique par aller-retour — et l'erreur remonte d'un scan lancé en
+    arrière-plan, dont seul le message est conservé : ce que ce texte ne dit
+    pas est perdu.
+
+    Le service principal est nommé quand il est connu. Un administrateur qui
+    lit « accordez WRITE VOLUME » sans savoir *à qui* doit encore le chercher,
+    et l'application est la seule à connaître l'identité sous laquelle elle
+    s'exécute — ce n'est pas celle de la personne connectée.
+
+    Les **trois** privilèges sont donnés, jamais le dernier seul. Unity Catalog
+    traverse la hiérarchie : ``WRITE VOLUME`` sans ``USE CATALOG`` ni
+    ``USE SCHEMA`` ne donne rien, et le refus qui suit nomme le maillon
+    manquant, pas celui qu'on vient d'accorder. Ce message a fait exactement
+    cette erreur une fois : il conseillait le troisième, l'exploitant l'a posé,
+    et le refus suivant réclamait le premier.
+    """
+    text = str(exc).lower()
+    who = principal or "<le service principal de l'application>"
+
+    if path.startswith(LAKEBASE_ROOT):
+        # Aucun conseil de GRANT n'a de sens ici : la pièce partait dans la
+        # base de l'application, qui n'a demandé de privilège à personne. Ce
+        # qui a échoué est la base elle-même.
+        return (
+            "L'écriture de la pièce dans la base a échoué. L'archivage est "
+            "réglé sur INV_EVIDENCE_STORE=lakebase : vérifiez que la base "
+            "répond — « /api/health » le dit — et que la migration 022, qui "
+            "crée la table « evidence_blob », s'est bien appliquée au "
+            "démarrage ; le même diagnostic en donne la liste."
+        )
+
+    if any(k in text for k in ("permission", "denied", "forbidden", "403")):
+        parts = volume_of(path)
+        if parts:
+            catalog, schema, volume = parts
+            grants = (
+                f"GRANT USE CATALOG ON CATALOG {catalog} TO `{who}` ; "
+                f"GRANT USE SCHEMA ON SCHEMA {catalog}.{schema} TO `{who}` ; "
+                f"GRANT READ VOLUME, WRITE VOLUME ON VOLUME "
+                f"{catalog}.{schema}.{volume} TO `{who}`"
+            )
+        else:
+            grants = (
+                "GRANT USE CATALOG sur le catalogue, USE SCHEMA sur le schéma, "
+                f"puis READ VOLUME, WRITE VOLUME sur le volume, à `{who}`"
+            )
+        return (
+            f"Le dépôt est refusé sur « {path} ». Unity Catalog exige les "
+            f"**trois** privilèges, et le dernier seul ne donne rien : {grants}. "
+            "Le catalogue a beau être celui des tables, l'identité n'est pas la "
+            "même — les tables sont écrites par le job sous l'identité qui le "
+            "lance, le volume par l'application sous la sienne. Si le premier "
+            "GRANT est lui-même refusé faute de MANAGE sur le catalogue, c'est "
+            "son propriétaire qui doit le poser : « DESCRIBE CATALOG EXTENDED "
+            f"{parts[0] if parts else '<catalogue>'} » le nomme. Ce "
+            "propriétaire est-il hors d'atteinte ? Posez "
+            "INV_EVIDENCE_STORE=lakebase : les pièces sont alors archivées dans "
+            "la base de l'application, qui n'exige de privilège de personne. Ce "
+            "qui est déjà déposé dans le volume reste lisible."
+        )
+    if any(k in text for k in ("not found", "does not exist", "404", "no such")):
+        return (
+            f"Le chemin « {path} » est introuvable. Le volume n'existe pas "
+            "encore — rejouez « make uc » — ou INV_UC_CATALOG / INV_UC_SCHEMA / "
+            "INV_UC_VOLUME ne désignent pas celui qui a été créé."
+        )
+    if any(k in text for k in ("unauthenticated", "401", "invalid token")):
+        return (
+            "L'application n'a pas pu s'authentifier auprès de l'espace de "
+            "travail. Vérifiez que l'app est bien déployée avec son service "
+            "principal ; un jeton expiré se règle en la redémarrant."
+        )
+    return f"Échec du dépôt sur « {path} »."
+
 
 
 class EvidenceStore:
     """Dépose et relit les pièces justificatives d'une campagne.
 
-    Le client est injectable pour que la suite de tests n'ait besoin ni d'un
-    espace de travail ni du SDK — la même règle que la lecture ERP.
+    Le client et le dépôt sont injectables pour que la suite de tests n'ait
+    besoin ni d'un espace de travail, ni du SDK, ni d'une base — la même règle
+    que la lecture ERP.
     """
 
-    def __init__(self, settings: Settings, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        client: Any | None = None,
+        *,
+        blobs: Any | None = None,
+    ) -> None:
         self._settings = settings
         self._client = client
+        self._blob_repository = blobs
 
     # ------------------------------------------------------------------ état
 
@@ -170,8 +320,17 @@ class EvidenceStore:
         return self._settings.evidence_configured
 
     @property
+    def in_database(self) -> bool:
+        """Si les **nouvelles** pièces partent dans la base plutôt qu'au volume.
+
+        Ne dit rien de celles déjà déposées : leur chemin, lui, le dit.
+        """
+        return self._settings.evidence_store == "lakebase"
+
+    @property
     def root(self) -> str:
-        return self._settings.uc_volume_path
+        """La racine des chemins déposés **aujourd'hui**."""
+        return LAKEBASE_ROOT if self.in_database else self._settings.uc_volume_path
 
     # ----------------------------------------------------------------- écrit
 
@@ -205,11 +364,15 @@ class EvidenceStore:
             return None
         if not self.available:
             if required:
+                where = (
+                    "la base de l'application est joignable"
+                    if self.in_database
+                    else "le volume Unity Catalog est déclaré"
+                )
                 raise UpstreamError(
                     "L'archivage des pièces justificatives n'est pas configuré. "
                     "Cette opération produit des quantités qui doivent rester "
-                    "vérifiables : déclarez le volume Unity Catalog avant de la "
-                    "relancer."
+                    f"vérifiables : vérifiez que {where} avant de la relancer."
                 )
             return None
 
@@ -219,11 +382,28 @@ class EvidenceStore:
             at=at, digest=digest,
         )
         try:
-            # Jamais `overwrite=True` : le chemin porte désormais l'empreinte du
-            # contenu, donc un chemin déjà pris ne peut l'être que par un
-            # fichier **identique**. Écraser n'apporterait rien et masquerait le
-            # jour où cette propriété cesserait d'être vraie.
-            self._files().upload(path, payload, overwrite=False)
+            if self.in_database:
+                self._blobs().put(
+                    path=path, campaign_code=campaign_code, kind=kind,
+                    filename=filename, mime=_mime_of(filename),
+                    sha256=digest, content=payload,
+                )
+            else:
+                # Jamais `overwrite=True` : le chemin porte désormais
+                # l'empreinte du contenu, donc un chemin déjà pris ne peut
+                # l'être que par un fichier **identique**. Écraser n'apporterait
+                # rien et masquerait le jour où cette propriété cesserait d'être
+                # vraie. (Côté base, c'est le `ON CONFLICT DO NOTHING` de la
+                # migration 022 qui énonce la même chose.)
+                #
+                # Un flux, pas des octets. `files.upload` déclare `contents:
+                # BinaryIO` et certaines versions du SDK appellent `seekable()`
+                # dessus pour savoir si elles peuvent rejouer la requête : des
+                # octets nus y échouent sur un `AttributeError`, et l'archivage
+                # n'aboutissait donc **jamais**. En silence pour un import — le
+                # régime non bloquant journalise et rend `None` — et par un
+                # refus pour un scan.
+                self._files().upload(path, io.BytesIO(payload), overwrite=False)
         except Exception as exc:
             if _looks_like_already_there(exc):
                 # Le même fichier, déposé deux fois. C'est le cas nominal d'un
@@ -236,11 +416,17 @@ class EvidenceStore:
                     "Pièce justificative obligatoire non archivée (%s) : %s — %s",
                     path, type(exc).__name__, exc,
                 )
+                advice = archive_advice(
+                    exc, path=path,
+                    principal=self._settings.service_principal_id,
+                )
                 raise UpstreamError(
                     "La pièce justificative n'a pas pu être archivée. "
                     "L'opération est interrompue : elle produirait des "
-                    "quantités que rien ne rattacherait au document lu.",
+                    f"quantités que rien ne rattacherait au document lu. "
+                    f"{advice} Détail : {type(exc).__name__} : {exc}",
                     cause=str(exc),
+                    path=path,
                 ) from exc
             # Journalisé en avertissement, pas en erreur : ce qui comptait —
             # les lignes chargées — a abouti. L'appelant ne le voit pas passer.
@@ -251,6 +437,70 @@ class EvidenceStore:
             return None
         log.info("Pièce archivée : %s (%d octets)", path, len(payload))
         return _described(path, payload, digest, filename)
+
+    def probe(self) -> dict[str, Any]:
+        """L'archivage marchera-t-il ? Vérifié en déposant, pas en supposant.
+
+        ``evidence_configured`` ne lit que la configuration. Elle disait donc
+        « oui » à un conteneur dont le service principal n'a aucun droit sur le
+        catalogue — et la panne n'apparaissait qu'au premier scan, c'est-à-dire
+        le jour de l'inventaire, sur une feuille manuscrite déjà repartie à
+        l'atelier.
+
+        Cette sonde écrit un octet dans le volume et le retire. C'est le seul
+        moyen de répondre : la traversée du catalogue, le droit sur le schéma
+        et le droit d'écriture sur le volume sont trois refus distincts, et
+        aucun ne se déduit de la configuration.
+
+        Rendue par ``/api/health/evidence``, jamais par ``/api/health`` : un
+        aller-retour par sonde de disponibilité serait payé toutes les
+        secondes, pour une réponse qui ne change qu'au jour d'un GRANT.
+        """
+        if not self.available:
+            return {
+                "ok": False,
+                "configured": False,
+                "detail": (
+                    "L'archivage est réglé sur la base (INV_EVIDENCE_STORE="
+                    "lakebase) mais celle-ci n'est pas configurée : sans "
+                    "PGHOST, PGDATABASE et PGUSER, rien n'est archivé."
+                    if self.in_database else
+                    "Aucun volume déclaré : INV_UC_CATALOG, INV_UC_SCHEMA et "
+                    "INV_UC_VOLUME doivent l'être pour que les pièces soient "
+                    "archivées."
+                ),
+            }
+        path = f"{self.root.rstrip('/')}/_diagnostic/ecriture.probe"
+        try:
+            if self.in_database:
+                self._blobs().put(
+                    path=path, campaign_code="_diagnostic", kind="_diagnostic",
+                    filename="ecriture.probe", mime="application/octet-stream",
+                    sha256=hashlib.sha256(b".").hexdigest(), content=b".",
+                )
+            else:
+                self._files().upload(path, io.BytesIO(b"."), overwrite=True)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "configured": True,
+                "path": path,
+                "detail": (
+                    f"{archive_advice(exc, path=path, principal=self._settings.service_principal_id)} "
+                    f"Détail : {type(exc).__name__} : {exc}"
+                ),
+            }
+        # Le retrait n'est pas la question posée : une sonde qui laisserait son
+        # fichier serait pénible, une sonde qui échouerait *sur le retrait*
+        # dirait « l'archivage ne marche pas » alors qu'il vient de marcher.
+        try:
+            if self.in_database:
+                self._blobs().delete(path)
+            else:
+                self._files().delete(path)
+        except Exception as exc:  # pragma: no cover - dépend du droit DELETE
+            log.info("Fichier de diagnostic laissé en place (%s) : %s", path, exc)
+        return {"ok": True, "configured": True, "path": path}
 
     def path_for(
         self,
@@ -285,19 +535,46 @@ class EvidenceStore:
         quelqu'un qui a cliqué sur « pièce jointe » et attend un fichier. Une
         réponse vide le laisserait croire que la pièce n'existe pas, alors
         qu'elle peut n'être qu'inaccessible.
+
+        **Aiguillée sur le chemin, jamais sur la configuration.** Une base
+        d'inventaire porte les pièces des campagnes passées, déposées sous le
+        réglage d'alors. Router sur ``INV_EVIDENCE_STORE`` rendrait
+        introuvables, du jour d'une bascule, toutes celles de l'autre archive —
+        et une pièce justificative qu'on ne retrouve plus n'en est plus une.
         """
         self._assert_inside(path)
         try:
-            response = self._files().download(path)
+            data = (
+                self._from_database(path)
+                if path.startswith(LAKEBASE_ROOT)
+                else self._from_volume(path)
+            )
+        except NotFoundError:
+            raise
         except Exception as exc:
             log.error("Pièce illisible (%s) : %s", path, exc)
             raise NotFoundError(
                 "Cette pièce justificative est introuvable dans l'archive. "
-                "Elle a pu être déplacée ou supprimée du volume."
+                "Elle a pu être déplacée ou supprimée."
             ) from exc
+        return data
+
+    def _from_volume(self, path: str) -> bytes:
+        response = self._files().download(path)
         contents = getattr(response, "contents", response)
         data = contents.read() if hasattr(contents, "read") else contents
         return bytes(data)
+
+    def _from_database(self, path: str) -> bytes:
+        content = self._blobs().get(path)
+        if content is None:
+            # Une ligne absente n'est pas une panne, et le message générique
+            # d'`get` — « déplacée ou supprimée » — la décrit exactement.
+            raise NotFoundError(
+                "Cette pièce justificative est introuvable dans l'archive. "
+                "Elle a pu être déplacée ou supprimée."
+            )
+        return content
 
     # --------------------------------------------------------------- interne
 
@@ -308,9 +585,17 @@ class EvidenceStore:
         elle-même déposé — mais il transite par une URL, et une colonne texte
         n'est pas une garantie. Le seul endroit où cette vérification a un coût
         nul est ici, juste avant la lecture.
+
+        **Les deux racines sont acceptées, pas seulement celle du jour.** Ce
+        qui est refusé est un chemin qui ne désigne ni le volume de cette
+        application ni sa table de pièces ; une bascule d'archive ne rend
+        illisible rien de ce qui a été déposé avant elle.
         """
-        root = self.root.rstrip("/") + "/"
-        if not path.startswith(root) or ".." in path:
+        roots = (
+            self._settings.uc_volume_path.rstrip("/") + "/",
+            LAKEBASE_ROOT + "/",
+        )
+        if ".." in path or not any(path.startswith(root) for root in roots):
             raise NotFoundError("Chemin de pièce justificative invalide.")
 
     def _files(self) -> Any:
@@ -320,3 +605,17 @@ class EvidenceStore:
 
         self._client = WorkspaceClient()
         return self._client.files
+
+    def _blobs(self) -> Any:
+        """Le dépôt des pièces gardées en base.
+
+        Construit à la demande pour que la sonde de diagnostic, qui n'a pas de
+        contexte de service sous la main, n'ait pas à en fabriquer un. Les
+        appels métier, eux, passent le dépôt du contexte : il porte la
+        connexion de la transaction en cours.
+        """
+        if self._blob_repository is None:
+            from .db import EvidenceBlobRepository, get_database
+
+            self._blob_repository = EvidenceBlobRepository(get_database())
+        return self._blob_repository

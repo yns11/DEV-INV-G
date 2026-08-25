@@ -64,8 +64,8 @@ run: build ## Serve the built SPA and the API from one process, like production
 # --- Databricks ---------------------------------------------------------------
 .PHONY: uc
 uc: ## Create the Unity Catalog schema, volume, tables and views
-	databricks sql query --warehouse-id $(WAREHOUSE_ID) \
-		--file sql/00_unity_catalog.sql --profile $(PROFILE)
+	$(PYTHON) scripts/apply_unity_catalog.py \
+		--warehouse-id $(WAREHOUSE_ID) --profile $(PROFILE)
 
 .PHONY: validate
 validate: build ## Validate the asset bundle

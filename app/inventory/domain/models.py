@@ -241,6 +241,20 @@ class CampaignConfig(DomainModel):
     max_bom_depth: int = Field(default=10, ge=1, le=25)
     #: Currency of every monetary amount in the campaign.
     currency: str = "EUR"
+    #: Les quantités peuvent-elles s'écrire comme des opérations ?
+    #:
+    #: Devant trois palettes de quarante-huit et un fond de bac de sept, un
+    #: compteur écrit « 3*48+7 » — et c'est la bonne façon de compter : le
+    #: calcul reste devant les yeux de qui relira, ce qu'un « 151 » nu ne permet
+    #: plus. Activé, ces expressions sont évaluées à la saisie comme à la
+    #: lecture d'un scan, et le texte d'origine est conservé à côté du résultat
+    #: (:mod:`inventory.domain.formula`).
+    #:
+    #: Éteint par défaut, et le rester est un choix défendable : une usine qui
+    #: veut que ses feuilles portent un nombre et un seul a raison de l'exiger.
+    #: Ce qui ne l'était pas, c'est que le refus parlait d'une quantité
+    #: illisible sans jamais dire qu'un réglage existait.
+    allow_formulas: bool = False
 
     @field_validator("generic_warehouse", "generic_location", mode="before")
     @classmethod
@@ -741,6 +755,15 @@ class CountSheetLine(DomainModel):
     source: DataSource = DataSource.MANUAL
     #: Per-line confidence when the value came from ``SCAN_AI``.
     confidence: float | None = None
+    #: L'opération écrite sur la feuille, quand la quantité en était une.
+    #:
+    #: « 3*48+7 » plutôt que « 151 » : c'est ce que le compteur a réellement
+    #: noté, et c'est ce qui permet de recompter six mois plus tard. Vide dès
+    #: que la saisie était déjà un nombre — garder « 151 » comme sa propre
+    #: formule remplirait une colonne de doublons. Le résultat, lui, est dans
+    #: `qty_manual` ou `qty_imported` comme n'importe quelle autre quantité :
+    #: rien en aval n'a à connaître cette colonne pour calculer juste.
+    qty_formula: str = ""
     comment: str = ""
     display_order: int = 0
 

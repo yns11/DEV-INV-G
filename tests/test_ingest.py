@@ -194,7 +194,7 @@ class TestItemMapping:
 
 class TestBookStockMapping:
     def test_duplicate_triples_are_summed_not_overwritten(self):
-        lines, _ = map_book_stock(
+        lines, *_ = map_book_stock(
             "c",
             [
                 {"item_number": "P-1", "warehouse_id": "B", "location_id": "L",
@@ -211,7 +211,7 @@ class TestBookStockMapping:
         from inventory.domain.models import Item
 
         items = {"P-1": Item(campaign_id="c", item_number="P-1", std_price="42")}
-        lines, _ = map_book_stock(
+        lines, *_ = map_book_stock(
             "c",
             [{"item_number": "P-1", "warehouse_id": "B", "location_id": "L",
               "qty": "2"}],
@@ -220,40 +220,51 @@ class TestBookStockMapping:
         assert lines[0].unit_cost == Decimal("42.00")
         assert lines[0].value == Decimal("84.00")
 
-    def test_an_unknown_reference_is_a_row_error(self):
-        """Sans article, la ligne n'a ni désignation, ni prix, ni matérialité."""
-        lines, errors = map_book_stock(
+    def test_an_unknown_reference_is_set_aside_not_refused(self):
+        """Sa ligne n'entre pas — sans article, ni désignation, ni prix, ni
+        matérialité — mais elle n'annule plus le chargement des autres.
+
+        Le stock ERP remplace l'ensemble : une ligne refusée annulait tout, si
+        bien qu'un référentiel en retard rendait le stock inchargeable.
+        """
+        lines, errors, _, unknown = map_book_stock(
             "c",
             [{"item_number": "INCONNU", "warehouse_id": "B", "location_id": "L",
               "qty": "3"}],
             items=_referential("P-1"),
         )
         assert lines == []
-        assert len(errors) == 1
-        assert errors[0].column == "item_number"
-        assert "absent du référentiel" in errors[0].message
+        assert errors == []
+        assert len(unknown) == 1
+        assert unknown[0].column == "item_number"
+        assert "absent du référentiel" in unknown[0].message
 
-    def test_an_excluded_article_is_a_row_error(self):
-        """Charger son stock reprendrait par la fenêtre la décision d'exclusion."""
-        lines, errors = map_book_stock(
+    def test_an_excluded_article_is_skipped_not_refused(self):
+        """Une décision de campagne n'est pas une erreur de fichier.
+
+        En faire un refus annulait toute l'écriture, le stock ERP remplaçant
+        l'ensemble : un périmètre restreint rendait le chargement impossible.
+        """
+        lines, errors, out_of_scope, _ = map_book_stock(
             "c",
             [{"item_number": "P-2", "warehouse_id": "B", "location_id": "L",
               "qty": "3"}],
             items=_referential("P-1", "P-2", excluded=("P-2",)),
         )
         assert lines == []
-        assert len(errors) == 1
-        assert "exclu du périmètre" in errors[0].message
+        assert errors == []
+        assert len(out_of_scope) == 1
+        assert "hors du périmètre" in out_of_scope[0].message
 
-    def test_the_refusal_says_where_to_go(self):
+    def test_the_message_says_where_to_go(self):
         """Deux causes, deux gestes : compléter le référentiel, ou lever
         l'exclusion."""
-        _, absent = map_book_stock(
+        *_, absent = map_book_stock(
             "c",
             [{"item_number": "X", "warehouse_id": "B", "qty": "1"}],
             items=_referential("P-1"),
         )
-        _, excluded = map_book_stock(
+        _, _, excluded, _ = map_book_stock(
             "c",
             [{"item_number": "P-2", "warehouse_id": "B", "qty": "1"}],
             items=_referential("P-2", excluded=("P-2",)),
@@ -261,8 +272,8 @@ class TestBookStockMapping:
         assert "référentiel articles" in absent[0].message
         assert "grille Articles" in excluded[0].message
 
-    def test_a_refused_row_does_not_drag_the_others_down(self):
-        lines, errors = map_book_stock(
+    def test_a_set_aside_row_does_not_drag_the_others_down(self):
+        lines, errors, _, unknown = map_book_stock(
             "c",
             [
                 {"item_number": "P-1", "warehouse_id": "B", "qty": "4"},
@@ -272,7 +283,8 @@ class TestBookStockMapping:
             items=_referential("P-1", "P-2"),
         )
         assert sorted(line.item_number for line in lines) == ["P-1", "P-2"]
-        assert len(errors) == 1
+        assert errors == []
+        assert len(unknown) == 1
 
     def test_the_rule_holds_whatever_the_input_looked_like(self):
         """Le mappeur est le point de passage des trois modes : fichier,
@@ -280,8 +292,10 @@ class TestBookStockMapping:
         peut pas ne valoir que pour l'un d'eux."""
         rows = [{"item_number": "INCONNU", "warehouse_id": "B", "qty": "1"}]
         for _ in range(2):
-            lines, errors = map_book_stock("c", rows, items=_referential("P-1"))
-            assert lines == [] and len(errors) == 1
+            lines, errors, _, unknown = map_book_stock(
+                "c", rows, items=_referential("P-1")
+            )
+            assert lines == [] and errors == [] and len(unknown) == 1
 
 
 class TestJournalMapping:

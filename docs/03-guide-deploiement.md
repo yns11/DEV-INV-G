@@ -107,9 +107,15 @@ export WAREHOUSE_ID=4b9b953939869799
 Le fichier `sql/00_unity_catalog.sql` est idempotent (`CREATE ... IF NOT EXISTS`).
 
 ```bash
-databricks sql query --warehouse-id "$WAREHOUSE_ID" \
-    --file sql/00_unity_catalog.sql --profile PROD
+make uc WAREHOUSE_ID="$WAREHOUSE_ID" PROFILE=PROD
 ```
+
+`databricks sql query --file` **n'existe pas** — la CLI répond « unknown
+command "sql" » et propose « psql ». `make uc` passe par
+`scripts/apply_unity_catalog.py`, qui découpe le fichier et l'exécute
+instruction par instruction sur le warehouse, en portant le catalogue et le
+schéma courants (une session par instruction : un `USE CATALOG` n'y survivrait
+pas).
 
 **Sans CLI** : ouvrez **SQL Editor** dans le workspace, collez le contenu du
 fichier, sélectionnez le warehouse, exécutez.
@@ -117,11 +123,17 @@ fichier, sélectionnez le warehouse, exécutez.
 Vérification :
 
 ```bash
-databricks sql query --warehouse-id "$WAREHOUSE_ID" --profile PROD \
-    --query "SHOW TABLES IN emotors_data_champions.inventory"
+databricks api post /api/2.0/sql/statements --profile PROD --json '{
+  "warehouse_id": "'"$WAREHOUSE_ID"'",
+  "statement": "SHOW TABLES IN emotors_data_champions.inventory",
+  "wait_timeout": "30s"
+}'
 ```
 
-Vous devez voir 9 tables et 4 vues (`v_variance`, `v_campaign_kpi`,
+Ou, sans CLI : `SHOW TABLES IN emotors_data_champions.inventory` dans le SQL
+Editor.
+
+Vous devez voir 10 tables et 4 vues (`v_variance`, `v_campaign_kpi`,
 `v_variance_recurrence`, `v_wip_contribution`).
 
 > Si votre catalogue ne s'appelle pas `emotors_data_champions`, remplacez-le en
@@ -278,6 +290,10 @@ PGPASSWORD=inventaire
 PGSSLMODE=disable
 ```
 
+Le fichier se pose à la racine du dépôt, et c'est là qu'il est lu quel que soit
+le répertoire d'où l'application démarre — `make run` fait `cd app`. Un `.env`
+placé dans `app/` reste lu et l'emporte, pour ceux qui en ont déjà un.
+
 Laissez `DATABRICKS_WAREHOUSE_ID` et `INV_LLM_ENDPOINT` vides : l'application
 démarre en mode dégradé pour ces deux fonctions (l'extraction IA et les lectures
 Delta) et signale clairement lesquelles sont indisponibles.
@@ -326,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 1308 tests, ~17 s ; 8 ignorés sans PostgreSQL
+make test      # 2225 contrôles, ~45 s ; 63 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -859,9 +875,8 @@ databricks postgres list-projects --profile PROD
 databricks postgres list-endpoints projects/inventaire/branches/production --profile PROD
 ```
 
-- Elle répond → l'identité a bien l'accès ; c'est le SDK de l'environnement du
-  job qui ne connaît pas l'API. Voir juste en dessous : il ne peut pas être
-  relevé, passez `--pg-host`.
+- Elle répond → l'identité a bien l'accès ; c'est un refus côté job, et la cause
+  exacte figure dans son journal.
 - Elle échoue → c'est l'accès au projet Lakebase, ou le chemin de branche.
   Corrigez `lakebase_project` / `lakebase_branch`, ou contournez avec
   `--pg-host`, lu dans la console Lakebase.
@@ -871,16 +886,25 @@ n'existe qu'à partir de `databricks-sdk` 0.81, mais `databricks-sdk` figure dan
 `immutable-package-constraints.txt` du runtime serverless : en déclarer une autre
 version fait échouer l'installation de **tout** l'environnement, et le job ne
 démarre pas — l'environnement n'accepte d'ailleurs que des versions exactes,
-jamais de bornes. Le job s'accommode donc de ce qui est présent :
+jamais de bornes. Le runtime de ce workspace apporte la 0.49, et la publication
+s'est arrêtée là au premier lancement.
+
+Ce que la 0.81 apporte n'est pourtant pas un accès privilégié : ce sont deux
+appels HTTP, `GET /api/2.0/postgres/{branche}/endpoints` et
+`POST /api/2.0/postgres/credentials`. Le client HTTP du SDK les émet depuis
+n'importe quelle version, avec la même authentification — c'est ce que le job
+fait quand la façade typée manque. La découverte ne dépend donc plus de la
+version :
 
 | Ce que le SDK offre | Hôte | Mot de passe |
 |---|---|---|
 | `w.postgres` (≥ 0.81) | déduit de `--branch` | credential dédié à l'endpoint |
-| version plus ancienne | **`--pg-host` requis** | jeton OAuth de l'identité du job |
-| — | `--pg-host` | `PGPASSWORD` d'un secret scope |
+| version plus ancienne | déduit de `--branch`, en appelant l'API en direct | credential dédié à l'endpoint |
+| ni l'un ni l'autre | **`--pg-host` requis** | jeton OAuth, ou `PGPASSWORD` d'un secret scope |
 
-L'hôte se relève une fois dans la console Lakebase (le projet → l'endpoint en
-écriture) ; il ne change pas. C'est la même valeur que le `PGHOST` de l'App.
+L'hôte reste relevable à la main dans la console Lakebase (le projet →
+l'endpoint en écriture) en dernier recours ; il ne change pas, et c'est la même
+valeur que le `PGHOST` de l'App.
 
 Le job journalise la version du SDK qu'il utilise et reporte la cause exacte de
 chaque refus : ces trois pannes se ressemblaient à l'écran.
@@ -1063,7 +1087,8 @@ ment.
 2. **Référentiels & seuils → Articles** : charger l'export articles.
 3. **Nomenclatures** : charger la BOM effective, vérifier l'onglet *Santé des
    nomenclatures* (cycles, assemblages sans structure).
-4. **Seuils** : ajuster les seuils de matérialité par type d'article.
+4. **Paramètres** : accepter ou non les formules dans les comptages, puis
+   ajuster les seuils de matérialité par type d'article.
 5. **GENERIQUE → Créer une zone** pour chaque aire physique, puis saisir la
    liste d'articles pré-imprimée de chaque zone.
 6. **Imprimer toutes les feuilles n°1** la veille de l'inventaire.
@@ -1081,12 +1106,60 @@ signé — le conteneur de l'application étant éphémère, le fichier n'y surv
 
 Le volume se crée une fois, dans le schéma de l'application :
 
+`make uc` crée le volume, mais **pas le droit** : un volume créé depuis un
+poste appartient à l'identité qui l'a créé, jamais à l'application. Le grant se
+pose une fois, avec l'identifiant du service principal de l'app :
+
+```bash
+# L'identifiant à mettre dans le GRANT
+databricks apps get campagnes-inventaire --profile PROD  # → service_principal_client_id
+```
+
 ```sql
 CREATE VOLUME IF NOT EXISTS emotors_data_champions.inventory.inventory_evidence;
+
+-- Les trois, et dans cet ordre. Unity Catalog traverse la hiérarchie :
+-- accorder le dernier seul ne donne rien, et le refus qui suit nomme le
+-- maillon manquant, pas celui qu'on vient d'accorder.
+GRANT USE CATALOG ON CATALOG emotors_data_champions
+  TO `<service_principal_client_id>`;
+GRANT USE SCHEMA ON SCHEMA emotors_data_champions.inventory
+  TO `<service_principal_client_id>`;
 GRANT READ VOLUME, WRITE VOLUME
   ON VOLUME emotors_data_champions.inventory.inventory_evidence
-  TO `<sp-de-l-app>`;
+  TO `<service_principal_client_id>`;
 ```
+
+> **« C'est pourtant le même catalogue que les tables. »** Oui — mais pas la
+> même identité. Les tables sont créées par `make uc` et écrites par le job de
+> publication, tous deux sous l'identité qui lance la commande. Le volume est
+> écrit par l'**application**, sous son service principal. Un droit sur l'un ne
+> dit rien de l'autre.
+
+> **Si le premier GRANT est refusé** — `PERMISSION_DENIED: User does not have
+> MANAGE on Catalog` — c'est que vous n'êtes pas propriétaire du catalogue.
+> Seuls `USE SCHEMA` et les droits sur le volume sont alors à votre portée : le
+> `USE CATALOG` doit être posé par le propriétaire du catalogue, que
+> `DESCRIBE CATALOG EXTENDED emotors_data_champions` nomme. C'est le cas
+> ordinaire d'un catalogue partagé, où le projet n'a le droit que d'ajouter des
+> schémas. **Quand ce propriétaire est hors d'atteinte, voir §7.4 bis.**
+
+**Vérifier sans attendre le jour de l'inventaire :**
+
+```bash
+curl -s https://<app>/api/health/evidence | jq
+# {"ok": true, "configured": true, "path": "/Volumes/.../_diagnostic/ecriture.probe"}
+```
+
+La sonde dépose un octet dans le volume et le retire. `evidenceConfigured` du
+diagnostic complet ne lit que la configuration : elle répond « oui » à un
+conteneur dont le service principal n'a aucun droit, et la panne n'apparaît
+alors qu'au premier scan — sur une feuille manuscrite déjà repartie à l'atelier.
+
+Sans lui, le scan d'une feuille échoue — et il **doit** échouer : le papier
+repart dans l'atelier, et écrire des quantités dont l'image n'a pas été
+archivée fabriquerait un comptage invérifiable. Le refus nomme désormais le
+droit, le principal et le chemin visé.
 
 Il s'organise par campagne, puis par nature de pièce :
 
@@ -1137,12 +1210,61 @@ jamais vérifier. Si le volume n'est pas configuré, la lecture de scans est don
 indisponible et le dit, au lieu de produire des chiffres sans pièce.
 
 `<url-de-lapp>/api/health` répond `"evidenceConfigured": true` quand les trois
-noms qui composent le chemin sont renseignés. Les droits, eux, ne se vérifient
-qu'au premier dépôt.
+noms qui composent le chemin sont renseignés — ou, en mode `lakebase`, quand la
+base est configurée — et `"evidenceStore"` dit laquelle des deux archives reçoit
+les pièces. Les droits, eux, ne se vérifient qu'au premier dépôt : c'est ce que
+`/api/health/evidence` fait à la demande.
 
 Ni les collages ni les lectures ERP ne produisent de pièce : le texte collé est
 déjà dans les lignes chargées, et une lecture ERP se rejoue par sa requête, que
 l'historique des imports nomme.
+
+### 7.4 bis — Quand le `USE CATALOG` du volume ne peut pas être obtenu
+
+`GRANT USE CATALOG` exige `MANAGE` sur le catalogue, c'est-à-dire d'en être
+propriétaire. Sur un catalogue partagé, ce propriétaire peut être injoignable —
+et l'inventaire garde sa date. `INV_EVIDENCE_STORE=lakebase` renverse alors la
+contrainte : les pièces sont archivées dans la base de l'application, qu'elle
+possède et où elle écrit déjà tout le reste. **Aucun administrateur n'est
+impliqué.** C'est le même renversement que `INV_ERP_SOURCE=mirror` (§8.3 bis),
+appliqué aux pièces plutôt qu'aux lignes.
+
+| `INV_EVIDENCE_STORE` | Où la pièce est écrite | Ce qu'il faut |
+|---|---|---|
+| `volume` (défaut) | le volume Unity Catalog | les trois GRANT du §7.4, dont un du propriétaire du catalogue |
+| `lakebase` | `evidence_blob`, dans le schéma de l'application (migration 022) | rien : l'application possède ce schéma |
+
+```bash
+databricks apps deploy -t prod --profile PROD --var=evidence_store=lakebase
+curl -s https://<app>/api/health/evidence | jq
+# {"ok": true, "configured": true, "path": "lakebase:/_diagnostic/ecriture.probe"}
+```
+
+La migration 022 s'applique au démarrage de l'app ; `/api/health` en donne la
+liste sous `migrations.applied`.
+
+**La garantie ne change pas.** Un scan est archivé avant que ses quantités
+soient écrites, ou l'opération est refusée — c'est le point, et une archive de
+secours qui le perdrait ne serait pas une solution mais un renoncement. Ce qui
+change tient en deux lignes :
+
+- **Ce qu'on y perd.** Un volume se parcourt depuis l'espace de travail ; la
+  table ne se lit qu'à travers l'application ou en SQL. Qui peut obtenir les
+  trois GRANT a intérêt à les obtenir.
+- **Ce qu'on n'y perd pas.** Le chemin garde la même forme —
+  `lakebase:/<campagne>/<nature>/<horodatage>-<empreinte>-<nom>` — donc un
+  `SELECT path FROM inventory.evidence_blob` reste lisible, et les pièces
+  pourront être ressorties vers le volume le jour où le grant arrive.
+
+**Basculer est sûr dans les deux sens.** La relecture s'aiguille sur le chemin
+enregistré, jamais sur le réglage du jour : ce qui est déjà dans le volume y
+reste lisible après la bascule, et ce qui est en base le reste après le retour.
+Rien n'est déplacé, rien n'est perdu.
+
+Une pièce archivée en base compte dans la taille de la base Lakebase, à hauteur
+de ce qu'elle pèse — quelques centaines de kilo-octets par feuille scannée, la
+taille du fichier pour un export ERP, plafonnée par `INV_MAX_UPLOAD_BYTES`
+(64 Mo par défaut).
 
 ---
 
@@ -1171,10 +1293,24 @@ l'historique des imports nomme.
 | **404 sur toutes les pages sauf `/api/...`** | SPA non construite | `make build-frontend` puis redéployez ; `app/static/index.html` doit exister |
 | **504 après 2 minutes, rien dans les journaux** | Requête dépassant les 120 s du proxy | Réduisez le volume importé par lot, ou augmentez la taille de compute |
 | `Client de modèle indisponible` | Endpoint LLM non attaché ou sans `CAN_QUERY` | Attachez la ressource `serving-endpoint` |
+| `La pièce justificative n'a pas pu être archivée` au scan d'une feuille | Le dépôt dans le volume a été refusé. Le plus souvent : le service principal de l'app n'a pas `WRITE VOLUME` — `make uc` crée le volume, pas le droit | Le message nomme la cause, le principal et le chemin. Pour un droit manquant, voir §7.4 ; pour un volume absent, rejouez `make uc`. L'échec est volontairement bloquant : sans l'image, la quantité lue n'a plus rien derrière elle |
+| `PERMISSION_DENIED … USE CATALOG` au dépôt, « pourtant c'est le même catalogue que les tables » | Même catalogue, autre identité : les tables sont écrites par le job sous l'identité qui le lance, le volume par l'application sous son service principal. Et `WRITE VOLUME` seul ne suffit jamais — Unity Catalog traverse `USE CATALOG` → `USE SCHEMA` → `WRITE VOLUME` | Posez les **trois** grants (§7.4). Le message d'erreur les écrit désormais copiables tels quels, catalogue, schéma et volume tirés du chemin visé |
+| `PERMISSION_DENIED: User does not have MANAGE on Catalog` en posant le GRANT | Vous n'êtes pas propriétaire du catalogue — cas ordinaire d'un catalogue partagé | `USE SCHEMA` et les droits du volume restent à votre portée ; le `USE CATALOG` doit être posé par le propriétaire, que `DESCRIBE CATALOG EXTENDED <catalogue>` nomme. **Propriétaire injoignable : `INV_EVIDENCE_STORE=lakebase` (§7.4 bis) archive dans la base de l'application, sans aucun grant** |
+| `AttributeError : 'ImportService' object has no attribute 'check_duplicate'` sur **tout** chargement de fichier | Le découpage des services a déplacé la méthode vers `ImportBatches` ; le routeur, lui, appelait toujours le service. Les six grilles échouaient en 500, la détection de doublon étant faite avant l'import | Corrigé : une façade d'une ligne, comme `parse` et `preview`. Deux mille contrôles passaient malgré tout, parce qu'ils appellent les importeurs directement — `tests/test_router_service_seam.py` vérifie désormais que ce qu'un routeur appelle sur un service existe bel et bien |
+| `AttributeError : 'bytes' object has no attribute 'seekable'` au dépôt | `files.upload` déclare `contents: BinaryIO` ; le SDK appelle `seekable()` dessus pour savoir s'il peut rejouer la requête | Corrigé : la charge utile part en flux. **Aucune pièce n'avait jamais été archivée** — en silence pour les imports, `storage_path` restant nul. Les pièces des campagnes antérieures sont définitivement perdues, le conteneur étant éphémère |
 | `relation "campaign" does not exist` | Migrations non appliquées | Consultez les journaux de démarrage ; le rôle doit avoir `CREATE` sur le schéma |
 | `La migration 001 a été modifiée après application` | Un fichier de migration déjà appliqué a été édité | Restaurez le fichier ; créez une **nouvelle** migration |
 | L'app démarre puis s'arrête | Dépassement des 10 min de démarrage | Épinglez les versions, réduisez les dépendances |
 | **Pas d'espace disque** pendant le build | Quota du conteneur atteint | Supprimez `frontend/node_modules` et les caches, relancez |
+| `NameError: name '__file__' is not defined` au lancement d'un job | Le calcul serverless n'*importe* pas le fichier : il l'exécute par `exec(compile(source, chemin, "exec"))`, dans un espace de noms où ce global n'existe pas | Corrigé : les deux jobs déduisent leur répertoire du chemin de compilation (`co_filename`), et ne l'ajoutent au chemin d'import qu'après avoir vérifié que `lakebase.py` s'y trouve |
+| `Hôte Lakebase inconnu, et le SDK … ne connaît pas l'API Lakebase Autoscaling` | Le runtime serverless fige `databricks-sdk` (0.49 ici) ; `w.postgres` n'apparaît qu'en 0.81 et la version ne peut pas être relevée | Corrigé : le job appelle l'API Lakebase en direct (`GET /api/2.0/postgres/{branche}/endpoints`) quand la façade typée manque. La découverte ne dépend plus de la version du SDK ; `--pg-host` reste le dernier recours |
+| `[CAST_INVALID_INPUT] The value 'count_date' … cannot be cast to "DATE"` — la valeur est le **nom** de la colonne | La connexion est ouverte en `row_factory=dict_row` ; `fetch` rezippait ces dictionnaires avec les noms de colonnes, et itérer un dictionnaire rend ses clés | Corrigé : `fetch` rend les lignes telles quelles quand elles sont déjà des dictionnaires. Sur un schéma entièrement textuel, le défaut aurait publié une archive de noms de colonnes en se déclarant réussie |
+| `CANNOT_DETERMINE_TYPE` à la publication d'une table | Une colonne vide sur **toutes** les lignes n'a pas de type déductible, et Spark refuse le DataFrame entier — cas ordinaire : une campagne en comptage n'a pas de date de clôture | Corrigé : ces colonnes sont retirées avant la construction et remises avec le type de la table. La valeur écrite reste NULL, mais typée |
+| `TABLE_OR_VIEW_NOT_FOUND … inventory.publication` à la publication | Le schéma Unity Catalog du workspace est antérieur à la table demandée : `make uc` a été joué avant qu'elle n'entre dans `sql/00_unity_catalog.sql` | Rejouez `make uc WAREHOUSE_ID=<id> PROFILE=<profil>`. Le script est en `CREATE TABLE IF NOT EXISTS` : seules les tables manquantes sont créées. Le job vérifie désormais les dix tables **avant** d'écrire quoi que ce soit, et les nomme toutes d'un coup |
+| `unknown command "sql" for "databricks"` — « Did you mean this? psql » | `databricks sql query` n'existe pas ; c'est pourtant ce que donnaient le README, le Makefile et l'en-tête du fichier SQL | Corrigé : `make uc` passe par `scripts/apply_unity_catalog.py`, qui découpe le fichier et l'exécute instruction par instruction avec le catalogue et le schéma courants |
+| `SystemExit: 0` et la tâche marquée FAILED | Le calcul serverless exécute le fichier dans un espace de noms ipykernel : un `SystemExit(0)` n'y est pas une sortie de processus mais une exception que le noyau remonte | Corrigé : les jobs ne lèvent que sur un code non nul. **Le travail avait réussi** — vérifiez `inventory.publication` avant de republier (rejouer reste sans risque) |
+| La synchronisation du miroir « réussit » sans rien copier | `sync_erp_mirror.py` n'avait aucun `if __name__ == "__main__"` : lancé comme tâche, il définissait `main` et s'arrêtait là | Corrigé : le point d'entrée manquant est en place. Un contrôle l'exige désormais sur les deux jobs |
+| `ModuleNotFoundError: No module named 'databricks'` sur `make uc` | Le SDK n'est pas dans l'interpréteur qui lance le script | `python -m pip install databricks-sdk`, ou `make install` pour toutes les dépendances du projet. Le script le dit maintenant au lieu de laisser passer la trace |
 
 ### 8.1 Commandes de diagnostic
 
@@ -1289,9 +1425,11 @@ qu'aucune colonne n'a été supprimée.
 
 ```bash
 # Publier toutes les campagnes ouvertes vers Delta (archive)
-for code in $(databricks sql query --warehouse-id "$WAREHOUSE_ID" --profile PROD \
-    --query "SELECT code FROM emotors_data_champions.inventory.campaign" -o json \
-    | jq -r '.[].code'); do
+for code in $(databricks api post /api/2.0/sql/statements --profile PROD --json '{
+    "warehouse_id": "'"$WAREHOUSE_ID"'",
+    "statement": "SELECT code FROM emotors_data_champions.inventory.campaign",
+    "wait_timeout": "30s"
+  }' | jq -r '.result.data_array[][0]'); do
   databricks bundle run inventory_publish_campaign -t prod --params campaign_code=$code
 done
 ```

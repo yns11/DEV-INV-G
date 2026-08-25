@@ -22,7 +22,12 @@ export function Analysis({ view }: { view: AnalysisView }) {
   const campaignId = overview.campaign.id
   const [causesTab, setCausesTab] = useSubSection<CausesTab>('causes', CAUSES_TABS)
 
-  if (!overview.campaign.book_stock_frozen_at) {
+  // Les contrôles passent cette porte : ils ne calculent aucun écart. Ils
+  // relisent le dossier tel qu'il est, et la plupart d'entre eux portent sur ce
+  // qui se prépare avant le gel — référentiel, nomenclatures, zones, et les
+  // références que le stock ERP n'a pas pu charger. Les retenir jusqu'au gel
+  // cachait ces défauts pendant toute la phase où ils se corrigent encore.
+  if (view !== 'controls' && !overview.campaign.book_stock_frozen_at) {
     return (
       <Card>
         <EmptyState title="Analyse indisponible" icon={<Icons.lock size={20} />}>

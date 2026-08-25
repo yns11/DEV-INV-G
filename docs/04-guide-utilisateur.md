@@ -209,9 +209,37 @@ L'onglet **Santé des nomenclatures** signale immédiatement :
 > Traiter ces alertes en préparation coûte dix minutes. Les découvrir le jour J
 > coûte un après-midi.
 
-### 1.5 Régler les seuils
+### 1.5 Régler les paramètres
 
-**Référentiels & seuils → Seuils.**
+**Gestion → Paramètres.**
+
+#### Accepter des formules dans les comptages
+
+Devant trois palettes de quarante-huit et un fond de bac de sept, un compteur
+écrit `3*48+7` — et c'est la bonne façon de compter : le calcul reste devant
+les yeux de qui relira, ce qu'un « 151 » nu ne permet plus.
+
+Activé, ces opérations sont évaluées comme dans un tableur, à la saisie
+**comme à la lecture d'un scan**, et le texte d'origine est conservé à côté du
+résultat : la feuille affiche `151` avec `3*48+7` en dessous. C'est ce qui
+permet de recompter six mois plus tard, et de s'apercevoir qu'une palette n'en
+contenait que quarante-six.
+
+| Accepté | Refusé |
+|---|---|
+| `3*48+7`, `=(10+2)/4`, `2,5*4`, `1 200 + 30`, `-4` | tout le reste : noms, appels, puissances |
+
+Désactivé — c'est le réglage par défaut — seuls des nombres sont acceptés, et
+une opération est refusée en le disant. Une usine qui veut que ses feuilles
+portent un nombre et un seul a raison de l'exiger ; ce qui ne se défendait pas,
+c'est que le refus parlait d'une quantité illisible sans jamais dire qu'un
+réglage existait.
+
+Ce réglage reste modifiable **pendant le comptage**, contrairement aux seuils :
+le besoin apparaît le jour de l'inventaire, devant la première feuille qui
+porte un calcul.
+
+#### Les seuils de matérialité
 
 Un écart est *matériel* — c'est-à-dire digne d'attention — lorsqu'il franchit
 **toutes** les barrières configurées de son type d'article :
@@ -503,6 +531,12 @@ finir — quatre clics par feuille, huit par zone à double comptage. Aucune
 écriture n'en dépendait : le papier partait au comptage que le bouton ait été
 cliqué ou non, et les quantités s'enregistraient dans tous les cas.
 
+**Une quantité peut s'écrire comme une opération**, si le réglage
+*Gestion → Paramètres → Accepter des formules dans les comptages* est activé.
+Tapez `3*48+7` dans la case : elle enregistre `151` et affiche `3*48+7` en
+dessous. Le calcul reste lisible, ce qui est tout l'intérêt — un « 151 » nu ne
+se recompte pas. La même règle s'applique aux feuilles scannées.
+
 **Une zone a trois états**, et c'est le seul suivi qui reste :
 
 | État | Ce qu'il veut dire |
@@ -542,7 +576,11 @@ Le modèle lit la feuille **en s'appuyant sur la liste d'articles pré-imprimée
   signalée comme suspecte, jamais acceptée ;
 - une case vide reste vide — elle ne devient jamais 0 ;
 - chaque valeur porte une **confiance** ; celles sous 75 % sont mises en avant ;
-- les articles attendus mais non lus apparaissent en ligne vide, à saisir.
+- les articles attendus mais non lus apparaissent en ligne vide, à saisir ;
+- une case qui porte une **opération** — `3*48+7` — est calculée, si le réglage
+  *Gestion → Paramètres* l'autorise ; sinon elle reste vide, à saisir à
+  l'écran. Une lecture ne fait jamais échouer les cent autres lignes d'une
+  feuille pour une case douteuse.
 
 Le rapprochement se fait sur le trio **feuille + article + section**, jamais sur
 la seule référence. Un même article figure légitimement deux fois sur une

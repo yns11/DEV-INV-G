@@ -16,10 +16,19 @@ chose — l'écran annonçant « prêt » sur une campagne que la clôture refus
 **Ce qui mérite un regard** n'empêche rien, et c'est justement pourquoi il faut
 le montrer. Un écart accepté sans un mot d'explication est une décision que
 personne ne saura défendre dans six mois ; une suggestion de l'IA que personne
-n'a tranchée est un travail commencé et laissé là. Aucun des deux ne justifie
-d'interdire la clôture — ce serait rendre la clôture impossible sur des points
+n'a tranchée est un travail commencé et laissé là ; un chargement qui a laissé
+des lignes refusées est un manque, mais souvent un manque connu. Aucun ne
+justifie d'interdire la clôture — ce serait la rendre impossible sur des points
 que l'exploitant a le droit d'assumer — mais les taire revient à faire comme
 s'ils n'existaient pas.
+
+Les lignes refusées ont bloqué la clôture un temps, et c'était trop. Un
+chargement en laisse pour des raisons qu'on connaît et qu'on assume : un article
+sorti du référentiel, une ligne d'export corrompue à la source, un fichier
+partiel chargé exprès. Exiger zéro refus rendait la clôture impossible sur un
+manque que personne n'avait le pouvoir de combler, et poussait à recharger un
+fichier pour faire taire un point plutôt que pour corriger quelque chose. Le
+constat n'a pas disparu : il a changé de ton.
 
 **Ce qui est fait** figure aussi. Une liste qui ne montre que les reproches se
 lit comme une machine à empêcher ; une liste qui montre les neuf points, dont
@@ -104,6 +113,7 @@ class ChecklistItem:
 def closure_checklist(
     *,
     blockers: Sequence[ControlFinding],
+    rejected_imports: Sequence[tuple[str, int]] = (),
     accepted_without_comment: int = 0,
     ai_suggestions_untouched: int = 0,
     sheets_changed_after_consolidation: bool = False,
@@ -133,17 +143,13 @@ def closure_checklist(
             )
         )
 
-    # Les trois points bloquants qui *ne* bloquent pas cette fois-ci : ils
-    # méritent d'apparaître en vert, sans quoi la liste ne dit pas qu'ils ont
-    # été vérifiés.
+    # Les points bloquants qui *ne* bloquent pas cette fois-ci : ils méritent
+    # d'apparaître en vert, sans quoi la liste ne dit pas qu'ils ont été
+    # vérifiés.
     for code, detail in (
         (
             "MATERIAL_VARIANCES_UNEXPLAINED",
             "Chaque écart matériel porte une cause ou une acceptation explicite.",
-        ),
-        (
-            "IMPORTS_WITH_REJECTS",
-            "Le dernier chargement de chaque grille a tout accepté.",
         ),
         (
             "PUBLICATION_NOT_DONE",
@@ -161,6 +167,37 @@ def closure_checklist(
             )
 
     # ---- ce qui mérite un regard --------------------------------------------
+
+    # Un appelant qui passerait encore ce constat en bloquant l'a déjà vu
+    # ajouté plus haut : ne pas le redire une seconde fois, sous un autre ton.
+    partial = [(target, n) for target, n in rejected_imports if n > 0]
+    if "IMPORTS_WITH_REJECTS" in blocked:
+        pass
+    elif partial:
+        detail = ", ".join(f"{target} ({n} ligne(s))" for target, n in partial[:5])
+        items.append(
+            ChecklistItem(
+                code="IMPORTS_WITH_REJECTS",
+                label=LABELS["IMPORTS_WITH_REJECTS"],
+                state=ChecklistState.ATTENTION,
+                detail=(
+                    f"{len(partial)} chargement(s) ont laissé des lignes "
+                    f"refusées : {detail}. Rechargez le fichier corrigé si le "
+                    "manque n'est pas voulu — sinon, c'est un manque assumé, et "
+                    "il n'empêche pas de clôturer."
+                ),
+                where=WHERE["IMPORTS_WITH_REJECTS"],
+            )
+        )
+    else:
+        items.append(
+            ChecklistItem(
+                code="IMPORTS_WITH_REJECTS",
+                label=LABELS["IMPORTS_WITH_REJECTS"],
+                state=ChecklistState.DONE,
+                detail="Le dernier chargement de chaque grille a tout accepté.",
+            )
+        )
 
     if accepted_without_comment:
         items.append(

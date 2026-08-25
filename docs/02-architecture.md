@@ -48,7 +48,7 @@ inventory.domain     règles métier pures — n'importe aucun driver, aucun fra
 **`inventory.domain` n'importe rien du reste.** C'est ce qui permet de tester
 l'intégralité des règles métier — éclatement BOM, consolidation, écarts,
 contrôles, machine à états, matrice d'impression — en une fraction de seconde
-sans base de données. La suite compte 1308 tests ; c'est la propriété que le
+sans base de données. La suite compte 2225 contrôles ; c'est la propriété que le
 classeur Excel n'avait pas.
 
 Dernier arrivé dans cette couche : `domain/printing.py`, qui décide lequel des
@@ -117,6 +117,7 @@ structurellement impossible.
 | | PRÉPARATION | COMPTAGE | ANALYSE | CLÔTURÉE |
 |---|:---:|:---:|:---:|:---:|
 | Seuils | ✅ | ❌ | ❌ | ❌ |
+| Paramètres (formules) | ✅ | ✅ | ❌ | ❌ |
 | Articles, nomenclatures | ✅ | ❌ | ❌ | ❌ |
 | Emplacements | ✅ | ✅ | ❌ | ❌ |
 | Stock ERP | ❌ | ✅ | ❌ | ❌ |
@@ -261,7 +262,7 @@ proposée à l'écran, où la troncature *est* l'intention.
 | Une page PDF au MediaBox démesuré | `render()` alloue son bitmap hors de portée de la garde anti-bombe de PIL. Une page de deux cents pouces produit 900 Mpx à 150 dpi ; la résolution est réduite pour tenir sous `INV_SCAN_MAX_PIXELS`, plutôt que la page refusée |
 | Téléversements non bornés | Lecture par tranches d'1 Mio, interrompue dès le plafond `INV_MAX_UPLOAD_BYTES` franchi. Le refus coûte une tranche, pas un fichier — il arrivait auparavant après que tout avait été chargé en mémoire, et seulement sur la route d'import |
 | Pas d'accès root | Uniquement des roues PyPI ; pas de Poppler, donc les PDF scannés sont découpés page par page en PDF, pas rasterisés |
-| Système de fichiers éphémère | Aucun état sur disque ; les preuves vont dans un volume UC |
+| Système de fichiers éphémère | Aucun état sur disque ; les preuves vont dans un volume UC — ou dans la base (`INV_EVIDENCE_STORE=lakebase`) quand le `USE CATALOG` du volume n'est pas obtenable |
 | Seuls stdout/stderr sont capturés | Journalisation JSON structurée sur stdout |
 | Sondes de la plateforme | `/api/health/live` (jamais de dépendance : une base en panne ne doit pas faire recycler des conteneurs sains) et `/api/health/ready` (503 tant que la base, les migrations ou le démarrage ne suivent pas). `/api/health` reste la page de diagnostic, toujours 200 |
 | Démarrage en 10 min max | Dépendances épinglées, migrations idempotentes et rapides |

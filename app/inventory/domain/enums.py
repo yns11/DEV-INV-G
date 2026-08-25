@@ -311,6 +311,15 @@ _LEGACY_SECTIONS: dict[str, CountSection] = {
     "MOM OK": CountSection.WIP_OK,
     "STATUT MOM: OK": CountSection.WIP_OK,
     "WIP_OK": CountSection.WIP_OK,
+    # Ce que l'application affiche et exporte. Un tableau relu depuis Excel
+    # porte le libellé, pas le code : sans ces entrées, un export réimporté
+    # échouait sur « section inconnue » — sur des lignes que l'outil venait
+    # lui-même d'écrire. Les deux orthographes, accentuée ou non, parce que la
+    # comparaison ne dépouille pas les accents.
+    "WIP (À ÉCLATER)": CountSection.WIP,
+    "WIP (A ECLATER)": CountSection.WIP,
+    "WIP ASSEMBLÉ": CountSection.WIP_OK,
+    "WIP ASSEMBLE": CountSection.WIP_OK,
 }
 
 

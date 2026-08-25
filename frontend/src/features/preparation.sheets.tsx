@@ -4,7 +4,8 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GRID_ROW_CEILING, api } from '../lib/api'
 import type { GridContract, Overview, PrintMode, Zone } from '../lib/types'
-import { SECTION_LABELS, qty, label as toLabel } from '../lib/format'
+import { qty } from '../lib/format'
+import { sectionColumn } from './sectionColumn'
 import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { PrintModal } from '../components/PrintModal'
@@ -317,13 +318,7 @@ function SheetLinesView({
     { key: 'passNo', label: 'Comptage', numeric: true, width: 100, editable: false },
     { key: 'item_number', label: 'Article', width: 170 },
     { key: 'name', label: 'Désignation', width: 240, editable: false },
-    {
-      key: 'section',
-      label: 'Section',
-      width: 150,
-      choices: ['LINE_SIDE', 'WIP', 'WIP_OK'],
-      choiceLabel: (value) => toLabel(SECTION_LABELS, value),
-    },
+    sectionColumn({ width: 150 }),
     { key: 'unit', label: 'Unité', width: 90 },
     { key: 'comment', label: 'Commentaire', width: 220 },
     {

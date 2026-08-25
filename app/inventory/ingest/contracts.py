@@ -40,10 +40,28 @@ class FieldSpec:
     aliases: tuple[str, ...] = ()
     #: Allowed values when ``type == "enum"``.
     choices: tuple[str, ...] = ()
+    #: Comment se lit chaque valeur de :attr:`choices`, par paires ``(code,
+    #: libellé)``.
+    #:
+    #: Un code est une convention interne : `LINE_SIDE` ne veut rien dire pour
+    #: qui remplit une feuille, et c'était pourtant ce que montraient la liste
+    #: déroulante d'une grille d'import et la colonne exportée vers Excel. Le
+    #: libellé est déclaré ici, avec le code, parce que le même couple sert à
+    #: quatre endroits — la grille vide, la cellule éditée, le filtre et
+    #: l'export — et que quatre tables séparées auraient dérivé.
+    #:
+    #: Une paire plutôt qu'un dictionnaire : la classe est gelée, et un
+    #: dictionnaire ne s'y range pas. :attr:`labels` en rend la forme utile.
+    choice_labels: tuple[tuple[str, str], ...] = ()
     default: Any = None
     help: str = ""
     #: Column width hint for the frontend grid, in pixels.
     width: int = 160
+
+    @property
+    def labels(self) -> dict[str, str]:
+        """``{code: libellé}``, vide quand la colonne n'est pas codée."""
+        return dict(self.choice_labels)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +71,7 @@ class FieldSpec:
             "required": self.required,
             "aliases": list(self.aliases),
             "choices": list(self.choices),
+            "choiceLabels": self.labels,
             "default": self.default,
             "help": self.help,
             "width": self.width,
@@ -121,9 +140,60 @@ class GridContract:
 # Contracts
 # --------------------------------------------------------------------------- #
 
-_ITEM_TYPES = ("COMPONENT", "SEMI_FINISHED", "FINISHED", "PACKAGING", "UNKNOWN")
-_EXCLUSIONS = ("", "GENERIC", "BOM", "ALL")
-_SECTIONS = ("LINE_SIDE", "WIP", "WIP_OK")
+# Vocabulaires codés : le code d'abord — c'est lui qui est stocké, comparé et
+# repris à l'import — puis la façon dont il se lit. Les listes de valeurs en
+# découlent, pour qu'un code ajouté sans libellé ne passe pas.
+_ITEM_TYPE_LABELS = (
+    ("COMPONENT", "Composant"),
+    ("SEMI_FINISHED", "Semi-fini"),
+    ("FINISHED", "Produit fini"),
+    ("PACKAGING", "Emballage"),
+    ("UNKNOWN", "Non typé"),
+)
+_EXCLUSION_LABELS = (
+    ("", ""),
+    ("GENERIC", "Hors GENERIQUE"),
+    ("BOM", "Ignoré en BOM"),
+    ("ALL", "Hors périmètre"),
+)
+_SECTION_LABELS = (
+    ("LINE_SIDE", "Bord de ligne"),
+    ("WIP", "WIP (à éclater)"),
+    ("WIP_OK", "WIP assemblé"),
+)
+_COMMONALITY_LABELS = (
+    ("SPECIFIC", "Spécifique"),
+    ("COMMON", "Commun"),
+    ("UNKNOWN", "Inconnue"),
+)
+_JOURNAL_KIND_LABELS = (
+    ("INVE", "INVE — étiquettes"),
+    ("INVV", "INVV — vrac"),
+)
+_MOVEMENT_KIND_LABELS = (
+    ("COUNT", "Comptage"),
+    ("ADJUSTMENT", "Ajustement de stock"),
+    ("RECOUNT", "Recomptage"),
+    ("OTHER", "Autre"),
+)
+_LOCATION_TYPE_LABELS = (
+    ("LABEL", "Étiquettes"),
+    ("BULK", "Vrac"),
+    ("UNKNOWN", "Non renseigné"),
+)
+_LOCATION_STATUS_LABELS = (
+    ("ACTIVE", "Actif"),
+    ("DISABLED", "Désactivé"),
+)
+
+
+def _codes(labels: tuple[tuple[str, str], ...]) -> tuple[str, ...]:
+    return tuple(code for code, _ in labels)
+
+
+_ITEM_TYPES = _codes(_ITEM_TYPE_LABELS)
+_EXCLUSIONS = _codes(_EXCLUSION_LABELS)
+_SECTIONS = _codes(_SECTION_LABELS)
 
 ITEMS = GridContract(
     key="items",
@@ -153,7 +223,7 @@ ITEMS = GridContract(
                   aliases=("etat du cycle de vie des produits", "lifecycle"),
                   width=150),
         FieldSpec("item_type", "Type produit", type="enum", choices=_ITEM_TYPES,
-                  default="UNKNOWN",
+                  choice_labels=_ITEM_TYPE_LABELS, default="UNKNOWN",
                   aliases=("type produit", "type", "producttype"), width=150),
         FieldSpec("category", "Catégorie",
                   aliases=("categorie", "famille", "sous-produit", "sous produit"),
@@ -163,7 +233,8 @@ ITEMS = GridContract(
                   help="M2BEV, M3, M4, M3GEN2, M2ERAD… Vide = article commun.",
                   width=140),
         FieldSpec("commonality", "Spécificité", type="enum",
-                  choices=("SPECIFIC", "COMMON", "UNKNOWN"), default="UNKNOWN",
+                  choices=_codes(_COMMONALITY_LABELS),
+                  choice_labels=_COMMONALITY_LABELS, default="UNKNOWN",
                   aliases=("specificite", "commonality"), width=130),
         FieldSpec("unit", "Unité", default="PCE",
                   aliases=("unite", "unite de stock", "unit"), width=90),
@@ -171,12 +242,13 @@ ITEMS = GridContract(
                   aliases=("prix", "prix std", "prix std 24", "std_price",
                            "unit cost", "unit price"), width=140),
         FieldSpec("exclusions", "Exclusion", type="string", default="",
-                  choices=_EXCLUSIONS, aliases=("exclusion", "a exclure", "exclure"),
+                  choices=_EXCLUSIONS, choice_labels=_EXCLUSION_LABELS,
+                  aliases=("exclusion", "a exclure", "exclure"),
                   width=140),
     ),
     examples=(
         {"item_number": "mass-00040922", "name": "STATOR M4",
-         "item_type": "SEMI_FINISHED", "category": "STATOR", "program": "M4",
+         "item_type": "Semi-fini", "category": "STATOR", "program": "M4",
          "unit": "PCE", "std_price": 312.5, "exclusions": ""},
     ),
 )
@@ -291,7 +363,8 @@ COUNT_JOURNAL_LINES = GridContract(
         FieldSpec("description", "Description",
                   aliases=("description",), width=220),
         FieldSpec("journal_name_id", "Type de journal", type="enum",
-                  choices=("INVE", "INVV"), default="INVV",
+                  choices=_codes(_JOURNAL_KIND_LABELS),
+                  choice_labels=_JOURNAL_KIND_LABELS, default="INVV",
                   aliases=("journalnameid", "type de journal"), width=140),
         FieldSpec("posted_date_time", "Date de postage", type="datetime",
                   aliases=("posteddatetime",), width=170),
@@ -314,10 +387,10 @@ COUNT_SHEETS = GridContract(
         "Une feuille inconnue est créée avec ses passages ; une feuille connue "
         "est complétée, jamais recréée. Un article absent du référentiel est "
         "une erreur de ligne : l'import de feuilles n'étend jamais le "
-        "référentiel. Sections : LINE_SIDE = bord de ligne (compté tel quel) · "
-        "WIP = assemblage non déclaré (éclaté en nomenclature) · WIP_OK = "
-        "assemblage déclaré (compté tel quel). Les anciens libellés « BDL », "
-        "« MOM waiting » et « MOM OK » sont acceptés."
+        "référentiel. Sections : « Bord de ligne » (compté tel quel) · "
+        "« WIP (à éclater) » (assemblage non déclaré, éclaté en nomenclature) · "
+        "« WIP assemblé » (assemblage déclaré, compté tel quel). Les anciens "
+        "libellés « BDL », « MOM waiting » et « MOM OK » sont acceptés."
     ),
     # A same article legitimately appears twice on one sheet in two different
     # sections (line side *and* WIP): it is the trio that must be unique, not
@@ -331,7 +404,7 @@ COUNT_SHEETS = GridContract(
                   aliases=("article", "reference", "ref", "item",
                            "numero d'article"), width=170),
         FieldSpec("section", "Section", type="enum", choices=_SECTIONS,
-                  default="LINE_SIDE",
+                  choice_labels=_SECTION_LABELS, default="LINE_SIDE",
                   aliases=("source", "statut", "statut mom", "type"),
                   help="Vide = bord de ligne.", width=150),
         FieldSpec("unit", "Unité de comptage", default="PCE",
@@ -339,9 +412,9 @@ COUNT_SHEETS = GridContract(
     ),
     examples=(
         {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
-         "section": "LINE_SIDE", "unit": "PCE"},
+         "section": "Bord de ligne", "unit": "PCE"},
         {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
-         "section": "WIP", "unit": "PCE"},
+         "section": "WIP (à éclater)", "unit": "PCE"},
     ),
 )
 
@@ -364,7 +437,8 @@ ADJUSTMENTS = GridContract(
         FieldSpec("physical_date", "Date physique", type="date",
                   aliases=("date physique", "physicaldate"), width=140),
         FieldSpec("kind", "Nature", type="enum",
-                  choices=("COUNT", "ADJUSTMENT", "RECOUNT", "OTHER"),
+                  choices=_codes(_MOVEMENT_KIND_LABELS),
+                  choice_labels=_MOVEMENT_KIND_LABELS,
                   default="ADJUSTMENT",
                   aliases=("reference", "nature", "type"),
                   help="« Comptage » et « Ajustement de stock » sont reconnus.",
@@ -493,12 +567,14 @@ LOCATIONS = GridContract(
                   aliases=("emplacement", "location"), width=170),
         FieldSpec("zone", "Zone logistique",
                   aliases=("zone", "zone erp"), width=200),
-        FieldSpec("type", "Type", type="enum", choices=("LABEL", "BULK", "UNKNOWN"),
-                  default="UNKNOWN",
+        FieldSpec("type", "Type", type="enum", choices=_codes(_LOCATION_TYPE_LABELS),
+                  choice_labels=_LOCATION_TYPE_LABELS, default="UNKNOWN",
                   aliases=("type emplacement", "type inventaire"),
-                  help="LABEL = étiquettes (scan, INVE) · BULK = vrac (INVV).",
+                  help="Étiquettes = scan, INVE · Vrac = INVV.",
                   width=130),
-        FieldSpec("status", "Statut", type="enum", choices=("ACTIVE", "DISABLED"),
+        FieldSpec("status", "Statut", type="enum",
+                  choices=_codes(_LOCATION_STATUS_LABELS),
+                  choice_labels=_LOCATION_STATUS_LABELS,
                   default="ACTIVE", aliases=("statut",), width=120),
     ),
 )

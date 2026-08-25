@@ -181,6 +181,13 @@ def _coerce(spec: FieldSpec, raw: Any) -> Any:
             for choice in spec.choices:
                 if normalise_header(choice) == normalise_header(text):
                     return choice
+            # Le libellé revient au code. C'est ce que l'application elle-même
+            # écrit maintenant : la grille montre « Bord de ligne », l'export
+            # Excel aussi, et ce fichier-là doit se recharger. Sans cette
+            # reprise, exporter puis réimporter perdait la colonne.
+            for code, label in spec.choice_labels:
+                if code and normalise_header(label) == normalise_header(text):
+                    return code
             return text  # left to the domain mapper, which knows the aliases
         case _:  # pragma: no cover - exhaustive over FieldType
             return raw

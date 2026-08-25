@@ -121,18 +121,28 @@ export interface Column<T extends Row = Record<string, unknown>> {
 
 /** Build grid columns straight from a backend column contract. */
 export function columnsFromContract(contract: GridContract): Column[] {
-  return contract.fields.map((field: FieldSpec) => ({
-    key: field.name,
-    label: field.label,
-    numeric: field.type === 'number' || field.type === 'integer',
-    width: field.width,
-    sortable: true,
-    editable: true,
-    choices: field.choices.length ? field.choices : undefined,
-    help: [field.required ? 'Obligatoire' : null, field.help]
-      .filter(Boolean)
-      .join(' · '),
-  }))
+  return contract.fields.map((field: FieldSpec) => {
+    // Le contrat porte le code **et** son libellé. Sans reprendre le second,
+    // la grille d'import offrait de choisir « LINE_SIDE » dans une liste
+    // déroulante, et l'export Excel écrivait le même code : deux endroits où
+    // l'utilisateur lisait du vocabulaire interne.
+    const labels = field.choiceLabels ?? {}
+    return {
+      key: field.name,
+      label: field.label,
+      numeric: field.type === 'number' || field.type === 'integer',
+      width: field.width,
+      sortable: true,
+      editable: true,
+      choices: field.choices.length ? field.choices : undefined,
+      choiceLabel: Object.keys(labels).length
+        ? (value: string) => labels[value] ?? value
+        : undefined,
+      help: [field.required ? 'Obligatoire' : null, field.help]
+        .filter(Boolean)
+        .join(' · '),
+    }
+  })
 }
 
 type SortState = { key: string; direction: 'asc' | 'desc' } | null
@@ -300,6 +310,25 @@ function defaultValue<T extends Row>(row: T, column: Column<T>): string | number
   if (typeof raw === 'number' || typeof raw === 'string') return raw
   if (typeof raw === 'boolean') return raw ? 1 : 0
   return String(raw)
+}
+
+/**
+ * Ce qu'une cellule vaut dans un fichier exporté.
+ *
+ * La valeur brute, sauf sur une colonne qui sait nommer ses codes : là, le
+ * libellé. Un tableur ne trie ni ne somme `LINE_SIDE`, et personne ne le lit.
+ */
+export function exportValue<T extends Row>(
+  row: T,
+  column: Column<T>,
+): string | number | null {
+  const value = defaultValue(row, column)
+  // `typeof` restreint le type — un libellé ne se demande que sur du texte.
+  // La cellule vide, elle, est un choix : une colonne peut nommer l'absence
+  // pour que le filtre la propose, et ce nom-là n'a rien à faire dans un
+  // fichier.
+  if (!column.choiceLabel || typeof value !== 'string' || value === '') return value
+  return column.choiceLabel(value)
 }
 
 export function DataGrid<T extends Row>({
@@ -777,7 +806,13 @@ export function DataGrid<T extends Row>({
               // La valeur, pas ce qui est peint : une cellule rendue en badge ou
               // en deux lignes a derrière elle un nombre, et c'est lui qu'un
               // tableur peut trier et sommer.
-              .map((c) => [c.key, defaultValue(row, c)]),
+              //
+              // Un code fait exception. `LINE_SIDE` n'est pas une valeur qu'on
+              // trie ou qu'on somme, c'est un mot de passe interne ; le fichier
+              // qui arrivait chez le gestionnaire en était plein. Là où la
+              // colonne sait nommer ses valeurs, c'est le nom qui part — et il
+              // se recharge, l'import reconnaissant le libellé comme le code.
+              .map((c) => [c.key, exportValue(row, c)]),
           ),
         ),
       })
@@ -1058,7 +1093,7 @@ export function DataGrid<T extends Row>({
                                 <option value="" />
                                 {column.choices.map((choice) => (
                                   <option key={choice} value={choice}>
-                                    {choice}
+                                    {column.choiceLabel?.(choice) ?? choice}
                                   </option>
                                 ))}
                               </select>

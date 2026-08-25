@@ -7,6 +7,7 @@ import type { SheetScanReport, Sheet, Zone } from '../lib/types'
 import { SECTION_HINTS, SOURCE_LABELS, ZONE_STATUS_LABELS, qty, label as toLabel } from '../lib/format'
 import { sectionColumn, sectionLabel } from './sectionColumn'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
+import { PasteArea } from '../components/PasteArea'
 import { PrintModal } from '../components/PrintModal'
 import { parseSheetLines } from '../lib/pasteSheetLines'
 import { Alert, AsyncBoundary, Badge, Button, Card, Icons, Modal, Skeleton, useErrorToast, useToast } from '../components/ui'
@@ -414,10 +415,10 @@ export function SheetModal({
                   Coller plusieurs lignes depuis Excel
                 </summary>
                 <div className="stack" style={{ marginTop: 'var(--space-3)' }}>
-                  <textarea
-                    className="textarea mono"
+                  <PasteArea
                     value={pasteText}
-                    onChange={(event) => setPasteText(event.target.value)}
+                    aria-label="Coller plusieurs lignes depuis Excel"
+                    onChange={setPasteText}
                     placeholder={
                       'Un article par ligne. L’ordre des colonnes est libre :\n' +
                       'article, unité et section sont reconnus à leur contenu.\n\n' +

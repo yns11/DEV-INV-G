@@ -126,12 +126,34 @@ MOVEMENT_COLUMNS = (
 )
 
 #: Le snapshot quotidien du stock physique : une ligne par article × entrepôt ×
-#: emplacement, pour un jour donné. Seule la photo la plus récente est copiée —
-#: c'est un état, pas un historique, et l'application n'en lit qu'un jour.
+#: emplacement, pour un jour donné. Quelques photos récentes sont copiées, pas
+#: tout l'historique : l'application n'en lit qu'une à la fois, mais l'écran
+#: d'import laisse choisir laquelle — voir :func:`_recent_snapshots`.
 STOCK_COLUMNS = (
     "item_id", "entrepot", "emplacement", "stock_physique", "unite",
     "snapshot_date",
 )
+
+
+def _recent_snapshots(table: str, days: int) -> str:
+    """Clause retenant les ``days`` photos les plus récentes de ``table``.
+
+    Des jours **publiés**, pas des jours du calendrier : la source ne publie pas
+    le week-end, et un « depuis sept jours » aurait ramené cinq photos une
+    semaine et sept la suivante. C'est la liste que l'écran propose, et elle doit
+    avoir la même longueur d'une semaine à l'autre.
+
+    ``days`` au minimum à 1 : un zéro, ou un négatif venu d'un paramètre mal
+    saisi, produirait une sous-requête vide et donc un miroir vide — c'est-à-dire
+    exactement ce que le job refuse d'écrire, mais découvert au bout de la
+    lecture complète.
+    """
+    kept = max(1, int(days))
+    return (
+        f"snapshot_date >= (SELECT min(d) FROM (SELECT DISTINCT snapshot_date "
+        f"AS d FROM {table} ORDER BY d DESC LIMIT {kept}))"
+    )
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -163,6 +185,15 @@ def main() -> int:
         help="Ne synchronise que les articles et les nomenclatures.",
     )
     parser.add_argument("--stock-table", default="stock_snapshot")
+    parser.add_argument(
+        "--stock-days", type=int,
+        default=int(os.environ.get("INV_STOCK_DAYS", "7")),
+        help=(
+            "Nombre de photos de stock à copier, la plus récente d'abord "
+            "(défaut 7). L'écran d'import laisse choisir la date : n'en copier "
+            "qu'une rendait ce choix inatteignable."
+        ),
+    )
     parser.add_argument(
         "--driver-side",
         action="store_true",
@@ -366,20 +397,27 @@ def main() -> int:
                 )
                 args.skip_movements = True
 
-        # Même règle encore. La photo la plus récente seulement : la source est
-        # partitionnée par jour et en garde l'historique, dont l'application n'a
-        # que faire — elle compare un comptage à *un* état du système.
+        # Même règle encore, mais sur une fenêtre. Une campagne compare son
+        # comptage à *un* état du système à *un* instant — jamais à un stock
+        # additionné sur trois mois — et c'est pourquoi la lecture ne prend
+        # qu'un jour. Mais **lequel** est un choix, et l'écran d'import le
+        # propose : la journée de comptage a commencé samedi matin, la reprise
+        # se fait le lundi, et c'est la photo de samedi qui fait foi.
+        #
+        # Le miroir n'en copiait qu'une, si bien que la liste « Photo du »
+        # n'offrait jamais qu'une date — la plus récente, celle-là même que le
+        # choix existe pour ne pas subir. Il en garde désormais quelques-unes.
         stock = 0
         if not args.skip_stock:
             try:
                 stock = prepare(
                     stock_fqn, "erp_stock_snapshot", STOCK_COLUMNS,
-                    where=(
-                        f"snapshot_date = (SELECT max(snapshot_date) "
-                        f"FROM {stock_fqn})"
-                    ),
+                    where=_recent_snapshots(stock_fqn, args.stock_days),
                 )
-                log.info("Préparé %d ligne(s) de stock physique", stock)
+                log.info(
+                    "Préparé %d ligne(s) de stock physique (%d photo(s))",
+                    stock, args.stock_days,
+                )
             except Exception as exc:
                 log.error(
                     "Snapshot de stock (%s) illisible, miroir laissé intact : %s",

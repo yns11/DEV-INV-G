@@ -368,8 +368,14 @@ COUNT_JOURNAL_LINES = GridContract(
                   aliases=("journalnameid", "type de journal"), width=140),
         FieldSpec("posted_date_time", "Date de postage", type="datetime",
                   aliases=("posteddatetime",), width=170),
+        # « Stock physique » est l'intitulé de la colonne de quantité dans les
+        # exports de l'ERP, journaux de comptage compris — c'est le même mot
+        # pour la même chose des deux côtés, et refuser le fichier faute de
+        # « Quantité comptée » obligeait à renommer une colonne à la main avant
+        # chaque chargement.
         FieldSpec("counted_quantity", "Quantité comptée", type="number", required=True,
-                  aliases=("countedquantity", "quantite comptee", "quantite"),
+                  aliases=("countedquantity", "quantite comptee", "quantite",
+                           "stock physique", "qty"),
                   width=160),
         FieldSpec("unit", "Unité", default="PCE", aliases=("unite", "unit"), width=90),
     ),

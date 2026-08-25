@@ -26,11 +26,22 @@ import type { GridContract } from '../lib/types'
 
 // L'export part par le réseau ; ce qui est vérifié ici est ce que la grille met
 // dans le corps de la requête, pas le fichier que le serveur en fait.
-const download = vi.fn(() => Promise.resolve())
+interface ExportBody {
+  title: string
+  columns: Array<{ key: string; label: string }>
+  rows: Array<Record<string, unknown>>
+}
+const download = vi.fn((_path: string, _body?: unknown) => Promise.resolve())
 vi.mock('../lib/api', () => ({
-  download: (...args: unknown[]) => download(...args),
+  download: (path: string, body?: unknown) => download(path, body),
   downloads: { table: (id: string) => `/campaigns/${id}/reports/table.xlsx` },
 }))
+
+/** Le corps de la requête d'export, tel que la grille l'a composé. */
+function exported(): ExportBody {
+  expect(download).toHaveBeenCalledTimes(1)
+  return download.mock.calls[0]![1] as ExportBody
+}
 
 interface Line {
   itemNumber: string
@@ -162,11 +173,7 @@ describe('le bouton Excel', () => {
       </ToastProvider>,
     )
     await userEvent.click(screen.getByRole('button', { name: /Excel/ }))
-    expect(download).toHaveBeenCalledTimes(1)
-    const body = download.mock.calls[0]![1] as {
-      rows: Array<Record<string, unknown>>
-    }
-    expect(body.rows.map((r) => r.section)).toEqual([
+    expect(exported().rows.map((r) => r.section)).toEqual([
       'Bord de ligne',
       'WIP assemblé',
     ])
@@ -185,10 +192,7 @@ describe('le bouton Excel', () => {
       </ToastProvider>,
     )
     await userEvent.click(screen.getByRole('button', { name: /Excel/ }))
-    const body = download.mock.calls[0]![1] as {
-      rows: Array<Record<string, unknown>>
-    }
-    expect(body.rows.map((r) => r.qty)).toEqual([12, 3])
+    expect(exported().rows.map((r) => r.qty)).toEqual([12, 3])
   })
 })
 

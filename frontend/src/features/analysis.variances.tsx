@@ -426,7 +426,10 @@ export function VariancesTab({
               getRowId={(row, index) => `${row.itemNumber}-${row.warehouseId}-${row.locationId}-${index}`}
               searchPlaceholder="Filtrer par article, désignation, programme…"
               maxHeight={640}
-              initialSort={{ key: 'varianceValue', direction: 'desc' }}
+              // Ascendant : les manques d'abord. L'écart le plus négatif est
+              // le stock que l'usine a perdu, et c'est celui qu'on va chercher
+              // en premier — un tri descendant mettait les excédents en tête.
+              initialSort={{ key: 'varianceValue', direction: 'asc' }}
               footer={
                 <span className="subtle">
                   Périmètre : {overview.campaign.code} · stock ERP gelé le{' '}

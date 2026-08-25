@@ -160,8 +160,14 @@ export const SECTIONS: Section[] = [
     icon: 'sliders',
     phase: 'PREPARATION',
     lede: 'Qui compte quoi, et à partir de quel montant un écart compte.',
-    enabled: (o) => ready(o, 'thresholds'),
-    locked: (o) => blocked(o, 'thresholds') ?? '',
+    // Jamais verrouillée. Elle ne porte pas que les seuils : les gestionnaires,
+    // les affectations de zones et de journaux, et les paramètres de la
+    // campagne — dont l'acceptation des formules, qui se règle le jour de
+    // l'inventaire. La garde de séquencement était celle des seuils seuls, et
+    // elle fermait les quatre. Chaque écriture reste refusée par la matrice de
+    // gel, qui décide de ce qui est modifiable ; c'est l'*accès en lecture* qui
+    // n'avait pas de raison d'être fermé.
+    enabled: () => true,
     subs: [
       { id: 'managers', label: 'Gestionnaires' },
       { id: 'zone_scope', label: 'Affectation zones' },
@@ -192,23 +198,6 @@ export const SECTIONS: Section[] = [
     lede: 'Ce que la production a consommé sans que l’ERP l’enregistre.',
     enabled: (o) => ready(o, 'backflush'),
     locked: (o) => blocked(o, 'backflush') ?? '',
-  },
-  {
-    to: 'journee',
-    label: 'La journée',
-    icon: 'clipboard',
-    phase: 'COUNTING',
-    lede: 'Ce qui attend quelqu’un, maintenant.',
-    // Aucune garde de séquencement : c'est une lecture, et la seule chose
-    // qu'elle puisse dire d'une campagne qui n'a rien commencé est justement
-    // « rien n'a commencé ».
-    enabled: () => true,
-    // Le nombre de zones et de journaux qui attendent encore. Il descend à
-    // zéro au fil de la journée, ce qui est la seule chose qu'on lui demande.
-    badge: (o) =>
-      o.genericProgress.zones -
-        o.genericProgress.done +
-        (o.journalProgress.total - o.journalProgress.complete) || null,
   },
   {
     to: 'compil',

@@ -10,7 +10,6 @@
 
 import type {
   ClosureChecklist,
-  WorkQueues,
   CampaignPage,
   AggregateRow,
   Analytics,
@@ -245,11 +244,6 @@ export const api = {
   // vendredi soir, est exactement ce qu'on évite.
   closureChecklist: (id: string) =>
     request<ClosureChecklist>(`/campaigns/${id}/closure-checklist`),
-  // Ce qui attend quelqu'un, maintenant. `focus` applique le périmètre du
-  // gestionnaire connecté : quarante zones sur neuf responsables donnent un
-  // tableau illisible si chacun voit tout.
-  workQueues: (id: string, focus = false) =>
-    request<WorkQueues>(`/campaigns/${id}/work-queues${qs({ focus })}`),
   transition: (id: string, target: string) =>
     request<Campaign>(`/campaigns/${id}/transition`, {
       method: 'POST',

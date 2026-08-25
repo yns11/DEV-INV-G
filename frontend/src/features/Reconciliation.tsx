@@ -759,7 +759,23 @@ function FlowKpis({ report }: { report: StockFlowReport }) {
       <Kpi
         label={`${report.basis.closingStockLabel} final`}
         value={moneyShort(kpis.closingValue)}
-        compare={`${kpis.matchedCount} tombent juste`}
+        // La population, et non seulement le nombre de coïncidences. Ce total
+        // ne porte que les articles **comparables** — comptés des deux côtés —
+        // là où le carrousel de tête porte le stock physique entier de la
+        // campagne. Deux chiffres du même nom et de valeurs différentes, à deux
+        // écrans d'écart, sans que rien ne dise pourquoi : c'est ainsi qu'on
+        // cesse de croire les totaux. Le compte des exclus vivait sur la carte
+        // « Fiabilité », trois cases plus loin.
+        compare={
+          <span>
+            {kpis.completeCount} comparé(s) · {kpis.matchedCount} tombent juste
+          </span>
+        }
+        hint={
+          kpis.incompleteCount
+            ? `Sur les articles comparables uniquement : ${kpis.incompleteCount} comptés d’un seul côté sont exclus. Le stock physique de la campagne, en tête d’écran, les compte — d’où un total supérieur.`
+            : 'Tous les articles sont comparables : ce total est celui de la campagne entière.'
+        }
       />
       <Kpi
         label="Écart net"

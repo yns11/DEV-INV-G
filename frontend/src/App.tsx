@@ -21,7 +21,6 @@ import { CampaignsPage } from './features/Campaigns'
 import { CampaignShell } from './features/CampaignShell'
 import { Preparation } from './features/Preparation'
 import { Counting } from './features/Counting'
-import { Board } from './features/Board'
 import { Generic } from './features/Generic'
 import { Analysis } from './features/Analysis'
 import { Backflush } from './features/Backflush'
@@ -139,7 +138,6 @@ export function App() {
 
                 <Route path="stock-erp" element={<Preparation view="book_stock" />} />
                 <Route path="backflush" element={<Backflush />} />
-                <Route path="journee" element={<Board />} />
                 <Route path="compil" element={<Generic />} />
                 <Route path="comptage" element={<Counting />} />
 
@@ -222,7 +220,9 @@ function CampaignSidebar({ campaignId }: { campaignId: string }) {
  */
 const HOME_OF: Record<CampaignStatus, string> = {
   PREPARATION: 'articles',
-  COUNTING: 'journee',
+  // toujours atteignable : `compil` attend que le stock ERP soit chargé,
+  // et envoyer quelqu'un sur un écran verrouillé n'est pas l'accueillir.
+  COUNTING: 'stock-erp',
   ANALYSIS: 'ecarts',
   CLOSED: 'ecarts',
 }

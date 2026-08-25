@@ -7,7 +7,6 @@ written — so no router and no repository has to remember any of that.
 
 from .analysis_service import AnalysisService
 from .assistant_service import AssistantService
-from .board_service import BoardService
 from .campaign_service import DEFAULT_THRESHOLDS, CampaignService
 from .consolidation_service import ConsolidationService
 from .context import ENGINE_VERSION, ServiceContext, utcnow
@@ -15,6 +14,7 @@ from .counting_service import CountingService
 from .evidence_service import ArchivedEvidence, EvidenceService
 from .generic_service import GenericService
 from .import_service import ImportOutcome, ImportService
+from .insight_service import InsightService
 from .manager_service import ManagerService, Perimeter
 from .referential_service import BookStockView, LocationView, ReferentialService
 from .report_service import ReportService
@@ -28,7 +28,6 @@ from .stock_flow_service import StockFlowService
 
 __all__ = [
     "AnalysisService",
-    "BoardService",
     "AssistantService",
     "CampaignService",
     "ArchivedEvidence",
@@ -43,6 +42,7 @@ __all__ = [
     "ScanService",
     "ImportOutcome",
     "ImportService",
+    "InsightService",
     "ManagerService",
     "Perimeter",
     "ReferentialService",

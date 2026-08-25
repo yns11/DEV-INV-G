@@ -2313,34 +2313,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/campaigns/{campaign_id}/work-queues": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Files de travail du jour
-         * @description Ce qui attend quelqu'un, maintenant.
-         *
-         *     Un pourcentage répond à « où en est-on », jamais à « que faire ». Ces files
-         *     répondent aux trois questions d'un matin d'inventaire : ce qui attend une
-         *     décision, ce qu'on peut fermer tout de suite, et qui n'a pas commencé.
-         *
-         *     ``focus=true`` applique le périmètre du gestionnaire connecté. C'est là que
-         *     le périmètre gagne sa place : quarante zones réparties sur neuf
-         *     responsables donnent un tableau illisible si chacun voit tout.
-         */
-        get: operations["work_queues_api_campaigns__campaign_id__work_queues_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/contracts": {
         parameters: {
             query?: never;
@@ -3197,6 +3169,10 @@ export interface components {
         GridField: {
             /** Aliases */
             aliases: string[];
+            /** Choicelabels */
+            choiceLabels: {
+                [key: string]: string;
+            };
             /** Choices */
             choices: string[];
             /** Default */
@@ -3878,39 +3854,6 @@ export interface components {
         WarehouseAssignmentRequest: {
             /** Assignments */
             assignments: components["schemas"]["WarehouseAssignment"][];
-        };
-        /** WorkQueue */
-        WorkQueue: {
-            /** Action */
-            action: string;
-            /** Code */
-            code: string;
-            /** Count */
-            count: number;
-            /** Hidden */
-            hidden: number;
-            /** Label */
-            label: string;
-            /** Names */
-            names: string[];
-            /** Where */
-            where: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * WorkQueuesResponse
-         * @description Ce qui attend quelqu'un, maintenant.
-         */
-        WorkQueuesResponse: {
-            /** Focus */
-            focus: boolean;
-            /** Queues */
-            queues: components["schemas"]["WorkQueue"][];
-            /** Waiting */
-            waiting: number;
-        } & {
-            [key: string]: unknown;
         };
         /**
          * ZoneAssignmentRequest
@@ -8497,43 +8440,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    work_queues_api_campaigns__campaign_id__work_queues_get: {
-        parameters: {
-            query?: {
-                focus?: boolean;
-            };
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WorkQueuesResponse"];
                 };
             };
             /** @description Validation Error */

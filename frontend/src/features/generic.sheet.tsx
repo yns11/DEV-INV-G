@@ -4,8 +4,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { SheetScanReport, Sheet, Zone } from '../lib/types'
-import { SECTION_HINTS, SECTION_LABELS, SOURCE_LABELS, ZONE_STATUS_LABELS, qty, label as toLabel } from '../lib/format'
+import { SECTION_HINTS, SOURCE_LABELS, ZONE_STATUS_LABELS, qty, label as toLabel } from '../lib/format'
+import { sectionColumn, sectionLabel } from './sectionColumn'
 import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
+import { PasteArea } from '../components/PasteArea'
 import { PrintModal } from '../components/PrintModal'
 import { parseSheetLines } from '../lib/pasteSheetLines'
 import { Alert, AsyncBoundary, Badge, Button, Card, Icons, Modal, Skeleton, useErrorToast, useToast } from '../components/ui'
@@ -225,13 +227,8 @@ export function SheetModal({
   const columns: Column[] = [
     { key: 'item_number', label: 'Référence', width: 170, editable: true },
     { key: 'name', label: 'Désignation', width: 240, editable: false },
-    {
-      key: 'section',
-      label: 'Section',
-      width: 160,
+    sectionColumn({
       editable: true,
-      choices: ['LINE_SIDE', 'WIP', 'WIP_OK'],
-      choiceLabel: (value) => toLabel(SECTION_LABELS, value),
       render: draft
         ? undefined
         : (row) => (
@@ -239,11 +236,10 @@ export function SheetModal({
               tone={row.section === 'WIP' ? 'warning' : row.section === 'WIP_OK' ? 'info' : 'neutral'}
               title={SECTION_HINTS[String(row.section)]}
             >
-              {SECTION_LABELS[String(row.section)] ?? String(row.section)}
+              {sectionLabel(row.section)}
             </Badge>
           ),
-      value: (row) => String(row.section),
-    },
+    }),
     {
       key: 'qty',
       label: 'Comptage',
@@ -419,10 +415,10 @@ export function SheetModal({
                   Coller plusieurs lignes depuis Excel
                 </summary>
                 <div className="stack" style={{ marginTop: 'var(--space-3)' }}>
-                  <textarea
-                    className="textarea mono"
+                  <PasteArea
                     value={pasteText}
-                    onChange={(event) => setPasteText(event.target.value)}
+                    aria-label="Coller plusieurs lignes depuis Excel"
+                    onChange={setPasteText}
                     placeholder={
                       'Un article par ligne. L’ordre des colonnes est libre :\n' +
                       'article, unité et section sont reconnus à leur contenu.\n\n' +

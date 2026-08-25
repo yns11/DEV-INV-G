@@ -57,7 +57,6 @@ __all__ = [
     "MeResponse",
     "MetricsResponse",
     "OverviewResponse",
-    "WorkQueuesResponse",
 ]
 
 
@@ -322,24 +321,6 @@ class ClosureChecklistResponse(Payload):
     counts: ClosureChecklistCounts
 
 
-class WorkQueue(Payload):
-    code: str
-    label: str
-    action: str
-    count: int
-    names: list[str]
-    hidden: int
-    where: str
-
-
-class WorkQueuesResponse(Payload):
-    """Ce qui attend quelqu'un, maintenant."""
-
-    focus: bool
-    queues: list[WorkQueue]
-    waiting: int
-
-
 # --------------------------------------------------------------------------- #
 # Contrats de grille
 # --------------------------------------------------------------------------- #
@@ -351,6 +332,10 @@ class GridField(Payload):
     required: bool
     aliases: list[str]
     choices: list[str]
+    #: Comment se lit chaque code de :attr:`choices`. Vide sur une colonne non
+    #: codée. Déclaré ici et pas seulement dans le contrat : c'est ce champ que
+    #: la grille lit pour ne plus proposer « LINE_SIDE » dans une liste.
+    choice_labels: dict[str, str] = Field(default_factory=dict, alias="choiceLabels")
     #: Les quatre types que portent réellement les contrats : un prix par
     #: défaut vaut `0`, un drapeau `False`, un type d'article `"UNKNOWN"`.
     default: str | int | bool | None = None

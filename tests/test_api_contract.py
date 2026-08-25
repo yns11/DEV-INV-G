@@ -157,7 +157,6 @@ class TestTheSchemaSaysWhatComesBack:
             "GET /api/campaigns/{campaign_id}",
             "GET /api/campaigns/{campaign_id}/overview",
             "GET /api/campaigns/{campaign_id}/closure-checklist",
-            "GET /api/campaigns/{campaign_id}/work-queues",
             "GET /api/campaigns/{campaign_id}/thresholds",
             "GET /api/contracts",
         ],
@@ -267,13 +266,6 @@ class TestTheDeclarationMatchesTheRealPayload:
             client,
             f"/api/campaigns/{campaign_id}/closure-checklist",
             ClosureChecklistResponse,
-        )
-
-    def test_the_work_queues(self, client, campaign_id):
-        from inventory.api.responses import WorkQueuesResponse
-
-        self.check(
-            client, f"/api/campaigns/{campaign_id}/work-queues", WorkQueuesResponse
         )
 
     def test_the_thresholds(self, client, fresh_campaign):
@@ -391,7 +383,6 @@ class TestTheGeneratedClient:
             ("Overview", "OverviewResponse"),
             ("Threshold", "Thresholds"),
             ("GridContract", "GridContractResponse"),
-            ("WorkQueues", "WorkQueuesResponse"),
             ("ClosureChecklist", "ClosureChecklistResponse"),
             ("Health", "HealthResponse"),
             ("Me", "MeResponse"),

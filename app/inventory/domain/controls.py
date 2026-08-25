@@ -686,11 +686,12 @@ def check_zones(
     zones: Sequence[Zone],
     sheets: Sequence[CountSheet],
     lines_by_sheet: Mapping[str, Sequence[CountSheetLine]] | None = None,
+    items: Mapping[str, Item] | None = None,
 ) -> list[ControlFinding]:
     """Preparation controls on the GENERIQUE zones.
 
-    Two defects, both of which are cheap to fix in preparation and expensive to
-    discover on the morning of the count:
+    Trois défauts. Les deux premiers sont bon marché à corriger en préparation
+    et chers à découvrir le matin du comptage :
 
     * a zone whose sheets carry no pre-printed article list — **unless** it is
       declared as a free-entry sheet. That distinction is the whole reason
@@ -699,12 +700,63 @@ def check_zones(
       teaches people to ignore the warning;
     * a zone missing one of the sheets its own ``passes`` requires — a second
       counter with no sheet is a second count that will not happen.
+
+    Le troisième se découvre après coup : une **quantité comptée sur un article
+    exclu du périmètre**. Elle ne produit aucun écart — un article exclu est
+    hors du calcul, c'est ce que l'exclusion veut dire — et c'est précisément
+    pour cela qu'elle doit se lire quelque part. Sans ce constat, quelqu'un
+    aurait compté une zone et ses quantités n'apparaîtraient nulle part, sans un
+    mot : ou bien l'exclusion est une erreur et il faut la lever, ou bien le
+    comptage l'est et il faut le retirer, mais les deux se décident en le
+    sachant.
+
+    Le contrôle jumeau existait déjà pour les **journaux** (voir
+    :func:`check_journals`) ; les feuilles GENERIQUE ne l'avaient pas, alors
+    que ce sont elles qu'on remplit à la main et donc elles qui portent le plus
+    volontiers un article que le référentiel a mis hors périmètre depuis.
+
+    :param items: le référentiel de la campagne. Sans lui, seuls les deux
+        premiers contrôles tournent — un appelant qui n'a pas chargé les
+        articles ne doit pas payer leur chargement pour un troisième constat.
     """
     lines_by_sheet = lines_by_sheet or {}
+    items = items or {}
     findings: list[ControlFinding] = []
     sheets_by_zone: dict[str, list[CountSheet]] = defaultdict(list)
     for sheet in sheets:
         sheets_by_zone[sheet.zone_id].append(sheet)
+
+    # Une ligne par article, pas par feuille : le même article exclu compté sur
+    # les deux passages d'une zone est un seul fait à trancher, et l'annoncer
+    # deux fois pousse le reste des constats hors de l'écran.
+    zone_of = {s.id: s.zone_id for s in sheets}
+    excluded_counted: dict[str, set[str]] = defaultdict(set)
+    for sheet_id, lines in lines_by_sheet.items():
+        for line in lines:
+            item = items.get(line.item_number)
+            if item is None or not item.excluded_everywhere or not line.is_counted:
+                continue
+            excluded_counted[line.item_number].add(zone_of.get(sheet_id, ""))
+
+    zone_code = {z.id: z.code for z in zones}
+    for item_number, zone_ids in sorted(excluded_counted.items()):
+        where = ", ".join(sorted(zone_code.get(z, z) for z in zone_ids if z))
+        findings.append(
+            ControlFinding(
+                code="EXCLUDED_ITEM_COUNTED",
+                severity=ControlSeverity.WARNING,
+                message=(
+                    f"{item_number} est exclu du périmètre mais a été compté"
+                    + (f" en zone {where}" if where else "")
+                    + " : sa quantité n'entre dans aucun écart. Levez "
+                    "l'exclusion sur la grille Articles si l'article doit être "
+                    "inventorié, ou retirez la ligne de la feuille."
+                ),
+                entity_type="count_sheet_line",
+                item_number=item_number,
+                context={"zones": sorted(z for z in zone_ids if z)},
+            )
+        )
 
     for zone in zones:
         zone_sheets = sheets_by_zone.get(zone.id, [])
@@ -792,7 +844,7 @@ def run_all_controls(
         )
     if zones:
         findings += check_zones(
-            zones=zones, sheets=sheets, lines_by_sheet=lines_by_sheet
+            zones=zones, sheets=sheets, lines_by_sheet=lines_by_sheet, items=items
         )
     if variances:
         findings += check_variances(campaign=campaign, variances=variances)

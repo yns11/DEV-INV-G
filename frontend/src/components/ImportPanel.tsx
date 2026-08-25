@@ -29,6 +29,7 @@ import {
   Alert, Badge, Button, Card, Icons, useDownload, useErrorToast, useToast,
 } from './ui'
 import { DataGrid, columnsFromContract } from './DataGrid'
+import { PasteArea } from './PasteArea'
 
 /** Grids the ERP is authoritative for — mirrors `ERP_TARGETS` on the API. */
 const ERP_TARGETS = ['items', 'boms', 'book_stock', 'backflush']
@@ -324,14 +325,14 @@ export function ImportPanel({
                 </span>
               ))}
             </div>
-            <textarea
-              className="textarea mono"
+            <PasteArea
               value={pasteText}
               autoFocus
-              onChange={(event) => setPasteText(event.target.value)}
+              aria-label={`Coller ${contract.title.toLowerCase()}`}
+              onChange={setPasteText}
               placeholder={
                 'Collez ici (Ctrl+V) un bloc copié depuis Excel.\n' +
-                'La ligne d’en-tête est détectée automatiquement.'
+                'La touche Tab insère une tabulation ; Échap la rend à la navigation.'
               }
             />
             <div className="row">

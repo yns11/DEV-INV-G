@@ -75,10 +75,13 @@ dbutils.widgets.dropdown(
 dbutils.widgets.text(
     "movements_since", "2026-03-30", "15. Mouvements depuis (date)",
 )
-# Le stock physique : une photo par jour, dont seule la dernière est copiée.
+# Le stock physique : une photo par jour, dont les plus récentes sont copiées.
+# L'écran d'import laisse choisir la date ; n'en copier qu'une, comme c'était le
+# cas, rendait ce choix inatteignable.
 dbutils.widgets.dropdown(
     "sync_stock", "oui", ["oui", "non"], "16. Copier le stock physique",
 )
+dbutils.widgets.text("stock_days", "7", "17. Photos de stock à garder")
 
 # COMMAND ----------
 
@@ -131,7 +134,7 @@ conf = {name: dbutils.widgets.get(name).strip() for name in (
     "pg_host", "pg_password", "pg_user", "pg_database", "pg_schema",
     "erp_catalog", "erp_schema", "limit", "lakebase_branch",
     "sync_backflush", "backflush_schema", "backflush_table", "backflush_since",
-    "sync_movements", "movements_since", "sync_stock",
+    "sync_movements", "movements_since", "sync_stock", "stock_days",
 )}
 
 if not conf["pg_host"]:
@@ -152,6 +155,14 @@ backflush_since = conf["backflush_since"]
 movements_fqn = f"{conf['erp_catalog']}.{conf['erp_schema']}.mouvements"
 stock_fqn = f"{conf['erp_catalog']}.{conf['erp_schema']}.stock_snapshot"
 with_stock = conf["sync_stock"] == "oui"
+# Des jours **publiés**, pas des jours du calendrier : la source ne publie pas
+# le week-end, et un « depuis sept jours » aurait donné cinq photos une semaine
+# et sept la suivante. Au moins une : zéro viderait le miroir.
+stock_days = max(1, int(conf["stock_days"] or 7))
+stock_where = (
+    f"snapshot_date >= (SELECT min(d) FROM (SELECT DISTINCT snapshot_date AS d "
+    f"FROM {stock_fqn} ORDER BY d DESC LIMIT {stock_days}))"
+)
 with_movements = conf["sync_movements"] == "oui"
 movements_since = conf["movements_since"]
 
@@ -469,24 +480,26 @@ if with_movements:
               f"laissé intact : {type(exc).__name__} — {exc}")
         with_movements = False
 
-# Même règle encore. La photo la plus récente seulement : la source est
-# partitionnée par jour et en garde l'historique, dont l'application n'a que
-# faire — elle compare un comptage à *un* état du système.
+# Même règle encore, mais sur une fenêtre. L'application ne lit qu'un jour à la
+# fois — un comptage se compare à *un* état du système, jamais à un stock
+# additionné sur trois mois — mais **lequel** est un choix, et l'écran d'import
+# le propose : le comptage a commencé samedi, la reprise se fait le lundi, et
+# c'est la photo de samedi qui fait foi. Le miroir n'en gardait qu'une, et la
+# liste « Photo du » n'offrait donc jamais que la plus récente.
 stock = 0
 if with_stock:
     try:
         stock = prepare(
-            stock_fqn, STOCK_COLUMNS, "erp_stock_snapshot",
-            where=(
-                f"snapshot_date = (SELECT max(snapshot_date) FROM {stock_fqn})"
-            ),
+            stock_fqn, STOCK_COLUMNS, "erp_stock_snapshot", where=stock_where,
         )
-        # La date du snapshot vient de la base, pas d'une ligne gardée en
-        # mémoire : plus rien ne transite par le driver.
-        jour = connection.execute(
-            "SELECT max(snapshot_date) FROM erp_stock_snapshot_staging"
-        ).fetchone()[0] if stock else "—"
-        print(f"{stock} ligne(s) de stock physique, au {jour}")
+        # Les dates viennent de la base, pas de lignes gardées en mémoire :
+        # plus rien ne transite par le driver.
+        jours = connection.execute(
+            "SELECT count(DISTINCT snapshot_date), max(snapshot_date) "
+            "FROM erp_stock_snapshot_staging"
+        ).fetchone() if stock else (0, "—")
+        print(f"{stock} ligne(s) de stock physique, "
+              f"{jours[0]} photo(s), la plus récente au {jours[1]}")
     except Exception as exc:
         print(f"\n⚠ {stock_fqn} illisible, miroir du stock laissé "
               f"intact : {type(exc).__name__} — {exc}")

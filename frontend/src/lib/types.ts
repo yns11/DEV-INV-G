@@ -615,6 +615,8 @@ export interface FieldSpec {
   required: boolean
   aliases: string[]
   choices: string[]
+  /** Comment se lit chaque code de `choices`. Vide sur une colonne non codée. */
+  choiceLabels: Record<string, string>
   default: unknown
   help: string
   width: number
@@ -798,7 +800,6 @@ export interface WorkQueue {
   where: string
 }
 
-export type WorkQueues = Schemas['WorkQueuesResponse']
 
 export type ClosureChecklist = Schemas['ClosureChecklistResponse']
 

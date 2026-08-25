@@ -107,15 +107,20 @@ def _exclusions(value: Any) -> set[ExclusionScope]:
     if value is True:
         return {ExclusionScope.ALL}
     out: set[ExclusionScope] = set()
-    for token in str(value).replace(";", ",").split(","):
+    # Le « + » sépare aussi : c'est ainsi que la colonne s'affiche et s'exporte
+    # quand un article porte deux exclusions (« Hors GENERIQUE + Ignoré en
+    # BOM »). Sans lui, relire un export rendait l'article au périmètre.
+    for token in str(value).replace(";", ",").replace("+", ",").split(","):
         key = normalise_key(token)
         if not key:
             continue
-        if key in ("X", "OUI", "YES", "TRUE", "1", "ALL", "TOUT", "TOUS"):
+        if key in ("X", "OUI", "YES", "TRUE", "1", "ALL", "TOUT", "TOUS",
+                   "HORS PÉRIMÈTRE", "HORS PERIMETRE"):
             out.add(ExclusionScope.ALL)
-        elif key in ("GENERIC", "GENERIQUE"):
+        elif key in ("GENERIC", "GENERIQUE", "HORS GENERIQUE",
+                     "HORS GÉNÉRIQUE"):
             out.add(ExclusionScope.GENERIC)
-        elif key in ("BOM", "NOMENCLATURE"):
+        elif key in ("BOM", "NOMENCLATURE", "IGNORÉ EN BOM", "IGNORE EN BOM"):
             out.add(ExclusionScope.BOM)
     return out
 

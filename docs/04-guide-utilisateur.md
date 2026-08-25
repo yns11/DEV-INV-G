@@ -160,7 +160,11 @@ n'aurait aucun sens.
    l'essentiel des erreurs de référentiel disparaît.
 2. **Charger un fichier** — un export Excel ou CSV, quand l'ERP n'est pas
    joignable ou que la liste vient d'ailleurs.
-3. **Copier / Coller** — un bloc collé depuis Excel.
+3. **Copier / Coller** — un bloc collé depuis Excel. Dans cette zone, la touche
+   **Tab insère une tabulation** au lieu de passer au bouton suivant : c'est le
+   séparateur de colonnes du presse-papier d'Excel, donc le caractère dont on a
+   besoin pour compléter une ligne à la main. Pour ressortir du champ au
+   clavier : **Échap**, puis Tab (ou Maj+Tab, qui n'a jamais changé).
 
 Les trois passent par la **même vérification** : les lignes sont validées une à
 une et le résultat s'affiche — acceptées, rejetées, pourquoi, à quelle ligne —
@@ -251,6 +255,14 @@ Un écart est *matériel* — c'est-à-dire digne d'attention — lorsqu'il fran
 
 Exiger la **conjonction** (et non l'une ou l'autre) garde la liste d'exceptions
 à une taille qu'une équipe peut réellement traiter le jour J.
+
+> **Un article exclu du périmètre ne produit aucun écart**, quoi qu'on ait
+> compté dessus. C'est ce que l'exclusion veut dire : ni son stock ERP, ni son
+> comptage, ni ses ajustements n'entrent dans le calcul. Si quelqu'un l'a
+> compté malgré tout, la vue *Contrôles* le signale — « exclu du périmètre mais
+> compté en zone B12 » — avec les deux gestes possibles : lever l'exclusion sur
+> la grille Articles, ou retirer la ligne de la feuille. La quantité n'est
+> jamais perdue en silence.
 
 Exception à cette règle : un article compté **alors que l'ERP n'en connaissait
 aucun stock** est toujours matériel. Du stock inconnu du système n'est jamais
@@ -768,6 +780,17 @@ c'est elle qui alimente le plan d'action de la campagne suivante.
 Le bouton **Proposer des causes par IA** analyse les plus gros écarts et propose
 un diagnostic avec sa confiance et sa justification. La proposition apparaît
 **à côté** de la décision, jamais à sa place : vous l'acceptez ou non.
+
+Le modèle lit désormais l'**écart backflush** de chaque article — la part que la
+consommation déclarée explique, ce qu'il en reste, et sur quelle période la
+mesure a été faite. C'est ce qui lui permet de choisir « Écart consommation
+(backflush) », une cause du référentiel qu'il ne pouvait pas fonder auparavant :
+faute de ces chiffres, un écart de consommation ressemblait à une erreur de
+comptage. Il sait aussi d'où vient la quantité comptée — comptée telle quelle, ou
+reconstituée depuis une nomenclature en éclatant un en-cours — et ce que
+« significatif » veut dire sur cette campagne, c'est-à-dire vos seuils.
+
+La même règle vaut pour **Expliquer cet écart**, sur une ligne de la vue Écarts.
 
 ### 3.5 Exploiter les analyses avancées
 

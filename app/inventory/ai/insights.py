@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from ..domain.models import AssignableCause, Item, VarianceLine
+from ..domain.models import AssignableCause, BackflushLine, Item, VarianceLine
 from ..domain.variance import KpiBlock, VarianceSet
 from .client import LlmClient, get_llm_client
 
@@ -43,17 +43,74 @@ class CauseSuggestion:
         return (self.item_number, self.cause_code, self.confidence, self.rationale)
 
 
-_CAUSE_SYSTEM = """\
+#: Comment lire les chiffres d'une campagne. Partagé par les trois prompts.
+#:
+#: Il était sous-entendu, et le modèle l'a donc deviné. Les propositions se
+#: rabattaient sur « écart de comptage » parce que c'est la cause qu'on devine
+#: sans rien savoir du site : le backflush — le mécanisme qui explique la plus
+#: grosse part des dérives d'un stock déduit de la production, et qui a son
+#: propre code de cause — n'était nulle part dans ce qu'on lui donnait à lire.
+_DOMAIN = """\
+Contexte du site : usine de moteurs électriques, ERP Dynamics 365, stock géré \
+par emplacement (WMS) sur certains entrepôts seulement.
+
+Vocabulaire des chiffres qu'on te donne :
+
+- « stock ERP » est la photo du système gelée juste avant le comptage. C'est la \
+référence, et elle ne bouge plus.
+- « écart » = stock physique − stock ERP. Positif : on a trouvé plus que ce que \
+le système annonce. Négatif : il manque.
+- « ajusté » est ce qui a bougé *après* le comptage (réception tardive, \
+recomptage, sortie postée depuis). L'écart en tient compte ; \
+« écartAvantAjustementsValeur » est ce que le comptage seul avait trouvé.
+- Le comptage se fait en trois sections. « Bord de ligne » : le composant est \
+compté tel quel. « WIP (à éclater) » : un en-cours non déclaré à l'ERP, éclaté \
+en nomenclature pour se ramener à des composants. « WIP assemblé » : un \
+ensemble déjà déclaré, compté tel quel. Une part éclatée importante veut dire \
+que la quantité vient d'un calcul de nomenclature, pas d'un décompte direct.
+
+Le backflush, et pourquoi il compte ici :
+
+La production ne saisit pas ses sorties de composants ligne à ligne : elles \
+sont déduites de la quantité déclarée produite, au prorata de la nomenclature. \
+Cette déduction suppose que la consommation réelle égale la théorique, et \
+l'écart backflush mesure exactement cet écart-là :
+
+    écart backflush = consommation théorique − consommation réelle
+
+Un backflush **positif** veut dire que la déduction a pris moins que la théorie : \
+la pièce est sortie du magasin sans que l'ERP l'enregistre, donc le stock \
+système est surévalué et le comptage trouvera moins. C'est pourquoi il entre \
+dans le raisonnement d'inventaire avec le signe inversé — c'est ce que dit \
+« partBackflush ».
+
+« inexpliqué » = écart − part backflush : ce que la production **n'explique \
+pas**, et donc ce qui reste à diagnostiquer. « tauxExplication » vaut 1 quand \
+le backflush explique tout l'écart, 0 quand il n'apporte rien, et devient \
+négatif quand en tenir compte creuse l'écart au lieu de le combler — ce dernier \
+cas est un signal, pas une erreur de calcul.
+
+« backflushMesure » à faux veut dire que la période ne porte aucune ligne pour \
+cet article : la production ne l'a pas touché. Ce n'est pas la même chose \
+qu'un écart backflush nul mesuré, et il ne faut pas conclure de l'un à l'autre."""
+
+_CAUSE_SYSTEM = f"""\
 Tu es un expert en gestion de stock industriel (WMS, ERP Dynamics 365, \
 procure-to-pay) sur un site de production de moteurs électriques.
 
+{_DOMAIN}
+
 On te donne des écarts d'inventaire et un référentiel de causes standard. Pour \
 chaque article, tu proposes la cause la plus probable, en t'appuyant \
-uniquement sur les faits fournis (signe et taille de l'écart, type d'article, \
-programme, emplacements concernés, présence de WIP, historique).
+uniquement sur les faits fournis.
 
 Règles :
 - Tu choisis un code de cause dans la liste fournie, jamais un autre.
+- Tu regardes le backflush avant de conclure : un écart que la part backflush \
+explique en grande partie n'est pas une erreur de comptage, et le référentiel \
+porte une cause pour cela.
+- À l'inverse, un écart que le backflush n'explique pas se diagnostique sur ce \
+qu'il en reste — l'inexpliqué — et non sur l'écart brut.
 - Ta confiance reflète honnêtement la force des indices : au-dessous de 0.5 \
 quand plusieurs causes sont également plausibles.
 - Ta justification est factuelle, en une ou deux phrases, et cite les chiffres \
@@ -62,9 +119,11 @@ qui la fondent.
 
 Tu réponds exclusivement en JSON valide."""
 
-_NARRATIVE_SYSTEM = """\
+_NARRATIVE_SYSTEM = f"""\
 Tu es responsable inventaire d'un site industriel. Tu rédiges la synthèse de \
 campagne destinée au comité de direction.
+
+{_DOMAIN}
 
 Règles :
 - Tu t'appuies exclusivement sur les chiffres fournis ; tu n'inventes aucun \
@@ -73,7 +132,26 @@ montant, aucun pourcentage, aucun article.
 - Tu distingues explicitement la fiabilité nette (écarts compensés) de la \
 fiabilité brute (somme des écarts absolus), car elles ne racontent pas la \
 même chose.
+- Tu distingues de même la part que la production explique — le backflush — de \
+ce qui reste inexpliqué. Ce sont deux conclusions opposées : la première mène à \
+un chantier sur le mécanisme de déduction, la seconde à une enquête terrain.
 - Tu es explicite sur ce qui reste inexpliqué."""
+
+_EXPLAIN_SYSTEM = f"""\
+Tu es analyste inventaire sur un site industriel. On te soumet **un** article, \
+et tu expliques son écart à quelqu'un qui devra aller vérifier sur le terrain.
+
+{_DOMAIN}
+
+Règles :
+- Tu t'appuies exclusivement sur les faits fournis ; tu n'inventes ni chiffre, \
+ni emplacement, ni mouvement.
+- Tu ouvres par ce que le backflush explique — ou ne recouvre pas — avant toute \
+autre hypothèse : c'est ce qui départage une dérive du mécanisme de déduction \
+d'une erreur de comptage ou de flux.
+- Quand la quantité vient d'un WIP éclaté, tu le dis : elle est calculée depuis \
+une nomenclature, et une nomenclature fausse s'y voit comme un écart de stock.
+- Tu écris en français, factuel et direct, sans introduction ni conclusion."""
 
 
 class InsightEngine:
@@ -171,9 +249,17 @@ class InsightEngine:
         by_warehouse: Sequence[VarianceSet],
         control_summary: dict[str, Any],
         cause_split: dict[str, Any] | None = None,
+        backflush: dict[str, Any] | None = None,
     ) -> str:
-        """A directors'-committee summary grounded in the supplied figures."""
-        facts = {
+        """A directors'-committee summary grounded in the supplied figures.
+
+        :param backflush: ce que la production explique à l'échelle de la
+            campagne. Sans ce bloc, la synthèse présentait l'écart entier comme
+            restant à élucider — ce qui est faux dès que le backflush est chargé,
+            et mène le comité vers une enquête terrain là où le chantier est sur
+            le mécanisme de déduction.
+        """
+        facts: dict[str, Any] = {
             "campagne": campaign_label,
             "dateComptage": count_date,
             "kpis": kpis.as_dict(),
@@ -199,6 +285,8 @@ class InsightEngine:
             "controles": control_summary,
             "repartitionCauses": cause_split or {},
         }
+        if backflush:
+            facts["backflush"] = dict(backflush)
         user = (
             "Voici les chiffres consolidés de la campagne :\n"
             f"{json.dumps(facts, ensure_ascii=False, indent=1, default=str)}\n\n"
@@ -228,13 +316,33 @@ class InsightEngine:
         item: Item | None,
         wip_breakdown: Sequence[dict[str, Any]] = (),
         movements: Sequence[dict[str, Any]] = (),
+        backflush: BackflushLine | None = None,
+        counting: dict[str, Any] | None = None,
+        thresholds: dict[str, Any] | None = None,
     ) -> str:
-        """A short, focused explanation of one article's variance."""
-        facts = {
+        """A short, focused explanation of one article's variance.
+
+        :param backflush: the frozen production figures for this article. Not a
+            duplicate of what the line already carries: the line holds the net,
+            and the diagnosis needs what the net is made of — 40 de
+            sous-consommation contre 38 de sur-consommation ne se lit pas comme
+            2, et ne mène pas à la même vérification.
+        :param counting: how the quantity was obtained — les zones, et la part
+            comptée telle quelle contre la part reconstituée par nomenclature.
+        :param thresholds: ce que « significatif » veut dire sur cette campagne,
+            pour que le modèle ne le devine pas à l'échelle de ses exemples.
+        """
+        facts: dict[str, Any] = {
             "article": _variance_payload(line, item, None),
             "compositionWip": [dict(b) for b in wip_breakdown[:20]],
             "mouvements": [dict(m) for m in movements[:30]],
         }
+        if backflush is not None:
+            facts["backflush"] = _backflush_payload(backflush)
+        if counting:
+            facts["comptage"] = dict(counting)
+        if thresholds:
+            facts["seuilsDeMaterialite"] = dict(thresholds)
         user = (
             f"{json.dumps(facts, ensure_ascii=False, indent=1, default=str)}\n\n"
             "Explique cet écart en 3 à 5 puces factuelles, puis propose la "
@@ -243,7 +351,7 @@ class InsightEngine:
         )
         try:
             return self._client.complete(
-                system=_NARRATIVE_SYSTEM, user=user, max_tokens=900, temperature=0.1
+                system=_EXPLAIN_SYSTEM, user=user, max_tokens=900, temperature=0.1
             ).text.strip()
         except Exception:
             log.exception("Variance explanation failed")
@@ -274,6 +382,19 @@ def _variance_payload(
         "écartAvantAjustementsValeur": float(line.counted_variance_value),
         "compteSansStockErp": line.counted_only,
         "stockErpNonCompte": line.book_only,
+        # Le backflush, dans la convention d'inventaire — c'est-à-dire signe
+        # déjà retourné. Il manquait entièrement, et le modèle diagnostiquait
+        # donc des écarts de consommation comme des erreurs de comptage : le
+        # référentiel porte pourtant une cause « Écart consommation
+        # (backflush) », qu'il n'avait aucun moyen de choisir.
+        "backflushMesure": line.backflush_measured,
+        "partBackflushQte": float(line.backflush_share_qty),
+        "partBackflushValeur": float(line.backflush_share_value),
+        "inexpliqueQte": float(line.unexplained_qty),
+        "inexpliqueValeur": float(line.unexplained_value),
+        "tauxExplication": (
+            None if line.explanation_rate is None else float(line.explanation_rate)
+        ),
     }
     if line.warehouse_id:
         payload["entrepot"] = line.warehouse_id
@@ -284,6 +405,27 @@ def _variance_payload(
             for k, v in features.items()
         }
     return payload
+
+
+def _backflush_payload(line: BackflushLine) -> dict[str, Any]:
+    """Ce dont le net est fait, et sur quelle période il a été mesuré.
+
+    La période est là parce qu'un écart de consommation ne se lit pas sans
+    elle : le même chiffre sur une semaine et sur un trimestre ne mène pas à la
+    même conclusion, et sans la borne le modèle la supposait.
+    """
+    return {
+        "periodeDebut": str(line.period_start),
+        "periodeFin": str(line.period_end),
+        "semaines": line.week_count,
+        "assemblagesConcernes": line.parent_count,
+        "consoTheoriqueQte": float(line.theoretical_qty),
+        "consoReelleQte": float(line.actual_qty),
+        "ecartNetQte": float(line.net_qty),
+        "sousConsommeQte": float(line.under_consumed_qty),
+        "surConsommeQte": float(line.over_consumed_qty),
+        "partInventaireQte": float(line.inventory_share_qty),
+    }
 
 
 def _confidence(value: Any) -> float:

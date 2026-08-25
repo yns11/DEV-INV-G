@@ -57,6 +57,26 @@ export interface Column<T extends Row = Record<string, unknown>> {
   render?: (row: T, index: number) => ReactNode
   /** Value used for sorting and searching when `render` returns a node. */
   value?: (row: T) => string | number | null
+  /**
+   * Les étiquettes d'une colonne qui en porte **plusieurs par ligne**.
+   *
+   * « Signalements » en affiche jusqu'à quatre côte à côte : au-delà des
+   * seuils, hors ERP, non compté, la cause retenue. Avec un `value` unique, il
+   * n'y avait que deux issues, toutes deux fausses. Sans rien — le cas jusqu'ici
+   * — le filtre ne lisait aucune valeur et ne proposait que « (vide) », sur une
+   * colonne pourtant remplie de badges. Avec une chaîne jointe, chaque
+   * *combinaison* serait devenue une entrée : « au-delà des seuils · hors ERP »
+   * à côté de « au-delà des seuils », et cocher la seconde n'aurait pas montré
+   * les lignes de la première.
+   *
+   * Déclarée ici, la facette liste les étiquettes une à une et une ligne est
+   * retenue dès qu'elle en porte **une** de celles cochées. C'est ce que
+   * « montre-moi les hors ERP » veut dire.
+   *
+   * Rend une liste vide pour une ligne sans étiquette : elle se retrouve alors
+   * sous « (vide) », comme partout ailleurs.
+   */
+  tags?: (row: T) => string[]
   help?: string
   /**
    * Filtre propre à cette colonne, en plus de la recherche libre.
@@ -101,18 +121,28 @@ export interface Column<T extends Row = Record<string, unknown>> {
 
 /** Build grid columns straight from a backend column contract. */
 export function columnsFromContract(contract: GridContract): Column[] {
-  return contract.fields.map((field: FieldSpec) => ({
-    key: field.name,
-    label: field.label,
-    numeric: field.type === 'number' || field.type === 'integer',
-    width: field.width,
-    sortable: true,
-    editable: true,
-    choices: field.choices.length ? field.choices : undefined,
-    help: [field.required ? 'Obligatoire' : null, field.help]
-      .filter(Boolean)
-      .join(' · '),
-  }))
+  return contract.fields.map((field: FieldSpec) => {
+    // Le contrat porte le code **et** son libellé. Sans reprendre le second,
+    // la grille d'import offrait de choisir « LINE_SIDE » dans une liste
+    // déroulante, et l'export Excel écrivait le même code : deux endroits où
+    // l'utilisateur lisait du vocabulaire interne.
+    const labels = field.choiceLabels ?? {}
+    return {
+      key: field.name,
+      label: field.label,
+      numeric: field.type === 'number' || field.type === 'integer',
+      width: field.width,
+      sortable: true,
+      editable: true,
+      choices: field.choices.length ? field.choices : undefined,
+      choiceLabel: Object.keys(labels).length
+        ? (value: string) => labels[value] ?? value
+        : undefined,
+      help: [field.required ? 'Obligatoire' : null, field.help]
+        .filter(Boolean)
+        .join(' · '),
+    }
+  })
 }
 
 type SortState = { key: string; direction: 'asc' | 'desc' } | null
@@ -246,6 +276,7 @@ function filterKind<T extends Row>(
   column: Column<T>, distinct: number, rowCount: number,
 ): 'choice' | 'range' | 'text' {
   if (column.filter) return column.filter
+  if (column.tags) return 'choice'
   if (column.numeric) return 'range'
   if (column.choices?.length) return 'choice'
   if (distinct > 0 && distinct <= CHOICE_CEILING && distinct * 2 <= rowCount) {
@@ -260,12 +291,44 @@ function cellOf(row: Row, key: string): unknown {
   return (row as Record<string, unknown>)[key]
 }
 
+/**
+ * Les étiquettes d'une ligne pour cette colonne, ou `null` si elle n'en a pas.
+ *
+ * `null` et non `[]` : l'absence d'étiquette doit se ranger sous « (vide) »
+ * comme une cellule vide, et un tableau vide se serait fondu dans le décompte
+ * sans jamais apparaître dans la liste.
+ */
+function tagsOf<T extends Row>(row: T, column: Column<T>): string[] | null {
+  if (!column.tags) return null
+  const found = column.tags(row).map((tag) => tag.trim()).filter(Boolean)
+  return found.length > 0 ? found : null
+}
+
 function defaultValue<T extends Row>(row: T, column: Column<T>): string | number | null {
   const raw = column.value ? column.value(row) : cellOf(row, column.key)
   if (raw === null || raw === undefined) return null
   if (typeof raw === 'number' || typeof raw === 'string') return raw
   if (typeof raw === 'boolean') return raw ? 1 : 0
   return String(raw)
+}
+
+/**
+ * Ce qu'une cellule vaut dans un fichier exporté.
+ *
+ * La valeur brute, sauf sur une colonne qui sait nommer ses codes : là, le
+ * libellé. Un tableur ne trie ni ne somme `LINE_SIDE`, et personne ne le lit.
+ */
+export function exportValue<T extends Row>(
+  row: T,
+  column: Column<T>,
+): string | number | null {
+  const value = defaultValue(row, column)
+  // `typeof` restreint le type — un libellé ne se demande que sur du texte.
+  // La cellule vide, elle, est un choix : une colonne peut nommer l'absence
+  // pour que le filtre la propose, et ce nom-là n'a rien à faire dans un
+  // fichier.
+  if (!column.choiceLabel || typeof value !== 'string' || value === '') return value
+  return column.choiceLabel(value)
 }
 
 export function DataGrid<T extends Row>({
@@ -365,7 +428,17 @@ export function DataGrid<T extends Row>({
       if (column.filter === false) continue
       const tally = new Map<string, number>()
       for (const row of rows) {
-        const value = defaultValue(row, column)
+        // Une colonne à étiquettes en compte plusieurs par ligne : c'est
+        // l'étiquette qui est la valeur, jamais la combinaison. Sans quoi
+        // « hors ERP » et « au-delà des seuils · hors ERP » seraient deux
+        // entrées, et cocher la première laisserait la seconde de côté.
+        const tags = tagsOf(row, column)
+        if (tags) {
+          for (const tag of tags) tally.set(tag, (tally.get(tag) ?? 0) + 1)
+          if (tally.size > CHOICE_CEILING) break
+          continue
+        }
+        const value = column.tags ? null : defaultValue(row, column)
         // La case vide est une valeur comme une autre : c'est celle qui répond
         // à « les articles dans le périmètre » ou « les lignes sans
         // commentaire ». L'écarter rendait ces deux questions impossibles à
@@ -446,6 +519,10 @@ export function DataGrid<T extends Row>({
       if (
         needle &&
         !columns.some((column) => {
+          const tags = tagsOf(row, column)
+          if (tags) {
+            return tags.some((tag) => tag.toLowerCase().includes(needle))
+          }
           const value = defaultValue(row, column)
           return value !== null && String(value).toLowerCase().includes(needle)
         })
@@ -455,6 +532,14 @@ export function DataGrid<T extends Row>({
       return active.every(([key, filter]) => {
         const column = byKey.get(key)
         if (!column) return true
+        const tags = column.tags ? tagsOf(row, column) : null
+        if (column.tags && filter.kind === 'choice') {
+          // « Une des étiquettes cochées », et non « toutes » : on demande
+          // « montre-moi les hors ERP », pas « ceux qui ne sont *que* hors ERP ».
+          return tags === null
+            ? filter.values.includes('')
+            : tags.some((tag) => filter.values.includes(tag))
+        }
         const value = defaultValue(row, column)
         if (filter.kind === 'choice') {
           return filter.values.includes(value === null ? '' : String(value))
@@ -721,7 +806,13 @@ export function DataGrid<T extends Row>({
               // La valeur, pas ce qui est peint : une cellule rendue en badge ou
               // en deux lignes a derrière elle un nombre, et c'est lui qu'un
               // tableur peut trier et sommer.
-              .map((c) => [c.key, defaultValue(row, c)]),
+              //
+              // Un code fait exception. `LINE_SIDE` n'est pas une valeur qu'on
+              // trie ou qu'on somme, c'est un mot de passe interne ; le fichier
+              // qui arrivait chez le gestionnaire en était plein. Là où la
+              // colonne sait nommer ses valeurs, c'est le nom qui part — et il
+              // se recharge, l'import reconnaissant le libellé comme le code.
+              .map((c) => [c.key, exportValue(row, c)]),
           ),
         ),
       })
@@ -1002,7 +1093,7 @@ export function DataGrid<T extends Row>({
                                 <option value="" />
                                 {column.choices.map((choice) => (
                                   <option key={choice} value={choice}>
-                                    {choice}
+                                    {column.choiceLabel?.(choice) ?? choice}
                                   </option>
                                 ))}
                               </select>

@@ -9,6 +9,7 @@ import { CompositionBar, Pareto, VarianceBars } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { BreakdownModal, DrillCell, type BreakdownAspect } from '../components/BreakdownModal'
 import { Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Skeleton, useErrorToast } from '../components/ui'
+import { FLAGS_COLUMN } from './varianceFlags'
 
 // --------------------------------------------------------------------------- //
 // Variances
@@ -268,25 +269,7 @@ export function VariancesTab({
           } as Column<VarianceRow>,
         ]
       : []),
-    {
-      key: 'flags',
-      label: 'Signalements',
-      width: 200,
-      sortable: false,
-      render: (row) => (
-        <span className="row-wrap" style={{ gap: 'var(--space-1)' }}>
-          {row.isMaterial && <Badge tone="danger">au-delà des seuils</Badge>}
-          {row.bookOnly && <Badge tone="warning">non compté</Badge>}
-          {row.countedOnly && <Badge tone="info">hors ERP</Badge>}
-          {row.causeCode && <Badge tone="success">cause {row.causeCode}</Badge>}
-          {!row.causeCode && row.aiSuggestedCause && (
-            <Badge tone="accent" title={row.aiRationale}>
-              IA : {row.aiSuggestedCause}
-            </Badge>
-          )}
-        </span>
-      ),
-    },
+    FLAGS_COLUMN,
     {
       key: 'explain',
       label: '',
@@ -443,7 +426,10 @@ export function VariancesTab({
               getRowId={(row, index) => `${row.itemNumber}-${row.warehouseId}-${row.locationId}-${index}`}
               searchPlaceholder="Filtrer par article, désignation, programme…"
               maxHeight={640}
-              initialSort={{ key: 'varianceValue', direction: 'desc' }}
+              // Ascendant : les manques d'abord. L'écart le plus négatif est
+              // le stock que l'usine a perdu, et c'est celui qu'on va chercher
+              // en premier — un tri descendant mettait les excédents en tête.
+              initialSort={{ key: 'varianceValue', direction: 'asc' }}
               footer={
                 <span className="subtle">
                   Périmètre : {overview.campaign.code} · stock ERP gelé le{' '}

@@ -146,6 +146,28 @@ def build_variances(
     for k in sorted(set(book_qty) | set(counted_qty) | set(adjusted_qty)):
         item_number, wh, loc = k
         item = items.get(item_number)
+        # **Un article exclu du périmètre ne produit aucun écart.**
+        #
+        # C'est la règle que `in_perimeter` énonce pour les lectures ERP, et
+        # elle vaut ici pour la même raison : « un article délibérément laissé
+        # hors du périmètre ne doit pas revenir par les quantités relevées
+        # dessus ». Elle n'était appliquée qu'à l'entrée du stock ERP, dont la
+        # ligne n'est plus chargée — mais le *comptage*, lui, arrivait par les
+        # feuilles et les journaux, et un article exclu ressortait en écart
+        # égal à la totalité du comptage, systématiquement matériel puisque son
+        # stock ERP vaut zéro. Une exclusion produisait donc exactement ce
+        # qu'elle existe pour éviter.
+        #
+        # `excluded_everywhere` et non `excluded_from_generic` : une exclusion
+        # GENERIQUE ne retire l'article que de la consolidation des zones, et
+        # son écart reste légitime là où il est bel et bien inventorié.
+        #
+        # Ce qui est compté sur un article exclu n'est pas perdu pour autant :
+        # `EXCLUDED_ITEM_COUNTED` le signale dans les contrôles, journaux et
+        # feuilles compris. Le retirer d'ici sans le dire ailleurs serait la
+        # troncature muette que ce projet refuse.
+        if item is not None and item.excluded_everywhere:
+            continue
         cost = unit_cost.get(item_number)
         if cost is None:
             cost = item.std_price if item else ZERO

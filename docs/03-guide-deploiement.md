@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 2225 contrôles, ~45 s ; 63 ignorés sans PostgreSQL
+make test      # 2375 contrôles, ~45 s ; 64 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -680,6 +680,10 @@ ait un sens, et `GET /api/erp/stock-dates` fait un `SELECT DISTINCT
 snapshot_date … LIMIT 30` sur cette table, borné pour la même raison que la liste
 affichée.
 
+En lecture par le miroir, cette liste ne vaut que ce que le job de
+synchronisation y a déposé : c'est `stock_days` qui décide combien de photos
+elle propose — voir *Le snapshot de stock physique* plus bas.
+
 `INV_ERP_MOVEMENTS_TABLE` désigne la table des **mouvements de stock**, lue par
 « Tout charger de l'ERP » dans la vue Comparaison. Une ligne par référence et par
 jour, une colonne par flux : `reception`, `expedition`, `production`,
@@ -813,11 +817,16 @@ jour, d'où la borne ; la maille référence × jour se retaille ensuite sur
 n'importe quelle période d'inventaire. La dernière cellule affiche l'intervalle
 couvert et le total de chacun des six flux.
 
-Le **snapshot de stock physique** n'a besoin que d'un interrupteur,
-`sync_stock` : la source est partitionnée par jour et le job n'en copie que la
-tranche la plus récente — il n'y a pas d'historique à borner. La dernière cellule
-affiche la date copiée et le nombre de lignes, ce qui répond à la seule question
-que pose l'écran *Stock ERP* : de quel jour vient ce stock.
+Le **snapshot de stock physique** se copie sous deux widgets : `sync_stock` et
+`stock_days`. La source est partitionnée par jour et en garde tout l'historique ;
+le job en copie les **sept dernières photos publiées** — des jours publiés, pas
+des jours de calendrier, puisque la source ne publie pas le week-end. C'est ce
+qui alimente la liste « Photo du » de l'écran *Stock ERP* : n'en copier qu'une,
+comme le faisait la première version, réduisait cette liste à la seule journée
+la plus récente, c'est-à-dire à celle que le choix existe pour ne pas subir. Un
+inventaire étalé sur plus d'une semaine demande d'élever `stock_days`. La
+dernière cellule affiche le nombre de photos, la plus récente et le total de
+lignes.
 
 ```bash
 # 1. l'App d'abord : la migration 006 s'applique à son démarrage et ouvre

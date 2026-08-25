@@ -14,6 +14,7 @@ from .counting_service import CountingService
 from .evidence_service import ArchivedEvidence, EvidenceService
 from .generic_service import GenericService
 from .import_service import ImportOutcome, ImportService
+from .insight_service import InsightService
 from .manager_service import ManagerService, Perimeter
 from .referential_service import BookStockView, LocationView, ReferentialService
 from .report_service import ReportService
@@ -41,6 +42,7 @@ __all__ = [
     "ScanService",
     "ImportOutcome",
     "ImportService",
+    "InsightService",
     "ManagerService",
     "Perimeter",
     "ReferentialService",

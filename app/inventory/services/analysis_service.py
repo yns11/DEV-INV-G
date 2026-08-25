@@ -70,8 +70,13 @@ class AnalysisService:
     """Reconciliation and analysis of a campaign."""
 
     def __init__(self, ctx: ServiceContext) -> None:
+        from .insight_service import InsightService
+
         self.ctx = ctx
         self._variance_cache: dict[tuple[str, str], list[VarianceLine]] = {}
+        #: Ce qu'on montre au modèle, et ce qu'il en propose. Composition, pas
+        #: héritage : les chiffres restent ici, le dossier envoyé est là-bas.
+        self.insights = InsightService(ctx, self)
 
     # ------------------------------------------------------- reconciliation
 
@@ -876,117 +881,19 @@ class AnalysisService:
         }
 
     # ------------------------------------------------------------------- AI
+    #
+    # Trois façades d'une ligne. Ce sont les noms que l'API et les contrôles
+    # connaissent, et la dernière fois qu'un découpage en a oublié une, tout
+    # chargement de fichier a répondu 500 en production pendant deux jours.
 
     def suggest_causes(self, campaign: Campaign, *, max_items: int = 40) -> int:
-        """Ask the model to propose a root cause for the largest variances.
-
-        Proposals are stored in the ``ai_*`` columns only. An analyst still has
-        to accept one for it to become the campaign's answer.
-        """
-        from ..ai import InsightEngine
-
-        ctx = self.ctx
-        ctx.guard(campaign, "analysis")
-        frame = self.frame(campaign, granularity="item")
-        features: dict[str, dict[str, Any]] = {}
-        if not frame.empty:
-            from ..analytics import detect_anomalies
-
-            enriched = detect_anomalies(frame).frame
-            for row in enriched.itertuples():
-                features[row.item_number] = {
-                    "wipShare": round(float(getattr(row, "wip_share", 0.0)), 4),
-                    "varianceRatio": (
-                        None if pd.isna(row.variance_ratio)
-                        else round(float(row.variance_ratio), 4)
-                    ),
-                    "anomalyPercentile": round(
-                        float(getattr(row, "anomaly_percentile", 0.0)), 4
-                    ),
-                    "movementCount": int(getattr(row, "movement_count", 0)),
-                }
-
-        suggestions = InsightEngine().suggest_causes(
-            variances=self.variances(campaign, granularity="item"),
-            causes=ctx.analysis.list_causes(),
-            items=ctx.referentials.items_by_number(campaign.id),
-            features=features,
-            max_items=max_items,
-        )
-        if not suggestions:
-            return 0
-        ctx.analysis.save_ai_suggestions(
-            campaign.id, [s.as_tuple() for s in suggestions]
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.UPDATE,
-            entity_type="variance_analysis",
-            summary=f"{len(suggestions)} proposition(s) de cause générée(s) par l'IA",
-            after={"count": len(suggestions)},
-        )
-        return len(suggestions)
+        return self.insights.suggest_causes(campaign, max_items=max_items)
 
     def narrative(self, campaign: Campaign) -> str:
-        """Generate the campaign summary for the closing report."""
-        from ..ai import InsightEngine
-
-        kpis = self.kpis(campaign)
-        lines = self.variances(campaign, granularity="item")
-        top = aggregate_by(lines, "item", campaign=campaign)[:15]
-        by_warehouse = aggregate_by(
-            self.variances(campaign, granularity="item_location"),
-            "warehouse",
-            campaign=campaign,
-        )
-        return InsightEngine().campaign_summary(
-            campaign_label=f"{campaign.code} — {campaign.label}",
-            count_date=str(campaign.count_date),
-            kpis=kpis,
-            top_variances=top,
-            by_warehouse=by_warehouse,
-            control_summary=self.controls(campaign)["summary"],
-            cause_split=self.cause_split(campaign),
-        )
+        return self.insights.narrative(campaign)
 
     def explain(self, campaign: Campaign, item_number: str) -> dict[str, Any]:
-        """A focused explanation of one article's variance."""
-        from ..ai import InsightEngine
-
-        ctx = self.ctx
-        line = next(
-            (l for l in self.variances(campaign, granularity="item")
-             if l.item_number == item_number),
-            None,
-        )
-        if line is None:
-            raise NotFoundError("Article introuvable dans les écarts.", item=item_number)
-
-        breakdown = ctx.consolidation.wip_breakdown(campaign.id, child_item=item_number)
-        movements = [
-            {
-                "date": str(a.physical_date) if a.physical_date else None,
-                "kind": str(a.kind),
-                "qty": float(a.qty),
-                "value": float(a.value),
-                "location": f"{a.warehouse_id}/{a.location_id}",
-                "journal": a.journal_number,
-            }
-            for a in ctx.adjustments.list(campaign.id)
-            if a.item_number == item_number
-        ]
-        text = InsightEngine().explain_variance(
-            line=line,
-            item=ctx.referentials.items_by_number(campaign.id).get(item_number),
-            wip_breakdown=breakdown,
-            movements=movements,
-        )
-        return {
-            "itemNumber": item_number,
-            "explanation": text,
-            "wipBreakdown": breakdown,
-            "movements": movements,
-        }
+        return self.insights.explain(campaign, item_number)
 
     # ------------------------------------------------------- human analysis
 
@@ -1154,6 +1061,7 @@ def _backflush_label(net: Decimal) -> str:
     if net < -_BACKFLUSH_TOLERANCE:
         return "Surconsommation"
     return "Conforme"
+
 
 
 def _period_payload(period: dict[str, Any]) -> dict[str, Any] | None:

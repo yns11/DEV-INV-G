@@ -188,6 +188,23 @@ class ImportService:
         """Essai à blanc — voir :class:`ImportParser`."""
         return self.parser.preview(*args, **kwargs)
 
+    def check_duplicate(
+        self, campaign_id: str, target: str, **kwargs: Any
+    ) -> dict[str, Any] | None:
+        """Ce fichier a-t-il déjà été chargé ? — voir :class:`ImportBatches`.
+
+        Même façade d'une ligne que :meth:`parse` et :meth:`preview`, et pour la
+        même raison. Elle avait été oubliée au découpage : la méthode est partie
+        avec la provenance, l'appelant est resté sur ce service, et **tout
+        chargement de fichier échouait en 500** — pas seulement le stock ERP,
+        les six grilles.
+
+        Rien ne l'a signalé parce que la suite appelle les importeurs
+        directement : la couture entre le routeur et le service n'était vérifiée
+        par rien. C'est ce que ferme désormais ``test_router_service_seam``.
+        """
+        return self.batches.check_duplicate(campaign_id, target, **kwargs)
+
     # -------------------------------------------------------------- importers
 
     def import_items(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:

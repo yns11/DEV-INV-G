@@ -296,6 +296,11 @@ class InsightEngine:
             "## Principaux contributeurs à l'écart\n"
             "## Points de vigilance et contrôles\n"
             "## Actions recommandées (3 à 5, priorisées, avec l'enjeu en €)\n"
+            "\n"
+            "Les chiffres de la campagne et les principaux contributeurs se "
+            "présentent en **tableau** (format GitHub, colonnes de chiffres "
+            "alignées à droite avec `---:`) : ce sont des mesures comparables "
+            "ligne à ligne, et une énumération en prose se relit mal en comité.\n"
         )
         try:
             response = self._client.complete(

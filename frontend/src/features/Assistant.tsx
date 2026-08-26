@@ -22,6 +22,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { assistantApi } from '../lib/api'
 import type { AssistantProfile, AssistantTurn, Overview } from '../lib/types'
+import { Markdown } from '../lib/markdown'
 import { Alert, Badge, Button, Card, Icons, useErrorToast } from '../components/ui'
 
 const MAX_FILES = 5
@@ -342,43 +343,5 @@ function Bubble({ message }: { message: Message }) {
         ) : null}
       </div>
     </div>
-  )
-}
-
-/**
- * The small subset of markdown the assistant is asked to produce.
- *
- * A full renderer would be a dependency and an injection surface for the sake
- * of bullets and bold. Everything here writes text nodes, never HTML.
- */
-function Markdown({ text }: { text: string }) {
-  const blocks = text.split(/\n{2,}/)
-  return (
-    <>
-      {blocks.map((block, index) => {
-        const lines = block.split('\n')
-        const bullets = lines.every((line) => /^\s*[-*•]\s+/.test(line))
-        if (bullets) {
-          return (
-            <ul key={index} style={{ margin: 0, paddingLeft: '1.1rem' }}>
-              {lines.map((line, i) => (
-                <li key={i}>{inline(line.replace(/^\s*[-*•]\s+/, ''))}</li>
-              ))}
-            </ul>
-          )
-        }
-        return <p key={index}>{lines.map((line, i) => [inline(line), <br key={i} />])}</p>
-      })}
-    </>
-  )
-}
-
-function inline(text: string) {
-  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) =>
-    part.startsWith('**') && part.endsWith('**') ? (
-      <strong key={index}>{part.slice(2, -2)}</strong>
-    ) : (
-      part
-    ),
   )
 }

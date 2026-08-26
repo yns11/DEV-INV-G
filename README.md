@@ -152,6 +152,8 @@ Makefile                    Points d'entrée développeur
 | [`04-guide-utilisateur.md`](docs/04-guide-utilisateur.md) | Le processus vu par l'utilisateur, de la préparation à la clôture |
 | [`05-modele-de-donnees.md`](docs/05-modele-de-donnees.md) | Schémas, types, index, définition exacte des indicateurs |
 | [`06-top20-ameliorations.md`](docs/06-top20-ameliorations.md) | Revue critique : 20 améliorations priorisées, séquencées |
+| [`07-comptages-avances.md`](docs/07-comptages-avances.md) | Étude de conception : compter certains emplacements avant le jour J, dans une seule campagne |
+| [`08-algorigrammes.md`](docs/08-algorigrammes.md) | Algorigrammes du processus actuel et du processus avec comptages avancés |
 
 ---
 

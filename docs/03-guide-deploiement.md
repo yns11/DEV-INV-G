@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 2389 contrôles, ~45 s ; 64 ignorés sans PostgreSQL
+make test      # 2400 contrôles, ~45 s ; 69 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -672,6 +672,15 @@ article × entrepôt × emplacement, partitionnée par `snapshot_date`. Les colo
 attendues sont `item_id`, `entrepot`, `emplacement`, `stock_physique`, `unite` et
 `snapshot_date` ; l'entité juridique et les lignes supprimées sont filtrées en
 amont.
+
+**« Une ligne par emplacement » est une approximation, et l'application ne s'y
+fie pas.** La source répartit le stock d'un emplacement sur plusieurs lignes dès
+qu'une dimension qu'on ne copie pas — lot, statut qualité — les distingue ; c'est
+courant sur les emplacements de quarantaine. Les quantités sont **sommées** à
+l'import, jamais remplacées : n'en garder qu'une sous-évaluerait le stock ERP et
+produirait un écart d'inventaire faux sans que rien ne le signale. Le miroir ne
+pose donc aucune contrainte d'unicité sur ces quatre colonnes (migration 024) —
+la copie doit dire exactement ce que dit la lecture directe.
 
 L'écran propose les journées publiées et **n'en charge qu'une**, celle que
 l'utilisateur désigne — la plus récente par défaut. Deux conséquences pour la
@@ -1312,6 +1321,7 @@ taille du fichier pour un export ERP, plafonnée par `INV_MAX_UPLOAD_BYTES`
 |---|---|---|
 | **502 Bad Gateway** | L'app n'écoute pas sur `DATABRICKS_APP_PORT`, ou sur `localhost` | La commande est `python main.py` ; `main.py` lit `DATABRICKS_APP_PORT` et se lie à `0.0.0.0`. Vérifiez la ligne `Uvicorn running on http://0.0.0.0:<port>` dans les logs |
 | `[UNSUPPORTED_DATA_SOURCE_WRITE] … allowed to run DML on serverless compute` au `bundle run` de la synchronisation | Le calcul serverless refuse l'écriture JDBC distribuée vers Lakebase | Corrigé : le job retombe de lui-même sur le chemin par le driver et l'écrit dans le journal. Pour éviter d'y venir après la lecture, passez `--driver-side` (§ *Sur calcul serverless…*) |
+| `duplicate key value violates unique constraint "erp_stock_snapshot_pkey"` à la substitution du stock | La source publie légitimement plusieurs lignes pour un même emplacement (lot, statut qualité) ; le miroir exigeait l'unicité | Corrigé par la **migration 024**, qui remplace la clé primaire par un index non unique. Redéployez l'App — c'est elle qui migre — **avant** de relancer la synchronisation. Ne dédupliquez pas au chargement : cela sous-évaluerait le stock |
 | `ModuleNotFoundError` au démarrage | Dépendance absente de `app/requirements.txt` | Ajoutez-la et redéployez ; aucun paquet système n'est installable |
 | `/api/health` → `ready: false` | Lakebase non attaché ou permissions manquantes | Vérifiez la ressource `postgres` et `CAN_CONNECT_AND_CREATE` |
 | `Database instance '<hôte>.database....cloud.databricks.com' not found` | Appel de l'API du palier *provisionné* avec un nom d'hôte | Corrigé : le credential est désormais émis contre le chemin de ressource de l'endpoint (§2.3). Vérifiez que `INV_LAKEBASE_BRANCH` figure bien dans les variables de l'app |

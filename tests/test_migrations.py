@@ -49,6 +49,7 @@ SHIPPED = {
     "021_campaign_published_at": "84865dcef4f3",
     "022_evidence_blob": "1953889cb85a",
     "023_count_sheet_line_formula": "e7cbaa4c82f9",
+    "024_erp_stock_snapshot_not_unique": "94becc3a8b0d",
 }
 
 

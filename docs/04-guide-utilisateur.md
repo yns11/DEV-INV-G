@@ -904,6 +904,13 @@ L'assistant peut comparer, expliquer un mécanisme métier, formuler une
 hypothèse — à condition de l'annoncer comme telle. Un chiffre absent du dossier
 est déclaré absent, jamais estimé en silence.
 
+**Les réponses sont mises en forme** : titres, listes, gras, et surtout de vrais
+**tableaux**, alignés et lisibles comme ceux du reste de l'application. Dès que
+la question compare plusieurs articles, zones ou périodes sur les mêmes mesures,
+la réponse arrive en tableau — colonnes de chiffres alignées à droite — plutôt
+qu'en énumération. C'est aussi le cas de la **Synthèse IA** de clôture. Vous
+pouvez le demander explicitement : « présente-moi ça en tableau ».
+
 Trois choses ne changent pas :
 
 - **le modèle n'a ni base de données ni outil.** Il ne peut être juste ou faux

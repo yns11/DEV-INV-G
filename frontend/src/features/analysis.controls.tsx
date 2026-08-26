@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ClosureChecklistView } from '../components/ClosureChecklist'
 import { api } from '../lib/api'
 import type { Overview } from '../lib/types'
+import { Markdown } from '../lib/markdown'
 import { DataGrid } from '../components/DataGrid'
 import { FindingGroups } from '../components/Findings'
 import { Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Skeleton } from '../components/ui'
@@ -182,8 +183,11 @@ export function SummaryTab({ campaignId }: { campaignId: string }) {
                 Rédaction automatique à partir des données de la campagne. Vérifiez
                 chaque chiffre avant diffusion.
               </Alert>
-              <div style={{ whiteSpace: 'pre-wrap', lineHeight: 'var(--leading-normal)' }}>
-                {data.markdown}
+              {/* Le serveur demande au modèle une note structurée en sections
+                  markdown ; l'afficher en texte brut mettait « ## Message clé »
+                  sous les yeux du comité de direction. */}
+              <div className="md">
+                <Markdown text={data.markdown} />
               </div>
             </div>
           )}

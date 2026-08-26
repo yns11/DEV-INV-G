@@ -44,8 +44,11 @@ MIGRATIONS = Path(__file__).resolve().parents[1] / "app" / "inventory" / "db" / 
 
 #: La ligne du refus, telle que la production l'a rendue — deux fois.
 DUPLICATE = ("2026-08-21", "mass-00037799", "QUAL VRAC", "PRISON QO")
-#: La base jetable de ces contrôles. Séparée, parce qu'ils reposent le schéma.
-SCRATCH = "inventaire_controle_stock"
+#: La base jetable de ces contrôles. Séparée, parce qu'ils reposent le schéma —
+#: et **propre au processus**, parce qu'un `DROP DATABASE` attend les connexions
+#: des autres : deux exécutions simultanées de la suite ne s'échouaient pas
+#: l'une l'autre, elles restaient bloquées, ce qui est pire.
+SCRATCH = f"inventaire_controle_stock_{os.getpid()}"
 
 INSERT = (
     "INSERT INTO inventory.erp_stock_snapshot "

@@ -52,6 +52,14 @@ BATCH = 5_000
 #: mais l'écriture côté PostgreSQL.
 WRITE_PARTITIONS = 8
 
+#: Le code d'erreur par lequel le calcul serverless refuse l'écriture JDBC.
+#:
+#: Databricks y restreint le DML à une liste de sources, et le connecteur JDBC
+#: générique n'en fait pas partie — quoi qu'en laisse croire le mot
+#: « postgresql » qui y figure : celui-là désigne la fédération par connexion
+#: Unity Catalog, pas `format("jdbc")` avec une URL et un mot de passe.
+_REFUSES_JDBC = "UNSUPPORTED_DATA_SOURCE_WRITE"
+
 
 #: Comment un type PostgreSQL se dit en SQL Spark.
 #:
@@ -157,6 +165,7 @@ def stage(
     jdbc_url: str = "",
     jdbc_properties: dict[str, str] | None = None,
     driver_side: bool = False,
+    say: Any = None,
 ) -> int:
     """Remplit ``<table>_staging`` et rend le nombre de lignes écrites.
 
@@ -170,6 +179,7 @@ def stage(
     une source qui ne renvoie rien est une anomalie, pas une mise à jour, et
     substituer un vide effacerait un miroir valide.
     """
+    say = say or log.info
     staging = f"{table}_staging"
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {staging} (LIKE {table} INCLUDING DEFAULTS)"
@@ -180,16 +190,40 @@ def stage(
     if driver_side or not jdbc_url:
         return _stage_through_driver(conn, frame, staging, columns)
 
-    (
-        frame.repartition(WRITE_PARTITIONS)
-        .write.format("jdbc")
-        .option("url", jdbc_url)
-        .option("dbtable", staging)
-        .option("batchsize", BATCH)
-        .options(**(jdbc_properties or {}))
-        .mode("append")
-        .save()
-    )
+    try:
+        (
+            frame.repartition(WRITE_PARTITIONS)
+            .write.format("jdbc")
+            .option("url", jdbc_url)
+            .option("dbtable", staging)
+            .option("batchsize", BATCH)
+            .options(**(jdbc_properties or {}))
+            .mode("append")
+            .save()
+        )
+    except Exception as exc:
+        # Le refus du serverless, et lui seul. Toute autre panne d'écriture —
+        # identifiants, colonne absente, base injoignable — se reproduirait à
+        # l'identique par le driver : la rattraper ici ne ferait que payer la
+        # lecture une seconde fois pour aboutir à la même erreur, plus tard et
+        # sous un autre nom.
+        if _REFUSES_JDBC not in str(exc):
+            raise
+        say(
+            f"{table} : le calcul serverless refuse l'écriture JDBC distribuée "
+            f"({_REFUSES_JDBC}). Repli sur le driver, en flux. La copie est "
+            "plus lente — c'est la bande passante d'une machine — mais elle "
+            "aboutit ; --driver-side l'impose d'emblée et évite d'y venir "
+            "après la lecture."
+        )
+        # La transaction de la connexion de contrôle n'a rien à voir avec
+        # l'échec Spark, mais le refus survient à l'analyse : rien n'a été
+        # écrit. On vide quand même avant de reprendre — une écriture partielle
+        # laisserait ses lignes, et le repli les doublerait.
+        conn.rollback()
+        conn.execute(f"TRUNCATE {staging}")
+        conn.commit()
+        return _stage_through_driver(conn, frame, staging, columns)
     return int(conn.execute(f"SELECT count(*) FROM {staging}").fetchone()[0])
 
 

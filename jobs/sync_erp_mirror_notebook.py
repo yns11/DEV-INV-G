@@ -426,6 +426,7 @@ def prepare(fqn, columns, table, unique_on="", where=""):
     return stage(
         connection, frame, table, columns,
         jdbc_url=jdbc_url, jdbc_properties=jdbc_properties,
+        say=lambda message: print(f"  ⚠ {message}"),
     )
 
 

@@ -342,7 +342,7 @@ curl -s localhost:8000/api/health | jq
 ### 3.5 Tests et qualité
 
 ```bash
-make test      # 2375 contrôles, ~45 s ; 64 ignorés sans PostgreSQL
+make test      # 2389 contrôles, ~45 s ; 64 ignorés sans PostgreSQL
 make lint      # ruff + tsc
 make check     # les deux
 ```
@@ -841,6 +841,35 @@ Le job `inventory_sync_erp_mirror` du bundle fait la même chose en ligne de
 commande ; sa planification est en pause, faute de quoi il échouerait chaque
 nuit tant que le SDK du runtime n'expose pas l'API Lakebase.
 
+### Sur calcul serverless, la copie passe par le driver
+
+Le remplissage nominal est **distribué** : chaque exécuteur écrit sa partition
+dans la table d'attente par JDBC, sans que rien ne converge vers le driver. Sur
+calcul **serverless**, Databricks refuse cette écriture :
+
+```
+[UNSUPPORTED_DATA_SOURCE_WRITE] … Only csv, json, avro, delta, kafka, parquet,
+orc, text, unity_catalog, binaryFile, xml, excel, simplescan, iceberg, file,
+mysql, postgresql, sqlserver, snowflake, redshift data sources are allowed to
+run DML on serverless compute.
+```
+
+Le mot `postgresql` de cette liste ne sauve rien : il désigne la fédération par
+**connexion Unity Catalog**, pas `format("jdbc")` avec une URL et un mot de
+passe. Le job retombe donc de lui-même sur le chemin par le driver, en flux
+(`toLocalIterator` : une partition à la fois, mémoire bornée), et le journal le
+dit. La copie aboutit ; elle est simplement plus lente, la bande passante étant
+celle d'une machine.
+
+Passer `--driver-side` (job) ou cocher le repli (notebook) prend ce chemin
+d'emblée et évite d'y venir **après** la lecture, qui est la partie coûteuse.
+Sur un cluster classique, laissez le défaut : l'écriture distribuée y passe.
+
+Toute **autre** panne d'écriture — identifiants, colonne absente, base
+injoignable — continue d'arrêter le job tout de suite et sous son propre nom :
+elle se reproduirait à l'identique par le driver, et la rattraper ne ferait que
+payer la lecture une seconde fois pour aboutir à la même erreur.
+
 Le job est planifié à 4 h 30 (Europe/Paris) : un référentiel n'est pas un flux
 temps réel, et la copie doit être en place **avant** la journée de comptage.
 Le bouton « Lire depuis l'ERP » ne change ni de place ni de comportement ; il
@@ -1282,6 +1311,7 @@ taille du fichier pour un export ERP, plafonnée par `INV_MAX_UPLOAD_BYTES`
 | Symptôme | Cause probable | Correction |
 |---|---|---|
 | **502 Bad Gateway** | L'app n'écoute pas sur `DATABRICKS_APP_PORT`, ou sur `localhost` | La commande est `python main.py` ; `main.py` lit `DATABRICKS_APP_PORT` et se lie à `0.0.0.0`. Vérifiez la ligne `Uvicorn running on http://0.0.0.0:<port>` dans les logs |
+| `[UNSUPPORTED_DATA_SOURCE_WRITE] … allowed to run DML on serverless compute` au `bundle run` de la synchronisation | Le calcul serverless refuse l'écriture JDBC distribuée vers Lakebase | Corrigé : le job retombe de lui-même sur le chemin par le driver et l'écrit dans le journal. Pour éviter d'y venir après la lecture, passez `--driver-side` (§ *Sur calcul serverless…*) |
 | `ModuleNotFoundError` au démarrage | Dépendance absente de `app/requirements.txt` | Ajoutez-la et redéployez ; aucun paquet système n'est installable |
 | `/api/health` → `ready: false` | Lakebase non attaché ou permissions manquantes | Vérifiez la ressource `postgres` et `CAN_CONNECT_AND_CREATE` |
 | `Database instance '<hôte>.database....cloud.databricks.com' not found` | Appel de l'API du palier *provisionné* avec un nom d'hôte | Corrigé : le credential est désormais émis contre le chemin de ressource de l'endpoint (§2.3). Vérifiez que `INV_LAKEBASE_BRANCH` figure bien dans les variables de l'app |

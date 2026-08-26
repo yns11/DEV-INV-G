@@ -512,6 +512,10 @@ def _stage(conn: Any, frame: Any, table: str, columns: tuple[str, ...],
     return stage(
         conn, frame, table, columns,
         jdbc_url=url, jdbc_properties=properties, driver_side=driver_side,
+        # Un repli silencieux ferait passer une copie deux fois plus lente pour
+        # le fonctionnement normal, et l'explication manquerait au moment où
+        # quelqu'un se demande pourquoi le job a doublé de durée.
+        say=log.warning,
     )
 
 

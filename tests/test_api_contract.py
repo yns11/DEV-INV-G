@@ -353,6 +353,22 @@ class TestNothingFiltersTheResponse:
 
         assert Payload.model_config.get("extra") == "allow"
 
+    def test_the_payload_base_accepts_the_field_name_too(self):
+        """L'entrée est en `snake_case`, la sortie en alias : les deux tiennent.
+
+        Les charges utiles sont assemblées à partir du `model_dump` d'un modèle
+        de domaine, qui parle `snake_case`. Sans ce drapeau, Pydantic exige
+        l'alias, ne le trouve pas, et FastAPI répond 500 — non pas au premier
+        contrôle, mais à la première ligne réellement rendue. C'est exactement
+        ce qui est arrivé aux trois routes des comptages avancés, en production.
+
+        La sortie, elle, ne bouge pas : FastAPI sérialise par alias, et l'écran
+        lit les mêmes clés qu'avant.
+        """
+        from inventory.api.responses import Payload
+
+        assert Payload.model_config.get("populate_by_name") is True
+
 
 # --------------------------------------------------------------------------- #
 # Le fichier généré est à jour, et l'interface s'en sert

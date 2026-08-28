@@ -74,10 +74,22 @@ class Payload(BaseModel):
     ``extra="allow"`` parce que ces modèles **décrivent** une réponse au lieu de
     la contraindre : un service qui ajoute une clé sans la déclarer ici doit
     faire échouer un contrôle, pas perdre la clé en vol.
+
+    ``populate_by_name`` parce que l'entrée et la sortie n'ont pas la même
+    forme, et que c'est voulu. Le fil parle ``camelCase`` — c'est l'alias, et
+    FastAPI sérialise par lui. Mais ce qui *arrive* dans le modèle est souvent
+    le ``model_dump`` d'un modèle de domaine, qui parle ``snake_case`` : sans ce
+    drapeau, Pydantic exige l'alias, ne le trouve pas, et la route répond 500
+    dès qu'elle a une ligne à rendre — c'est arrivé sur les trois routes des
+    comptages avancés, en production, au premier journal importé.
+
+    Le drapeau n'élargit que l'entrée. La sortie reste en alias, donc l'écran
+    lit toujours les mêmes clés.
     """
 
     model_config = ConfigDict(
         extra="allow",
+        populate_by_name=True,
         # Un champ à valeur par défaut est toujours émis : le déclarer
         # facultatif obligerait l'interface à le tester pour rien.
         json_schema_serialization_defaults_required=True,

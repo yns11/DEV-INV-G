@@ -337,18 +337,36 @@ COUNT_JOURNAL_LINES = GridContract(
         "remplace les valeurs importées sans effacer les corrections manuelles."
     ),
     hint=(
-        "Structure identique à l'export OData standard. Un journal absent du "
-        "référentiel des emplacements est créé automatiquement, sauf si "
-        "l'emplacement est désactivé."
+        "Structure identique à l'export OData standard. Le journal porte sa "
+        "propre référence : « Stock ERP » est le stock d'avant comptage, "
+        "« Qté Comptée » le relevé. Un journal absent du référentiel des "
+        "emplacements est créé automatiquement, sauf si l'emplacement est "
+        "désactivé."
     ),
-    natural_key=("journal_number", "item_number", "warehouse_id", "location_id"),
+    # Le doublon d'un export de journaux, c'est « Journal ERP + Numéro de
+    # ligne ». Ce ne peut pas être (journal, article, entrepôt, emplacement)
+    # comme avant : un journal INVE porte une ligne **par étiquette**, si bien
+    # que dix palettes du même article au même endroit sont dix lignes
+    # légitimes — et l'ancienne clé en signalait neuf comme des doublons.
+    natural_key=("journal_number", "erp_line_number"),
+    # Un export omet parfois le numéro de ligne. Ces lignes-là sont chargées
+    # comme les autres, elles ne sont simplement pas soumises au contrôle
+    # d'unicité — exactement ce que fait l'index de la migration 025, où deux
+    # NULL sont distincts.
+    duplicate_scope=lambda row: row.get("erp_line_number") is not None,
     fields=(
-        FieldSpec("journal_number", "N° de journal",
-                  aliases=("journalnumber", "numero", "journal"), width=150),
+        FieldSpec("journal_number", "Journal ERP",
+                  aliases=("journalnumber", "numero", "journal",
+                           "journal erp", "journal erp source"), width=150),
+        FieldSpec("erp_line_number", "Numéro de ligne", type="integer",
+                  aliases=("linenumber", "numero de ligne", "ligne"),
+                  help="Identifie la ligne dans son journal ERP.", width=140),
         FieldSpec("counting_date", "Date de comptage", type="datetime",
                   aliases=("countingdate", "date de comptage"), width=170),
-        FieldSpec("item_number", "Numéro d'article", required=True,
-                  aliases=("itemnumber", "numero d'article", "reference"), width=170),
+        FieldSpec("site_id", "Site",
+                  aliases=("inventorysiteid", "site"), width=90),
+        FieldSpec("warehouse_id", "Entrepôt", required=True,
+                  aliases=("warehouseid", "entrepot", "warehouse"), width=120),
         # Not required: some warehouses legitimately have a blank location, and
         # an ERP export occasionally drops the value on a single row. Both cases
         # are handled by the mapper, which infers from the journal number and
@@ -356,18 +374,26 @@ COUNT_JOURNAL_LINES = GridContract(
         FieldSpec("location_id", "Emplacement",
                   aliases=("warehouselocationid", "emplacement", "location"),
                   width=150),
-        FieldSpec("warehouse_id", "Entrepôt", required=True,
-                  aliases=("warehouseid", "entrepot", "warehouse"), width=120),
-        FieldSpec("is_posted", "Posté", type="boolean", default=False,
-                  aliases=("isposted", "poste", "posted"), width=100),
-        FieldSpec("description", "Description",
-                  aliases=("description",), width=220),
-        FieldSpec("journal_name_id", "Type de journal", type="enum",
-                  choices=_codes(_JOURNAL_KIND_LABELS),
-                  choice_labels=_JOURNAL_KIND_LABELS, default="INVV",
-                  aliases=("journalnameid", "type de journal"), width=140),
-        FieldSpec("posted_date_time", "Date de postage", type="datetime",
-                  aliases=("posteddatetime",), width=170),
+        # Étiquette et numéro de série descendent **sous** le grain de
+        # l'application, qui reste « emplacement + article » pour tout calcul.
+        # Ils servent la traçabilité et un seul contrôle : signaler qu'une
+        # étiquette d'un emplacement scellé se retrouve comptée dans un autre
+        # journal.
+        FieldSpec("label_id", "Etiquette",
+                  aliases=("sillabelid", "etiquette", "étiquette", "label"),
+                  help="Étiquette logistique — UC, UM ou palette.", width=140),
+        FieldSpec("serial_number", "Numéro de série",
+                  aliases=("itemserialnumber", "numero de serie",
+                           "numéro de série", "serial"), width=170),
+        FieldSpec("item_number", "Numéro d'article", required=True,
+                  aliases=("itemnumber", "numero d'article", "reference"), width=170),
+        # La référence de la ligne, et donc celle d'un comptage avancé : c'est
+        # elle qui rend un lot autonome, sans chargement de stock séparé.
+        FieldSpec("qty_on_hand", "Stock ERP", type="number",
+                  aliases=("onhandquantity", "stock erp", "stock theorique",
+                           "stock théorique"),
+                  help="Le stock ERP avant comptage, tel que le journal le porte.",
+                  width=150),
         # « Stock physique » est l'intitulé de la colonne de quantité dans les
         # exports de l'ERP, journaux de comptage compris — c'est le même mot
         # pour la même chose des deux côtés, et refuser le fichier faute de
@@ -375,9 +401,25 @@ COUNT_JOURNAL_LINES = GridContract(
         # chaque chargement.
         FieldSpec("counted_quantity", "Quantité comptée", type="number", required=True,
                   aliases=("countedquantity", "quantite comptee", "quantite",
-                           "stock physique", "qty"),
+                           "qte comptee", "qté comptée", "stock physique", "qty"),
                   width=160),
         FieldSpec("unit", "Unité", default="PCE", aliases=("unite", "unit"), width=90),
+        FieldSpec("inventory_status_id", "Statut qualité",
+                  aliases=("inventorystatusid", "statut qualite",
+                           "statut qualité"), width=130),
+        FieldSpec("is_posted", "Posté", type="boolean", default=False,
+                  aliases=("isposted", "poste", "posted", "est poste erp",
+                           "est posté erp"), width=100),
+        FieldSpec("posted_date_time", "Date de postage", type="datetime",
+                  aliases=("posteddatetime", "date et heure postage erp"),
+                  width=170),
+        FieldSpec("description", "Description",
+                  aliases=("description", "description journal"), width=220),
+        FieldSpec("journal_name_id", "Type de journal", type="enum",
+                  choices=_codes(_JOURNAL_KIND_LABELS),
+                  choice_labels=_JOURNAL_KIND_LABELS, default="INVV",
+                  aliases=("journalnameid", "type de journal", "type journal"),
+                  width=140),
     ),
 )
 

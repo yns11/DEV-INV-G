@@ -40,6 +40,7 @@ from ..domain.models import (
     Zone,
     normalise_key,
 )
+from ..domain.quantities import ZERO, to_decimal
 from .contracts import is_active_status
 from .parser import RowError
 
@@ -388,13 +389,19 @@ class ImportedJournalLine:
     __slots__ = (
         "counting_date",
         "description",
+        "erp_line_number",
+        "inventory_status_id",
         "is_posted",
         "item_number",
         "journal_number",
         "kind",
+        "label_id",
         "location_id",
         "posted_at",
         "qty",
+        "qty_on_hand",
+        "serial_number",
+        "site_id",
         "unit",
         "warehouse_id",
     )
@@ -413,6 +420,12 @@ class ImportedJournalLine:
         posted_at: dt.datetime | None = None,
         description: str = "",
         counting_date: dt.datetime | None = None,
+        erp_line_number: int | None = None,
+        site_id: str = "",
+        label_id: str = "",
+        serial_number: str = "",
+        inventory_status_id: str = "",
+        qty_on_hand: Decimal = ZERO,
     ) -> None:
         self.item_number = item_number
         self.warehouse_id = warehouse_id
@@ -425,6 +438,13 @@ class ImportedJournalLine:
         self.posted_at = posted_at
         self.description = description
         self.counting_date = counting_date
+        self.erp_line_number = erp_line_number
+        self.site_id = site_id
+        self.label_id = label_id
+        self.serial_number = serial_number
+        self.inventory_status_id = inventory_status_id
+        #: « Stock ERP » : la référence que la ligne porte elle-même.
+        self.qty_on_hand = qty_on_hand
 
     @property
     def key(self) -> tuple[str, str]:
@@ -529,9 +549,37 @@ def map_journal_lines(
                 posted_at=row.get("posted_date_time"),
                 description=str(row.get("description") or "").strip(),
                 counting_date=row.get("counting_date"),
+                erp_line_number=row.get("erp_line_number"),
+                site_id=normalise_key(str(row.get("site_id") or "")),
+                label_id=_identifier(row.get("label_id")),
+                serial_number=_identifier(row.get("serial_number")),
+                inventory_status_id=_identifier(row.get("inventory_status_id")),
+                qty_on_hand=to_decimal(row.get("qty_on_hand") or 0),
             )
         )
     return lines, errors, warnings
+
+
+def _identifier(raw: Any) -> str:
+    """Un identifiant ERP, transporté tel quel.
+
+    Ni majuscules, ni espaces recollés, ni conversion : le traitement réservé
+    aux clés métier rendrait « 001609231 » introuvable dans l'ERP.
+
+    Un seul redressement, et il répare une perte plutôt qu'il n'en cause une :
+    une feuille collée depuis Excel fait arriver l'étiquette en nombre, et
+    ``str()`` en tire alors « 1609231.0 ». Le « .0 » part. Les zéros de tête,
+    eux, sont déjà perdus à ce stade — c'est le tableur qui les a mangés, et
+    aucun code ici ne peut les inventer. D'où la colonne en texte de bout en
+    bout : c'est ce qui fait qu'un fichier arrivé en texte le reste.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, float) and raw.is_integer():
+        return str(int(raw))
+    if isinstance(raw, Decimal):
+        return format(raw.normalize(), "f")
+    return str(raw).strip()
 
 
 # --------------------------------------------------------------------------- #

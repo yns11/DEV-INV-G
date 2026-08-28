@@ -69,9 +69,24 @@ CREATE TABLE IF NOT EXISTS erp_journal (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS erp_journal_uq
     ON erp_journal (campaign_id, journal_number) WHERE deleted_at IS NULL;
-ALTER TABLE erp_journal
-    DROP CONSTRAINT IF EXISTS erp_journal_id_campaign_key,
-    ADD  CONSTRAINT erp_journal_id_campaign_key UNIQUE (id, campaign_id);
+-- Ajoutée seulement si absente, et non pas retirée puis reposée.
+--
+-- Le `DROP … ADD` de la migration 018 ne se rejoue pas ici : les clés étrangères
+-- composites créées plus bas s'appuient sur cet index, et Postgres refuse de le
+-- retirer tant qu'elles existent. La migration 018 ne rencontrait pas le cas —
+-- ses dépendants n'étaient pas dans le même fichier — mais celle-ci si, et
+-- « rejouable sans effet de bord » n'est pas une formule de politesse.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'erp_journal_id_campaign_key'
+          AND conrelid = 'erp_journal'::regclass
+    ) THEN
+        ALTER TABLE erp_journal
+            ADD CONSTRAINT erp_journal_id_campaign_key UNIQUE (id, campaign_id);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS erp_journal_scope (
     erp_journal_id UUID NOT NULL,
@@ -150,9 +165,17 @@ CREATE TABLE IF NOT EXISTS early_count_batch (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS early_count_batch_uq
     ON early_count_batch (campaign_id, code) WHERE deleted_at IS NULL;
-ALTER TABLE early_count_batch
-    DROP CONSTRAINT IF EXISTS early_count_batch_id_campaign_key,
-    ADD  CONSTRAINT early_count_batch_id_campaign_key UNIQUE (id, campaign_id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'early_count_batch_id_campaign_key'
+          AND conrelid = 'early_count_batch'::regclass
+    ) THEN
+        ALTER TABLE early_count_batch
+            ADD CONSTRAINT early_count_batch_id_campaign_key UNIQUE (id, campaign_id);
+    END IF;
+END $$;
 
 -- Le premier gel **par objet** du produit. La matrice de mutabilité reste
 -- consultée en premier et garde le dernier mot pour interdire ; le scellement

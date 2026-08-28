@@ -114,6 +114,42 @@ def _journal(db, campaign_id: str, number: str) -> str:
     return journal_id
 
 
+class TestTheMigrationReplays:
+    """« Idempotent : rejouable sans effet de bord » n'est pas une formule.
+
+    La première version employait le `DROP CONSTRAINT … ADD CONSTRAINT` de la
+    migration 018 pour poser les clés `(id, campagne)`. Ça se rejoue tant que
+    rien ne dépend de l'index — ce qui était le cas en 018, dont les dépendants
+    vivaient dans d'autres fichiers. Ici les clés étrangères composites sont
+    dans le même fichier, et Postgres refuse de retirer un index dont elles
+    dépendent : la migration passait une fois et échouait ensuite.
+
+    Un déploiement ne rejoue pas une migration déjà enregistrée, si bien que
+    rien ne l'aurait signalé — jusqu'au jour où une reprise, une base recréée à
+    partir d'un dump partiel ou un correctif d'empreinte la ferait repasser.
+    """
+
+    def test_applying_it_a_second_time_changes_nothing(self, db):
+        from inventory.db.migrations import MIGRATIONS_DIR
+
+        sql = (MIGRATIONS_DIR / "025_comptages_avances.sql").read_text(encoding="utf-8")
+        with db.transaction() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+        with db.connection() as conn:
+            tables = {
+                row["table_name"]
+                for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'inventory' "
+                    "AND (table_name LIKE 'erp_journal%' OR table_name LIKE 'early_count%')"
+                ).fetchall()
+            }
+        assert tables == {
+            "erp_journal", "erp_journal_scope", "erp_journal_line",
+            "early_count_batch", "early_count_drift",
+        }
+
+
 class TestOneLocationBelongsToOneJournal:
     """« Hors emplacements déjà alloués à un autre journal », garanti par la base."""
 
@@ -127,14 +163,13 @@ class TestOneLocationBelongsToOneJournal:
                 "VALUES (%s, %s, 'ATP', 'SOL')",
                 (first, campaign),
             )
-        with pytest.raises(Exception) as caught:
-            with db.transaction() as conn:
-                conn.execute(
-                    "INSERT INTO erp_journal_scope "
-                    "(erp_journal_id, campaign_id, warehouse_id, location_id) "
-                    "VALUES (%s, %s, 'ATP', 'SOL')",
-                    (second, campaign),
-                )
+        with pytest.raises(Exception) as caught, db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO erp_journal_scope "
+                "(erp_journal_id, campaign_id, warehouse_id, location_id) "
+                "VALUES (%s, %s, 'ATP', 'SOL')",
+                (second, campaign),
+            )
         assert "erp_journal_scope_location_uq" in str(caught.value)
 
     def test_one_journal_may_cover_many_locations(self, db, campaign):
@@ -193,15 +228,14 @@ class TestTheDuplicateLineIsImpossible:
                 "VALUES (%s, %s, %s, 7, 'ATP', 'SOL', 'MASS-1')",
                 (str(uuid.uuid4()), journal, campaign),
             )
-        with pytest.raises(Exception) as caught:
-            with db.transaction() as conn:
-                conn.execute(
-                    "INSERT INTO erp_journal_line "
-                    "(id, erp_journal_id, campaign_id, erp_line_number, warehouse_id, "
-                    " location_id, item_number) "
-                    "VALUES (%s, %s, %s, 7, 'ATP', 'SOL', 'MASS-2')",
-                    (str(uuid.uuid4()), journal, campaign),
-                )
+        with pytest.raises(Exception) as caught, db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO erp_journal_line "
+                "(id, erp_journal_id, campaign_id, erp_line_number, warehouse_id, "
+                " location_id, item_number) "
+                "VALUES (%s, %s, %s, 7, 'ATP', 'SOL', 'MASS-2')",
+                (str(uuid.uuid4()), journal, campaign),
+            )
         assert "erp_journal_line_uq" in str(caught.value)
 
     def test_a_missing_line_number_is_not_a_duplicate(self, db, campaign):
@@ -240,14 +274,13 @@ class TestAChildCannotBelongToAnotherCampaign:
             )
         try:
             journal = _journal(db, campaign, "NPEM-000020")
-            with pytest.raises(Exception) as caught:
-                with db.transaction() as conn:
-                    conn.execute(
-                        "INSERT INTO erp_journal_line "
-                        "(id, erp_journal_id, campaign_id, warehouse_id, location_id, "
-                        " item_number) VALUES (%s, %s, %s, 'ATP', 'SOL', 'MASS-1')",
-                        (str(uuid.uuid4()), journal, other),
-                    )
+            with pytest.raises(Exception) as caught, db.transaction() as conn:
+                conn.execute(
+                    "INSERT INTO erp_journal_line "
+                    "(id, erp_journal_id, campaign_id, warehouse_id, location_id, "
+                    " item_number) VALUES (%s, %s, %s, 'ATP', 'SOL', 'MASS-1')",
+                    (str(uuid.uuid4()), journal, other),
+                )
             assert "erp_journal_line" in str(caught.value).lower()
         finally:
             with db.transaction() as conn:

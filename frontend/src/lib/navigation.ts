@@ -229,6 +229,25 @@ export const SECTIONS: Section[] = [
     ],
   },
   {
+    // Avant les journaux, parce que c'est ce qui se fait avant : un lot avancé
+    // s'ouvre, se compte et se scelle des jours avant le comptage général. Et
+    // le jour J, c'est ici que les dérives se tranchent — le passage en analyse
+    // les attend.
+    to: 'comptages-avances',
+    label: 'Comptages avancés',
+    icon: 'history',
+    phase: 'COUNTING',
+    lede: 'Compter certains emplacements avant le jour J, et sceller leur comptage.',
+    enabled: (o) => ready(o, 'count_journals'),
+    locked: (o) => blocked(o, 'count_journals') ?? '',
+    subs: [
+      { id: 'journaux', label: 'Journaux ERP' },
+      { id: 'lots', label: 'Lots avancés' },
+      { id: 'derives', label: 'Dérives' },
+      { id: 'etiquettes', label: 'Étiquettes' },
+    ],
+  },
+  {
     to: 'comptage',
     label: 'Journaux de comptage',
     icon: 'clipboard',

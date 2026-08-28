@@ -1,0 +1,134 @@
+/**
+ * L'écran des comptages avancés est **branché**.
+ *
+ * C'est la classe de défaut que ce dépôt rencontre le plus souvent : un écran
+ * écrit, testé, et que rien n'atteint — pas de route, pas d'entrée de
+ * navigation, ou un appel qui vise une adresse que le serveur ne sert pas.
+ * Aucun test de rendu ne l'attrape, puisque le composant se rend très bien
+ * quand on le monte à la main.
+ */
+
+import { readFileSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
+
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
+
+const APP = read('../App.tsx')
+const NAVIGATION = read('../lib/navigation.ts')
+const API = read('../lib/api.ts')
+const SCREEN = read('./EarlyCounts.tsx')
+const ROUTER = read('../../../app/inventory/api/routers/early_counts.py')
+
+describe("l'écran est atteignable", () => {
+  it('a sa route', () => {
+    expect(APP).toContain('path="comptages-avances"')
+    expect(APP).toContain('<EarlyCounts />')
+  })
+
+  it('est importé', () => {
+    expect(APP).toContain("import EarlyCounts from './features/EarlyCounts'")
+  })
+
+  it('a son entrée de navigation, dans la phase de comptage', () => {
+    const entry = NAVIGATION.slice(
+      NAVIGATION.indexOf("to: 'comptages-avances'"),
+      NAVIGATION.indexOf("to: 'comptage',"),
+    )
+    expect(entry).toContain("phase: 'COUNTING'")
+    expect(entry).toContain("label: 'Comptages avancés'")
+  })
+
+  it('vient avant les journaux de comptage', () => {
+    // Un lot avancé s'ouvre et se scelle des jours avant le comptage général :
+    // l'ordre de la barre latérale suit celui du travail.
+    expect(NAVIGATION.indexOf("to: 'comptages-avances'")).toBeLessThan(
+      NAVIGATION.indexOf("to: 'comptage',"),
+    )
+  })
+
+  it('déclare ses quatre sous-sections', () => {
+    for (const sub of ['journaux', 'lots', 'derives', 'etiquettes']) {
+      expect(NAVIGATION).toContain(`id: '${sub}'`)
+      expect(SCREEN).toContain(`'${sub}'`)
+    }
+  })
+})
+
+describe('le client vise des adresses que le serveur sert', () => {
+  /** Les chemins déclarés par le routeur FastAPI, sans son préfixe. */
+  const served = [...ROUTER.matchAll(/@router\.(get|post|put)\(\s*\n?\s*"([^"]+)"/g)].map(
+    (match) => match[2],
+  )
+
+  it('le routeur en déclare onze', () => {
+    expect(served).toHaveLength(11)
+  })
+
+  it.each([
+    ['erpJournals', '/journals'],
+    ['scopeProposal', '/scope-proposal'],
+    ['declareScope', '/scope'],
+    ['earlyBatches', '/batches'],
+    ['createEarlyBatch', '/batches'],
+    ['closeEarlyBatch', '/close'],
+    ['sealEarlyBatch', '/seal'],
+    ['unsealEarlyBatch', '/unseal'],
+    ['drifts', '/drifts'],
+    ['resolveDrifts', '/drifts/resolve'],
+    ['labelAlerts', '/label-alerts'],
+  ])('%s appelle une route servie', (method, fragment) => {
+    expect(API).toContain(`${method}:`)
+    const call = API.slice(API.indexOf(`${method}:`), API.indexOf(`${method}:`) + 500)
+    expect(call).toContain('/early-counts')
+    expect(served.some((path) => path.includes(fragment))).toBe(true)
+  })
+})
+
+describe("l'écran appelle réellement le client", () => {
+  it.each([
+    'api.erpJournals',
+    'api.scopeProposal',
+    'api.declareScope',
+    'api.earlyBatches',
+    'api.closeEarlyBatch',
+    'api.sealEarlyBatch',
+    'api.unsealEarlyBatch',
+    'api.drifts',
+    'api.resolveDrifts',
+    'api.labelAlerts',
+  ])('%s', (call) => {
+    expect(SCREEN).toContain(call)
+  })
+})
+
+describe('les décisions que porte l’écran', () => {
+  it('nomme les deux issues d’une dérive, et pas une troisième', () => {
+    const resolutions = [...SCREEN.matchAll(/id: '(KEEP_EARLY|RECOUNT)'/g)]
+    expect(resolutions).toHaveLength(2)
+  })
+
+  it('dit que conserver le comptage avancé demande une cause', () => {
+    expect(SCREEN).toContain('cause est obligatoire')
+  })
+
+  it('exige un motif pour desceller', () => {
+    expect(SCREEN).toContain('Desceller annule une preuve datée')
+  })
+
+  it('affiche l’heure du dernier import', () => {
+    // Le notebook est rejoué toutes les quelques minutes le jour J : de quand
+    // datent les chiffres qu'on regarde n'est pas un détail d'affichage.
+    expect(SCREEN).toContain('journalsImportedAt')
+    expect(SCREEN).toContain('relativeTime')
+  })
+
+  it("n'encode pas une clé d'emplacement avec un séparateur choisi", () => {
+    // Un identifiant d'emplacement peut contenir n'importe quel caractère.
+    // Concaténer revient à parier qu'un séparateur n'y figurera jamais, et le
+    // pari se perd en silence — sur une ligne qui se coche à la place d'une
+    // autre. Un octet invisible est pire encore : il ne se voit même pas en
+    // relisant le fichier.
+    expect(SCREEN).not.toContain(String.fromCharCode(0))
+    expect(SCREEN).toContain('JSON.stringify([warehouseId, locationId])')
+  })
+})

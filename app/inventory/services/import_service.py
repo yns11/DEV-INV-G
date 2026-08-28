@@ -29,10 +29,12 @@ from ..domain.models import (
     Campaign,
     CountJournalLine,
     CountSheetLine,
+    ErpJournalLine,
     LocationKey,
     Warehouse,
     Zone,
 )
+from ..domain.quantities import ZERO
 from ..domain.workflow import passes_for
 from ..errors import ConflictError, ValidationError
 from ..ingest import (
@@ -748,24 +750,43 @@ class ImportService:
             k for k in keys_in_file
             if k in locations and locations[k].status is LocationStatus.DISABLED
         }
+        # Un emplacement scellé ne se recharge pas. Son comptage est une preuve
+        # datée : le réimporter le remplacerait par la photographie du jour, et
+        # la dérive qu'on cherche justement à mesurer disparaîtrait avec.
+        #
+        # Ses lignes ERP, elles, sont conservées comme toutes les autres — c'est
+        # ce qui permet au contrôle par étiquette de les rapprocher.
+        sealed = {
+            LocationKey(warehouse_id=warehouse, location_id=location)
+            for warehouse, location in ctx.journals.sealed_keys(campaign.id)
+        }
+        skipped = disabled | sealed
         to_create = [
             k for k in keys_in_file
-            if k not in journals and k not in disabled
+            if k not in journals and k not in skipped
         ]
 
-        if disabled:
-            for line_no, line in enumerate(imported, start=2):
-                key = LocationKey(
-                    warehouse_id=line.warehouse_id, location_id=line.location_id
-                )
-                if key in disabled:
-                    outcome.warnings.append(
-                        RowError(
-                            line_no, "location_id", str(key),
-                            f"L'emplacement {key} est désactivé : la ligne est "
-                            "ignorée. Réactivez-le pour l'inclure.",
-                        )
+        for line_no, line in enumerate(imported, start=2):
+            key = LocationKey(
+                warehouse_id=line.warehouse_id, location_id=line.location_id
+            )
+            if key in disabled:
+                outcome.warnings.append(
+                    RowError(
+                        line_no, "location_id", str(key),
+                        f"L'emplacement {key} est désactivé : la ligne est "
+                        "ignorée. Réactivez-le pour l'inclure.",
                     )
+                )
+            elif key in sealed:
+                outcome.warnings.append(
+                    RowError(
+                        line_no, "location_id", str(key),
+                        f"L'emplacement {key} est scellé : son comptage avancé "
+                        "fait foi et n'est pas remplacé. La ligne reste "
+                        "consultable dans le journal ERP.",
+                    )
+                )
 
         with ctx.db.transaction() as conn:
             if to_create:
@@ -787,33 +808,58 @@ class ImportService:
             # transaction commits, and their lines would be dropped.
             journals = {j.key: j for j in ctx.journals.list(campaign.id, conn=conn)}
 
-            lines: list[CountJournalLine] = []
+            erp_journals = self._store_erp_journals(campaign, imported, conn=conn)
+
+            # Une ligne par étiquette du côté ERP, une ligne par article et
+            # emplacement du côté de l'application. Agréger ici n'est pas une
+            # optimisation : c'est le grain sur lequel tout le reste est écrit —
+            # écarts, consolidation, contrôles, écrans. Sans cela, un journal
+            # INVE poserait cinquante-sept mille lignes de comptage là où il en
+            # faut quelques milliers, et chaque article y figurerait autant de
+            # fois qu'il a de palettes.
+            grouped: dict[tuple[LocationKey, str], dict[str, Any]] = {}
             posted_flags: dict[str, list[bool]] = {}
-            journal_numbers: dict[str, str] = {}
             for line in imported:
                 key = LocationKey(
                     warehouse_id=line.warehouse_id, location_id=line.location_id
                 )
-                if key in disabled:
+                if key in skipped:
                     continue
                 journal = journals.get(key)
                 if journal is None:  # pragma: no cover - defensive
                     continue
-                lines.append(
-                    CountJournalLine(
-                        id=new_id(),
-                        journal_id=journal.id,
-                        campaign_id=campaign.id,
-                        item_number=line.item_number,
-                        qty_imported=line.qty,
-                        unit=line.unit,
-                        source=DataSource.ERP_IMPORT,
-                        updated_by=ctx.actor,
-                    )
+                bucket = grouped.setdefault(
+                    (key, line.item_number),
+                    {
+                        "journal_id": journal.id,
+                        "qty": ZERO,
+                        "qty_on_hand": ZERO,
+                        "labels": 0,
+                        "unit": line.unit,
+                        "journal_number": line.journal_number,
+                    },
                 )
+                bucket["qty"] += line.qty
+                bucket["qty_on_hand"] += line.qty_on_hand
+                bucket["labels"] += 1
                 posted_flags.setdefault(journal.id, []).append(line.is_posted)
-                if line.journal_number:
-                    journal_numbers[journal.id] = line.journal_number
+
+            lines: list[CountJournalLine] = [
+                CountJournalLine(
+                    id=new_id(),
+                    journal_id=bucket["journal_id"],
+                    campaign_id=campaign.id,
+                    item_number=item_number,
+                    qty_imported=bucket["qty"],
+                    unit=bucket["unit"],
+                    source=DataSource.ERP_IMPORT,
+                    updated_by=ctx.actor,
+                    qty_on_hand=bucket["qty_on_hand"],
+                    erp_journal_number=bucket["journal_number"],
+                    label_count=bucket["labels"],
+                )
+                for (_key, item_number), bucket in grouped.items()
+            ]
 
             touched = sorted(posted_flags)
             ctx.journals.replace_imported_lines(
@@ -845,6 +891,7 @@ class ImportService:
                         actor=ctx.actor, conn=conn,
                     )
 
+            ctx.erp_journals.touch_import(campaign.id, conn=conn)
             outcome.rows_accepted = len(lines)
             outcome.batch_id = self.batches.record_batch(
                 campaign.id, "count_journal_lines", outcome, conn=conn, **kwargs
@@ -864,18 +911,102 @@ class ImportService:
                     "journalsCreated": len(to_create),
                     "journalsPosted": len(fully_posted),
                     "disabledLocationsSkipped": sorted(str(k) for k in disabled),
+                    "sealedLocationsKept": sorted(str(k) for k in sealed),
+                    "erpJournals": len(erp_journals),
                 },
                 conn=conn,
             )
 
+        undeclared = [
+            journal.journal_number
+            for journal in ctx.erp_journals.list(campaign.id)
+            if not journal.scope_declared
+        ]
         outcome.details = {
             "journalsTouched": len(touched),
             "journalsCreated": len(to_create),
             "journalsPosted": len(fully_posted),
             "journalsInProgress": len(partially) + len(in_progress),
             "disabledLocationsSkipped": sorted(str(k) for k in disabled),
+            "sealedLocationsKept": sorted(str(k) for k in sealed),
+            "erpJournals": len(erp_journals),
+            # Le périmètre se déclare, il ne se devine pas. Tant qu'il manque,
+            # aucun lot avancé ne peut être ouvert sur ce journal — d'où la
+            # liste, en tête du rapport plutôt qu'à découvrir plus tard.
+            "scopeUndeclared": undeclared,
         }
         return outcome
+
+    def _store_erp_journals(
+        self,
+        campaign: Campaign,
+        imported: Sequence[Any],
+        *,
+        conn: Any,
+    ) -> dict[str, str]:
+        """Conserver les journaux ERP et leurs lignes, au grain de l'ERP.
+
+        Toutes les lignes, y compris celles du tampon et celles hors périmètre :
+        la note métier le demande explicitement — « les lignes doivent néanmoins
+        être importées et conservées pour la traçabilité » — et c'est aussi ce
+        qui rend le contrôle par étiquette possible.
+
+        Le remplacement se fait **par journal**. Un journal absent de la
+        photographie garde ses lignes, ce qui est exactement ce qu'il faut pour
+        que les lots avancés survivent aux imports du jour J.
+        """
+        ctx = self.ctx
+        by_number: dict[str, list[Any]] = {}
+        for line in imported:
+            by_number.setdefault(line.journal_number or "", []).append(line)
+
+        stored: dict[str, str] = {}
+        for number, lines in by_number.items():
+            if not number:
+                # Sans numéro de journal, la ligne n'a pas de journal ERP où
+                # vivre. Elle reste comptée côté application ; elle n'entre
+                # simplement pas dans la traçabilité par journal.
+                continue
+            first = lines[0]
+            erp_journal_id = ctx.erp_journals.upsert_journal(
+                campaign.id,
+                journal_number=number,
+                kind=first.kind,
+                description=first.description,
+                site_id=first.site_id,
+                erp_posted=all(line.is_posted for line in lines),
+                erp_posted_at=next(
+                    (line.posted_at for line in lines if line.posted_at), None
+                ),
+                line_count=len(lines),
+                conn=conn,
+            )
+            ctx.erp_journals.replace_lines(
+                campaign.id,
+                erp_journal_id,
+                [
+                    ErpJournalLine(
+                        id=new_id(),
+                        erp_journal_id=erp_journal_id,
+                        campaign_id=campaign.id,
+                        erp_line_number=line.erp_line_number,
+                        site_id=line.site_id,
+                        warehouse_id=line.warehouse_id,
+                        location_id=line.location_id,
+                        label_id=line.label_id,
+                        serial_number=line.serial_number,
+                        item_number=line.item_number,
+                        qty_on_hand=line.qty_on_hand,
+                        qty_counted=line.qty,
+                        unit=line.unit,
+                        inventory_status_id=line.inventory_status_id,
+                    )
+                    for line in lines
+                ],
+                conn=conn,
+            )
+            stored[number] = erp_journal_id
+        return stored
 
     # ----------------------------------------------------------- count sheets
 

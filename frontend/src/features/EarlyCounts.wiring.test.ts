@@ -56,9 +56,9 @@ describe("l'écran est atteignable", () => {
 
 describe('le client vise des adresses que le serveur sert', () => {
   /** Les chemins déclarés par le routeur FastAPI, sans son préfixe. */
-  const served = [...ROUTER.matchAll(/@router\.(get|post|put)\(\s*\n?\s*"([^"]+)"/g)].map(
-    (match) => match[2],
-  )
+  const served: string[] = [
+    ...ROUTER.matchAll(/@router\.(get|post|put)\(\s*\n?\s*"([^"]+)"/g),
+  ].map((match) => match[2] ?? '')
 
   it('le routeur en déclare onze', () => {
     expect(served).toHaveLength(11)

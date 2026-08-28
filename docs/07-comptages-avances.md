@@ -1,9 +1,15 @@
 # Comptages avancés
 
-> Étude de conception. Rien de ce document n'est implémenté à ce jour : il
-> décrit la logique à écrire, ce qu'elle change dans l'existant, et ce qu'elle
-> demande à l'exploitation. Les algorigrammes correspondants sont dans
-> [`08-algorigrammes.md`](08-algorigrammes.md).
+> **Implémenté.** Ce document a d'abord été une étude ; il décrit maintenant ce
+> que l'application fait. Les algorigrammes correspondants sont dans
+> [`08-algorigrammes.md`](08-algorigrammes.md), le mode d'emploi au § 2.0 et au
+> § 2.7 du [guide utilisateur](04-guide-utilisateur.md).
+>
+> Deux écarts entre l'étude et la réalisation, tous deux assumés et expliqués
+> plus bas : le journal ERP est un objet **à côté** de `count_journal`, qui
+> reste un par emplacement (§ 3) ; et le périmètre déclaré est exigé pour
+> **ouvrir un lot avancé**, pas pour importer — un import qui refuserait tout
+> tant qu'on n'a pas trié 73 journaux serait inutilisable le jour J.
 >
 > Les constats chiffrés viennent de l'export post-campagne du 13 juin 2026
 > (58 345 lignes, 73 journaux). Ce sont des ordres de grandeur, pas des règles.
@@ -88,6 +94,18 @@ ERP. La réalité est : un journal ERP, un entrepôt, un à cinquante-quatre
 emplacements, plus des lignes de passage.
 
 ### Le périmètre se déclare, il ne se devine pas
+
+> **Tel que réalisé.** `erp_journal` et `erp_journal_scope` portent le journal
+> ERP et son périmètre, **à côté** de `count_journal`, qui reste un par
+> (campagne, entrepôt, emplacement). C'est l'unité de comptage, de progression
+> et de gel dont tout le produit dépend — la clé du journal, le forçage au stock
+> ERP, les quantités comptées, les écrans. Les lignes brutes vivent dans
+> `erp_journal_line`, au grain de l'étiquette ; l'application agrège vers
+> l'emplacement.
+>
+> Le périmètre non déclaré est signalé en tête du rapport d'import
+> (`scopeUndeclared`) et **bloque l'ouverture d'un lot avancé**, pas l'import
+> lui-même.
 
 À chaque nouveau journal importé, l'application **propose** les entrepôts et
 emplacements susceptibles d'être les siens :

@@ -56,6 +56,12 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   serveur — ce qu'il exclut n'est jamais envoyé au poste. C'est un filtre, pas
   une habilitation : un gestionnaire garde le droit d'agir hors du sien, ce
   qu'exige la couverture d'un collègue à six heures du matin.
+- **Compter avant le jour J, sans éclater le dossier.** Certains emplacements se
+  précomptent à J-1 ou J-2, leur comptage se scelle, et le jour J l'application
+  confronte ce que l'ERP en dit au physique qui y a été posté. La référence
+  d'un emplacement scellé reste celle de son précomptage : sans cela, poster
+  son journal ayant réaligné l'ERP sur le physique, son écart tomberait à zéro
+  et le résultat de son inventaire disparaîtrait.
 - **Un transfert entre bacs n'est pas une perte.** L'analyse s'ouvre sur l'écart
   par référence et chiffre explicitement la part qui n'est qu'un déplacement.
 - **Le WIP est explorable.** Chaque quantité éclatée est traçable jusqu'à
@@ -152,7 +158,7 @@ Makefile                    Points d'entrée développeur
 | [`04-guide-utilisateur.md`](docs/04-guide-utilisateur.md) | Le processus vu par l'utilisateur, de la préparation à la clôture |
 | [`05-modele-de-donnees.md`](docs/05-modele-de-donnees.md) | Schémas, types, index, définition exacte des indicateurs |
 | [`06-top20-ameliorations.md`](docs/06-top20-ameliorations.md) | Revue critique : 20 améliorations priorisées, séquencées |
-| [`07-comptages-avances.md`](docs/07-comptages-avances.md) | Étude de conception : compter certains emplacements avant le jour J, dans une seule campagne |
+| [`07-comptages-avances.md`](docs/07-comptages-avances.md) | Comptages avancés : la logique, le modèle et le processus |
 | [`08-algorigrammes.md`](docs/08-algorigrammes.md) | Algorigrammes du processus actuel et du processus avec comptages avancés |
 
 ---

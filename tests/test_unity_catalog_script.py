@@ -154,15 +154,20 @@ class TestApplyingTheRealFile:
         assert combien == len(client.statement_execution.calls)
         assert combien > 15
 
-    def test_le_schema_et_les_dix_tables_y_sont(self):
+    def test_le_schema_et_les_treize_tables_y_sont(self):
         client = FakeClient()
         uc.apply(client, "w-1", DDL.read_text(encoding="utf-8"))
         envoyees = [c["statement"] for c in client.statement_execution.calls]
 
         assert any(s.startswith("CREATE SCHEMA") for s in envoyees)
         creations = [s for s in envoyees if s.startswith("CREATE TABLE")]
-        assert len(creations) == 10
+        assert len(creations) == 13
         assert any("publication" in s for s in creations), "le manifeste qui manquait"
+        # Les trois tables des comptages avancés : sans elles, l'archive ne
+        # dirait ni contre quoi un emplacement précompté a été compté, ni ce
+        # qu'on a décidé de l'écart constaté le jour J.
+        for table in ("early_count_batch", "early_count_drift", "erp_journal_scope"):
+            assert any(table in s for s in creations), table
 
     def test_chaque_instruction_porte_le_catalogue_du_fichier(self):
         client = FakeClient()

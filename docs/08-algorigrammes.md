@@ -1,8 +1,9 @@
 # Algorigrammes
 
-Le processus d'inventaire tel qu'il fonctionne aujourd'hui, puis tel qu'il
-fonctionnerait avec les **comptages avancés** décrits dans
-[`07-comptages-avances.md`](07-comptages-avances.md).
+Le processus d'inventaire avant les **comptages avancés**, puis tel qu'il
+fonctionne depuis. La logique est décrite dans
+[`07-comptages-avances.md`](07-comptages-avances.md), le mode d'emploi dans le
+[guide utilisateur](04-guide-utilisateur.md).
 
 Les diagrammes sont en Mermaid : ils se lisent tels quels dans GitHub et dans la
 plupart des éditeurs Markdown.

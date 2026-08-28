@@ -229,7 +229,7 @@ class TestASealedLocationIsNotReloaded:
         _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=7)])
         service.import_journal_lines(campaign, payload=b"x", filename="j2.csv")
         service.ctx.journals.seal(
-            campaign.id, [("ATP", "SOL")], batch_id=None, actor="alice"
+            campaign.id, [("ATP", "SOL")], actor="alice"
         )
 
         # Le jour J, la même référence est comptée autrement.
@@ -252,7 +252,7 @@ class TestASealedLocationIsNotReloaded:
         _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=7)])
         service.import_journal_lines(campaign, payload=b"x", filename="j2.csv")
         service.ctx.journals.seal(
-            campaign.id, [("ATP", "SOL")], batch_id=None, actor="alice"
+            campaign.id, [("ATP", "SOL")], actor="alice"
         )
         _feed(service, monkeypatch, [
             _row(journal_number="NPEM-JOURJ", erp_line_number=1,

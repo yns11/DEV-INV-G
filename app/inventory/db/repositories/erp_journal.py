@@ -20,10 +20,15 @@ from typing import Any
 import psycopg
 
 from ...domain.enums import JournalKind
-from ...domain.models import ErpJournal, ErpJournalLine, LocationKey
+from ...domain.models import (
+    EarlyCountBatch,
+    ErpJournal,
+    ErpJournalLine,
+    LocationKey,
+)
 from ._base import _Base, _NullContext, new_id
 
-__all__ = ["ErpJournalRepository"]
+__all__ = ["EarlyCountBatchRepository", "ErpJournalRepository"]
 
 
 class ErpJournalRepository(_Base):
@@ -428,4 +433,120 @@ class ErpJournalRepository(_Base):
             qty_counted=row["qty_counted"],
             unit=row["unit"],
             inventory_status_id=row["inventory_status_id"],
+        )
+
+
+class EarlyCountBatchRepository(_Base):
+    """Les lots de comptage avancé d'une campagne.
+
+    Le périmètre d'un lot n'a pas de table à lui : c'est l'ensemble des
+    emplacements dont le journal porte son identifiant. Une seule écriture, donc
+    une seule vérité — un périmètre stocké deux fois finirait par diverger du
+    scellement qu'il est censé décrire.
+    """
+
+    _COLUMNS = (
+        "id, campaign_id, code, label, counted_on, opened_at, opened_by, "
+        "closed_at, closed_by, sealed_at, sealed_by"
+    )
+
+    def list(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> list[EarlyCountBatch]:
+        rows = self._fetch_all(
+            f"SELECT {self._COLUMNS} FROM early_count_batch "
+            "WHERE campaign_id = %s AND deleted_at IS NULL "
+            "ORDER BY counted_on NULLS LAST, code",
+            (campaign_id,),
+            conn=conn,
+        )
+        locations = self._locations(campaign_id, conn=conn)
+        return [self._batch(row, locations.get(str(row["id"]), [])) for row in rows]
+
+    def _locations(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> dict[str, list[LocationKey]]:
+        rows = self._fetch_all(
+            "SELECT early_batch_id, warehouse_id, location_id FROM count_journal "
+            "WHERE campaign_id = %s AND early_batch_id IS NOT NULL "
+            "ORDER BY warehouse_id, location_id",
+            (campaign_id,),
+            conn=conn,
+        )
+        out: dict[str, list[LocationKey]] = {}
+        for row in rows:
+            out.setdefault(str(row["early_batch_id"]), []).append(
+                LocationKey(
+                    warehouse_id=row["warehouse_id"], location_id=row["location_id"]
+                )
+            )
+        return out
+
+    def create(
+        self, batch: EarlyCountBatch, *, conn: psycopg.Connection | None = None
+    ) -> str:
+        self._execute(
+            "INSERT INTO early_count_batch (id, campaign_id, code, label, "
+            "counted_on, opened_at, opened_by) VALUES (%s,%s,%s,%s,%s,now(),%s)",
+            (batch.id, batch.campaign_id, batch.code, batch.label,
+             batch.counted_on, batch.opened_by),
+            conn=conn,
+        )
+        return batch.id
+
+    def close(
+        self, campaign_id: str, batch_id: str, *, actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        return self._execute(
+            "UPDATE early_count_batch SET closed_at = now(), closed_by = %s "
+            "WHERE campaign_id = %s AND id = %s",
+            (actor, campaign_id, batch_id),
+            conn=conn,
+        )
+
+    def seal(
+        self, campaign_id: str, batch_id: str, *, actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        return self._execute(
+            "UPDATE early_count_batch SET sealed_at = now(), sealed_by = %s "
+            "WHERE campaign_id = %s AND id = %s",
+            (actor, campaign_id, batch_id),
+            conn=conn,
+        )
+
+    def unseal(
+        self, campaign_id: str, batch_id: str, *,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Rouvrir le lot : il redevient modifiable, et son périmètre repart.
+
+        Clore et sceller sont deux gestes, et desceller défait les deux : un lot
+        descellé mais toujours clos serait figé sans être scellé, c'est-à-dire
+        dans un état d'où l'on ne pourrait ni corriger ni resceller.
+        """
+        return self._execute(
+            "UPDATE early_count_batch SET sealed_at = NULL, sealed_by = NULL, "
+            "closed_at = NULL, closed_by = NULL "
+            "WHERE campaign_id = %(cid)s AND id = %(bid)s",
+            {"cid": campaign_id, "bid": batch_id},
+            conn=conn,
+        )
+
+    @staticmethod
+    def _batch(row: dict[str, Any], locations: list[LocationKey]) -> EarlyCountBatch:
+        return EarlyCountBatch(
+            id=str(row["id"]),
+            campaign_id=str(row["campaign_id"]),
+            code=row["code"],
+            label=row["label"],
+            counted_on=row["counted_on"],
+            opened_at=row["opened_at"],
+            opened_by=row["opened_by"] or "",
+            closed_at=row["closed_at"],
+            closed_by=row["closed_by"] or "",
+            sealed_at=row["sealed_at"],
+            sealed_by=row["sealed_by"] or "",
+            locations=locations,
         )

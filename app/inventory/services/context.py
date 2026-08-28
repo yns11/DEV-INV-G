@@ -25,6 +25,7 @@ from ..db import (
     CampaignRepository,
     ConsolidationRepository,
     Database,
+    EarlyCountBatchRepository,
     ErpJournalRepository,
     EvidenceBlobRepository,
     ImportBatchRepository,
@@ -90,6 +91,10 @@ class ServiceContext:
     @functools.cached_property
     def erp_journals(self) -> ErpJournalRepository:
         return ErpJournalRepository(self.db)
+
+    @functools.cached_property
+    def early_counts(self) -> EarlyCountBatchRepository:
+        return EarlyCountBatchRepository(self.db)
 
     @functools.cached_property
     def sheets(self) -> SheetRepository:

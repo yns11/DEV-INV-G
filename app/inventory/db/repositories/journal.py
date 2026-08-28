@@ -288,12 +288,34 @@ class JournalRepository(_Base):
 
     # -------------------------------------------------------------- scellement
 
-    def seal(
+    def assign_batch(
         self,
         campaign_id: str,
         keys: Sequence[tuple[str, str]],
         *,
         batch_id: str,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Rattacher des emplacements à un lot avancé, sans encore les sceller.
+
+        Le périmètre d'un lot n'a pas de table à lui : c'est l'ensemble des
+        journaux qui portent son identifiant. Il est donc posé à l'ouverture du
+        lot, et non au scellement — une première version l'écrivait au moment de
+        sceller, si bien que le scellement cherchait un périmètre que lui seul
+        pouvait créer, et ne scellait rien.
+        """
+        return self._mark(
+            campaign_id, keys, actor=actor,
+            assignments=("early_batch_id = %(batch)s",), batch_id=batch_id,
+            conn=conn,
+        )
+
+    def seal(
+        self,
+        campaign_id: str,
+        keys: Sequence[tuple[str, str]],
+        *,
         actor: str,
         conn: psycopg.Connection | None = None,
     ) -> int:
@@ -304,8 +326,10 @@ class JournalRepository(_Base):
         interdire. C'est ce qui évite deux sources de vérité qui se
         contrediraient sur « peut-on écrire ici ? ».
         """
-        return self._set_seal(
-            campaign_id, keys, batch_id=batch_id, actor=actor, sealed=True, conn=conn
+        return self._mark(
+            campaign_id, keys, actor=actor,
+            assignments=("sealed_at = now()", "sealed_by = %(actor)s"),
+            conn=conn,
         )
 
     def unseal(
@@ -321,18 +345,22 @@ class JournalRepository(_Base):
         Il est tracé par l'appelant : sans motif obligatoire, ce serait une porte
         dérobée sur une preuve.
         """
-        return self._set_seal(
-            campaign_id, keys, batch_id=None, actor=actor, sealed=False, conn=conn
+        return self._mark(
+            campaign_id, keys, actor=actor,
+            assignments=(
+                "sealed_at = NULL", "sealed_by = NULL", "early_batch_id = NULL",
+            ),
+            conn=conn,
         )
 
-    def _set_seal(
+    def _mark(
         self,
         campaign_id: str,
         keys: Sequence[tuple[str, str]],
         *,
-        batch_id: str | None,
         actor: str,
-        sealed: bool,
+        assignments: Sequence[str],
+        batch_id: str | None = None,
         conn: psycopg.Connection | None = None,
     ) -> int:
         if not keys:
@@ -348,9 +376,7 @@ class JournalRepository(_Base):
         with ctx as connection, connection.cursor() as cur:
             cur.execute(
                 "UPDATE count_journal SET "
-                "sealed_at = CASE WHEN %(sealed)s THEN now() ELSE NULL END, "
-                "sealed_by = CASE WHEN %(sealed)s THEN %(actor)s ELSE NULL END, "
-                "early_batch_id = %(batch)s, "
+                + ", ".join(assignments) + ", "
                 "updated_by = %(actor)s, updated_at = now(), "
                 "row_version = row_version + 1 "
                 "WHERE campaign_id = %(cid)s "
@@ -358,8 +384,7 @@ class JournalRepository(_Base):
                 "  SELECT * FROM unnest(%(warehouses)s::text[], %(locations)s::text[])"
                 ")",
                 {
-                    "sealed": sealed, "actor": actor, "batch": batch_id,
-                    "cid": campaign_id,
+                    "actor": actor, "batch": batch_id, "cid": campaign_id,
                     "warehouses": warehouses, "locations": locations,
                 },
             )

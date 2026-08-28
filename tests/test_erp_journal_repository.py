@@ -308,7 +308,7 @@ class TestSealing:
         ])
         touched = journals.seal(
             campaign, [("ATP", "SOL"), ("ATP", "STK P FI")],
-            batch_id=None, actor="alice",
+            actor="alice",
         )
         assert touched == 2
         assert journals.sealed_keys(campaign) == {("ATP", "SOL"), ("ATP", "STK P FI")}
@@ -320,7 +320,7 @@ class TestSealing:
         journals.ensure_journals(
             campaign, [LocationKey(warehouse_id="ATP", location_id="SOL")]
         )
-        journals.seal(campaign, [("ATP", "SOL")], batch_id=None, actor="alice")
+        journals.seal(campaign, [("ATP", "SOL")], actor="alice")
         journals.unseal(campaign, [("ATP", "SOL")], actor="bob")
         assert journals.sealed_keys(campaign) == set()
 
@@ -338,7 +338,7 @@ class TestSealing:
                 journals.ensure_journals(
                     campaign_id, [LocationKey(warehouse_id="ATP", location_id="SOL")]
                 )
-            journals.seal(campaign, [("ATP", "SOL")], batch_id=None, actor="alice")
+            journals.seal(campaign, [("ATP", "SOL")], actor="alice")
             assert journals.sealed_keys(other) == set()
         finally:
             with db.transaction() as conn:

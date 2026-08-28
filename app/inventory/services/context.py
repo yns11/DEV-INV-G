@@ -325,6 +325,7 @@ _ASPECT_LABELS = {
     "book_stock": "Le stock ERP",
     "zones": "Les zones GENERIQUE",
     "count_journals": "Les journaux de comptage",
+    "early_counts": "Les comptages avancés",
     "count_sheets": "Les feuilles de comptage",
     "count_entries": "La saisie des comptages",
     "post_journal": "Le postage des journaux",

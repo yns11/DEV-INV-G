@@ -594,6 +594,13 @@ curl -s -w "\nready:%{http_code}\n"           "$URL/api/health/ready"
 >
 > Rien de tout cela n'est nécessaire pour une campagne qui ne précompte pas :
 > les colonnes restent vides et les trois tables vides.
+>
+> **Correctif de séquencement.** Une version suivante ouvre l'écran des
+> comptages avancés dès le référentiel articles chargé, au lieu d'attendre le
+> stock ERP général — qui arrive le jour J, donc après. Le correctif est
+> entièrement applicatif : **aucune migration, aucun geste Unity Catalog**, un
+> redéploiement de l'App suffit. Une campagne en cours reprend son écran là où
+> elle l'avait laissé.
 
 > **La table `publication`.** Elle est écrite en dernier par le job, et par rien
 > d'autre. Une campagne y figure si et seulement si son archive est complète :

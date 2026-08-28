@@ -4015,6 +4015,8 @@ export interface components {
             countJournals: boolean;
             /** Countsheets */
             countSheets: boolean;
+            /** Earlycounts */
+            earlyCounts: boolean;
             /** Items */
             items: boolean;
             /** Locations */

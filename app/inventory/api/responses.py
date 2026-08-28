@@ -230,6 +230,7 @@ class Permissions(Payload):
     book_stock: bool = Field(alias="bookStock")
     zones: bool
     count_journals: bool = Field(alias="countJournals")
+    early_counts: bool = Field(alias="earlyCounts")
     count_sheets: bool = Field(alias="countSheets")
     count_entries: bool = Field(alias="countEntries")
     adjustments: bool

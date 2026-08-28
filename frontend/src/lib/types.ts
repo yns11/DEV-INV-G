@@ -58,6 +58,8 @@ export interface Permissions {
   bookStock: boolean
   zones: boolean
   countJournals: boolean
+  /** Les comptages avancés, qui n'attendent que le référentiel articles. */
+  earlyCounts: boolean
   countSheets: boolean
   adjustments: boolean
   analysis: boolean

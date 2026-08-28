@@ -238,8 +238,12 @@ export const SECTIONS: Section[] = [
     icon: 'history',
     phase: 'COUNTING',
     lede: 'Compter certains emplacements avant le jour J, et sceller leur comptage.',
-    enabled: (o) => ready(o, 'count_journals'),
-    locked: (o) => blocked(o, 'count_journals') ?? '',
+    // `early_counts`, et pas `count_journals` : ce dernier attend le stock ERP
+    // chargé, qui arrive le jour J. L'écran serait resté fermé jusqu'après le
+    // moment où il sert — un lot avancé se compte des jours avant, et sa
+    // référence est dans son propre journal.
+    enabled: (o) => ready(o, 'early_counts'),
+    locked: (o) => blocked(o, 'early_counts') ?? '',
     subs: [
       { id: 'journaux', label: 'Journaux ERP' },
       { id: 'lots', label: 'Lots avancés' },

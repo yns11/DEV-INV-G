@@ -425,12 +425,20 @@ propre référence : sa colonne « Stock ERP » donne le stock d'avant comptage.
 n'y a donc **aucun stock à charger séparément** pour un lot avancé — le fichier
 qui apporte le comptage apporte aussi ce contre quoi il se compare.
 
+L'écran n'attend donc rien d'autre que la campagne passée en **Comptage** et le
+**référentiel articles** chargé. En particulier il n'attend pas le stock ERP
+général : celui-là arrive le jour J, c'est-à-dire après les lots avancés.
+C'est aussi pourquoi le panneau d'import des journaux se trouve ici, sur
+l'onglet *Journaux ERP*, et pas seulement sur l'écran des journaux de comptage.
+
 Le déroulé, pour chaque lot :
 
 1. **Comptez et postez le journal dans l'ERP.** C'est le postage qui réaligne
    l'ERP sur le physique compté, et l'application l'exige pour sceller.
 2. **Exécutez le notebook** sur la fenêtre de dates du lot, puis chargez son
-   export comme n'importe quel journal.
+   export depuis le panneau d'import de l'onglet *Journaux ERP*. Chaque import
+   remplace les journaux qu'il rapporte et laisse les autres intacts ; l'heure
+   du dernier s'affiche en tête de l'écran.
 3. **Déclarez le périmètre** de chaque journal, onglet *Journaux ERP*.
    L'application propose les emplacements candidats — ceux de ses lignes, moins
    le tampon `INV / 01`, moins ceux déjà pris par un autre journal — le plus

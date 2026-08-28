@@ -72,6 +72,17 @@ class Editable:
     zones: bool
     #: Counting journals and their lines.
     count_journals: bool
+    #: Les comptages avancés : journaux ERP importés, périmètres déclarés, lots
+    #: ouverts, clos, scellés, et les dérives tranchées le jour J.
+    #:
+    #: Aspect distinct de ``count_journals``, et pas par goût de la granularité.
+    #: Les deux ouvrent et se ferment au même moment, mais ils n'attendent pas
+    #: la même chose : un journal de comptage général se mesure contre le stock
+    #: ERP chargé, un lot avancé porte sa propre référence dans la colonne
+    #: « Stock ERP » de son journal. Partager l'aspect revenait à imposer au
+    #: comptage avancé le prérequis de l'étape qu'il précède — voir
+    #: :mod:`inventory.domain.sequence`.
+    early_counts: bool
     #: The *structure* of a counting sheet: which articles it lists. Prepared
     #: before inventory day, which is the whole point of preparing paper.
     count_sheets: bool
@@ -128,6 +139,7 @@ class Editable:
             "bookStock": self.book_stock,
             "zones": self.zones,
             "countJournals": self.count_journals,
+            "earlyCounts": self.early_counts,
             "countSheets": self.count_sheets,
             "countEntries": self.count_entries,
             "adjustments": self.adjustments,
@@ -157,6 +169,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         book_stock=False,
         zones=True,
         count_journals=False,
+        early_counts=False,
         count_sheets=True,
         count_entries=False,
         adjustments=False,
@@ -171,6 +184,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         book_stock=True,
         zones=True,
         count_journals=True,
+        early_counts=True,
         count_sheets=True,
         count_entries=True,
         adjustments=False,
@@ -184,6 +198,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         book_stock=False,
         zones=False,
         count_journals=False,
+        early_counts=False,
         count_sheets=False,
         count_entries=False,
         adjustments=True,
@@ -197,6 +212,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         book_stock=False,
         zones=False,
         count_journals=False,
+        early_counts=False,
         count_sheets=False,
         count_entries=False,
         adjustments=False,

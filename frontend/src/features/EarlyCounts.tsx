@@ -42,6 +42,7 @@ import type {
 import { DASH, date as formatDate, qty, relativeTime, signedMoney, signedNum } from '../lib/format'
 import { useSubSection } from '../lib/subsection'
 import { DataGrid, type Column } from '../components/DataGrid'
+import { ImportPanel } from '../components/ImportPanel'
 import { SubSectionTabs } from '../components/SubSectionTabs'
 import {
   Alert,
@@ -105,10 +106,12 @@ function parseKey(key: string): { warehouseId: string; locationId: string } {
 }
 
 export default function EarlyCounts() {
-  const { campaign, overview } = useOutletContext<{
-    campaign: { id: string }
-    overview: Overview
-  }>()
+  // `CampaignShell` passe l'aperçu tel quel, comme à tous les autres écrans.
+  // Y lire `{ campaign, overview }` compilait — `useOutletContext<T>()` est une
+  // assertion, pas une vérification — et donnait `overview === undefined` :
+  // l'écran se cassait au premier accès, sur une campagne où tout allait bien.
+  const overview = useOutletContext<Overview>()
+  const campaignId = overview.campaign.id
   const [view, setView] = useSubSection<View>('journaux', VIEWS.map((v) => v.id))
 
   return (
@@ -120,10 +123,12 @@ export default function EarlyCounts() {
         value={view}
         onChange={setView}
       />
-      {view === 'journaux' && <Journals campaignId={campaign.id} />}
-      {view === 'lots' && <Batches campaignId={campaign.id} />}
-      {view === 'derives' && <Drifts campaignId={campaign.id} />}
-      {view === 'etiquettes' && <Labels campaignId={campaign.id} />}
+      {view === 'journaux' && (
+        <Journals campaignId={campaignId} canImport={overview.permissions.earlyCounts} />
+      )}
+      {view === 'lots' && <Batches campaignId={campaignId} />}
+      {view === 'derives' && <Drifts campaignId={campaignId} />}
+      {view === 'etiquettes' && <Labels campaignId={campaignId} />}
     </div>
   )
 }
@@ -135,8 +140,12 @@ export default function EarlyCounts() {
  * détail d'affichage : c'est ce qui dit s'il faut recharger avant de décider.
  */
 function LastImport({ overview }: { overview: Overview }) {
-  const at = (overview.campaign as { journalsImportedAt?: string | null })
-    ?.journalsImportedAt
+  // Le nom du champ vient du modèle, pas d'un alias : la campagne est le seul
+  // objet de l'aperçu qui voyage tel quel, en `snake_case`. Le lire en
+  // `journalsImportedAt` — au travers d'un cast, qui éteignait justement le
+  // contrôle qui l'aurait dit — donnait `undefined` pour toujours, donc la
+  // bannière « aucun import » même l'heure d'après un import réussi.
+  const at = overview.campaign.journals_imported_at
   if (!at) {
     return (
       <Alert tone="info" title="Aucun import de journaux">
@@ -160,11 +169,25 @@ function LastImport({ overview }: { overview: Overview }) {
 // Journaux ERP et périmètres
 // --------------------------------------------------------------------------
 
-function Journals({ campaignId }: { campaignId: string }) {
+function Journals({
+  campaignId,
+  canImport,
+}: {
+  campaignId: string
+  canImport: boolean
+}) {
+  const client = useQueryClient()
   const query = useQuery({
     queryKey: ['erp-journals', campaignId],
     queryFn: () => api.erpJournals(campaignId),
   })
+  // L'import vit ici autant que sur l'écran des journaux de comptage, et pour
+  // une raison de séquence : celui-là n'ouvre qu'une fois le stock ERP chargé,
+  // c'est-à-dire le jour J. Le lot avancé s'importe des jours avant. Sans ce
+  // panneau, l'état vide disait « chargez l'export » depuis le seul écran d'où
+  // c'était impossible.
+  const contracts = useQuery({ queryKey: ['contracts'], queryFn: api.contracts })
+  const contract = contracts.data?.find((c) => c.key === 'count_journal_lines')
   const [open, setOpen] = useState<string | null>(null)
 
   const columns: Column<ErpJournal>[] = [
@@ -211,13 +234,32 @@ function Journals({ campaignId }: { campaignId: string }) {
   ]
 
   return (
+    <div className="stack">
+      {contract && (
+        <ImportPanel
+          campaignId={campaignId}
+          contract={contract}
+          target="count_journal_lines"
+          disabled={!canImport}
+          disabledReason="Les comptages avancés sont gelés hors de la phase de comptage."
+          onImported={() => {
+            client.invalidateQueries({ queryKey: ['erp-journals', campaignId] })
+            client.invalidateQueries({ queryKey: ['overview', campaignId] })
+          }}
+          extraActions={
+            <Badge tone="info">
+              Chaque import remplace les journaux qu’il rapporte
+            </Badge>
+          }
+        />
+      )}
     <AsyncBoundary
       query={query}
       skeleton={<Skeleton height={220} />}
       isEmpty={(rows) => rows.length === 0}
       empty={
         <EmptyState title="Aucun journal ERP importé">
-            Chargez l’export des lignes de journaux de comptage.
+            Chargez l’export des lignes de journaux de comptage avec le panneau ci-dessus.
         </EmptyState>
       }
     >
@@ -245,6 +287,7 @@ function Journals({ campaignId }: { campaignId: string }) {
         </div>
       )}
     </AsyncBoundary>
+    </div>
   )
 }
 

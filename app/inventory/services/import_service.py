@@ -732,9 +732,25 @@ class ImportService:
           created — unless its location is disabled, in which case the lines are
           rejected with an explicit message rather than silently dropped;
         * a journal whose lines are all flagged posted becomes ``POSTED``.
+
+        Gardé par ``early_counts`` et non ``count_journals``, ce qui déplace le
+        prérequis du stock ERP chargé vers le seul référentiel articles.
+
+        Cet import est le point d'entrée des deux comptages, et le comptage
+        avancé passe **avant** le chargement général : exiger le stock ERP ici
+        rendait impossible d'importer le journal d'un lot avancé, donc de
+        déclarer son périmètre, donc de le sceller — tout l'écran restait fermé
+        jusqu'au jour J, c'est-à-dire jusqu'après le moment où il sert.
+
+        Rien ne se perd du séquencement. Ce que cet import fait est **refléter
+        l'ERP** : le fichier apporte le comptage et, dans sa colonne « Stock
+        ERP », ce contre quoi il se compare. Ce qui s'*écrit* dans l'application
+        — corriger une ligne à la main, changer un statut, forcer au stock ERP —
+        reste gardé par ``count_journals``, et le postage, seul geste
+        irréversible, exige toujours un stock chargé **et** gelé.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "early_counts")
         _, parsed = self.parser.parse("count_journal_lines", **kwargs)
         outcome = _base_outcome("count_journal_lines", parsed)
         outcome.storage_path = self.batches.archive(campaign, "count_journal_lines", kwargs)

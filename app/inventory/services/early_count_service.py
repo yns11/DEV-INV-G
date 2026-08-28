@@ -74,7 +74,7 @@ class EarlyCountService:
         self, campaign: Campaign, erp_journal_id: str, keys: Sequence[LocationKey]
     ) -> int:
         ctx = self.ctx
-        ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "early_counts")
         journal = self._erp_journal(campaign, erp_journal_id)
         buffer_key = campaign.config.buffer_key
         if any(key == buffer_key for key in keys):
@@ -173,7 +173,7 @@ class EarlyCountService:
         assise sur des emplacements que le journal ne couvre pas.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "early_counts")
         if not erp_journal_ids:
             raise ValidationError(
                 "Un lot avancé porte sur au moins un journal ERP."
@@ -239,7 +239,7 @@ class EarlyCountService:
     def close_batch(self, campaign: Campaign, batch_id: str) -> EarlyCountBatch:
         """Clore le lot : on cesse d'y ajouter, on peut encore corriger."""
         ctx = self.ctx
-        ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "early_counts")
         batch = self._batch(campaign, batch_id)
         with ctx.db.transaction() as conn:
             ctx.early_counts.close(campaign.id, batch_id, actor=ctx.actor, conn=conn)
@@ -262,7 +262,7 @@ class EarlyCountService:
         branche du traitement des dérives.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "early_counts")
         batch = self._batch(campaign, batch_id)
         if not batch.is_closed:
             raise ConflictError(
@@ -324,7 +324,7 @@ class EarlyCountService:
         annule une preuve sans dire pourquoi est une porte dérobée.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "early_counts")
         if not reason.strip():
             raise ValidationError(
                 "Le descellement demande un motif : il annule une preuve datée."

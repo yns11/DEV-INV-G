@@ -118,7 +118,14 @@ describe('les décisions que porte l’écran', () => {
   it('affiche l’heure du dernier import', () => {
     // Le notebook est rejoué toutes les quelques minutes le jour J : de quand
     // datent les chiffres qu'on regarde n'est pas un détail d'affichage.
-    expect(SCREEN).toContain('journalsImportedAt')
+    //
+    // Le nom du champ est celui du modèle. Cette ligne a d'abord épinglé
+    // `journalsImportedAt`, qui n'existe nulle part : la campagne est le seul
+    // objet de l'aperçu qui voyage tel quel, en `snake_case`. Le contrôle
+    // passait, la bannière affichait « aucun import » pour toujours — un
+    // contrôle par chaînes ne vaut que ce que vaut la chaîne qu'il épingle,
+    // d'où le contrôle de rendu à côté, qui monte l'écran pour de bon.
+    expect(SCREEN).toContain('journals_imported_at')
     expect(SCREEN).toContain('relativeTime')
   })
 

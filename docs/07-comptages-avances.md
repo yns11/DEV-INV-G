@@ -497,6 +497,30 @@ Le jalon `campaign.general_count_opened_at` suffit : avant, comptage avancé ;
 après, comptage général. L'interface affiche « Comptage — lots avancés » puis
 « Comptage — général » : c'est un libellé, pas une machine à états.
 
+**En revanche, un aspect à part : `early_counts`.** Pas un statut, un aspect de
+`Editable` — même fenêtre que `count_journals` (ouvert en `COUNTING`, fermé
+ailleurs), prérequis différent.
+
+C'est le point où la première réalisation s'est trompée, et la faute mérite
+d'être écrite. Tout le chantier s'était branché sur `count_journals`, dont le
+prérequis de séquence est le **chargement du stock ERP**. Or ce chargement est
+l'étape 10 du déroulé ci-dessus, et le comptage avancé occupe les étapes 2 à 8.
+L'écran restait donc verrouillé, et son API refusait, jusqu'après le moment où
+la fonction sert — la barre latérale affichant en prime « chargez d'abord le
+stock ERP », prérequis que le comptage avancé n'a jamais eu.
+
+`early_counts` n'attend que le **référentiel articles** : ses lignes s'y
+rattachent, et le scellement les valorise au prix standard. Le partage
+d'aspect ne pouvait pas tenir, parce que les deux comptages ne se mesurent pas
+contre la même chose — le général contre le snapshot chargé, l'avancé contre la
+colonne « Stock ERP » de son propre journal.
+
+Un seul point ailleurs suit la même règle : **l'import des lignes de journaux**,
+qui est le point d'entrée des deux comptages, est gardé par `early_counts`. Ce
+qu'il fait est refléter l'ERP. Ce qui s'écrit dans l'application — corriger une
+ligne à la main, changer un statut, forcer au stock ERP — reste gardé par
+`count_journals`, et le postage exige toujours un stock chargé **et** gelé.
+
 ---
 
 ## 15. Le nouveau processus, étape par étape

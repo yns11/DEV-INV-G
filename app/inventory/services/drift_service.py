@@ -214,7 +214,7 @@ class DriftService:
         justifie qu'on la nomme.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "early_counts")
         if not drift_ids:
             return 0
         if resolution is DriftResolution.KEEP_EARLY and not cause_code.strip():

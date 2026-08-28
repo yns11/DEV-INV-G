@@ -102,6 +102,57 @@ class EarlyCountService:
             )
         return count
 
+    def list_journals(self, campaign_id: str) -> list[dict[str, Any]]:
+        """Les journaux ERP importés, avec leur périmètre déclaré.
+
+        ``scopeDeclared`` à faux est la seule chose à traiter : tant qu'il l'est,
+        aucun lot ne peut s'ouvrir sur ce journal et ses lignes ne produisent
+        aucune référence.
+        """
+        return [
+            {
+                **journal.model_dump(mode="json", exclude={"scope"}),
+                "scope": [
+                    {"warehouseId": k.warehouse_id, "locationId": k.location_id}
+                    for k in journal.scope
+                ],
+                "scopeDeclared": journal.scope_declared,
+                "warehouses": sorted(journal.warehouses),
+            }
+            for journal in self.ctx.erp_journals.list(campaign_id)
+        ]
+
+    def label_alerts(self, campaign_id: str) -> list[dict[str, Any]]:
+        """Les étiquettes d'un emplacement scellé comptées dans un autre journal.
+
+        Le seul contrôle qui descende au grain de l'étiquette, et celui qui
+        rattrape ce que la dérive ne voit pas : une pièce sortie d'un
+        emplacement scellé sans aucune transaction ERP laisse une dérive nulle,
+        mais si elle est re-scannée ailleurs, son étiquette apparaît dans un
+        second journal.
+        """
+        sealed = [
+            LocationKey(warehouse_id=warehouse, location_id=location)
+            for warehouse, location in sorted(
+                self.ctx.journals.sealed_keys(campaign_id)
+            )
+        ]
+        return [
+            {
+                "labelId": row["label_id"],
+                "itemNumber": row["item_number"],
+                "sealedWarehouseId": row["sealed_warehouse_id"],
+                "sealedLocationId": row["sealed_location_id"],
+                "otherWarehouseId": row["other_warehouse_id"],
+                "otherLocationId": row["other_location_id"],
+                "otherJournalNumber": row["other_journal_number"],
+                "otherQtyCounted": float(row["other_qty_counted"] or 0),
+            }
+            for row in self.ctx.erp_journals.labels_counted_elsewhere(
+                campaign_id, sealed
+            )
+        ]
+
     # ------------------------------------------------------------------- lots
 
     def list_batches(self, campaign_id: str) -> list[EarlyCountBatch]:

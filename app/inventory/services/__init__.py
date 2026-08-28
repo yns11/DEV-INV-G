@@ -11,6 +11,8 @@ from .campaign_service import DEFAULT_THRESHOLDS, CampaignService
 from .consolidation_service import ConsolidationService
 from .context import ENGINE_VERSION, ServiceContext, utcnow
 from .counting_service import CountingService
+from .drift_service import DriftService
+from .early_count_service import EarlyCountService
 from .evidence_service import ArchivedEvidence, EvidenceService
 from .generic_service import GenericService
 from .import_service import ImportOutcome, ImportService
@@ -33,6 +35,8 @@ __all__ = [
     "ArchivedEvidence",
     "BookStockView",
     "CountingService",
+    "DriftService",
+    "EarlyCountService",
     "DEFAULT_THRESHOLDS",
     "EvidenceService",
     "LocationView",

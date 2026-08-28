@@ -418,6 +418,13 @@ class CampaignService:
         # panneau « ce qui manque pour avancer ».
         unexplained = 0
         publication_done = True
+        # Une seule requête, et seulement quand elle peut changer la réponse :
+        # les dérives ne bloquent que l'entrée en analyse.
+        unresolved_drift = 0
+        if target is CampaignStatus.ANALYSIS:
+            unresolved_drift = sum(
+                1 for drift in ctx.drifts.list(campaign.id) if drift.blocks_analysis
+            )
         if target is CampaignStatus.CLOSED:
             # Posé par le job de publication après son manifeste Delta. Le lire
             # ici évite de faire dépendre la clôture d'un entrepôt SQL éveillé,
@@ -432,6 +439,7 @@ class CampaignService:
             zone_statuses=zone_statuses,
             book_stock_frozen=campaign.book_stock_frozen_at is not None,
             unexplained_material=unexplained,
+            unresolved_drift=unresolved_drift,
             publication_done=publication_done,
         )
         return {

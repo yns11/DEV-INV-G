@@ -15,6 +15,11 @@ Elles sont issues du cahier des charges et appliquées sans exception.
 | Un chargement porte un seul identifiant de lot | Le stock ERP et l'écart backflush marquent leurs lignes avec l'identifiant que porte aussi leur ligne d'`import_batch`. Deux identifiants pour un chargement rendaient « d'où vient cette quantité » sans réponse. |
 | Les suppressions logiques sont préférées aux suppressions physiques | `deleted_at` partout ; le journal d'audit résout donc toujours. Une campagne qui a une histoire ne se supprime plus **physiquement** : `audit_event.campaign_id` est `ON DELETE RESTRICT`, et un trigger `BEFORE TRUNCATE` refuse de vider la trace (migration 020). |
 | Un chargement qui remplace n'écrit pas un ensemble amputé | Stock ERP, écart backflush et nomenclature en mode remplacement refusent d'écrire dès qu'une ligne est rejetée : les lignes manquantes deviendraient des lignes supprimées. Dérogation explicite par `allowPartial`, tracée dans le rapport du lot. |
+| Un journal ERP n'est pas un emplacement | `count_journal` reste un par (campagne, entrepôt, emplacement) — c'est l'unité de comptage, de progression et de gel. `erp_journal` est un objet **à côté** : il tient à un entrepôt et couvre plusieurs emplacements (48 journaux sur 73 dans l'export du 13 juin 2026, jusqu'à 54). Deux grains, deux tables, et `erp_journal_line` garde celui de l'étiquette quand `count_journal_line` garde celui sur lequel tout le reste est écrit. |
+| Le périmètre d'un journal se déclare, il ne se devine pas | Les emplacements de ses lignes ne suffisent pas : certaines ne portent un autre emplacement que pour matérialiser un déplacement (1 932 lignes sur 58 345). `erp_journal_scope` porte la déclaration humaine, et un index unique `(campagne, entrepôt, emplacement)` garantit qu'un emplacement n'appartient qu'à un journal. |
+| Un identifiant se transporte, il ne se normalise pas | `label_id` et `serial_number` sont en `TEXT`, sans majuscules ni espaces recollés : « 001609231 » perd trois caractères au premier passage par un entier, et une étiquette tronquée ne se rattache plus à rien. Les clés métier, elles, restent normalisées. |
+| La référence porte sa date | `book_stock.reference_date`. Une campagne qui précompte a une référence composite : le jour J pour la plupart des emplacements, la date du précomptage pour les emplacements scellés. C'est la règle générale — la référence est *ce contre quoi la campagne a été comptée* — appliquée à deux dates. |
+| Une référence absente n'est pas une référence nulle | `count_journal_line.qty_on_hand` vaut `NULL` quand aucune référence ERP n'est connue (saisie manuelle, ligne née d'un scan) et `0` quand l'ERP annonce zéro. Les confondre ferait d'un article que l'ERP ignore un écart franc. |
 | L'archive porte l'identifiant, jamais le code | Les tables Delta sont partitionnées par `campaign_id` : un code métier se réutilise après une suppression logique, et deux campagnes homonymes écrasaient leurs archives. La table `publication`, écrite en dernier, dit qu'un dossier est complet ; `campaign.published_at` le rapporte à Lakebase, où la clôture le consulte. |
 
 ## 2. Types numériques
@@ -43,6 +48,13 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           ├─ location                     PK (campaign, warehouse, location)
           │
           ├─ book_stock                   (snapshot ERP figé)
+          │
+          ├─ erp_journal ──┬─ erp_journal_scope   (le périmètre déclaré)
+          │    le journal    └─ erp_journal_line    (la ligne brute, par étiquette)
+          │    tel que l'ERP le tient : un entrepôt, plusieurs emplacements
+          │
+          ├─ early_count_batch            (lots de comptage avancé)
+          ├─ early_count_drift            (ERP@J − physique@T0, et son issue)
           │
           ├─ count_journal ──── count_journal_line
           │    1 par emplacement actif      qty_imported / qty_manual séparées

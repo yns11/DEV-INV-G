@@ -129,20 +129,57 @@ QUERIES: dict[str, str] = {
         FROM inventory.bom_link
         WHERE campaign_id = %(campaign_id)s AND deleted_at IS NULL
     """,
+    # `reference_date` : sans elle, une archive relue dans deux ans laisserait
+    # croire que tout le stock ERP a été photographié le même jour. Une campagne
+    # qui précompte a une référence composite — le jour J pour la plupart des
+    # emplacements, la date du précomptage pour les emplacements scellés.
     "book_stock_snapshot": """
         SELECT campaign_id::text, item_number, warehouse_id, location_id, qty, unit,
-               unit_cost, (qty * unit_cost) AS value
+               unit_cost, (qty * unit_cost) AS value,
+               reference_date, early_batch_id::text
         FROM inventory.book_stock
         WHERE campaign_id = %(campaign_id)s
     """,
+    # Le scellement et la référence de la ligne suivent le comptage : sans eux,
+    # l'archive ne dirait pas contre quoi un emplacement précompté a été compté,
+    # ni qu'il l'a été avant les autres.
     "count_result": """
         SELECT l.campaign_id::text, l.item_number, j.warehouse_id, j.location_id,
                j.kind AS journal_kind, j.status AS journal_status,
                j.journal_number, l.qty_imported, l.qty_manual,
-               COALESCE(l.qty_manual, l.qty_imported, 0) AS qty, l.unit, l.source
+               COALESCE(l.qty_manual, l.qty_imported, 0) AS qty, l.unit, l.source,
+               l.qty_on_hand, l.erp_journal_number, l.label_count,
+               j.sealed_at, j.early_batch_id::text
         FROM inventory.count_journal_line l
         JOIN inventory.count_journal j ON j.id = l.journal_id
         WHERE l.campaign_id = %(campaign_id)s AND l.deleted_at IS NULL
+    """,
+    # Les lots avancés et leurs dérives. Sans la table des dérives, l'issue
+    # donnée à chacune n'existerait nulle part et le raisonnement ne serait plus
+    # rejouable : c'est précisément ce qu'une archive doit permettre.
+    "early_count_batch": """
+        SELECT campaign_id::text, id::text AS batch_id, code, label, counted_on,
+               opened_at, opened_by, closed_at, closed_by, sealed_at, sealed_by
+        FROM inventory.early_count_batch
+        WHERE campaign_id = %(campaign_id)s AND deleted_at IS NULL
+    """,
+    "early_count_drift": """
+        SELECT campaign_id::text, batch_id::text, warehouse_id, location_id,
+               item_number, qty_erp_t0, qty_physical_t0, qty_erp_j, drift_qty,
+               drift_value, is_material, resolution, cause_code, comment,
+               resolved_at, resolved_by
+        FROM inventory.early_count_drift
+        WHERE campaign_id = %(campaign_id)s
+    """,
+    # Le périmètre déclaré d'un journal ERP : sans lui, on ne saurait plus
+    # distinguer une ligne comptée d'une ligne de passage.
+    "erp_journal_scope": """
+        SELECT s.campaign_id::text, j.journal_number, j.kind, j.erp_posted,
+               s.warehouse_id, s.location_id
+        FROM inventory.erp_journal_scope s
+        JOIN inventory.erp_journal j
+          ON j.id = s.erp_journal_id AND j.campaign_id = s.campaign_id
+        WHERE s.campaign_id = %(campaign_id)s AND j.deleted_at IS NULL
     """,
     "wip_breakdown": """
         SELECT r.campaign_id::text, b.zone_code, b.parent_item, b.parent_qty,
@@ -362,7 +399,7 @@ def manifest(
     """La ligne qui déclare la publication complète.
 
     ``row_counts`` porte le décompte table par table : c'est ce qui permet de
-    répondre à « l'archive est-elle fidèle » sans relire les neuf tables, et de
+    répondre à « l'archive est-elle fidèle » sans relire les douze tables, et de
     voir tout de suite qu'une campagne archivée avec zéro ligne de comptage est
     une anomalie plutôt qu'une campagne vide.
     """

@@ -122,6 +122,9 @@ def book_stock_service(monkeypatch):
     )
     ctx.journals = SimpleNamespace(
         ensure_journals=lambda cid, keys, *, kinds, actor, conn=None: len(keys),
+        # Le chargement général confronte les emplacements scellés à ce que
+        # l'ERP en dit le jour J ; ce contrôle-ci n'en a aucun.
+        sealed_keys=lambda cid: set(),
     )
     ctx.record = lambda **kw: "evt"
     ctx.forget_progress = lambda cid=None: None

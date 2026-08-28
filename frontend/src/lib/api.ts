@@ -9,6 +9,12 @@
  */
 
 import type {
+  Drift,
+  DriftResolution,
+  EarlyBatch,
+  ErpJournal,
+  LabelAlert,
+  ScopeCandidate,
   ClosureChecklist,
   CampaignPage,
   AggregateRow,
@@ -471,6 +477,63 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ rows, ...body }) },
     )
   },
+
+  // -------------------------------------------------------- comptages avancés
+  erpJournals: (id: string) =>
+    request<ErpJournal[]>(`/campaigns/${id}/early-counts/journals`),
+  scopeProposal: (id: string, journalId: string) =>
+    request<ScopeCandidate[]>(
+      `/campaigns/${id}/early-counts/journals/${journalId}/scope-proposal`,
+    ),
+  declareScope: (
+    id: string,
+    journalId: string,
+    locations: { warehouseId: string; locationId: string }[],
+  ) =>
+    request<{ locations: number }>(
+      `/campaigns/${id}/early-counts/journals/${journalId}/scope`,
+      { method: 'PUT', body: JSON.stringify({ locations }) },
+    ),
+  earlyBatches: (id: string) =>
+    request<EarlyBatch[]>(`/campaigns/${id}/early-counts/batches`),
+  createEarlyBatch: (
+    id: string,
+    body: { code: string; label?: string; countedOn?: string | null; erpJournalIds: string[] },
+  ) =>
+    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  closeEarlyBatch: (id: string, batchId: string) =>
+    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/close`, {
+      method: 'POST',
+    }),
+  sealEarlyBatch: (id: string, batchId: string) =>
+    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/seal`, {
+      method: 'POST',
+    }),
+  unsealEarlyBatch: (id: string, batchId: string, reason: string) =>
+    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/unseal`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  drifts: (id: string) =>
+    request<Drift[]>(`/campaigns/${id}/early-counts/drifts`),
+  resolveDrifts: (
+    id: string,
+    body: {
+      driftIds: string[]
+      resolution: DriftResolution
+      causeCode?: string
+      comment?: string
+    },
+  ) =>
+    request<{ resolved: number }>(`/campaigns/${id}/early-counts/drifts/resolve`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  labelAlerts: (id: string) =>
+    request<LabelAlert[]>(`/campaigns/${id}/early-counts/label-alerts`),
 
   // ---------------------------------------------------------------- counting
   // `focus` is a server-side filter: the browser asks for it, the server

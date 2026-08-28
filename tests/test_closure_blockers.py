@@ -162,6 +162,8 @@ def service(*, variances, analyses, batches, published: bool = True):
     with_transactions(ctx)
     ctx.campaigns = SimpleNamespace(get=lambda cid: campaign(published=published))
     ctx.journals = SimpleNamespace(list=lambda cid: [])
+    # Les dérives ne bloquent que l'entrée en analyse ; aucune ici.
+    ctx.drifts = SimpleNamespace(list=lambda cid: [])
     ctx.sheets = SimpleNamespace(
         list_zones=lambda cid: [], list_sheets=lambda cid: [],
         list_arbitrations=lambda cid: [], lines_by_sheet=lambda cid: {},

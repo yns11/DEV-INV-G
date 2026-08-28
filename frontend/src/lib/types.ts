@@ -1079,3 +1079,16 @@ export interface StockFlowReport {
   chain: StockFlowChainStep[]
   rows: StockFlowRow[]
 }
+
+// --------------------------------------------------------------------------
+// Comptages avancés
+// --------------------------------------------------------------------------
+// Générés : la réponse est déclarée côté serveur, donc renommer un champ y
+// fait échouer `tsc` ici plutôt que d'afficher `undefined` à l'écran.
+
+export type ErpJournal = Schemas['ErpJournalResponse']
+export type ScopeCandidate = Schemas['ScopeCandidate']
+export type EarlyBatch = Schemas['EarlyBatchResponse']
+export type Drift = Schemas['DriftResponse']
+export type LabelAlert = Schemas['LabelAlert']
+export type DriftResolution = 'KEEP_EARLY' | 'RECOUNT'

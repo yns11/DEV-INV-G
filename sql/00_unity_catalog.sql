@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS book_stock_snapshot (
     unit         STRING,
     unit_cost    DECIMAL(20,2) NOT NULL COMMENT 'Coût figé au moment du snapshot',
     value        DECIMAL(20,2) NOT NULL COMMENT 'qty × unit_cost, matérialisé pour l''analyse',
+    reference_date DATE COMMENT 'Date de la référence. Le jour J pour la plupart des lignes, la date du précomptage pour un emplacement scellé : une campagne qui précompte a une référence composite.',
+    early_batch_id STRING COMMENT 'Le lot de comptage avancé dont vient cette référence, s''il y en a un',
     published_at TIMESTAMP     NOT NULL
 )
 USING DELTA
@@ -157,11 +159,81 @@ CREATE TABLE IF NOT EXISTS count_result (
     qty           DECIMAL(20,6) NOT NULL COMMENT 'Quantité retenue',
     unit          STRING,
     source        STRING COMMENT 'ERP_IMPORT | MANUAL | SCAN_AI | CONSOLIDATION | SYSTEM',
+    qty_on_hand   DECIMAL(20,6) COMMENT 'Le stock ERP d''avant comptage, porté par le journal lui-même. NULL = aucune référence ERP connue pour cette ligne, ce qui n''est pas zéro.',
+    erp_journal_number STRING COMMENT 'Le journal ERP d''où vient la ligne',
+    label_count   INT COMMENT 'Nombre de lignes ERP — donc d''étiquettes — agrégées ici',
+    sealed_at     TIMESTAMP COMMENT 'Renseigné pour un emplacement précompté et scellé',
+    early_batch_id STRING,
     published_at  TIMESTAMP NOT NULL
 )
 USING DELTA
 PARTITIONED BY (campaign_id)
 COMMENT 'Comptages retenus, avec la valeur importée et la correction humaine côte à côte.';
+
+-- --------------------------------------------------------------------------
+-- Comptages avancés
+-- --------------------------------------------------------------------------
+-- Compter certains emplacements avant le jour J, sans éclater le dossier entre
+-- plusieurs campagnes. Ces trois tables sont ce qui rend le raisonnement
+-- rejouable : sans elles, l'archive ne dirait ni contre quoi un emplacement
+-- précompté a été compté, ni ce qu'on a décidé de l'écart constaté le jour J.
+
+CREATE TABLE IF NOT EXISTS early_count_batch (
+    campaign_id   STRING NOT NULL,
+    campaign_code STRING NOT NULL,
+    batch_id      STRING NOT NULL,
+    code          STRING NOT NULL,
+    label         STRING,
+    counted_on    DATE COMMENT 'La date du comptage physique du lot',
+    opened_at     TIMESTAMP,
+    opened_by     STRING,
+    closed_at     TIMESTAMP,
+    closed_by     STRING,
+    sealed_at     TIMESTAMP COMMENT 'Le scellement : à partir de là, le comptage ne bouge plus sans descellement tracé',
+    sealed_by     STRING,
+    published_at  TIMESTAMP NOT NULL
+)
+USING DELTA
+PARTITIONED BY (campaign_id)
+COMMENT 'Les lots de comptage avancé d''une campagne.';
+
+CREATE TABLE IF NOT EXISTS early_count_drift (
+    campaign_id     STRING NOT NULL,
+    campaign_code   STRING NOT NULL,
+    batch_id        STRING,
+    warehouse_id    STRING NOT NULL,
+    location_id     STRING NOT NULL,
+    item_number     STRING NOT NULL,
+    qty_erp_t0      DECIMAL(20,6) COMMENT 'La référence : stock ERP d''avant le précomptage',
+    qty_physical_t0 DECIMAL(20,6) COMMENT 'Compté + ajusté à T0',
+    qty_erp_j       DECIMAL(20,6) COMMENT 'Stock ERP du snapshot général, gelé le jour J',
+    drift_qty       DECIMAL(20,6) COMMENT 'ERP@J − physique@T0. Attendue nulle : l''emplacement était balisé, et poster son journal a réaligné l''ERP sur le physique compté.',
+    drift_value     DECIMAL(20,2),
+    is_material     BOOLEAN COMMENT 'Aux seuils de la campagne, pas à un réglage à part',
+    resolution      STRING COMMENT 'KEEP_EARLY (le comptage avancé fait foi) | RECOUNT (l''emplacement rejoint le comptage général)',
+    cause_code      STRING COMMENT 'Obligatoire pour KEEP_EARLY : cette issue laisse la campagne et l''ERP en désaccord',
+    comment         STRING,
+    resolved_at     TIMESTAMP,
+    resolved_by     STRING,
+    published_at    TIMESTAMP NOT NULL
+)
+USING DELTA
+PARTITIONED BY (campaign_id)
+COMMENT 'L''écart entre ce que l''ERP dit d''un emplacement scellé le jour J et le physique qui y a été posté.';
+
+CREATE TABLE IF NOT EXISTS erp_journal_scope (
+    campaign_id    STRING NOT NULL,
+    campaign_code  STRING NOT NULL,
+    journal_number STRING NOT NULL,
+    kind           STRING COMMENT 'INVE (étiquettes) | INVV (vrac)',
+    erp_posted     BOOLEAN COMMENT 'Le postage tel que l''en-tête ERP le déclare',
+    warehouse_id   STRING NOT NULL,
+    location_id    STRING NOT NULL,
+    published_at   TIMESTAMP NOT NULL
+)
+USING DELTA
+PARTITIONED BY (campaign_id)
+COMMENT 'Les emplacements qu''un journal ERP couvre réellement, tels qu''un humain les a déclarés — ils ne se déduisent pas de ses lignes.';
 
 CREATE TABLE IF NOT EXISTS wip_breakdown (
     campaign_id    STRING NOT NULL,

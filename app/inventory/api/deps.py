@@ -16,6 +16,8 @@ from ..services import (
     CampaignService,
     ConsolidationService,
     CountingService,
+    DriftService,
+    EarlyCountService,
     EvidenceService,
     GenericService,
     ImportService,
@@ -131,6 +133,14 @@ def campaign_service(ctx: Ctx) -> CampaignService:
 
 def counting_service(ctx: Ctx) -> CountingService:
     return CountingService(ctx)
+
+
+def early_count_service(ctx: Ctx) -> EarlyCountService:
+    return EarlyCountService(ctx)
+
+
+def drift_service(ctx: Ctx) -> DriftService:
+    return DriftService(ctx)
 
 
 def generic_service(ctx: Ctx) -> GenericService:

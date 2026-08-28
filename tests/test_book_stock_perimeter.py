@@ -228,6 +228,9 @@ def import_service(monkeypatch, *, rows, items):
     )
     ctx.journals = SimpleNamespace(
         ensure_journals=lambda cid, keys, *, kinds, actor, conn=None: len(keys),
+        # Le chargement général confronte les emplacements scellés à ce que
+        # l'ERP en dit le jour J. Aucun ici : ce contrôle porte sur le périmètre.
+        sealed_keys=lambda cid: set(),
     )
     ctx.imports = SimpleNamespace(create=lambda **k: k.get("batch_id") or "lot")
     ctx.record = lambda **kw: "evt"

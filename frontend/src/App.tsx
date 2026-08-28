@@ -21,6 +21,7 @@ import { CampaignsPage } from './features/Campaigns'
 import { CampaignShell } from './features/CampaignShell'
 import { Preparation } from './features/Preparation'
 import { Counting } from './features/Counting'
+import EarlyCounts from './features/EarlyCounts'
 import { Generic } from './features/Generic'
 import { Analysis } from './features/Analysis'
 import { Backflush } from './features/Backflush'
@@ -140,6 +141,7 @@ export function App() {
                 <Route path="backflush" element={<Backflush />} />
                 <Route path="compil" element={<Generic />} />
                 <Route path="comptage" element={<Counting />} />
+                <Route path="comptages-avances" element={<EarlyCounts />} />
 
                 <Route path="controles" element={<Analysis view="controls" />} />
                 <Route path="ecarts" element={<Analysis view="variances" />} />

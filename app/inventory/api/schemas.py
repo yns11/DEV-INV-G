@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..domain.enums import (
     CampaignStatus,
     CountSection,
+    DriftResolution,
     ExclusionScope,
     ItemType,
     JournalStatus,
@@ -44,6 +45,10 @@ __all__ = [
     "LocationStatusRequest",
     "JournalStatusRequest",
     "JournalLineRequest",
+    "JournalScopeRequest",
+    "EarlyBatchRequest",
+    "UnsealRequest",
+    "DriftResolutionRequest",
     "ZoneRequest",
     "ZonePassesRequest",
     "ZoneNegativeRequest",
@@ -295,6 +300,40 @@ class LocationStatusRequest(ApiModel):
 class JournalStatusRequest(ApiModel):
     journal_ids: list[str] = Field(min_length=1, alias="journalIds")
     status: JournalStatus
+
+
+class JournalScopeRequest(ApiModel):
+    """Les emplacements qu'un journal ERP couvre réellement.
+
+    Ils ne se déduisent pas de ses lignes : certaines ne portent un autre
+    emplacement que pour matérialiser un déplacement. D'où une déclaration, et
+    non un calcul.
+    """
+
+    locations: list[LocationKeyPayload] = Field(min_length=1)
+
+
+class EarlyBatchRequest(ApiModel):
+    code: str = Field(min_length=3, max_length=50)
+    label: str = ""
+    counted_on: dt.date | None = Field(default=None, alias="countedOn")
+    erp_journal_ids: list[str] = Field(min_length=1, alias="erpJournalIds")
+
+
+class UnsealRequest(ApiModel):
+    """Le descellement annule une preuve datée : il se motive."""
+
+    reason: str = Field(min_length=1)
+
+
+class DriftResolutionRequest(ApiModel):
+    drift_ids: list[str] = Field(min_length=1, alias="driftIds")
+    resolution: DriftResolution
+    #: Obligatoire pour ``KEEP_EARLY`` — le service le vérifie, parce que c'est
+    #: une règle métier et non une contrainte de forme : cette issue laisse la
+    #: campagne et l'ERP en désaccord, et il faut dire pourquoi.
+    cause_code: str = Field(default="", alias="causeCode")
+    comment: str = ""
 
 
 class JournalLineRequest(ApiModel):

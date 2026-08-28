@@ -401,7 +401,52 @@ articles, nomenclatures, seuils. Les zones GENERIQUE, elles, restent créables.
 
 ---
 
-## 2. Comptage — le jour J
+## 2. Comptage
+
+La phase a deux temps. Avant le jour J, on peut **précompter** certains
+emplacements et sceller leur comptage. Le jour J, on charge le stock ERP
+général et on compte le reste. Le passage de l'un à l'autre est un jalon, pas
+un changement de phase : les droits sont les mêmes, seul l'écran change de
+libellé.
+
+Si vous ne précomptez rien, sautez le § 2.0 — le reste est inchangé.
+
+### 2.0 Comptages avancés — compter avant le jour J
+
+**Comptages avancés**, dans la barre latérale, juste avant les journaux.
+
+L'intérêt : alléger la charge du jour J sur des emplacements qui ne bougent pas
+— zones lentes, magasins extérieurs, stock immobilisé. Tout reste dans la même
+campagne : preuves, écarts et analyses ne se répartissent pas entre plusieurs
+dossiers.
+
+**Ce qu'il faut savoir avant de commencer.** Le journal de comptage porte sa
+propre référence : sa colonne « Stock ERP » donne le stock d'avant comptage. Il
+n'y a donc **aucun stock à charger séparément** pour un lot avancé — le fichier
+qui apporte le comptage apporte aussi ce contre quoi il se compare.
+
+Le déroulé, pour chaque lot :
+
+1. **Comptez et postez le journal dans l'ERP.** C'est le postage qui réaligne
+   l'ERP sur le physique compté, et l'application l'exige pour sceller.
+2. **Exécutez le notebook** sur la fenêtre de dates du lot, puis chargez son
+   export comme n'importe quel journal.
+3. **Déclarez le périmètre** de chaque journal, onglet *Journaux ERP*.
+   L'application propose les emplacements candidats — ceux de ses lignes, moins
+   le tampon `INV / 01`, moins ceux déjà pris par un autre journal — le plus
+   probable en tête. Vous cochez. Cette étape est obligatoire : les emplacements
+   des lignes ne suffisent pas à dire lesquels le journal couvre, certaines
+   n'étant là que pour matérialiser un déplacement.
+4. **Ouvrez le lot** sur ces journaux, onglet *Lots avancés*, avec la date du
+   comptage physique.
+5. **Clôturez-le**, puis **scellez-le**. Le scellement pose la référence des
+   emplacements et interdit qu'on y touche. Il est refusé tant qu'un journal
+   n'est pas posté dans l'ERP.
+6. **Balisez physiquement** les emplacements. Cette étape n'est pas dans
+   l'application, mais c'est elle qui rend tout le reste valable.
+
+**Desceller** est possible — c'est ce qui permet un recomptage — mais demande un
+motif : le descellement annule une preuve datée.
 
 ### 2.1 Charger le stock ERP
 
@@ -515,11 +560,46 @@ L'écran affiche aussi les **articles du stock ERP que personne n'a comptés**
 sur cet emplacement, avec leur valeur : ce sont eux qui seront soldés à zéro à
 la clôture. Ils n'apparaissaient auparavant que trois semaines plus tard.
 
-### 2.7 Emplacements inventoriés avant le snapshot
+### 2.7 Traiter les dérives des emplacements précomptés
+
+**Comptages avancés → Dérives.** À faire une fois le stock ERP général chargé,
+et avant le passage en analyse — qui l'attend.
+
+Pour chaque emplacement scellé, l'application confronte ce que l'ERP en dit le
+jour J au physique qui y a été posté :
+
+```
+dérive = stock ERP du jour J − physique posté au précomptage
+```
+
+Elle est **attendue nulle** : l'emplacement était balisé, et poster son journal
+a réaligné l'ERP sur le physique compté. Quand elle ne l'est pas, une seule
+question se pose — *quelle quantité fait foi au jour J ?* — et il y a deux
+réponses :
+
+| Issue | Quand | Ce qu'elle engage |
+|---|---|---|
+| **Conserver le comptage avancé** | Le mouvement est purement informatique, le physique n'a pas bougé | Le physique de T0 est retenu. **Une cause est obligatoire** : la campagne et l'ERP resteront en désaccord de la valeur de la dérive, et personne ne doit le découvrir plus tard |
+| **Recompter le jour J** | On ne fait plus confiance au comptage avancé | L'emplacement est descellé et rejoint le comptage général ; sa référence redevient le stock ERP du jour J |
+
+**Ce que la dérive ne voit pas.** Elle se calcule entre deux lectures de l'ERP :
+une pièce sortie d'un emplacement scellé sans aucune transaction laisse une
+dérive nulle. C'est l'onglet **Étiquettes** qui la rattrape — si la pièce est
+re-scannée ailleurs, son étiquette apparaît dans un second journal, et
+l'application désigne les deux emplacements à aller voir. Reste le cas où elle
+n'est scannée nulle part : rien ne la voit, et seul le balisage physique
+l'évite.
+
+### 2.7 bis Emplacements inventoriés ailleurs
 
 Sélectionnez les journaux concernés → **Forcer au stock ERP**. Leur quantité
 comptée devient celle du stock ERP : l'écart est nul **par construction**, et
 non par accident. Les lignes sont matérialisées et tracées.
+
+Réservé au cas pour lequel il existe : un magasin extérieur dont on reprend le
+chiffre ERP **sans preuve de comptage**. Pour un emplacement que vous avez
+réellement compté avant le jour J, passez par les comptages avancés : forcer au
+stock ERP effacerait le résultat de son inventaire.
 
 ### 2.8 Compter les zones GENERIQUE
 

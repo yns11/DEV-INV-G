@@ -30,6 +30,8 @@ __all__ = [
     "CountSection",
     "DataSource",
     "AdjustmentKind",
+    "CountingStage",
+    "DriftResolution",
     "FlowKind",
     "FlowSource",
     "StockBasis",
@@ -212,6 +214,49 @@ class AdjustmentKind(StrEnum):
     ADJUSTMENT = "ADJUSTMENT"    # journal d'ajustement saisi après analyse
     RECOUNT = "RECOUNT"          # recomptage post-inventaire
     OTHER = "OTHER"
+
+
+class CountingStage(StrEnum):
+    """Sous-phase du comptage, **déduite** du jalon de la campagne.
+
+    Ce n'est pas un statut de campagne, et c'est délibéré : ``COUNTING`` porte
+    déjà exactement les droits qu'un comptage avancé demande, si bien qu'un
+    statut supplémentaire aurait traversé les transitions, la matrice de gel, le
+    contrat côté navigateur et la table Delta pour recopier une ligne.
+    """
+
+    #: La campagne n'est pas en phase de comptage : la question ne se pose pas.
+    NOT_COUNTING = "NOT_COUNTING"
+    #: Avant l'ouverture du comptage général : on charge et scelle des lots.
+    EARLY = "EARLY"
+    #: Après : le stock ERP général est chargé, le reste se compte.
+    GENERAL = "GENERAL"
+
+
+class DriftResolution(StrEnum):
+    """Ce qu'un exploitant décide d'une dérive matérielle.
+
+    Une dérive est l'écart entre le stock ERP du jour J et le physique posté au
+    précomptage, sur un emplacement scellé. Elle est attendue nulle ; quand elle
+    ne l'est pas, **une seule question se pose** : quelle quantité fait foi au
+    jour J ?
+
+    Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une :
+    on ne scelle qu'un journal déjà posté dans l'ERP, si bien que le
+    réalignement est acquis par construction plutôt que diagnostiqué après coup.
+    « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
+    d'ajustement, qui a déjà son sens, sa table et sa place dans le calcul —
+    en faire une issue de la dérive aurait dupliqué une fonction et forcé à
+    choisir entre deux gestes qui ne s'excluent pas.
+    """
+
+    #: Le comptage avancé fait foi. Cause et commentaire obligatoires : la
+    #: campagne et l'ERP restent alors en désaccord de la valeur de la dérive,
+    #: et personne ne doit le découvrir plus tard.
+    KEEP_EARLY = "KEEP_EARLY"
+    #: L'emplacement est descellé et rejoint le comptage général ; sa référence
+    #: redevient le stock ERP du jour J.
+    RECOUNT = "RECOUNT"
 
 
 class FlowKind(StrEnum):

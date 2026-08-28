@@ -49,6 +49,14 @@ from ..domain.models import Campaign
 from ..ingest.contracts import FieldType
 
 __all__ = [
+    "ScopeLocation",
+    "ErpJournalResponse",
+    "ScopeCandidate",
+    "ScopeDeclared",
+    "EarlyBatchResponse",
+    "DriftResponse",
+    "DriftsResolved",
+    "LabelAlert",
     "CampaignPage",
     "ClosureChecklistResponse",
     "DeletedResponse",
@@ -353,3 +361,113 @@ class GridContractResponse(Payload):
     natural_key: list[str] = Field(alias="naturalKey")
     fields: list[GridField]
     examples: list[dict]
+
+
+# --------------------------------------------------------------------------- #
+# Comptages avancés
+# --------------------------------------------------------------------------- #
+
+class ScopeLocation(Payload):
+    warehouse_id: str = Field(alias="warehouseId")
+    location_id: str = Field(alias="locationId")
+
+
+class ErpJournalResponse(Payload):
+    """Un journal tel que l'ERP le tient, avec son périmètre déclaré."""
+
+    id: str
+    campaign_id: str = Field(alias="campaignId")
+    journal_number: str = Field(alias="journalNumber")
+    kind: str
+    description: str = ""
+    site_id: str = Field(default="", alias="siteId")
+    #: Le postage tel que l'en-tête ERP le déclare, distinct du statut de
+    #: workflow : c'est lui que le scellement d'un lot exige.
+    erp_posted: bool = Field(alias="erpPosted")
+    erp_posted_at: str | None = Field(default=None, alias="erpPostedAt")
+    line_count: int = Field(alias="lineCount")
+    last_imported_at: str | None = Field(default=None, alias="lastImportedAt")
+    scope: list[ScopeLocation] = Field(default_factory=list)
+    #: Faux tant que personne n'a désigné les emplacements du journal — et tant
+    #: qu'il l'est, aucun lot ne peut s'ouvrir dessus.
+    scope_declared: bool = Field(alias="scopeDeclared")
+    warehouses: list[str] = Field(default_factory=list)
+
+
+class ScopeCandidate(Payload):
+    """Un emplacement que le journal *pourrait* couvrir."""
+
+    warehouse_id: str = Field(alias="warehouseId")
+    location_id: str = Field(alias="locationId")
+    line_count: int = Field(alias="lineCount")
+    item_count: int = Field(alias="itemCount")
+    qty_on_hand: float = Field(alias="qtyOnHand")
+    qty_counted: float = Field(alias="qtyCounted")
+
+
+class ScopeDeclared(Payload):
+    locations: int
+
+
+class EarlyBatchResponse(Payload):
+    id: str
+    campaign_id: str = Field(alias="campaignId")
+    code: str
+    label: str = ""
+    counted_on: str | None = Field(default=None, alias="countedOn")
+    opened_at: str | None = Field(default=None, alias="openedAt")
+    opened_by: str = Field(default="", alias="openedBy")
+    closed_at: str | None = Field(default=None, alias="closedAt")
+    sealed_at: str | None = Field(default=None, alias="sealedAt")
+    sealed_by: str = Field(default="", alias="sealedBy")
+    is_closed: bool = Field(default=False, alias="isClosed")
+    is_sealed: bool = Field(default=False, alias="isSealed")
+    locations: list[ScopeLocation] = Field(default_factory=list)
+
+
+class DriftResponse(Payload):
+    """``ERP@J − physique@T0`` sur un emplacement scellé, attendue nulle."""
+
+    id: str
+    campaign_id: str = Field(alias="campaignId")
+    batch_id: str | None = Field(default=None, alias="batchId")
+    warehouse_id: str = Field(alias="warehouseId")
+    location_id: str = Field(alias="locationId")
+    item_number: str = Field(alias="itemNumber")
+    #: La référence de l'emplacement — le stock ERP d'avant son précomptage.
+    qty_erp_t0: float = Field(alias="qtyErpT0")
+    qty_physical_t0: float = Field(alias="qtyPhysicalT0")
+    qty_erp_j: float = Field(alias="qtyErpJ")
+    drift_qty: float = Field(alias="driftQty")
+    drift_value: float = Field(alias="driftValue")
+    is_material: bool = Field(alias="isMaterial")
+    resolution: str | None = None
+    cause_code: str = Field(default="", alias="causeCode")
+    comment: str = ""
+    resolved_at: str | None = Field(default=None, alias="resolvedAt")
+    resolved_by: str = Field(default="", alias="resolvedBy")
+    is_resolved: bool = Field(alias="isResolved")
+    #: Vrai tant qu'une dérive matérielle n'a pas d'issue : le passage en
+    #: analyse est alors refusé.
+    blocks_analysis: bool = Field(alias="blocksAnalysis")
+
+
+class DriftsResolved(Payload):
+    resolved: int
+
+
+class LabelAlert(Payload):
+    """Une étiquette d'un emplacement scellé, comptée dans un autre journal.
+
+    Le seul contrôle qui descende au grain de l'étiquette, et celui qui rattrape
+    ce que la dérive ne voit pas.
+    """
+
+    label_id: str = Field(alias="labelId")
+    item_number: str = Field(alias="itemNumber")
+    sealed_warehouse_id: str = Field(alias="sealedWarehouseId")
+    sealed_location_id: str = Field(alias="sealedLocationId")
+    other_warehouse_id: str = Field(alias="otherWarehouseId")
+    other_location_id: str = Field(alias="otherLocationId")
+    other_journal_number: str = Field(alias="otherJournalNumber")
+    other_qty_counted: float = Field(alias="otherQtyCounted")

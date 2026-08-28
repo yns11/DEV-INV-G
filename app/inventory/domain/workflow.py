@@ -241,6 +241,7 @@ def campaign_transition_blockers(
     book_stock_frozen: bool = False,
     blocking_controls: Sequence[ControlFinding] = (),
     unexplained_material: int = 0,
+    unresolved_drift: int = 0,
     publication_done: bool = True,
 ) -> list[ControlFinding]:
     """Business preconditions that must hold before *target* can be entered.
@@ -296,6 +297,22 @@ def campaign_transition_blockers(
                     ),
                     entity_type="count_journal",
                     context={"pending": len(pending)},
+                )
+            )
+        if unresolved_drift:
+            blockers.append(
+                ControlFinding(
+                    code="EARLY_COUNT_DRIFT_UNRESOLVED",
+                    severity=ControlSeverity.BLOCKER,
+                    message=(
+                        f"{unresolved_drift} dérive(s) matérielle(s) sur des "
+                        "emplacements scellés n'ont pas d'issue. Le stock ERP du "
+                        "jour J ne dit pas la même chose que le physique posté "
+                        "au précomptage : décidez, pour chacune, laquelle fait "
+                        "foi — conserver le comptage avancé, ou recompter."
+                    ),
+                    entity_type="early_count_drift",
+                    context={"unresolved": unresolved_drift},
                 )
             )
         open_zones = [z for z in zone_statuses if z is not ZoneStatus.DONE]

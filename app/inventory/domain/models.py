@@ -25,8 +25,10 @@ from .enums import (
     AdjustmentKind,
     CampaignStatus,
     ControlSeverity,
+    CountingStage,
     CountSection,
     DataSource,
+    DriftResolution,
     ExclusionScope,
     FlowKind,
     FlowSource,
@@ -60,6 +62,10 @@ __all__ = [
     "BookStockLine",
     "CountJournal",
     "CountJournalLine",
+    "ErpJournal",
+    "ErpJournalLine",
+    "EarlyCountBatch",
+    "EarlyCountDrift",
     "Zone",
     "CountSheet",
     "CountSheetLine",
@@ -256,7 +262,29 @@ class CampaignConfig(DomainModel):
     #: illisible sans jamais dire qu'un réglage existait.
     allow_formulas: bool = False
 
-    @field_validator("generic_warehouse", "generic_location", mode="before")
+    #: L'emplacement **tampon** de l'ERP, ``INV / 01``.
+    #:
+    #: Entièrement virtuel : aucun emplacement physique de l'usine ne lui
+    #: correspond, et l'ERP n'y crée aucun journal de comptage. Il reçoit toute
+    #: pièce qu'un comptage ne retrouve pas, et centralise ainsi les écarts du
+    #: stock géré par lots.
+    #:
+    #: L'application le connaît pour trois raisons, et elles se tiennent : il ne
+    #: doit jamais entrer dans le périmètre d'un journal ni dans un lot avancé,
+    #: aucun contrôle de dérive ne s'y applique, et son emplacement se désactive
+    #: après le chargement général. Cette désactivation n'est pas une commodité :
+    #: une pièce introuvable produit un départ (ERP 1, compté 0) et une arrivée
+    #: au tampon (ERP 0, compté 1) qui **se compensent exactement** à l'échelle
+    #: de l'article. Le garder dans le périmètre effacerait donc la perte ; le
+    #: retirer ne laisse que la ligne de départ, et la perte redevient un écart.
+    buffer_warehouse: str = "INV"
+    buffer_location: str = "01"
+
+    @field_validator(
+        "generic_warehouse", "generic_location",
+        "buffer_warehouse", "buffer_location",
+        mode="before",
+    )
     @classmethod
     def _norm(cls, v: Any) -> str:
         return normalise_key(str(v))
@@ -265,6 +293,12 @@ class CampaignConfig(DomainModel):
     def generic_key(self) -> LocationKey:
         return LocationKey(
             warehouse_id=self.generic_warehouse, location_id=self.generic_location
+        )
+
+    @property
+    def buffer_key(self) -> LocationKey:
+        return LocationKey(
+            warehouse_id=self.buffer_warehouse, location_id=self.buffer_location
         )
 
 
@@ -290,6 +324,21 @@ class Campaign(DomainModel):
     #: son manifeste. ``None`` = jamais archivée, et la clôture le refuse : la
     #: base opérationnelle est vivante, l'archive est ce qui reste.
     published_at: dt.datetime | None = None
+    #: Le jalon qui sépare les deux sous-phases du comptage : avant lui les lots
+    #: avancés, après lui le comptage général.
+    #:
+    #: Un jalon et non un statut de campagne. ``COUNTING`` porte déjà exactement
+    #: les droits qu'un comptage avancé demande — référentiels gelés, journaux et
+    #: saisies ouverts — et un statut de plus traverserait les transitions, la
+    #: matrice de gel, le contrat côté navigateur, la barre latérale et la table
+    #: Delta pour aboutir à une ligne recopiée. La sous-phase se **déduit** donc,
+    #: comme les deux premiers états d'une zone se déduisent de ses quantités.
+    general_count_opened_at: dt.datetime | None = None
+    #: Heure du dernier import de journaux ERP réussi. Le notebook est rejoué
+    #: très régulièrement le jour J ; savoir de quand datent les chiffres qu'on
+    #: regarde n'est pas un détail d'affichage, c'est ce qui dit s'il faut
+    #: recharger avant de décider.
+    journals_imported_at: dt.datetime | None = None
 
     created_by: str
     created_at: dt.datetime
@@ -319,6 +368,19 @@ class Campaign(DomainModel):
     @property
     def is_frozen(self) -> bool:
         return self.status is CampaignStatus.CLOSED
+
+    @property
+    def counting_stage(self) -> CountingStage:
+        """Où en est le comptage : lots avancés, ou général.
+
+        Dérivé du jalon, jamais stocké deux fois. Hors de la phase de comptage
+        la question ne se pose pas, et la réponse le dit.
+        """
+        if self.status is not CampaignStatus.COUNTING:
+            return CountingStage.NOT_COUNTING
+        if self.general_count_opened_at is None:
+            return CountingStage.EARLY
+        return CountingStage.GENERAL
 
 
 # --------------------------------------------------------------------------- #
@@ -546,6 +608,21 @@ class BookStockLine(DomainModel):
     unit: str = "PCE"
     #: Unit cost captured at snapshot time; the campaign is valued with it.
     unit_cost: Decimal = ZERO
+    #: La date à laquelle cette référence a été prise.
+    #:
+    #: Le jour J pour la plupart des lignes ; la date du précomptage pour les
+    #: emplacements scellés, dont la référence est le stock ERP d'avant leur
+    #: comptage. La règle est la même dans les deux cas, et c'est celle que
+    #: :attr:`VarianceLine.variance_qty` documente déjà : la référence est *ce
+    #: contre quoi la campagne a été comptée*. Elle s'applique simplement à deux
+    #: dates dès qu'on précompte.
+    #:
+    #: D'où cette colonne : le total « stock ERP » d'une campagne qui précompte
+    #: est composite, et un rapprochement avec un état ERP tiré à une date unique
+    #: trouverait une différence que rien n'expliquerait.
+    reference_date: dt.date | None = None
+    #: Le lot avancé d'où vient cette référence, quand elle n'est pas du jour J.
+    early_batch_id: str | None = None
 
     @field_validator("item_number", "warehouse_id", "location_id", "unit", mode="before")
     @classmethod
@@ -594,6 +671,23 @@ class CountJournal(DomainModel):
     #: location was absent from the book stock (book qty = 0, counted > 0).
     auto_created: bool = False
     updated_at: dt.datetime | None = None
+    #: Le lot de comptage avancé auquel cet emplacement appartient, s'il y en a.
+    early_batch_id: str | None = None
+    #: Quand le comptage de cet emplacement a été scellé, et par qui.
+    #:
+    #: **Le premier gel par objet du produit.** Jusqu'ici, tout ce que
+    #: l'application gèle, elle le gèle par statut de campagne : la matrice de
+    #: :mod:`inventory.domain.workflow` répond « peut-on écrire des journaux dans
+    #: cette campagne ? », et tant qu'elle est en comptage la réponse vaut pour
+    #: tous. Un comptage avancé posté doit pourtant cesser de bouger, sinon la
+    #: preuve du 22 ne vaut rien le 24.
+    #:
+    #: La règle qui évite deux sources de vérité contradictoires : le scellement
+    #: ne fait que **restreindre**. ``mutability_of`` est consulté en premier et
+    #: garde le dernier mot pour interdire ; le scellement s'y ajoute et ne peut
+    #: jamais rouvrir ce que la campagne a fermé.
+    sealed_at: dt.datetime | None = None
+    sealed_by: str = ""
 
     @field_validator("warehouse_id", "location_id", mode="before")
     @classmethod
@@ -605,6 +699,10 @@ class CountJournal(DomainModel):
         return LocationKey(
             warehouse_id=self.warehouse_id, location_id=self.location_id
         )
+
+    @property
+    def is_sealed(self) -> bool:
+        return self.sealed_at is not None
 
     @property
     def is_complete(self) -> bool:
@@ -634,13 +732,28 @@ class CountJournalLine(DomainModel):
     comment: str = ""
     updated_by: str | None = None
     updated_at: dt.datetime | None = None
+    #: Le stock ERP **avant** comptage, agrégé depuis les lignes ERP du périmètre
+    #: — la colonne ``OnHandQuantity`` de l'export, que l'export nomme
+    #: « Stock ERP ». C'est la référence propre à cette ligne, et c'est elle qui
+    #: rend un comptage avancé autonome : le journal apporte à la fois le
+    #: comptage et ce contre quoi il se compare, sans chargement séparé.
+    #:
+    #: ``None`` n'est pas ``0``. ``None`` dit « aucune référence ERP connue » —
+    #: une saisie manuelle, une ligne née d'un scan — quand ``0`` dit « l'ERP
+    #: annonce zéro ». Les confondre ferait d'un article que l'ERP ignore un
+    #: écart franc, alors qu'on n'en sait rien.
+    qty_on_hand: Decimal | None = None
+    #: Le numéro du journal ERP d'où cette ligne provient.
+    erp_journal_number: str = ""
+    #: Combien de lignes ERP — donc d'étiquettes — cette ligne agrège.
+    label_count: int = 0
 
     @field_validator("item_number", "unit", mode="before")
     @classmethod
     def _key(cls, v: Any) -> str:
         return normalise_key(str(v) if v is not None else "")
 
-    @field_validator("qty_imported", "qty_manual", mode="before")
+    @field_validator("qty_imported", "qty_manual", "qty_on_hand", mode="before")
     @classmethod
     def _qty(cls, v: Any) -> Decimal | None:
         if v is None or v == "":
@@ -661,6 +774,262 @@ class CountJournalLine(DomainModel):
     @property
     def is_overridden(self) -> bool:
         return self.qty_manual is not None and self.qty_manual != self.qty_imported
+
+
+# --------------------------------------------------------------------------- #
+# Le journal ERP, tel que l'ERP le produit
+# --------------------------------------------------------------------------- #
+#
+# Un objet **à côté** de :class:`CountJournal`, pas à sa place. ``CountJournal``
+# reste un par (campagne, entrepôt, emplacement) : c'est l'unité de comptage, de
+# progression et de gel de toute l'application. Le journal ERP, lui, tient à un
+# entrepôt et couvre plusieurs emplacements — sur l'export réel du 13 juin 2026,
+# 48 journaux sur 73 en couvrent plus d'un, jusqu'à 54 pour l'un d'eux.
+#
+# Deux grains, deux tables, et c'est délibéré.
+
+class ErpJournal(DomainModel):
+    """Un journal de comptage tel que l'ERP le tient, et son périmètre déclaré."""
+
+    id: str
+    campaign_id: str
+    journal_number: str
+    kind: JournalKind = JournalKind.INVV
+    description: str = ""
+    site_id: str = ""
+    #: Le postage tel que l'en-tête ERP le déclare (``IsPosted``), distinct du
+    #: statut de workflow d'un :class:`CountJournal` qu'un humain fait avancer.
+    #:
+    #: C'est cette valeur-ci que le scellement d'un lot avancé exige. Poster un
+    #: journal réaligne l'ERP sur le physique compté ; n'accepter de sceller
+    #: qu'un journal posté rend donc ce réalignement acquis **par construction**,
+    #: au lieu d'avoir à le diagnostiquer plus tard depuis la forme d'une dérive.
+    erp_posted: bool = False
+    erp_posted_at: dt.datetime | None = None
+    line_count: int = 0
+    first_imported_at: dt.datetime | None = None
+    last_imported_at: dt.datetime | None = None
+    #: Les emplacements que ce journal couvre réellement, tels qu'un humain les
+    #: a désignés.
+    #:
+    #: Ils ne se déduisent pas des lignes : certaines ne portent un autre
+    #: entrepôt ou emplacement que pour matérialiser un déplacement — 1 932
+    #: lignes sur 58 345 dans l'export analysé. Tant que le périmètre n'est pas
+    #: déclaré, rien n'est calculable : ni la référence d'un emplacement, ni ce
+    #: qui est une ligne de passage.
+    scope: list[LocationKey] = Field(default_factory=list)
+    scope_declared_at: dt.datetime | None = None
+    scope_declared_by: str = ""
+
+    @field_validator("journal_number", "site_id", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @property
+    def scope_declared(self) -> bool:
+        return self.scope_declared_at is not None
+
+    @property
+    def warehouses(self) -> set[str]:
+        return {key.warehouse_id for key in self.scope}
+
+    def covers(self, key: LocationKey) -> bool:
+        return key in self.scope
+
+
+class ErpJournalLine(DomainModel):
+    """Une ligne de journal ERP, au grain où l'ERP la produit.
+
+    Conservée telle quelle — y compris les lignes hors périmètre et celles de
+    l'emplacement tampon — parce que c'est la trace, et parce que le seul
+    contrôle qui descende sous le grain de l'application la lit : une étiquette
+    d'un emplacement scellé retrouvée comptée dans un autre journal.
+    """
+
+    id: str
+    erp_journal_id: str
+    campaign_id: str
+    #: Numéro de ligne ERP. Absent de certains exports, et ce n'est pas une
+    #: raison de refuser la ligne : ce serait perdre une quantité comptée pour
+    #: une colonne technique.
+    erp_line_number: int | None = None
+    site_id: str = ""
+    warehouse_id: str
+    location_id: str = ""
+    #: Étiquette logistique (``SILlabelID``) et numéro de série
+    #: (``ItemSerialNumber``), **en texte et jamais autrement**. « 001609231 »
+    #: perd trois caractères au premier passage par un entier, et une étiquette
+    #: tronquée ne se rattache plus à rien.
+    label_id: str = ""
+    serial_number: str = ""
+    item_number: str
+    #: « Stock ERP » : la référence, avant comptage.
+    qty_on_hand: Decimal = ZERO
+    #: « Qté Comptée » : le physique relevé ou scanné.
+    qty_counted: Decimal = ZERO
+    unit: str = "PCE"
+    inventory_status_id: str = ""
+
+    @field_validator("item_number", "warehouse_id", "location_id", "unit",
+                     "site_id", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @field_validator("label_id", "serial_number", "inventory_status_id",
+                     mode="before")
+    @classmethod
+    def _identifier(cls, v: Any) -> str:
+        """Un identifiant se transporte, il ne se normalise pas.
+
+        Ni majuscules, ni espaces recollés, ni conversion : seul l'entourage
+        blanc part. Tout le reste appartient à l'ERP, y compris les zéros de
+        tête, et le renvoyer autrement qu'il est arrivé casserait le
+        rapprochement.
+        """
+        if v is None:
+            return ""
+        return str(v).strip()
+
+    @field_validator("qty_on_hand", "qty_counted", mode="before")
+    @classmethod
+    def _qty(cls, v: Any) -> Decimal:
+        return _as_qty(v if v not in (None, "") else 0)
+
+    @property
+    def key(self) -> LocationKey:
+        return LocationKey(
+            warehouse_id=self.warehouse_id, location_id=self.location_id
+        )
+
+    @property
+    def variance_qty(self) -> Decimal:
+        """Qté Comptée − Stock ERP.
+
+        Un écart de ligne n'est pas une anomalie de stock : un moins ici et un
+        plus là-bas, c'est le déplacement d'une même pièce. Sur l'export du
+        13 juin, 18 696 lignes portent une arrivée et 17 971 un départ.
+        """
+        return quantize_qty(self.qty_counted - self.qty_on_hand)
+
+
+# --------------------------------------------------------------------------- #
+# Comptages avancés
+# --------------------------------------------------------------------------- #
+
+class EarlyCountBatch(DomainModel):
+    """Un lot d'emplacements comptés avant le jour J.
+
+    Sa référence ne vient d'aucun chargement séparé : elle est déjà dans le
+    journal, colonne « Stock ERP », agrégée par emplacement et article sur le
+    périmètre déclaré.
+    """
+
+    id: str
+    campaign_id: str
+    code: str
+    label: str = ""
+    #: La date du comptage physique, telle que l'exploitant la déclare.
+    counted_on: dt.date | None = None
+    opened_at: dt.datetime | None = None
+    opened_by: str = ""
+    closed_at: dt.datetime | None = None
+    closed_by: str = ""
+    sealed_at: dt.datetime | None = None
+    sealed_by: str = ""
+    #: Les emplacements du lot, repris des journaux ERP qui le composent.
+    locations: list[LocationKey] = Field(default_factory=list)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def _code(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "").replace(" ", "-")
+
+    @property
+    def is_closed(self) -> bool:
+        return self.closed_at is not None
+
+    @property
+    def is_sealed(self) -> bool:
+        return self.sealed_at is not None
+
+
+class EarlyCountDrift(DomainModel):
+    """L'écart entre le stock ERP du jour J et le physique posté au précomptage.
+
+    Attendue nulle : l'emplacement a été balisé, et poster son journal a
+    réaligné l'ERP sur le physique compté. Quand elle ne l'est pas, une seule
+    question se pose — quelle quantité fait foi au jour J ? — et
+    :class:`DriftResolution` en porte les deux réponses.
+
+    Ce que cette dérive ne verra pas
+    --------------------------------
+    Elle se calcule entre deux lectures de l'ERP, donc elle ne voit que ce que
+    l'ERP a appris. Une pièce sortie d'un emplacement scellé sans aucune
+    transaction laisse une dérive nulle. Si elle est re-scannée ailleurs le jour
+    J, c'est le contrôle par étiquette qui la rattrape ; sinon rien ne la voit,
+    et la perte n'apparaîtra qu'à l'inventaire suivant.
+    """
+
+    id: str
+    campaign_id: str
+    batch_id: str | None = None
+    warehouse_id: str
+    location_id: str
+    item_number: str
+    #: Le stock ERP d'avant le comptage avancé — la référence de l'emplacement.
+    qty_erp_t0: Decimal = ZERO
+    #: Compté + ajusté à T0.
+    qty_physical_t0: Decimal = ZERO
+    #: Le stock ERP du snapshot général, gelé le jour J.
+    qty_erp_j: Decimal = ZERO
+    drift_value: Decimal = ZERO
+    is_material: bool = False
+    resolution: DriftResolution | None = None
+    cause_code: str = ""
+    comment: str = ""
+    resolved_at: dt.datetime | None = None
+    resolved_by: str = ""
+
+    @field_validator("item_number", "warehouse_id", "location_id", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @field_validator("qty_erp_t0", "qty_physical_t0", "qty_erp_j", mode="before")
+    @classmethod
+    def _qty(cls, v: Any) -> Decimal:
+        return _as_qty(v if v not in (None, "") else 0)
+
+    @field_validator("drift_value", mode="before")
+    @classmethod
+    def _value(cls, v: Any) -> Decimal:
+        return _as_money(v if v not in (None, "") else 0)
+
+    @property
+    def key(self) -> LocationKey:
+        return LocationKey(
+            warehouse_id=self.warehouse_id, location_id=self.location_id
+        )
+
+    @property
+    def drift_qty(self) -> Decimal:
+        """``ERP@J − physique@T0``, calculée et non stockée.
+
+        Stocker la soustraction à côté de ses deux termes aurait ouvert la
+        possibilité qu'ils cessent d'être d'accord.
+        """
+        return quantize_qty(self.qty_erp_j - self.qty_physical_t0)
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.resolution is not None
+
+    @property
+    def blocks_analysis(self) -> bool:
+        """Une dérive matérielle sans issue arrête le passage en analyse."""
+        return self.is_material and not self.is_resolved
 
 
 class Zone(DomainModel):

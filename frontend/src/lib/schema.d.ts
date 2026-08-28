@@ -927,6 +927,214 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/early-counts/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Lister les lots de comptage avancé */
+        get: operations["list_batches_api_campaigns__campaign_id__early_counts_batches_get"];
+        put?: never;
+        /** Ouvrir un lot de comptage avancé */
+        post: operations["create_batch_api_campaigns__campaign_id__early_counts_batches_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/batches/{batch_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Clore un lot */
+        post: operations["close_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/batches/{batch_id}/seal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sceller un lot
+         * @description Poser la référence des emplacements du lot, et interdire qu'on y touche.
+         *
+         *     Refusé si l'un des journaux du périmètre n'est pas posté dans l'ERP : c'est
+         *     le postage qui réaligne l'ERP sur le physique compté, et le scellement tient
+         *     ce réalignement pour acquis.
+         */
+        post: operations["seal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__seal_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/batches/{batch_id}/unseal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Desceller un lot */
+        post: operations["unseal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__unseal_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/drifts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lister les dérives des emplacements scellés
+         * @description ``ERP@J − physique@T0``, par article et emplacement scellé.
+         *
+         *     Attendue nulle. ``blocksAnalysis`` marque celles qui arrêtent le passage en
+         *     analyse tant que personne n'a dit laquelle des deux quantités fait foi.
+         */
+        get: operations["list_drifts_api_campaigns__campaign_id__early_counts_drifts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/drifts/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trancher des dérives
+         * @description Quelle quantité fait foi au jour J ?
+         *
+         *     Deux réponses : conserver le comptage avancé — avec une cause, parce que la
+         *     campagne et l'ERP resteront alors en désaccord — ou recompter, ce qui rend
+         *     l'emplacement au comptage général.
+         */
+        post: operations["resolve_drifts_api_campaigns__campaign_id__early_counts_drifts_resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/journals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lister les journaux ERP importés
+         * @description Les journaux tels que l'ERP les tient, avec leur périmètre déclaré.
+         */
+        get: operations["list_erp_journals_api_campaigns__campaign_id__early_counts_journals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/journals/{erp_journal_id}/scope": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Déclarer le périmètre d'un journal */
+        put: operations["declare_scope_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__scope_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/journals/{erp_journal_id}/scope-proposal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Proposer les emplacements d'un journal
+         * @description Les emplacements que ce journal *pourrait* couvrir.
+         *
+         *     Ceux de ses lignes, moins le tampon, moins ceux déjà alloués à un autre
+         *     journal, le plus probable en tête. L'application propose, l'utilisateur
+         *     tranche : les emplacements des lignes ne suffisent pas à dire le périmètre.
+         */
+        get: operations["propose_scope_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__scope_proposal_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/label-alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Étiquettes scellées comptées ailleurs
+         * @description Le seul contrôle qui descende au grain de l'étiquette.
+         *
+         *     Il rattrape ce que la dérive ne voit pas : une pièce sortie d'un emplacement
+         *     scellé sans aucune transaction ERP laisse une dérive nulle, mais si elle est
+         *     re-scannée ailleurs, son étiquette apparaît dans un second journal.
+         */
+        get: operations["label_alerts_api_campaigns__campaign_id__early_counts_label_alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/generic/arbitrations": {
         parameters: {
             query?: never;
@@ -2836,8 +3044,12 @@ export interface components {
              * @default 1.0.0
              */
             engine_version: string;
+            /** General Count Opened At */
+            general_count_opened_at: string | null;
             /** Id */
             id: string;
+            /** Journals Imported At */
+            journals_imported_at: string | null;
             /** Label */
             label: string;
             /** Published At */
@@ -2866,6 +3078,16 @@ export interface components {
              * @default 0
              */
             arbitration_tolerance: string;
+            /**
+             * Buffer Location
+             * @default 01
+             */
+            buffer_location: string;
+            /**
+             * Buffer Warehouse
+             * @default INV
+             */
+            buffer_warehouse: string;
             /**
              * Currency
              * @default EUR
@@ -3079,6 +3301,203 @@ export interface components {
         DeletedResponse: {
             /** Deleted */
             deleted: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * DriftResolution
+         * @description Ce qu'un exploitant décide d'une dérive matérielle.
+         *
+         *     Une dérive est l'écart entre le stock ERP du jour J et le physique posté au
+         *     précomptage, sur un emplacement scellé. Elle est attendue nulle ; quand elle
+         *     ne l'est pas, **une seule question se pose** : quelle quantité fait foi au
+         *     jour J ?
+         *
+         *     Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une :
+         *     on ne scelle qu'un journal déjà posté dans l'ERP, si bien que le
+         *     réalignement est acquis par construction plutôt que diagnostiqué après coup.
+         *     « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
+         *     d'ajustement, qui a déjà son sens, sa table et sa place dans le calcul —
+         *     en faire une issue de la dérive aurait dupliqué une fonction et forcé à
+         *     choisir entre deux gestes qui ne s'excluent pas.
+         * @enum {string}
+         */
+        DriftResolution: "KEEP_EARLY" | "RECOUNT";
+        /** DriftResolutionRequest */
+        DriftResolutionRequest: {
+            /**
+             * Causecode
+             * @default
+             */
+            causeCode: string;
+            /**
+             * Comment
+             * @default
+             */
+            comment: string;
+            /** Driftids */
+            driftIds: string[];
+            resolution: components["schemas"]["DriftResolution"];
+        };
+        /**
+         * DriftResponse
+         * @description ``ERP@J − physique@T0`` sur un emplacement scellé, attendue nulle.
+         */
+        DriftResponse: {
+            /** Batchid */
+            batchId: string | null;
+            /** Blocksanalysis */
+            blocksAnalysis: boolean;
+            /** Campaignid */
+            campaignId: string;
+            /**
+             * Causecode
+             * @default
+             */
+            causeCode: string;
+            /**
+             * Comment
+             * @default
+             */
+            comment: string;
+            /** Driftqty */
+            driftQty: number;
+            /** Driftvalue */
+            driftValue: number;
+            /** Id */
+            id: string;
+            /** Ismaterial */
+            isMaterial: boolean;
+            /** Isresolved */
+            isResolved: boolean;
+            /** Itemnumber */
+            itemNumber: string;
+            /** Locationid */
+            locationId: string;
+            /** Qtyerpj */
+            qtyErpJ: number;
+            /** Qtyerpt0 */
+            qtyErpT0: number;
+            /** Qtyphysicalt0 */
+            qtyPhysicalT0: number;
+            /** Resolution */
+            resolution: string | null;
+            /** Resolvedat */
+            resolvedAt: string | null;
+            /**
+             * Resolvedby
+             * @default
+             */
+            resolvedBy: string;
+            /** Warehouseid */
+            warehouseId: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** DriftsResolved */
+        DriftsResolved: {
+            /** Resolved */
+            resolved: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** EarlyBatchRequest */
+        EarlyBatchRequest: {
+            /** Code */
+            code: string;
+            /** Countedon */
+            countedOn?: string | null;
+            /** Erpjournalids */
+            erpJournalIds: string[];
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+        };
+        /** EarlyBatchResponse */
+        EarlyBatchResponse: {
+            /** Campaignid */
+            campaignId: string;
+            /** Closedat */
+            closedAt: string | null;
+            /** Code */
+            code: string;
+            /** Countedon */
+            countedOn: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Isclosed
+             * @default false
+             */
+            isClosed: boolean;
+            /**
+             * Issealed
+             * @default false
+             */
+            isSealed: boolean;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Locations */
+            locations: components["schemas"]["ScopeLocation"][];
+            /** Openedat */
+            openedAt: string | null;
+            /**
+             * Openedby
+             * @default
+             */
+            openedBy: string;
+            /** Sealedat */
+            sealedAt: string | null;
+            /**
+             * Sealedby
+             * @default
+             */
+            sealedBy: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ErpJournalResponse
+         * @description Un journal tel que l'ERP le tient, avec son périmètre déclaré.
+         */
+        ErpJournalResponse: {
+            /** Campaignid */
+            campaignId: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Erpposted */
+            erpPosted: boolean;
+            /** Erppostedat */
+            erpPostedAt: string | null;
+            /** Id */
+            id: string;
+            /** Journalnumber */
+            journalNumber: string;
+            /** Kind */
+            kind: string;
+            /** Lastimportedat */
+            lastImportedAt: string | null;
+            /** Linecount */
+            lineCount: number;
+            /** Scope */
+            scope: components["schemas"]["ScopeLocation"][];
+            /** Scopedeclared */
+            scopeDeclared: boolean;
+            /**
+             * Siteid
+             * @default
+             */
+            siteId: string;
+            /** Warehouses */
+            warehouses: string[];
         } & {
             [key: string]: unknown;
         };
@@ -3349,6 +3768,18 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * JournalScopeRequest
+         * @description Les emplacements qu'un journal ERP couvre réellement.
+         *
+         *     Ils ne se déduisent pas de ses lignes : certaines ne portent un autre
+         *     emplacement que pour matérialiser un déplacement. D'où une déclaration, et
+         *     non un calcul.
+         */
+        JournalScopeRequest: {
+            /** Locations */
+            locations: components["schemas"]["LocationKeyPayload"][];
+        };
+        /**
          * JournalStatus
          * @description Progress of one counting journal (one per active warehouse+location).
          *
@@ -3363,6 +3794,33 @@ export interface components {
             /** Journalids */
             journalIds: string[];
             status: components["schemas"]["JournalStatus"];
+        };
+        /**
+         * LabelAlert
+         * @description Une étiquette d'un emplacement scellé, comptée dans un autre journal.
+         *
+         *     Le seul contrôle qui descende au grain de l'étiquette, et celui qui rattrape
+         *     ce que la dérive ne voit pas.
+         */
+        LabelAlert: {
+            /** Itemnumber */
+            itemNumber: string;
+            /** Labelid */
+            labelId: string;
+            /** Otherjournalnumber */
+            otherJournalNumber: string;
+            /** Otherlocationid */
+            otherLocationId: string;
+            /** Otherqtycounted */
+            otherQtyCounted: number;
+            /** Otherwarehouseid */
+            otherWarehouseId: string;
+            /** Sealedlocationid */
+            sealedLocationId: string;
+            /** Sealedwarehouseid */
+            sealedWarehouseId: string;
+        } & {
+            [key: string]: unknown;
         };
         /** LocationKeyPayload */
         LocationKeyPayload: {
@@ -3662,6 +4120,42 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * ScopeCandidate
+         * @description Un emplacement que le journal *pourrait* couvrir.
+         */
+        ScopeCandidate: {
+            /** Itemcount */
+            itemCount: number;
+            /** Linecount */
+            lineCount: number;
+            /** Locationid */
+            locationId: string;
+            /** Qtycounted */
+            qtyCounted: number;
+            /** Qtyonhand */
+            qtyOnHand: number;
+            /** Warehouseid */
+            warehouseId: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ScopeDeclared */
+        ScopeDeclared: {
+            /** Locations */
+            locations: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ScopeLocation */
+        ScopeLocation: {
+            /** Locationid */
+            locationId: string;
+            /** Warehouseid */
+            warehouseId: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * Sequence
          * @description Ce que la phase courante autorise, et ce qui manque sinon.
          */
@@ -3825,6 +4319,14 @@ export interface components {
             content: string;
             /** Role */
             role: string;
+        };
+        /**
+         * UnsealRequest
+         * @description Le descellement annule une preuve datée : il se motive.
+         */
+        UnsealRequest: {
+            /** Reason */
+            reason: string;
         };
         /** UpdateThresholdsRequest */
         UpdateThresholdsRequest: {
@@ -5680,6 +6182,412 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_batches_api_campaigns__campaign_id__early_counts_batches_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EarlyBatchResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_batch_api_campaigns__campaign_id__early_counts_batches_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EarlyBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EarlyBatchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__close_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                batch_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EarlyBatchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    seal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__seal_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                batch_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EarlyBatchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unseal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__unseal_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                batch_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UnsealRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EarlyBatchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_drifts_api_campaigns__campaign_id__early_counts_drifts_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriftResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_drifts_api_campaigns__campaign_id__early_counts_drifts_resolve_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DriftResolutionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriftsResolved"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_erp_journals_api_campaigns__campaign_id__early_counts_journals_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErpJournalResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    declare_scope_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__scope_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                erp_journal_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JournalScopeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDeclared"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    propose_scope_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__scope_proposal_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                erp_journal_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeCandidate"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    label_alerts_api_campaigns__campaign_id__early_counts_label_alerts_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabelAlert"][];
                 };
             };
             /** @description Validation Error */

@@ -36,6 +36,7 @@ class CampaignRepository(_Base):
     _COLUMNS = (
         "id, code, label, count_date, status, config, referentials_frozen_at, "
         "book_stock_frozen_at, counting_frozen_at, closed_at, published_at, "
+        "general_count_opened_at, journals_imported_at, "
         "cloned_from_code, "
         "engine_version, created_by, created_at, updated_at, row_version"
     )
@@ -269,6 +270,8 @@ class CampaignRepository(_Base):
             counting_frozen_at=row["counting_frozen_at"],
             closed_at=row["closed_at"],
             published_at=row["published_at"],
+            general_count_opened_at=row.get("general_count_opened_at"),
+            journals_imported_at=row.get("journals_imported_at"),
             cloned_from_code=row["cloned_from_code"],
             engine_version=row["engine_version"],
             created_by=row["created_by"],

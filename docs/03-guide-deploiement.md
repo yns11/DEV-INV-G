@@ -565,6 +565,36 @@ curl -s -w "\nready:%{http_code}\n"           "$URL/api/health/ready"
 > Republier est sans risque : chaque écriture est un `replaceWhere` sur
 > l'identifiant de la campagne.
 
+> **Mise à jour vers les comptages avancés.** Deux gestes, dans cet ordre.
+>
+> 1. **Redéployer l'App**, qui applique la migration `025` à son démarrage :
+>    elle ajoute le journal ERP, son périmètre, ses lignes brutes, les lots
+>    avancés et les dérives, plus quelques colonnes sur les tables existantes.
+>    Elle est idempotente et ne réécrit aucune donnée.
+> 2. **Rejouer `make uc`**, qui crée les trois tables Delta neuves —
+>    `early_count_batch`, `early_count_drift`, `erp_journal_scope` — et **ne
+>    touche pas** aux colonnes ajoutées sur `book_stock_snapshot` et
+>    `count_result`, puisque `CREATE TABLE IF NOT EXISTS` ne modifie pas une
+>    table existante.
+>
+> Ces deux colonnes-là demandent donc un geste explicite sur une installation
+> déjà en place :
+>
+> ```sql
+> ALTER TABLE inventory.book_stock_snapshot ADD COLUMNS (
+>   reference_date DATE, early_batch_id STRING);
+> ALTER TABLE inventory.count_result ADD COLUMNS (
+>   qty_on_hand DECIMAL(20,6), erp_journal_number STRING, label_count INT,
+>   sealed_at TIMESTAMP, early_batch_id STRING);
+> ```
+>
+> Sans elles, le job de publication échoue en alignant son écriture sur le
+> schéma déclaré de la table — ce qui est le comportement voulu : mieux vaut un
+> refus qu'une archive amputée en silence.
+>
+> Rien de tout cela n'est nécessaire pour une campagne qui ne précompte pas :
+> les colonnes restent vides et les trois tables vides.
+
 > **La table `publication`.** Elle est écrite en dernier par le job, et par rien
 > d'autre. Une campagne y figure si et seulement si son archive est complète :
 > Delta n'offrant pas de transaction couvrant plusieurs tables, c'est ce qui

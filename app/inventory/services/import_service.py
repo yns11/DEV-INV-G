@@ -564,6 +564,14 @@ class ImportService:
                 conn=conn,
             )
 
+        # Les emplacements scellés n'ont pas reçu ces lignes — leur référence
+        # reste celle de leur précomptage — mais elles disent ce que l'ERP pense
+        # d'eux le jour J, et c'est exactement ce qu'il faut confronter au
+        # physique qui y a été posté.
+        from .drift_service import DriftService
+
+        drifts = DriftService(ctx).record_general_load(campaign, lines)
+
         outcome.batch_id = batch_id
         outcome.rows_accepted = len(lines)
         # Fusionner, et non remplacer : le retrait des emplacements périmés a
@@ -574,6 +582,7 @@ class ImportService:
             "totalLocations": len(existing) + len(discovered),
             "journalsCreated": created,
             "warehouses": sorted({l.warehouse_id for l in lines}),
+            "driftLines": drifts,
         })
         return outcome
 

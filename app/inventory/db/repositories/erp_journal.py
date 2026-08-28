@@ -19,16 +19,21 @@ from typing import Any
 
 import psycopg
 
-from ...domain.enums import JournalKind
+from ...domain.enums import DriftResolution, JournalKind
 from ...domain.models import (
     EarlyCountBatch,
+    EarlyCountDrift,
     ErpJournal,
     ErpJournalLine,
     LocationKey,
 )
 from ._base import _Base, _NullContext, new_id
 
-__all__ = ["EarlyCountBatchRepository", "ErpJournalRepository"]
+__all__ = [
+    "EarlyCountBatchRepository",
+    "EarlyCountDriftRepository",
+    "ErpJournalRepository",
+]
 
 
 class ErpJournalRepository(_Base):
@@ -549,4 +554,134 @@ class EarlyCountBatchRepository(_Base):
             sealed_at=row["sealed_at"],
             sealed_by=row["sealed_by"] or "",
             locations=locations,
+        )
+
+
+class EarlyCountDriftRepository(_Base):
+    """Les dérives d'une campagne, et l'issue qu'un humain leur donne."""
+
+    _COLUMNS = (
+        "id, campaign_id, batch_id, warehouse_id, location_id, item_number, "
+        "qty_erp_t0, qty_physical_t0, qty_erp_j, drift_value, is_material, "
+        "resolution, cause_code, comment, resolved_at, resolved_by"
+    )
+
+    def list(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> list[EarlyCountDrift]:
+        rows = self._fetch_all(
+            f"SELECT {self._COLUMNS} FROM early_count_drift WHERE campaign_id = %s "
+            "ORDER BY warehouse_id, location_id, item_number",
+            (campaign_id,),
+            conn=conn,
+        )
+        return [self._drift(row) for row in rows]
+
+    def replace(
+        self,
+        campaign_id: str,
+        drifts: Sequence[EarlyCountDrift],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Recalculer les dérives **en conservant les issues déjà données**.
+
+        Le notebook est rejoué très régulièrement le jour J, et chaque import
+        relance ce calcul. Repartir de zéro effacerait les décisions prises
+        entre deux imports — un exploitant tranche une dérive à neuf heures et
+        la retrouve vierge à neuf heures cinq, sans que rien ne le dise.
+        """
+        owns = conn is None
+        ctx = self.db.transaction() if owns else _NullContext(conn)
+        with ctx as connection, connection.cursor() as cur:
+            cur.execute(
+                "SELECT warehouse_id, location_id, item_number, resolution, "
+                "cause_code, comment, resolved_at, resolved_by "
+                "FROM early_count_drift "
+                "WHERE campaign_id = %s AND resolution IS NOT NULL",
+                (campaign_id,),
+            )
+            decided = {
+                (r["warehouse_id"], r["location_id"], r["item_number"]): r
+                for r in cur.fetchall()
+            }
+            cur.execute(
+                "DELETE FROM early_count_drift WHERE campaign_id = %s", (campaign_id,)
+            )
+            if not drifts:
+                return 0
+            cur.executemany(
+                "INSERT INTO early_count_drift (id, campaign_id, batch_id, "
+                "warehouse_id, location_id, item_number, qty_erp_t0, "
+                "qty_physical_t0, qty_erp_j, drift_qty, drift_value, is_material, "
+                "resolution, cause_code, comment, resolved_at, resolved_by) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                [
+                    (
+                        drift.id, campaign_id, drift.batch_id, drift.warehouse_id,
+                        drift.location_id, drift.item_number, drift.qty_erp_t0,
+                        drift.qty_physical_t0, drift.qty_erp_j, drift.drift_qty,
+                        drift.drift_value, drift.is_material,
+                        *self._carried(decided, drift),
+                    )
+                    for drift in drifts
+                ],
+            )
+            return len(drifts)
+
+    @staticmethod
+    def _carried(decided: dict, drift: EarlyCountDrift) -> tuple:
+        previous = decided.get(
+            (drift.warehouse_id, drift.location_id, drift.item_number)
+        )
+        if previous is None:
+            return (None, "", "", None, None)
+        return (
+            previous["resolution"], previous["cause_code"] or "",
+            previous["comment"] or "", previous["resolved_at"],
+            previous["resolved_by"],
+        )
+
+    def resolve(
+        self,
+        campaign_id: str,
+        drift_ids: Sequence[str],
+        resolution: DriftResolution,
+        *,
+        cause_code: str,
+        comment: str,
+        actor: str,
+        resolved_at: Any,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        return self._execute(
+            "UPDATE early_count_drift SET resolution = %s, cause_code = %s, "
+            "comment = %s, resolved_at = %s, resolved_by = %s "
+            "WHERE campaign_id = %s AND id = ANY(%s::uuid[])",
+            (str(resolution), cause_code, comment, resolved_at, actor,
+             campaign_id, list(drift_ids)),
+            conn=conn,
+        )
+
+    @staticmethod
+    def _drift(row: dict[str, Any]) -> EarlyCountDrift:
+        return EarlyCountDrift(
+            id=str(row["id"]),
+            campaign_id=str(row["campaign_id"]),
+            batch_id=str(row["batch_id"]) if row["batch_id"] else None,
+            warehouse_id=row["warehouse_id"],
+            location_id=row["location_id"],
+            item_number=row["item_number"],
+            qty_erp_t0=row["qty_erp_t0"],
+            qty_physical_t0=row["qty_physical_t0"],
+            qty_erp_j=row["qty_erp_j"],
+            drift_value=row["drift_value"],
+            is_material=row["is_material"],
+            resolution=(
+                DriftResolution(row["resolution"]) if row["resolution"] else None
+            ),
+            cause_code=row["cause_code"] or "",
+            comment=row["comment"] or "",
+            resolved_at=row["resolved_at"],
+            resolved_by=row["resolved_by"] or "",
         )

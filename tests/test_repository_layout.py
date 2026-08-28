@@ -52,6 +52,7 @@ PUBLIC = (
     "BookStockRepository",
     "CampaignRepository",
     "ConsolidationRepository",
+    "ErpJournalRepository",
     "EvidenceBlobRepository",
     "ImportBatchRepository",
     "JournalRepository",

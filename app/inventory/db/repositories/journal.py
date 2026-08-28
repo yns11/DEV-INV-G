@@ -34,7 +34,8 @@ class JournalRepository(_Base):
 
     _COLUMNS = (
         "id, campaign_id, warehouse_id, location_id, kind, status, journal_number, "
-        "description, posted_at, auto_created, updated_at, row_version"
+        "description, posted_at, auto_created, updated_at, row_version, "
+        "early_batch_id, sealed_at, sealed_by"
     )
 
     def list(
@@ -218,7 +219,8 @@ class JournalRepository(_Base):
 
     _LINE_COLUMNS = (
         "id, journal_id, campaign_id, item_number, qty_imported, qty_manual, unit, "
-        "source, comment, updated_by, updated_at, row_version"
+        "source, comment, updated_by, updated_at, row_version, "
+        "qty_on_hand, erp_journal_number, label_count"
     )
 
     def list_lines(self, journal_id: str) -> list[CountJournalLine]:
@@ -271,16 +273,108 @@ class JournalRepository(_Base):
                 return 0
             cur.executemany(
                 "INSERT INTO count_journal_line (id, journal_id, campaign_id, "
-                "item_number, qty_imported, unit, source, updated_by, updated_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now()) "
+                "item_number, qty_imported, unit, source, updated_by, updated_at, "
+                "qty_on_hand, erp_journal_number, label_count) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now(), %s,%s,%s) "
                 "ON CONFLICT (id) DO NOTHING",
                 [
                     (l.id, l.journal_id, campaign_id, l.item_number, l.qty_imported,
-                     l.unit, str(l.source), l.updated_by or "import")
+                     l.unit, str(l.source), l.updated_by or "import",
+                     l.qty_on_hand, l.erp_journal_number, l.label_count)
                     for l in lines
                 ],
             )
         return len(lines)
+
+    # -------------------------------------------------------------- scellement
+
+    def seal(
+        self,
+        campaign_id: str,
+        keys: Sequence[tuple[str, str]],
+        *,
+        batch_id: str,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Sceller les journaux d'un lot avancé.
+
+        Le scellement ne fait que **restreindre** : il s'ajoute à la matrice de
+        mutabilité, qui reste consultée en premier et garde le dernier mot pour
+        interdire. C'est ce qui évite deux sources de vérité qui se
+        contrediraient sur « peut-on écrire ici ? ».
+        """
+        return self._set_seal(
+            campaign_id, keys, batch_id=batch_id, actor=actor, sealed=True, conn=conn
+        )
+
+    def unseal(
+        self,
+        campaign_id: str,
+        keys: Sequence[tuple[str, str]],
+        *,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Desceller — le geste qui rend le recomptage possible.
+
+        Il est tracé par l'appelant : sans motif obligatoire, ce serait une porte
+        dérobée sur une preuve.
+        """
+        return self._set_seal(
+            campaign_id, keys, batch_id=None, actor=actor, sealed=False, conn=conn
+        )
+
+    def _set_seal(
+        self,
+        campaign_id: str,
+        keys: Sequence[tuple[str, str]],
+        *,
+        batch_id: str | None,
+        actor: str,
+        sealed: bool,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        if not keys:
+            return 0
+        owns = conn is None
+        ctx = self.db.transaction() if owns else _NullContext(conn)
+        # Deux tableaux parallèles plutôt qu'une clé concaténée. C'est la règle
+        # de modélisation du dépôt — les identifiants métier ne se concatènent
+        # jamais — et ici elle a une conséquence directe : un séparateur présent
+        # dans un emplacement ferait correspondre la mauvaise ligne, en silence.
+        warehouses = [warehouse for warehouse, _ in keys]
+        locations = [location for _, location in keys]
+        with ctx as connection, connection.cursor() as cur:
+            cur.execute(
+                "UPDATE count_journal SET "
+                "sealed_at = CASE WHEN %(sealed)s THEN now() ELSE NULL END, "
+                "sealed_by = CASE WHEN %(sealed)s THEN %(actor)s ELSE NULL END, "
+                "early_batch_id = %(batch)s, "
+                "updated_by = %(actor)s, updated_at = now(), "
+                "row_version = row_version + 1 "
+                "WHERE campaign_id = %(cid)s "
+                "AND (warehouse_id, location_id) IN ("
+                "  SELECT * FROM unnest(%(warehouses)s::text[], %(locations)s::text[])"
+                ")",
+                {
+                    "sealed": sealed, "actor": actor, "batch": batch_id,
+                    "cid": campaign_id,
+                    "warehouses": warehouses, "locations": locations,
+                },
+            )
+            return cur.rowcount
+
+    def sealed_keys(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> set[tuple[str, str]]:
+        rows = self._fetch_all(
+            "SELECT warehouse_id, location_id FROM count_journal "
+            "WHERE campaign_id = %s AND sealed_at IS NOT NULL",
+            (campaign_id,),
+            conn=conn,
+        )
+        return {(r["warehouse_id"], r["location_id"]) for r in rows}
 
     def upsert_line(
         self, line: CountJournalLine, *, actor: str,
@@ -422,6 +516,11 @@ class JournalRepository(_Base):
             posted_at=row["posted_at"],
             auto_created=row["auto_created"],
             updated_at=row["updated_at"],
+            early_batch_id=(
+                str(row["early_batch_id"]) if row.get("early_batch_id") else None
+            ),
+            sealed_at=row.get("sealed_at"),
+            sealed_by=row.get("sealed_by") or "",
         )
 
     @staticmethod
@@ -438,4 +537,7 @@ class JournalRepository(_Base):
             comment=row["comment"],
             updated_by=row["updated_by"],
             updated_at=row["updated_at"],
+            qty_on_hand=row.get("qty_on_hand"),
+            erp_journal_number=row.get("erp_journal_number") or "",
+            label_count=int(row.get("label_count") or 0),
         )

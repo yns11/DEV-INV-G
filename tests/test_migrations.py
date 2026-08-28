@@ -50,6 +50,7 @@ SHIPPED = {
     "022_evidence_blob": "1953889cb85a",
     "023_count_sheet_line_formula": "e7cbaa4c82f9",
     "024_erp_stock_snapshot_not_unique": "94becc3a8b0d",
+    "025_comptages_avances": "4cbae69a00d7",
 }
 
 

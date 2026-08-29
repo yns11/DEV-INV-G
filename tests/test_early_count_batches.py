@@ -153,6 +153,40 @@ class TestOpeningABatch:
         with pytest.raises(ValidationError):
             service.create_batch(campaign, code="VIDE", erp_journal_ids=[])
 
+    def test_a_second_batch_cannot_take_the_locations_of_the_first(
+        self, service, ctx, campaign
+    ):
+        """Sinon il les lui volerait, en silence et sans rien à quoi se raccrocher.
+
+        Le périmètre d'un lot n'a pas de table : c'est l'ensemble des journaux
+        qui portent son identifiant, et l'affectation écrase sans condition.
+        Un second lot sur les mêmes emplacements laisserait donc le premier
+        sans périmètre — scellé compris, sa référence datée restant en base
+        sans plus aucun lot pour la revendiquer.
+
+        Le cas ne se produisait pas tant que rien, dans l'interface, ne
+        permettait d'ouvrir un lot. Il devient atteignable au premier clic.
+        """
+        journal = _journal(ctx, campaign, scope=(SOL,))
+        service.create_batch(campaign, code="LOT-A", erp_journal_ids=[journal])
+
+        with pytest.raises(ConflictError) as caught:
+            service.create_batch(campaign, code="LOT-B", erp_journal_ids=[journal])
+
+        assert "LOT-A" in str(caught.value)
+
+    def test_and_the_first_keeps_its_perimeter(self, service, ctx, campaign):
+        """Le refus ne vaut que s'il laisse l'existant intact."""
+        journal = _journal(ctx, campaign, scope=(SOL,))
+        first = service.create_batch(
+            campaign, code="LOT-A", erp_journal_ids=[journal]
+        )
+        with pytest.raises(ConflictError):
+            service.create_batch(campaign, code="LOT-B", erp_journal_ids=[journal])
+
+        kept = [b for b in ctx.early_counts.list(campaign.id) if b.id == first.id]
+        assert kept and kept[0].locations == [SOL]
+
 
 class TestSealing:
     def _open(self, service, ctx, campaign, *, posted=True):

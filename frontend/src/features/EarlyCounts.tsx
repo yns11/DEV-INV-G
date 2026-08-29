@@ -51,7 +51,9 @@ import {
   Button,
   Card,
   EmptyState,
+  Field,
   Kpi,
+  Modal,
   Skeleton,
   useErrorToast,
   useToast,
@@ -105,6 +107,28 @@ function parseKey(key: string): { warehouseId: string; locationId: string } {
   return { warehouseId, locationId }
 }
 
+/** Le périmètre en toutes lettres — pour le filtre, l'export et l'infobulle. */
+function scopeText(journal: ErpJournal): string {
+  return journal.scope.map((s) => `${s.warehouseId} / ${s.locationId}`).join(', ')
+}
+
+/**
+ * Le périmètre tel qu'une cellule peut le porter.
+ *
+ * Un journal réel en couvre cinquante-sept. Écrits bout à bout, ils poussaient
+ * la ligne sur six hauteurs, chassaient les autres journaux hors de l'écran, et
+ * n'apprenaient rien : personne ne lit cinquante-sept codes d'emplacement dans
+ * une cellule. Le nombre, lui, se lit — c'est la grandeur du lot qu'on ouvrira.
+ *
+ * La liste entière ne disparaît pas pour autant : elle reste la valeur de la
+ * colonne, donc filtrable et exportée, et l'infobulle la rend au survol.
+ */
+function scopeSummary(journal: ErpJournal): string {
+  const all = journal.scope.map((s) => `${s.warehouseId} / ${s.locationId}`)
+  if (all.length <= 3) return all.join(', ')
+  return `${all.length} emplacements : ${all.slice(0, 2).join(', ')}, +${all.length - 2}`
+}
+
 export default function EarlyCounts() {
   // `CampaignShell` passe l'aperçu tel quel, comme à tous les autres écrans.
   // Y lire `{ campaign, overview }` compilait — `useOutletContext<T>()` est une
@@ -126,7 +150,9 @@ export default function EarlyCounts() {
       {view === 'journaux' && (
         <Journals campaignId={campaignId} canImport={overview.permissions.earlyCounts} />
       )}
-      {view === 'lots' && <Batches campaignId={campaignId} />}
+      {view === 'lots' && (
+        <Batches campaignId={campaignId} canWrite={overview.permissions.earlyCounts} />
+      )}
       {view === 'derives' && <Drifts campaignId={campaignId} />}
       {view === 'etiquettes' && <Labels campaignId={campaignId} />}
     </div>
@@ -216,12 +242,14 @@ function Journals({
       key: 'scopeDeclared',
       label: 'Périmètre',
       width: 260,
-      value: (row) =>
-        row.scope.map((s) => `${s.warehouseId} / ${s.locationId}`).join(', '),
+      // Le filtre et l'export gardent la liste entière : c'est là qu'on
+      // cherche « l'emplacement X est-il dans un périmètre ? », et une
+      // abréviation dans un fichier Excel serait une perte sèche.
+      value: (row) => scopeText(row),
       render: (row) => (
         <span>
           {row.scopeDeclared ? (
-            row.scope.map((s) => `${s.warehouseId} / ${s.locationId}`).join(', ')
+            <span title={scopeText(row)}>{scopeSummary(row)}</span>
           ) : (
             <Badge tone="warning">À déclarer</Badge>
           )}{' '}
@@ -396,10 +424,17 @@ function ScopePicker({
 // Lots
 // --------------------------------------------------------------------------
 
-function Batches({ campaignId }: { campaignId: string }) {
+function Batches({
+  campaignId,
+  canWrite,
+}: {
+  campaignId: string
+  canWrite: boolean
+}) {
   const client = useQueryClient()
   const toast = useToast()
   const onError = useErrorToast()
+  const [opening, setOpening] = useState(false)
   const query = useQuery({
     queryKey: ['early-batches', campaignId],
     queryFn: () => api.earlyBatches(campaignId),
@@ -467,42 +502,259 @@ function Batches({ campaignId }: { campaignId: string }) {
   }
 
   return (
-    <AsyncBoundary
-      query={query}
-      skeleton={<Skeleton height={200} />}
-      isEmpty={(rows) => rows.length === 0}
-      empty={
-        <EmptyState title="Aucun lot avancé">
-            Déclarez le périmètre d’un journal ERP, puis ouvrez un lot dessus.
-        </EmptyState>
+    <div className="stack">
+      <AsyncBoundary
+        query={query}
+        skeleton={<Skeleton height={200} />}
+        isEmpty={(rows) => rows.length === 0}
+        empty={
+          <EmptyState title="Aucun lot avancé">
+            Déclarez le périmètre d’un journal ERP, puis ouvrez un lot dessus
+            avec le bouton ci-dessous.
+          </EmptyState>
+        }
+      >
+        {(batches) => (
+          <Card
+            title="Lots de comptage avancé"
+            message="Ouvrir, compter, poster dans l’ERP, clore, sceller. Le scellement pose la référence des emplacements et refuse tant qu’un journal n’est pas posté."
+          >
+            <ul className="stack">
+              {batches.map((batch) => (
+                <li key={batch.id}>
+                  <strong>{batch.code}</strong>{' '}
+                  {batch.isSealed ? (
+                    <Badge tone="success">Scellé</Badge>
+                  ) : batch.isClosed ? (
+                    <Badge tone="info">Clos</Badge>
+                  ) : (
+                    <Badge tone="warning">Ouvert</Badge>
+                  )}{' '}
+                  — {batch.locations.length} emplacement(s)
+                  {batch.countedOn ? `, compté le ${formatDate(batch.countedOn)}` : ''}
+                  {'  '}
+                  {actions(batch)}
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )}
+      </AsyncBoundary>
+
+      {/* Hors de l'`AsyncBoundary`, et c'est le point : l'état vide est
+          précisément le moment où il faut pouvoir ouvrir un lot. Rendu à
+          l'intérieur, le bouton n'existait pas tant qu'aucun lot n'existait —
+          l'écran demandait un geste qu'il ne proposait nulle part. */}
+      <div className="row-wrap">
+        <Button
+          variant="primary"
+          onClick={() => setOpening(true)}
+          disabled={!canWrite}
+          title={
+            canWrite
+              ? undefined
+              : 'Les comptages avancés sont gelés hors de la phase de comptage.'
+          }
+        >
+          Ouvrir un lot
+        </Button>
+      </div>
+      {opening && (
+        <OpenBatch
+          campaignId={campaignId}
+          batches={query.data ?? []}
+          onDone={() => {
+            setOpening(false)
+            refresh()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Ouvrir un lot sur le périmètre déclaré d'un ou plusieurs journaux.
+ *
+ * Le service, la route et la méthode du client existaient depuis le premier
+ * jour ; aucun composant ne les appelait. L'écran listait des lots, savait les
+ * clore, les sceller, les desceller — et n'avait aucun moyen d'en créer un.
+ * L'état vide, lui, disait « ouvrez un lot dessus » : la seule phrase de
+ * l'écran qui décrivait un geste impossible.
+ *
+ * Ne sont proposés que les journaux dont le périmètre est **déclaré** : c'est
+ * la précondition du service, et la faire découvrir par un refus serait la
+ * faire découvrir trop tard.
+ */
+function OpenBatch({
+  campaignId,
+  batches,
+  onDone,
+}: {
+  campaignId: string
+  batches: EarlyBatch[]
+  onDone: () => void
+}) {
+  const toast = useToast()
+  const onError = useErrorToast()
+  const [code, setCode] = useState('')
+  const [label, setLabel] = useState('')
+  const [countedOn, setCountedOn] = useState('')
+  const [chosen, setChosen] = useState<Set<string>>(new Set())
+
+  const journals = useQuery({
+    queryKey: ['erp-journals', campaignId],
+    queryFn: () => api.erpJournals(campaignId),
+  })
+  const eligible = (journals.data ?? []).filter((j) => j.scopeDeclared)
+
+  // Un emplacement ne se précompte qu'une fois, et le service le refuse. Le
+  // dire ici plutôt que là : proposer un journal pour le refuser ensuite est
+  // la façon de faire découvrir une règle au plus mauvais moment.
+  const heldBy = new Map<string, string>()
+  for (const batch of batches) {
+    for (const k of batch.locations) {
+      heldBy.set(keyOf(k.warehouseId, k.locationId), batch.code)
+    }
+  }
+  const takenBy = (journal: ErpJournal): string =>
+    [
+      ...new Set(
+        journal.scope
+          .map((s) => heldBy.get(keyOf(s.warehouseId, s.locationId)))
+          .filter((code): code is string => Boolean(code)),
+      ),
+    ].join(', ')
+
+  const create = useMutation({
+    mutationFn: () =>
+      api.createEarlyBatch(campaignId, {
+        code: code.trim(),
+        label: label.trim(),
+        countedOn: countedOn || null,
+        erpJournalIds: [...chosen],
+      }),
+    onSuccess: (batch) => {
+      toast.success(
+        `Lot ${batch.code} ouvert sur ${batch.locations.length} emplacement(s).`,
+      )
+      onDone()
+    },
+    onError: (error: unknown) => onError(error),
+  })
+
+  const toggle = (id: string) =>
+    setChosen((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const valid = code.trim().length >= 3 && chosen.size > 0
+
+  return (
+    <Modal
+      title="Ouvrir un lot de comptage avancé"
+      onClose={onDone}
+      width={640}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onDone}>
+            Annuler
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!valid || create.isPending}
+            onClick={() => create.mutate()}
+          >
+            {create.isPending ? 'Ouverture…' : 'Ouvrir le lot'}
+          </Button>
+        </>
       }
     >
-      {(batches) => (
-        <Card
-          title="Lots de comptage avancé"
-          message="Ouvrir, compter, poster dans l’ERP, clore, sceller. Le scellement pose la référence des emplacements et refuse tant qu’un journal n’est pas posté."
+      <div className="stack">
+        <Field
+          label="Code du lot"
+          hint="Identifiant métier, visible dans l’audit et les exports."
         >
-          <ul className="stack">
-            {batches.map((batch) => (
-              <li key={batch.id}>
-                <strong>{batch.code}</strong>{' '}
-                {batch.isSealed ? (
-                  <Badge tone="success">Scellé</Badge>
-                ) : batch.isClosed ? (
-                  <Badge tone="info">Clos</Badge>
-                ) : (
-                  <Badge tone="warning">Ouvert</Badge>
-                )}{' '}
-                — {batch.locations.length} emplacement(s)
-                {batch.countedOn ? `, compté le ${formatDate(batch.countedOn)}` : ''}
-                {'  '}
-                {actions(batch)}
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
-    </AsyncBoundary>
+          <input
+            className="input mono"
+            value={code}
+            placeholder="LOT-J2-ATELIER"
+            onChange={(e) => setCode(e.target.value.toUpperCase())}
+          />
+        </Field>
+        <Field label="Libellé">
+          <input
+            className="input"
+            value={label}
+            placeholder="Atelier stator — comptage du 10 juin"
+            onChange={(e) => setLabel(e.target.value)}
+          />
+        </Field>
+        <Field
+          label="Date du comptage physique"
+          hint="Celle du relevé, pas celle de l’import. Elle date la référence que le scellement posera."
+        >
+          <input
+            className="input"
+            type="date"
+            value={countedOn}
+            onChange={(e) => setCountedOn(e.target.value)}
+          />
+        </Field>
+
+        {eligible.length === 0 ? (
+          <Alert tone="warning" title="Aucun journal au périmètre déclaré">
+            Un lot porte sur le périmètre d’un journal. Retournez à l’onglet
+            <em> Journaux ERP</em> et déclarez les emplacements d’au moins un
+            journal.
+          </Alert>
+        ) : (
+          <Field
+            label="Journaux du lot"
+            hint="Seuls les journaux dont le périmètre est déclaré sont proposés."
+          >
+            <ul className="stack">
+              {eligible.map((journal) => {
+                const held = takenBy(journal)
+                return (
+                  <li key={journal.id}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={chosen.has(journal.id)}
+                        disabled={Boolean(held)}
+                        onChange={() => toggle(journal.id)}
+                      />{' '}
+                      <strong>{journal.journalNumber}</strong> —{' '}
+                      {journal.scope.length} emplacement(s), {journal.lineCount}{' '}
+                      ligne(s){' '}
+                      {journal.erpPosted ? (
+                        <Badge tone="success">Posté</Badge>
+                      ) : (
+                        <Badge tone="warning">Pas encore posté</Badge>
+                      )}{' '}
+                      {held && <Badge tone="neutral">Déjà dans {held}</Badge>}
+                      <br />
+                      <span className="field__hint">{scopeSummary(journal)}</span>
+                    </label>
+                  </li>
+                )
+              })}
+            </ul>
+          </Field>
+        )}
+
+        <Alert tone="info" title="Et ensuite ?">
+          Le lot s’ouvre, puis se <strong>clôt</strong>, puis se{' '}
+          <strong>scelle</strong>. Le scellement pose la référence de ses
+          emplacements — lue dans la colonne « Stock ERP » du journal — et refuse
+          tant qu’un journal du périmètre n’est pas posté dans l’ERP.
+        </Alert>
+      </div>
+    </Modal>
   )
 }
 

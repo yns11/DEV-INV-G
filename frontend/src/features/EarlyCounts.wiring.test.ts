@@ -85,19 +85,30 @@ describe('le client vise des adresses que le serveur sert', () => {
 })
 
 describe("l'écran appelle réellement le client", () => {
-  it.each([
-    'api.erpJournals',
-    'api.scopeProposal',
-    'api.declareScope',
-    'api.earlyBatches',
-    'api.closeEarlyBatch',
-    'api.sealEarlyBatch',
-    'api.unsealEarlyBatch',
-    'api.drifts',
-    'api.resolveDrifts',
-    'api.labelAlerts',
-  ])('%s', (call) => {
-    expect(SCREEN).toContain(call)
+  /**
+   * Les méthodes lues dans le client, jamais recopiées ici.
+   *
+   * Cette liste a d'abord été écrite à la main, et il y en avait dix pour onze
+   * routes : `createEarlyBatch` manquait — la seule méthode qu'aucun composant
+   * n'appelait était aussi la seule que personne n'avait pensé à inscrire.
+   * L'écran listait les lots, savait les clore, les sceller, les desceller, et
+   * n'avait aucun moyen d'en ouvrir un ; son état vide demandait pourtant
+   * « ouvrez un lot dessus ». Une liste recopiée ne tient que ce qu'on a pensé
+   * à y mettre, c'est-à-dire jamais le cas qu'on a oublié.
+   */
+  const methods = [...API.matchAll(/^ {2}(\w+): \(/gm)]
+    .map((match) => match[1] ?? '')
+    .filter((name) => {
+      const start = API.indexOf(`\n  ${name}: (`)
+      return API.slice(start, start + 600).includes('/early-counts')
+    })
+
+  it('le client en expose onze, une par route', () => {
+    expect(methods).toHaveLength(11)
+  })
+
+  it.each(methods.map((name) => [name]))('api.%s', (name) => {
+    expect(SCREEN).toContain(`api.${name}`)
   })
 })
 

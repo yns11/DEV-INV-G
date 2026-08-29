@@ -198,6 +198,31 @@ class EarlyCountService:
                 "Le périmètre déclaré de ces journaux est vide."
             )
 
+        # Le périmètre d'un lot est porté par `count_journal.early_batch_id`, et
+        # l'affectation écrase sans condition. Ouvrir un lot sur des
+        # emplacements déjà pris **dépouillerait** celui qui les porte — y
+        # compris scellé, dont la référence datée resterait en base sans plus
+        # aucun lot pour la revendiquer. Tant que rien dans l'interface ne
+        # permettait d'ouvrir un lot, le cas ne se produisait pas ; il devient
+        # atteignable au premier clic, donc il se refuse ici.
+        held = {
+            (k.warehouse_id, k.location_id): batch.code
+            for batch in ctx.early_counts.list(campaign.id)
+            for k in batch.locations
+        }
+        clash = sorted(
+            {held[(k.warehouse_id, k.location_id)] for k in keys
+             if (k.warehouse_id, k.location_id) in held}
+        )
+        if clash:
+            raise ConflictError(
+                "Ces emplacements appartiennent déjà au lot "
+                f"{', '.join(clash)}. Un emplacement n'est précompté qu'une "
+                "fois : descellez et supprimez l'autre lot, ou retirez ces "
+                "emplacements de son périmètre.",
+                batches=clash,
+            )
+
         batch = EarlyCountBatch(
             id=new_id(),
             campaign_id=campaign.id,

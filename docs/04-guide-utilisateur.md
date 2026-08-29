@@ -445,8 +445,15 @@ Le déroulé, pour chaque lot :
    probable en tête. Vous cochez. Cette étape est obligatoire : les emplacements
    des lignes ne suffisent pas à dire lesquels le journal couvre, certaines
    n'étant là que pour matérialiser un déplacement.
-4. **Ouvrez le lot** sur ces journaux, onglet *Lots avancés*, avec la date du
-   comptage physique.
+   Un journal réel couvre parfois cinquante emplacements ou plus : la colonne
+   *Périmètre* en affiche le nombre et les deux premiers. La liste entière
+   s'obtient au survol, et part telle quelle dans le filtre et l'export Excel.
+4. **Ouvrez le lot** sur ces journaux : onglet *Lots avancés*, bouton **Ouvrir
+   un lot**. Vous donnez un code, un libellé, la date du comptage physique — pas
+   celle de l'import, c'est elle qui datera la référence — et vous cochez les
+   journaux. Seuls ceux dont le périmètre est déclaré sont proposés ; un journal
+   dont les emplacements appartiennent déjà à un autre lot est grisé, parce
+   qu'un emplacement ne se précompte qu'une fois.
 5. **Clôturez-le**, puis **scellez-le**. Le scellement pose la référence des
    emplacements et interdit qu'on y touche. Il est refusé tant qu'un journal
    n'est pas posté dans l'ERP.

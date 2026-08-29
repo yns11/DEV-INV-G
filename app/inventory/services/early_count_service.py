@@ -40,13 +40,19 @@ une impasse.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Sequence
 from typing import Any
 
 from ..db import new_id
-from ..domain.enums import AuditAction, LabelResolution
-from ..domain.models import BookStockLine, Campaign, LabelDecision, LocationKey
-from ..errors import NotFoundError, ValidationError
+from ..domain.enums import AuditAction, DataSource, LabelResolution
+from ..domain.models import (
+    BookStockLine,
+    Campaign,
+    CountJournalLine,
+    LabelDecision,
+    LocationKey,
+)
+from ..errors import ConflictError, NotFoundError, ValidationError
 from .context import ServiceContext
 
 log = logging.getLogger(__name__)
@@ -107,6 +113,30 @@ class EarlyCountService:
                 "Un périmètre vide ne scelle rien. Pour retirer le périmètre "
                 "d'un journal, descellez-le."
             )
+        # Un emplacement n'appartient qu'à un journal, et la base le tient déjà :
+        # `erp_journal_scope_location_uq`. Mais un index unique ne sait pas dire
+        # *qui* possède déjà l'emplacement — il remonte une UniqueViolation
+        # brute, donc un 500 devant lequel il n'y a rien à faire. La liste
+        # proposée exclut déjà ces emplacements ; ce refus est là pour l'appel
+        # qui ne passe pas par elle, et il nomme le journal à desceller.
+        owners = self.scope_owners(campaign.id)
+        requested = set(keys)
+        taken = sorted(
+            (
+                (key, owner)
+                for key, owner in owners.items()
+                if key in requested and owner != journal.journal_number
+            ),
+            key=lambda pair: str(pair[0]),
+        )
+        if taken:
+            names = ", ".join(f"{key} (journal {owner})" for key, owner in taken)
+            raise ConflictError(
+                f"{len(taken)} emplacement(s) appartiennent déjà au périmètre "
+                f"d'un autre journal : {names}. Descellez ce journal-là pour "
+                "les lui reprendre.",
+                locations=[str(key) for key, _ in taken],
+            )
 
         with ctx.db.transaction() as conn:
             count = ctx.erp_journals.set_scope(
@@ -116,6 +146,10 @@ class EarlyCountService:
             reference = self._reference_lines(campaign, journal, keys, conn=conn)
             ctx.book_stock.replace_for_journal(
                 campaign.id, erp_journal_id, reference, conn=conn
+            )
+            touched, counted = self._counted_lines(campaign, keys, conn=conn)
+            ctx.journals.replace_imported_lines(
+                campaign.id, touched, counted, conn=conn
             )
             ctx.journals.seal(
                 campaign.id,
@@ -226,6 +260,12 @@ class EarlyCountService:
                 ctx.book_stock.replace_for_journal(
                     campaign.id, journal.id, reference, conn=conn
                 )
+                touched, counted = self._counted_lines(
+                    campaign, journal.scope, conn=conn
+                )
+                ctx.journals.replace_imported_lines(
+                    campaign.id, touched, counted, conn=conn
+                )
                 ctx.journals.seal(
                     campaign.id,
                     [(k.warehouse_id, k.location_id) for k in journal.scope],
@@ -235,38 +275,73 @@ class EarlyCountService:
                 resealed += 1
         return resealed
 
-    def out_of_scope_keys(
-        self, campaign: Campaign, imported: Sequence[Any]
-    ) -> set[LocationKey]:
-        """Les emplacements que le fichier touche hors du périmètre déclaré.
+    def scope_owners(self, campaign_id: str) -> dict[LocationKey, str]:
+        """Quel journal possède chaque emplacement scellé, par numéro de journal.
 
-        Seulement pour les journaux **dont le périmètre est déclaré** : pour les
-        autres — un journal qui vient d'arriver, un journal du comptage général
-        qui n'en a pas — on ne sait rien, et présumer serait pire que de laisser
-        entrer.
+        Un emplacement n'appartient au périmètre que d'un seul journal — index
+        unique de la migration 025. C'est cette propriété qui décide **qui le
+        compte** : le journal qui le possède, et lui seul.
+
+        Les lignes des autres journaux sur cet emplacement existent : un journal
+        ERP porte des lignes sur des emplacements qu'il ne couvre pas, pour
+        matérialiser un déplacement. Elles restent dans ``erp_journal_line`` —
+        c'est la trace, et c'est ce que le contrôle par étiquette relit — mais
+        elles ne comptent pas. Sans cette règle, la quantité comptée d'un
+        emplacement scellé prenait celle du dernier journal passé dessus tandis
+        que sa référence restait celle de son propriétaire : deux journaux dans
+        un même écart, et rien pour le dire.
         """
-        declared = {
-            journal.journal_number: set(journal.scope)
-            for journal in self.ctx.erp_journals.list(campaign.id)
+        return {
+            key: journal.journal_number
+            for journal in self.ctx.erp_journals.list(campaign_id)
+            if journal.scope_declared
+            for key in journal.scope
+        }
+
+    def declared_journal_numbers(self, campaign_id: str) -> set[str]:
+        """Les journaux dont on sait ce qu'ils couvrent.
+
+        Pour les autres — un journal qui vient d'arriver, un journal du comptage
+        général qui n'a pas de périmètre — on ne sait rien, et présumer serait
+        pire que de laisser entrer.
+        """
+        return {
+            journal.journal_number
+            for journal in self.ctx.erp_journals.list(campaign_id)
             if journal.scope_declared and journal.scope
         }
-        if not declared:
-            return set()
-        out: set[LocationKey] = set()
-        for line in imported:
-            scope = declared.get(line.journal_number or "")
-            if scope is None:
-                continue
+
+    def counting_filter(
+        self, campaign_id: str, *, disabled: Collection[LocationKey] = ()
+    ) -> Callable[[Any], bool]:
+        """Le tri de l'import : cette ligne compte-t-elle son emplacement ?
+
+        Le tri se fait **ligne par ligne**, pas emplacement par emplacement. Un
+        même fichier apporte les lignes du propriétaire de l'emplacement et
+        celles des journaux qui n'ont fait qu'y passer ; écarter la clé entière
+        écarterait aussi le comptage de son propriétaire, et l'emplacement
+        scellé se retrouverait sans quantité comptée.
+
+        Trois cas, et le troisième est le seul permissif : emplacement
+        désactivé, non ; emplacement déclaré, seul son journal ; emplacement
+        libre, tout journal dont on ne connaît pas encore le périmètre.
+        """
+        excluded = set(disabled)
+        owners = self.scope_owners(campaign_id)
+        declared = self.declared_journal_numbers(campaign_id)
+
+        def counts(line: Any) -> bool:
             key = LocationKey(
                 warehouse_id=line.warehouse_id, location_id=line.location_id
             )
-            if key not in scope:
-                out.add(key)
-        # Un emplacement hors périmètre d'un journal peut être *dans* celui d'un
-        # autre, ou compté par le jour J : ne l'écarter que si aucun journal
-        # déclaré ne le revendique.
-        claimed = {key for scope in declared.values() for key in scope}
-        return out - claimed
+            if key in excluded:
+                return False
+            owner = owners.get(key)
+            if owner is not None:
+                return owner == line.journal_number
+            return line.journal_number not in declared
+
+        return counts
 
     # ---------------------------------------------------------------- lectures
 
@@ -447,6 +522,78 @@ class EarlyCountService:
 
     # ----------------------------------------------------------------- interne
 
+    def _aggregate(
+        self,
+        campaign: Campaign,
+        keys: Sequence[LocationKey],
+        *,
+        conn: Any = None,
+    ) -> list[tuple[LocationKey, dict[str, Any]]]:
+        """Les lignes du périmètre, agrégées par emplacement et article.
+
+        Une seule lecture pour la référence *et* le comptage, et c'est la raison
+        d'être de cette fonction : les deux nombres d'un même écart doivent
+        venir de la même requête, sur la même connexion, avec les mêmes
+        étiquettes exclues. Les avoir calculés séparément est exactement ce qui
+        produisait une référence tirée d'un journal et un comptage tiré d'un
+        autre.
+        """
+        wanted = set(keys)
+        excluded = {
+            (d.label_id, d.item_number)
+            for d in self.ctx.label_decisions.list(campaign.id, conn=conn)
+            if d.excluded_from_sealed
+        }
+        rows: list[tuple[LocationKey, dict[str, Any]]] = []
+        for row in self.ctx.erp_journals.aggregate_in_scope(
+            campaign.id, excluded_labels=excluded, conn=conn
+        ):
+            key = LocationKey(
+                warehouse_id=row["warehouse_id"], location_id=row["location_id"]
+            )
+            if key in wanted:
+                rows.append((key, row))
+        return rows
+
+    def _counted_lines(
+        self,
+        campaign: Campaign,
+        keys: Sequence[LocationKey],
+        *,
+        conn: Any = None,
+    ) -> tuple[list[str], list[CountJournalLine]]:
+        """Le comptage des emplacements du périmètre, relu depuis leur journal.
+
+        Déclarer ne posait que la référence, et le comptage restait celui que
+        l'import avait écrit — c'est-à-dire, quand plusieurs journaux touchaient
+        l'emplacement avant qu'aucun ne soit déclaré, la somme de leurs lignes.
+        Le scellement affichait alors un écart entre le stock d'un journal et le
+        comptage de plusieurs.
+
+        Le recalculer ici rend l'ordre des gestes indifférent : importer puis
+        déclarer, ou déclarer puis réimporter, donnent le même comptage.
+        """
+        journals = {j.key: j for j in self.ctx.journals.list(campaign.id, conn=conn)}
+        touched = [journals[key].id for key in set(keys) if key in journals]
+        lines = [
+            CountJournalLine(
+                id=new_id(),
+                journal_id=journals[key].id,
+                campaign_id=campaign.id,
+                item_number=row["item_number"],
+                qty_imported=row["qty_counted"],
+                unit=row["unit"] or "PCE",
+                source=DataSource.ERP_IMPORT,
+                updated_by=self.ctx.actor,
+                qty_on_hand=row["qty_on_hand"],
+                erp_journal_number=row["journal_number"],
+                label_count=row["label_count"],
+            )
+            for key, row in self._aggregate(campaign, keys, conn=conn)
+            if key in journals
+        ]
+        return touched, lines
+
     def _reference_lines(
         self,
         campaign: Campaign,
@@ -465,27 +612,14 @@ class EarlyCountService:
         du pool ne le verrait pas, l'agrégation ne ramènerait rien, et le
         scellement poserait une référence vide sans que rien ne le signale.
         """
-        wanted = set(keys)
         prices = {
             number: item.std_price
             for number, item in self.ctx.referentials.items_by_number(
                 campaign.id
             ).items()
         }
-        excluded = {
-            (d.label_id, d.item_number)
-            for d in self.ctx.label_decisions.list(campaign.id, conn=conn)
-            if d.excluded_from_sealed
-        }
         lines: list[BookStockLine] = []
-        for row in self.ctx.erp_journals.aggregate_in_scope(
-            campaign.id, excluded_labels=excluded, conn=conn
-        ):
-            key = LocationKey(
-                warehouse_id=row["warehouse_id"], location_id=row["location_id"]
-            )
-            if key not in wanted:
-                continue
+        for key, row in self._aggregate(campaign, keys, conn=conn):
             lines.append(
                 BookStockLine(
                     campaign_id=campaign.id,

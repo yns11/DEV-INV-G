@@ -33,7 +33,7 @@ from inventory.domain.models import (
     Item,
     LocationKey,
 )
-from inventory.errors import ValidationError
+from inventory.errors import ConflictError, ValidationError
 
 pytestmark = pytest.mark.postgres
 
@@ -336,6 +336,31 @@ class TestTheLabelDecisions:
             "l'étiquette sort de l'emplacement scellé"
         )
 
+    def test_and_the_counted_quantity_follows(self, service, ctx, campaign):
+        """Sinon la décision creuse l'écart qu'elle est censée trancher.
+
+        L'étiquette sortait de la référence et restait dans le comptage : un
+        emplacement scellé à 8 en stock ERP et 16 comptés, c'est-à-dire un écart
+        de 8 créé par la décision elle-même. Référence et comptage se lisent
+        dans les mêmes lignes ; ils sortent de la même agrégation.
+        """
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+        counting = {j.key: j for j in ctx.journals.list(campaign.id)}[SOL]
+        assert ctx.journals.lines_by_journal(campaign.id)[counting.id][
+            0
+        ].qty_imported == Decimal(16)
+
+        service.decide_label(
+            campaign, label_id="001609233", item_number="MASS-1",
+            decision=LabelResolution.KEEP_NEW,
+            sealed=SOL, other=LocationKey(warehouse_id="ATP", location_id="QUAI EXP"),
+        )
+
+        assert ctx.journals.lines_by_journal(campaign.id)[counting.id][
+            0
+        ].qty_imported == Decimal(8)
+
     def test_keeping_the_sealed_place_leaves_the_reference_alone(
         self, service, ctx, campaign
     ):
@@ -532,6 +557,148 @@ class TestPassThroughLinesDoNotCount:
 
         keys = {j.key for j in ctx.journals.list(campaign.id)}
         assert STK not in keys
+
+
+class TestAnLocationBelongsToOneJournal:
+    """Deux journaux sur le même emplacement : lequel le compte ?
+
+    Le cas arrive : deux comptages avancés à deux jours d'écart passent par le
+    même emplacement, ou l'un ne fait qu'y déplacer une palette. La base tient
+    déjà l'unicité du périmètre (``erp_journal_scope_location_uq``), mais elle
+    la tenait *seule* — et un index unique ne sait pas nommer le propriétaire.
+    Ce qui remontait était une ``UniqueViolation`` brute, donc un 500 devant
+    lequel il n'y a rien à faire.
+
+    L'autre moitié du cas est plus silencieuse et pire : un journal **non
+    déclaré** dont les lignes touchent un emplacement scellé posait sa quantité
+    par-dessus celle du propriétaire, pendant que la référence restait celle du
+    propriétaire. Deux journaux dans un même écart, et rien pour le dire.
+    """
+
+    def _counted(self, ctx, campaign, key=SOL) -> list[Decimal]:
+        journals = {j.key: j for j in ctx.journals.list(campaign.id)}
+        by_journal = ctx.journals.lines_by_journal(campaign.id)
+        return [line.qty_imported for line in by_journal.get(journals[key].id, [])]
+
+    def _erp_journal(self, ctx, campaign, number, *, qty) -> str:
+        journal_id = ctx.erp_journals.upsert_journal(
+            campaign.id, journal_number=number, kind=JournalKind.INVE,
+            erp_posted=True, counted_on=dt.date(2026, 6, 11),
+        )
+        ctx.erp_journals.replace_lines(campaign.id, journal_id, [
+            _erp_line(campaign.id, journal_id, erp_line_number=1,
+                      label_id=f"ET-{number}", qty_on_hand=qty, qty_counted=qty),
+        ])
+        return journal_id
+
+    def test_the_refusal_names_the_journal_that_owns_it(
+        self, service, ctx, campaign
+    ):
+        """Sans ce refus, l'écran renvoie un 500 sur un geste ordinaire."""
+        _priced(ctx, campaign)
+        first = self._erp_journal(ctx, campaign, "NPEM-A", qty=10)
+        second = self._erp_journal(ctx, campaign, "NPEM-B", qty=99)
+        service.declare_scope(campaign, first, [SOL])
+
+        with pytest.raises(ConflictError) as caught:
+            service.declare_scope(campaign, second, [SOL])
+
+        assert "NPEM-A" in str(caught.value), "l'exploitant doit savoir qui desceller"
+        assert "ATP / SOL" in str(caught.value)
+
+    def test_the_proposal_does_not_offer_it_either(self, service, ctx, campaign):
+        """Le refus est le filet ; la liste proposée est la première défense."""
+        _priced(ctx, campaign)
+        first = self._erp_journal(ctx, campaign, "NPEM-A", qty=10)
+        second = self._erp_journal(ctx, campaign, "NPEM-B", qty=99)
+        service.declare_scope(campaign, first, [SOL])
+
+        assert service.propose_scope(campaign, second) == []
+
+    def test_a_second_journal_does_not_count_a_sealed_location(
+        self, service, ctx, campaign
+    ):
+        """Le cas silencieux : B n'est pas déclaré, ses lignes passent sur SOL.
+
+        Sa quantité remplaçait celle de A tandis que la référence restait celle
+        de A. L'emplacement affichait alors l'écart entre le stock d'un journal
+        et le comptage d'un autre.
+        """
+        from inventory.ingest import ParseResult
+        from inventory.services.import_service import ImportService
+
+        _priced(ctx, campaign)
+        first = self._erp_journal(ctx, campaign, "NPEM-A", qty=10)
+        ctx.journals.ensure_journals(campaign.id, [SOL])
+        service.declare_scope(campaign, first, [SOL])
+
+        imports = ImportService(ctx)
+        imports.batches.archive = lambda *a, **k: None
+        imports.parser.parse = lambda contract, **kw: (None, ParseResult(
+            contract_key=contract,
+            rows=[{
+                "journal_number": "NPEM-B", "erp_line_number": 1,
+                "warehouse_id": "ATP", "location_id": "SOL",
+                "item_number": "MASS-1", "counted_quantity": 99,
+                "qty_on_hand": 99, "journal_name_id": "INVE",
+                "is_posted": True, "unit": "PCE",
+            }],
+            rows_received=1,
+        ))
+        imports.import_journal_lines(campaign, mode="file", payload=b"x",
+                                     filename="b.csv")
+
+        assert self._counted(ctx, campaign) == [Decimal(10)], (
+            "seul le journal propriétaire compte son emplacement"
+        )
+        assert [line.qty for line in ctx.book_stock.list(campaign.id)] == [
+            Decimal(10)
+        ]
+
+    def test_declaring_after_the_import_rewrites_the_count(
+        self, service, ctx, campaign
+    ):
+        """L'ordre des gestes ne doit rien changer.
+
+        Quand les deux journaux entrent avant qu'aucun ne soit déclaré, l'import
+        ne sait pas encore trier : les deux comptent, et l'emplacement porte leur
+        somme. Déclarer est le moment où l'on sait — et le comptage se recalcule
+        alors sur le seul propriétaire, comme la référence.
+        """
+        _priced(ctx, campaign)
+        first = self._erp_journal(ctx, campaign, "NPEM-A", qty=10)
+        self._erp_journal(ctx, campaign, "NPEM-B", qty=99)
+        ctx.journals.ensure_journals(campaign.id, [SOL])
+        journals = {j.key: j for j in ctx.journals.list(campaign.id)}
+        ctx.journals.replace_imported_lines(campaign.id, [journals[SOL].id], [
+            CountJournalLine(
+                id=new_id(), journal_id=journals[SOL].id, campaign_id=campaign.id,
+                item_number="MASS-1", qty_imported=Decimal(109),
+                erp_journal_number="NPEM-B",
+            ),
+        ])
+
+        service.declare_scope(campaign, first, [SOL])
+
+        assert self._counted(ctx, campaign) == [Decimal(10)]
+
+    def test_unsealing_hands_the_location_over(self, service, ctx, campaign):
+        """C'est le geste qui transfère : desceller A, déclarer B.
+
+        Référence *et* comptage doivent suivre ensemble. Recalculer la seule
+        référence laissait le comptage de A sous le stock de B.
+        """
+        _priced(ctx, campaign)
+        first = self._erp_journal(ctx, campaign, "NPEM-A", qty=10)
+        second = self._erp_journal(ctx, campaign, "NPEM-B", qty=99)
+        service.declare_scope(campaign, first, [SOL])
+        service.unseal(campaign, first, reason="mauvais journal")
+        service.declare_scope(campaign, second, [SOL])
+
+        assert self._counted(ctx, campaign) == [Decimal(99)]
+        reference = ctx.book_stock.list(campaign.id)
+        assert [line.qty for line in reference] == [Decimal(99)]
+        assert reference[0].erp_journal_id == second
 
 
 class TestTheOverviewReportsWhatIsSealed:

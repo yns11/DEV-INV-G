@@ -145,6 +145,36 @@ Le périmètre décide de deux choses :
 | Son `Stock ERP` | Fait la référence de l'emplacement | N'en fait pas |
 | Devenir | — | Conservée, signalée, jamais supprimée |
 
+### Un emplacement n'appartient qu'à un journal
+
+Deux comptages avancés à deux jours d'écart peuvent passer par le même
+emplacement, et le second n'y fait souvent que déplacer une palette. La question
+« lequel des deux le compte ? » a une seule réponse : **celui dont le périmètre
+le contient**.
+
+Trois chemins mènent au cas, et chacun a son traitement.
+
+| Situation | Ce qui se passe |
+|---|---|
+| **Déclarer un emplacement déjà déclaré ailleurs** | Refusé, en nommant le journal propriétaire : « ATP / SOL appartient déjà au périmètre du journal NPEM-A. Descellez-le pour le lui reprendre. » La liste proposée ne l'offrait déjà pas ; le refus est le filet pour l'appel direct |
+| **Un autre journal, non déclaré, dont les lignes touchent l'emplacement** | Ses lignes entrent dans `erp_journal_line` — c'est la trace du déplacement, et le contrôle par étiquette la relit — mais **elles ne comptent pas**. Seul le propriétaire compte son emplacement |
+| **Transférer l'emplacement d'un journal à un autre** | Descellez le premier (motif obligatoire), déclarez le second. Référence **et** comptage basculent ensemble sur le nouveau journal |
+
+Le tri se fait **ligne par ligne**, pas emplacement par emplacement : un même
+fichier apporte les lignes du propriétaire et celles des journaux de passage, et
+écarter la clé entière priverait l'emplacement scellé de sa quantité comptée.
+
+L'ordre des gestes est indifférent. Si les deux journaux entrent avant qu'aucun
+ne soit déclaré, l'import ne sait pas encore trier et l'emplacement porte leur
+somme ; **déclarer le périmètre recalcule le comptage** sur le seul
+propriétaire, exactement comme il en pose la référence. Les deux nombres d'un
+même écart sortent de la même agrégation.
+
+> Sans cette règle, l'emplacement affichait le stock ERP d'un journal contre le
+> comptage d'un autre — un écart entre deux journaux, et rien pour le dire. Et
+> déclarer deux fois le même emplacement remontait une violation d'unicité
+> brute, c'est-à-dire un 500 devant lequel il n'y a rien à faire.
+
 ---
 
 ## 4. Ce que devient une pièce absente de son emplacement

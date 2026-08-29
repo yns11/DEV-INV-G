@@ -798,12 +798,15 @@ class ImportService:
         # rescelle, le comptage avancé lit ce que l'import a écrit.
         from .early_count_service import EarlyCountService
 
-        out_of_scope = EarlyCountService(ctx).out_of_scope_keys(campaign, imported)
-        skipped = disabled | out_of_scope
-        to_create = [
-            k for k in keys_in_file
-            if k not in journals and k not in skipped
-        ]
+        counts = EarlyCountService(ctx).counting_filter(
+            campaign.id, disabled=disabled
+        )
+        counted_keys = {
+            LocationKey(warehouse_id=l.warehouse_id, location_id=l.location_id)
+            for l in imported
+            if counts(l)
+        }
+        to_create = [k for k in counted_keys if k not in journals]
 
         for line_no, line in enumerate(imported, start=2):
             key = LocationKey(
@@ -862,7 +865,7 @@ class ImportService:
                 key = LocationKey(
                     warehouse_id=line.warehouse_id, location_id=line.location_id
                 )
-                if key in skipped:
+                if not counts(line):
                     continue
                 if (
                     line.label_id, line.item_number,

@@ -478,6 +478,17 @@ jour J.
 jour J — mais demande un motif : le descellement annule une preuve datée. Le
 périmètre part avec ; redéclarer est le geste qui rescelle.
 
+**Un emplacement n'appartient qu'à un journal.** Si un second comptage avancé
+passe par un emplacement déjà scellé, la liste proposée ne vous l'offre pas, et
+le déclarer quand même est refusé en nommant le journal propriétaire. Ses lignes
+sont conservées — c'est la trace du déplacement — mais **elles ne comptent pas** :
+seul le journal qui possède l'emplacement le compte, sans quoi vous liriez le
+stock ERP d'un journal contre le comptage d'un autre. Pour changer de
+propriétaire, descellez le premier journal puis déclarez le second : référence et
+comptage basculent ensemble. Et l'ordre n'a pas d'importance — si les deux
+journaux sont entrés avant qu'aucun ne soit déclaré, déclarer recalcule le
+comptage sur le seul propriétaire.
+
 **Les écarts sont visibles tout de suite.** Dès qu'un précomptage est scellé, la
 vue **Écarts** s'ouvre et le carrousel affiche les planches *Stock et écarts* et
 *Couverture*, sans attendre le chargement ni le gel du stock ERP général : la
@@ -635,7 +646,7 @@ même étiquette, et seul quelqu'un qui va voir le sait.
 
 | Issue | Ce qu'elle veut dire | Ce qu'elle change |
 |---|---|---|
-| **La mettre au nouvel emplacement** | La pièce est bien là où elle a reparu | L'étiquette sort de l'emplacement scellé, qui perd la quantité correspondante |
+| **La mettre au nouvel emplacement** | La pièce est bien là où elle a reparu | L'étiquette sort de l'emplacement scellé, qui perd la quantité correspondante — **sa référence comme son comptage**, sans quoi la décision creuserait l'écart qu'elle tranche |
 | **L'enlever du nouvel emplacement** | Elle n'a pas bougé | C'est la ligne de l'autre journal qui est l'erreur, et c'est elle qui sort du comptage |
 | **Signaler : à rescanner** | On ne tranche pas sur pièce | Rien n'est retiré. L'emplacement **scellé** rejoint l'onglet *À rescanner* |
 

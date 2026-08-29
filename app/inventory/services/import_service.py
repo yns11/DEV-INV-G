@@ -775,17 +775,18 @@ class ImportService:
             k for k in keys_in_file
             if k in locations and locations[k].status is LocationStatus.DISABLED
         }
-        # Un emplacement scellé ne se recharge pas. Son comptage est une preuve
-        # datée : le réimporter le remplacerait par la photographie du jour, et
-        # la dérive qu'on cherche justement à mesurer disparaîtrait avec.
+        # Un emplacement scellé **se recharge**, et c'est la règle métier : la
+        # dernière lecture de l'ERP est la plus juste, et une preuve qu'on ne
+        # peut plus corriger n'est pas une preuve mais une impasse. Le
+        # rechargement rescelle et recalcule la référence dans la foulée — voir
+        # `EarlyCountService.reseal_after_import`.
         #
-        # Ses lignes ERP, elles, sont conservées comme toutes les autres — c'est
-        # ce qui permet au contrôle par étiquette de les rapprocher.
-        sealed = {
-            LocationKey(warehouse_id=warehouse, location_id=location)
-            for warehouse, location in ctx.journals.sealed_keys(campaign.id)
-        }
-        skipped = disabled | sealed
+        # Ce que le chargement du **stock ERP général** fait, lui, est l'inverse
+        # et le reste : il préserve les emplacements scellés, sans quoi le
+        # résultat de leur inventaire disparaîtrait le jour J. Deux imports,
+        # deux règles, et elles ne se contredisent pas — l'un rafraîchit le
+        # précomptage, l'autre ne doit pas l'écraser.
+        skipped = disabled
         to_create = [
             k for k in keys_in_file
             if k not in journals and k not in skipped
@@ -801,15 +802,6 @@ class ImportService:
                         line_no, "location_id", str(key),
                         f"L'emplacement {key} est désactivé : la ligne est "
                         "ignorée. Réactivez-le pour l'inclure.",
-                    )
-                )
-            elif key in sealed:
-                outcome.warnings.append(
-                    RowError(
-                        line_no, "location_id", str(key),
-                        f"L'emplacement {key} est scellé : son comptage avancé "
-                        "fait foi et n'est pas remplacé. La ligne reste "
-                        "consultable dans le journal ERP.",
                     )
                 )
 
@@ -844,11 +836,25 @@ class ImportService:
             # fois qu'il a de palettes.
             grouped: dict[tuple[LocationKey, str], dict[str, Any]] = {}
             posted_flags: dict[str, list[bool]] = {}
+            # Une étiquette qu'un humain a rendue à son emplacement scellé ne
+            # compte pas là où elle a reparu : quelqu'un est allé voir, et la
+            # ligne de l'autre journal est l'erreur. Sans cette exclusion, la
+            # décision serait une opinion consignée plutôt qu'un effet.
+            elsewhere = {
+                (d.label_id, d.item_number, d.other_warehouse_id, d.other_location_id)
+                for d in ctx.label_decisions.list(campaign.id, conn=conn)
+                if d.excluded_from_other
+            }
             for line in imported:
                 key = LocationKey(
                     warehouse_id=line.warehouse_id, location_id=line.location_id
                 )
                 if key in skipped:
+                    continue
+                if (
+                    line.label_id, line.item_number,
+                    line.warehouse_id, line.location_id,
+                ) in elsewhere:
                     continue
                 journal = journals.get(key)
                 if journal is None:  # pragma: no cover - defensive
@@ -936,11 +942,16 @@ class ImportService:
                     "journalsCreated": len(to_create),
                     "journalsPosted": len(fully_posted),
                     "disabledLocationsSkipped": sorted(str(k) for k in disabled),
-                    "sealedLocationsKept": sorted(str(k) for k in sealed),
                     "erpJournals": len(erp_journals),
                 },
                 conn=conn,
             )
+
+        # Hors transaction, et après elle : rescellez d'abord ce que l'import
+        # vient de rafraîchir, sinon la référence resterait celle de la veille.
+        from .early_count_service import EarlyCountService
+
+        resealed = EarlyCountService(ctx).reseal_after_import(campaign)
 
         undeclared = [
             journal.journal_number
@@ -953,11 +964,12 @@ class ImportService:
             "journalsPosted": len(fully_posted),
             "journalsInProgress": len(partially) + len(in_progress),
             "disabledLocationsSkipped": sorted(str(k) for k in disabled),
-            "sealedLocationsKept": sorted(str(k) for k in sealed),
+            "resealed": resealed,
             "erpJournals": len(erp_journals),
             # Le périmètre se déclare, il ne se devine pas. Tant qu'il manque,
-            # aucun lot avancé ne peut être ouvert sur ce journal — d'où la
-            # liste, en tête du rapport plutôt qu'à découvrir plus tard.
+            # les emplacements du journal restent au comptage général et ses
+            # lignes ne produisent aucune référence — d'où la liste, en tête du
+            # rapport plutôt qu'à découvrir plus tard.
             "scopeUndeclared": undeclared,
         }
         return outcome
@@ -978,7 +990,11 @@ class ImportService:
 
         Le remplacement se fait **par journal**. Un journal absent de la
         photographie garde ses lignes, ce qui est exactement ce qu'il faut pour
-        que les lots avancés survivent aux imports du jour J.
+        que les précomptages survivent aux imports du jour J.
+
+        La **date de comptage** de l'en-tête vient d'ici : la plus récente des
+        dates portées par ses lignes. L'ERP la donne sur chacune ; l'application
+        la lisait et la jetait, puis la redemandait à l'utilisateur.
         """
         ctx = self.ctx
         by_number: dict[str, list[Any]] = {}
@@ -1004,6 +1020,11 @@ class ImportService:
                     (line.posted_at for line in lines if line.posted_at), None
                 ),
                 line_count=len(lines),
+                counted_on=max(
+                    (line.counting_date.date() for line in lines
+                     if line.counting_date is not None),
+                    default=None,
+                ),
                 conn=conn,
             )
             ctx.erp_journals.replace_lines(

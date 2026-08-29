@@ -21,6 +21,7 @@ from ..domain.enums import (
     ExclusionScope,
     ItemType,
     JournalStatus,
+    LabelResolution,
     LocationStatus,
 )
 
@@ -46,7 +47,7 @@ __all__ = [
     "JournalStatusRequest",
     "JournalLineRequest",
     "JournalScopeRequest",
-    "EarlyBatchRequest",
+    "LabelDecisionRequest",
     "UnsealRequest",
     "DriftResolutionRequest",
     "ZoneRequest",
@@ -313,11 +314,17 @@ class JournalScopeRequest(ApiModel):
     locations: list[LocationKeyPayload] = Field(min_length=1)
 
 
-class EarlyBatchRequest(ApiModel):
-    code: str = Field(min_length=3, max_length=50)
-    label: str = ""
-    counted_on: dt.date | None = Field(default=None, alias="countedOn")
-    erp_journal_ids: list[str] = Field(min_length=1, alias="erpJournalIds")
+class LabelDecisionRequest(ApiModel):
+    """Où est la pièce : les deux emplacements, et ce qu'on a constaté."""
+
+    label_id: str = Field(min_length=1, alias="labelId")
+    item_number: str = Field(min_length=1, alias="itemNumber")
+    decision: LabelResolution
+    sealed_warehouse_id: str = Field(alias="sealedWarehouseId")
+    sealed_location_id: str = Field(alias="sealedLocationId")
+    other_warehouse_id: str = Field(alias="otherWarehouseId")
+    other_location_id: str = Field(alias="otherLocationId")
+    comment: str = ""
 
 
 class UnsealRequest(ApiModel):

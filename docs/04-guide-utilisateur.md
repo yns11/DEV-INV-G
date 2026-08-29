@@ -431,37 +431,42 @@ général : celui-là arrive le jour J, c'est-à-dire après les lots avancés.
 C'est aussi pourquoi le panneau d'import des journaux se trouve ici, sur
 l'onglet *Journaux ERP*, et pas seulement sur l'écran des journaux de comptage.
 
-Le déroulé, pour chaque lot :
+Le déroulé, pour chaque journal de précomptage :
 
-1. **Comptez et postez le journal dans l'ERP.** C'est le postage qui réaligne
-   l'ERP sur le physique compté, et l'application l'exige pour sceller.
-2. **Exécutez le notebook** sur la fenêtre de dates du lot, puis chargez son
+1. **Comptez et postez le journal dans l'ERP**, puis validez-le. Il y a peu de
+   journaux de précomptage et ils n'ont pas l'urgence du jour J : on a le temps
+   de ne charger que du définitif.
+2. **Exécutez le notebook** sur la fenêtre de dates du comptage, puis chargez son
    export depuis le panneau d'import de l'onglet *Journaux ERP*. Chaque import
-   remplace les journaux qu'il rapporte et laisse les autres intacts ; l'heure
-   du dernier s'affiche en tête de l'écran.
-3. **Déclarez le périmètre** de chaque journal, onglet *Journaux ERP*.
-   L'application propose les emplacements candidats — ceux de ses lignes, moins
-   le tampon `INV / 01`, moins ceux déjà pris par un autre journal — le plus
-   probable en tête. Vous cochez. Cette étape est obligatoire : les emplacements
-   des lignes ne suffisent pas à dire lesquels le journal couvre, certaines
-   n'étant là que pour matérialiser un déplacement.
+   remplace les journaux qu'il rapporte et laisse les autres intacts ; l'heure du
+   dernier s'affiche en tête de l'écran.
+3. **Déclarez le périmètre**, onglet *Journaux ERP*. L'application propose les
+   emplacements candidats — ceux des lignes du journal, moins le tampon
+   `INV / 01`, moins ceux déjà pris par un autre journal — le plus probable en
+   tête. Vous cochez.
+
+   **Déclarer scelle.** Les deux gestes n'en font qu'un : dire quels
+   emplacements ce journal couvre, c'est dire lesquels sont comptés et ne
+   bougeront plus. Dans la foulée, l'application pose leur référence — le stock
+   ERP d'avant comptage, lu dans la colonne « Stock ERP » du journal, valorisé au
+   prix standard et **daté par la colonne « Date de comptage » de ses lignes**.
+   Vous ne retapez aucune date.
+
    Un journal réel couvre parfois cinquante emplacements ou plus : la colonne
    *Périmètre* en affiche le nombre et les deux premiers. La liste entière
    s'obtient au survol, et part telle quelle dans le filtre et l'export Excel.
-4. **Ouvrez le lot** sur ces journaux : onglet *Lots avancés*, bouton **Ouvrir
-   un lot**. Vous donnez un code, un libellé, la date du comptage physique — pas
-   celle de l'import, c'est elle qui datera la référence — et vous cochez les
-   journaux. Seuls ceux dont le périmètre est déclaré sont proposés ; un journal
-   dont les emplacements appartiennent déjà à un autre lot est grisé, parce
-   qu'un emplacement ne se précompte qu'une fois.
-5. **Clôturez-le**, puis **scellez-le**. Le scellement pose la référence des
-   emplacements et interdit qu'on y touche. Il est refusé tant qu'un journal
-   n'est pas posté dans l'ERP.
-6. **Balisez physiquement** les emplacements. Cette étape n'est pas dans
+4. **Balisez physiquement** les emplacements. Cette étape n'est pas dans
    l'application, mais c'est elle qui rend tout le reste valable.
 
-**Desceller** est possible — c'est ce qui permet un recomptage — mais demande un
-motif : le descellement annule une preuve datée.
+**Recharger un journal déjà scellé est permis, et normal.** L'import remplace ses
+lignes, recalcule la référence et rescelle : la dernière lecture de l'ERP est la
+plus juste. Le chargement du **stock ERP général**, lui, ne touche pas aux
+emplacements scellés — sinon le résultat de leur inventaire disparaîtrait le
+jour J.
+
+**Desceller** est possible — c'est ce qui rend un emplacement au comptage du
+jour J — mais demande un motif : le descellement annule une preuve datée. Le
+périmètre part avec ; redéclarer est le geste qui rescelle.
 
 ### 2.1 Charger le stock ERP
 
@@ -604,6 +609,26 @@ re-scannée ailleurs, son étiquette apparaît dans un second journal, et
 l'application désigne les deux emplacements à aller voir. Reste le cas où elle
 n'est scannée nulle part : rien ne la voit, et seul le balisage physique
 l'évite.
+
+**Trancher une étiquette signalée.** Cochez les lignes, puis choisissez. Aucun
+calcul ne peut répondre à la question posée — deux journaux affirment détenir la
+même étiquette, et seul quelqu'un qui va voir le sait.
+
+| Issue | Ce qu'elle veut dire | Ce qu'elle change |
+|---|---|---|
+| **La mettre au nouvel emplacement** | La pièce est bien là où elle a reparu | L'étiquette sort de l'emplacement scellé, qui perd la quantité correspondante |
+| **L'enlever du nouvel emplacement** | Elle n'a pas bougé | C'est la ligne de l'autre journal qui est l'erreur, et c'est elle qui sort du comptage |
+| **Signaler : à rescanner** | On ne tranche pas sur pièce | Rien n'est retiré. L'emplacement **scellé** rejoint l'onglet *À rescanner* |
+
+Les deux premières agissent immédiatement sur les quantités, et l'issue survit
+aux réimports du jour J : une décision prise à neuf heures ne se retrouve pas
+vierge à neuf heures cinq.
+
+**L'onglet À rescanner** liste les emplacements scellés qu'une étiquette met en
+question, avec l'étiquette en cause et l'endroit où elle a reparu. C'est
+l'**ancien** emplacement qui y figure, parce que c'est lui qu'il faut desceller
+pour que le comptage du jour J le reprenne — le bouton *Desceller le journal* est
+sur la ligne.
 
 ### 2.7 bis Emplacements inventoriés ailleurs
 

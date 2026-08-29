@@ -25,12 +25,12 @@ from ..db import (
     CampaignRepository,
     ConsolidationRepository,
     Database,
-    EarlyCountBatchRepository,
     EarlyCountDriftRepository,
     ErpJournalRepository,
     EvidenceBlobRepository,
     ImportBatchRepository,
     JournalRepository,
+    LabelDecisionRepository,
     ReferentialRepository,
     ScanJobRepository,
     SheetRepository,
@@ -94,8 +94,8 @@ class ServiceContext:
         return ErpJournalRepository(self.db)
 
     @functools.cached_property
-    def early_counts(self) -> EarlyCountBatchRepository:
-        return EarlyCountBatchRepository(self.db)
+    def label_decisions(self) -> LabelDecisionRepository:
+        return LabelDecisionRepository(self.db)
 
     @functools.cached_property
     def drifts(self) -> EarlyCountDriftRepository:

@@ -42,9 +42,11 @@ const fixtures = vi.hoisted(() => {
   }))
   return {
     scope,
-    createEarlyBatch: vi.fn(
-      (_campaignId: string, body: { code: string; erpJournalIds: string[] }) =>
-        Promise.resolve({ id: 'lot-1', code: body.code, locations: scope }),
+    decideLabel: vi.fn(
+      (
+        _campaignId: string,
+        body: { labelId: string; decision: string },
+      ) => Promise.resolve({ ...body }),
     ),
   }
 })
@@ -63,17 +65,9 @@ vi.mock('../lib/api', () => ({
           lineCount: 217,
           erpPosted: true,
           scopeDeclared: true,
+          isSealed: true,
+          countedOn: '2026-06-10',
           scope: fixtures.scope,
-        },
-        {
-          id: 'j-3',
-          journalNumber: 'NPEM-521288',
-          kind: 'INVE',
-          description: 'Inventaire par étiquette',
-          lineCount: 7,
-          erpPosted: true,
-          scopeDeclared: true,
-          scope: [{ warehouseId: 'MAG', locationId: 'RACK A' }],
         },
         {
           id: 'j-2',
@@ -86,19 +80,41 @@ vi.mock('../lib/api', () => ({
           scope: [],
         },
       ]),
-    earlyBatches: () =>
+    labelAlerts: () =>
       Promise.resolve([
         {
-          id: 'lot-0',
-          code: 'LOT-DEJA',
-          isClosed: true,
-          isSealed: true,
-          locations: [{ warehouseId: 'MAG', locationId: 'RACK A' }],
+          labelId: '001609233',
+          itemNumber: 'MEL-STA-4412',
+          sealedWarehouseId: 'ATP',
+          sealedLocationId: 'SOL',
+          otherWarehouseId: 'ATP',
+          otherLocationId: 'QUAI EXP',
+          otherJournalNumber: 'NPEM-523004',
+          otherQtyCounted: 8,
+          decision: null,
         },
       ]),
-    createEarlyBatch: fixtures.createEarlyBatch,
+    toRescan: () =>
+      Promise.resolve([
+        {
+          warehouseId: 'ATP',
+          locationId: 'SOL',
+          journalNumber: 'NPEM-521215',
+          erpJournalId: 'j-1',
+          isSealed: true,
+          labels: [
+            {
+              labelId: '001609233',
+              itemNumber: 'MEL-STA-4412',
+              otherWarehouseId: 'ATP',
+              otherLocationId: 'QUAI EXP',
+              comment: '',
+            },
+          ],
+        },
+      ]),
+    decideLabel: fixtures.decideLabel,
     drifts: () => Promise.resolve([]),
-    labelAlerts: () => Promise.resolve([]),
     contracts: () =>
       Promise.resolve([
         {
@@ -156,7 +172,7 @@ describe('l’écran s’affiche', () => {
     expect(() => show(null)).not.toThrow()
   })
 
-  it.each(['', '?vue=lots', '?vue=derives', '?vue=etiquettes'])(
+  it.each(['', '?vue=derives', '?vue=etiquettes', '?vue=rescanner'])(
     'y compris sur la sous-section « %s »',
     (search) => {
       expect(() => show(null, search)).not.toThrow()
@@ -206,58 +222,63 @@ describe('la colonne Périmètre', () => {
   })
 })
 
-describe('ouvrir un lot', () => {
-  it('se propose toujours, y compris quand aucun lot n’existe', async () => {
-    // C'est exactement là que le geste manquait : l'état vide disait « ouvrez
-    // un lot dessus » et l'écran n'offrait aucun moyen de le faire. Le bouton
-    // vit donc hors de la liste, pas dedans.
-    show(null, '?vue=lots')
+describe('les étiquettes', () => {
+  it('offrent les trois issues une fois une ligne cochée', async () => {
+    show(null, '?vue=etiquettes')
+    const row = await screen.findByText('001609233')
+    expect(row).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('checkbox')[1]!)
     expect(
-      await screen.findByRole('button', { name: 'Ouvrir un lot' }),
+      await screen.findByRole('button', { name: 'La mettre au nouvel emplacement' }),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'L’enlever du nouvel emplacement' }),
+    ).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Signaler : à rescanner' }),
     ).toBeTruthy()
   })
 
-  it('grise un journal dont les emplacements sont déjà pris', async () => {
-    // Le service refuse — un emplacement ne se précompte qu'une fois. Le dire
-    // avant plutôt qu'après : proposer puis refuser fait découvrir la règle au
-    // plus mauvais moment.
-    show(null, '?vue=lots')
-    fireEvent.click(await screen.findByRole('button', { name: 'Ouvrir un lot' }))
-    await screen.findByText('NPEM-521288')
-    expect(screen.getByText(/Déjà dans LOT-DEJA/)).toBeTruthy()
-    const boxes = screen.getAllByRole('checkbox')
-    expect(boxes.some((b) => b.hasAttribute('disabled'))).toBe(true)
+  it('appellent le client avec l’issue et les deux emplacements', async () => {
+    fixtures.decideLabel.mockClear()
+    show(null, '?vue=etiquettes')
+    await screen.findByText('001609233')
+    fireEvent.click(screen.getAllByRole('checkbox')[1]!)
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Signaler : à rescanner' }),
+    )
+
+    await waitFor(() => expect(fixtures.decideLabel).toHaveBeenCalled())
+    const body = fixtures.decideLabel.mock.calls[0]?.[1] as {
+      labelId: string
+      decision: string
+      sealedLocationId: string
+      otherLocationId: string
+    }
+    expect(body.labelId).toBe('001609233')
+    expect(body.decision).toBe('RECOUNT')
+    expect(body.sealedLocationId).toBe('SOL')
+    expect(body.otherLocationId).toBe('QUAI EXP')
   })
+})
 
-  it('ne propose que les journaux dont le périmètre est déclaré', async () => {
-    show(null, '?vue=lots')
-    fireEvent.click(await screen.findByRole('button', { name: 'Ouvrir un lot' }))
-    expect(await screen.findByText('NPEM-521213')).toBeTruthy()
-    expect(screen.queryByText('NPEM-521301')).toBeNull()
+describe('la liste à rescanner', () => {
+  it('expose l’ancien emplacement, celui qu’il faut desceller', async () => {
+    show(null, '?vue=rescanner')
+    expect(await screen.findByText(/ATP \/ SOL/)).toBeTruthy()
+    expect(screen.getByText(/NPEM-521215/)).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Desceller le journal' }),
+    ).toBeTruthy()
   })
+})
 
-  it('appelle le client avec le code et les journaux choisis', async () => {
-    fixtures.createEarlyBatch.mockClear()
-    show(null, '?vue=lots')
-    fireEvent.click(await screen.findByRole('button', { name: 'Ouvrir un lot' }))
-    await screen.findByText('NPEM-521213')
-
-    fireEvent.change(screen.getByPlaceholderText('LOT-J2-ATELIER'), {
-      target: { value: 'LOT-J2-ATELIER' },
-    })
-    fireEvent.click(screen.getAllByRole('checkbox')[0]!)
-    fireEvent.click(screen.getByRole('button', { name: 'Ouvrir le lot' }))
-
-    await waitFor(() => expect(fixtures.createEarlyBatch).toHaveBeenCalled())
-    const body = fixtures.createEarlyBatch.mock.calls[0]?.[1]
-    expect(body?.code).toBe('LOT-J2-ATELIER')
-    expect(body?.erpJournalIds).toEqual(['j-1'])
-  })
-
-  it('refuse de partir sans code ni journal', async () => {
-    show(null, '?vue=lots')
-    fireEvent.click(await screen.findByRole('button', { name: 'Ouvrir un lot' }))
-    const submit = await screen.findByRole('button', { name: 'Ouvrir le lot' })
-    expect(submit.hasAttribute('disabled')).toBe(true)
+describe('la grille des journaux', () => {
+  it('dit qu’un journal est scellé et depuis quelle date de comptage', async () => {
+    show(null)
+    // L'en-tête de colonne, plus le badge du seul journal scellé — le second
+    // ne l'est pas, et un troisième « Scellé » voudrait dire qu'il l'est.
+    expect((await screen.findAllByText('Scellé')).length).toBe(2)
+    expect(screen.getByText('10/06/2026')).toBeTruthy()
   })
 })

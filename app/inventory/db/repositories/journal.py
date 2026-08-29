@@ -35,7 +35,7 @@ class JournalRepository(_Base):
     _COLUMNS = (
         "id, campaign_id, warehouse_id, location_id, kind, status, journal_number, "
         "description, posted_at, auto_created, updated_at, row_version, "
-        "early_batch_id, sealed_at, sealed_by"
+        "sealed_at, sealed_by"
     )
 
     def list(
@@ -288,29 +288,6 @@ class JournalRepository(_Base):
 
     # -------------------------------------------------------------- scellement
 
-    def assign_batch(
-        self,
-        campaign_id: str,
-        keys: Sequence[tuple[str, str]],
-        *,
-        batch_id: str,
-        actor: str,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Rattacher des emplacements à un lot avancé, sans encore les sceller.
-
-        Le périmètre d'un lot n'a pas de table à lui : c'est l'ensemble des
-        journaux qui portent son identifiant. Il est donc posé à l'ouverture du
-        lot, et non au scellement — une première version l'écrivait au moment de
-        sceller, si bien que le scellement cherchait un périmètre que lui seul
-        pouvait créer, et ne scellait rien.
-        """
-        return self._mark(
-            campaign_id, keys, actor=actor,
-            assignments=("early_batch_id = %(batch)s",), batch_id=batch_id,
-            conn=conn,
-        )
-
     def seal(
         self,
         campaign_id: str,
@@ -319,7 +296,7 @@ class JournalRepository(_Base):
         actor: str,
         conn: psycopg.Connection | None = None,
     ) -> int:
-        """Sceller les journaux d'un lot avancé.
+        """Sceller les emplacements d'un journal de précomptage.
 
         Le scellement ne fait que **restreindre** : il s'ajoute à la matrice de
         mutabilité, qui reste consultée en premier et garde le dernier mot pour
@@ -348,7 +325,7 @@ class JournalRepository(_Base):
         return self._mark(
             campaign_id, keys, actor=actor,
             assignments=(
-                "sealed_at = NULL", "sealed_by = NULL", "early_batch_id = NULL",
+                "sealed_at = NULL", "sealed_by = NULL",
             ),
             conn=conn,
         )
@@ -541,9 +518,6 @@ class JournalRepository(_Base):
             posted_at=row["posted_at"],
             auto_created=row["auto_created"],
             updated_at=row["updated_at"],
-            early_batch_id=(
-                str(row["early_batch_id"]) if row.get("early_batch_id") else None
-            ),
             sealed_at=row.get("sealed_at"),
             sealed_by=row.get("sealed_by") or "",
         )

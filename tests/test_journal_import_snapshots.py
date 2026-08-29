@@ -17,6 +17,7 @@ comptage :
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -222,30 +223,49 @@ class TestAReplacementIsPerJournal:
         assert [line.qty_counted for line in raw] == [Decimal(8)]
 
 
-class TestASealedLocationIsNotReloaded:
-    def test_its_counted_lines_survive_the_import(
-        self, service, campaign, monkeypatch
-    ):
+class TestASealedLocationIsReloaded:
+    """La règle a changé, et pour une bonne raison.
+
+    Une première version protégeait l'emplacement scellé du rechargement : son
+    comptage était une preuve datée, et la réimporter l'aurait remplacée par la
+    photographie du jour. Le métier a tranché autrement — un réimport du journal,
+    ou l'import d'un autre journal de précomptage qui touche l'emplacement,
+    **remplace et met à jour**. La dernière lecture de l'ERP est la plus juste,
+    et une preuve qu'on ne peut plus corriger n'est pas une preuve mais une
+    impasse.
+
+    Ce que le chargement du **stock ERP général** fait, lui, est l'inverse et le
+    reste : il préserve les emplacements scellés, sans quoi le résultat de leur
+    inventaire disparaîtrait le jour J. Deux imports, deux règles, et elles ne se
+    contredisent pas.
+    """
+
+    def test_its_counted_lines_are_replaced(self, service, campaign, monkeypatch):
         _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=7)])
         service.import_journal_lines(campaign, payload=b"x", filename="j2.csv")
         service.ctx.journals.seal(
             campaign.id, [("ATP", "SOL")], actor="alice"
         )
 
-        # Le jour J, la même référence est comptée autrement.
         _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=2)])
-        outcome = service.import_journal_lines(campaign, payload=b"x", filename="jj.csv")
+        service.import_journal_lines(campaign, payload=b"x", filename="jj.csv")
 
         counted = [
             line
             for group in service.ctx.journals.lines_by_journal(campaign.id).values()
             for line in group
         ]
-        assert [line.qty for line in counted] == [Decimal(7)], (
-            "le comptage avancé fait foi ; le recharger effacerait la dérive"
+        assert [line.qty for line in counted] == [Decimal(2)], (
+            "le rechargement remplace : c'est la règle métier"
         )
-        assert any("scellé" in w.message for w in outcome.warnings)
-        assert outcome.details["sealedLocationsKept"] == ["ATP / SOL"]
+
+    def test_nothing_is_reported_as_kept(self, service, campaign, monkeypatch):
+        """Le rapport ne doit plus annoncer une protection qui n'existe plus."""
+        _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=7)])
+        outcome = service.import_journal_lines(
+            campaign, payload=b"x", filename="j2.csv"
+        )
+        assert "sealedLocationsKept" not in outcome.details
 
     def test_its_raw_lines_are_still_recorded(self, service, campaign, monkeypatch):
         """Sans quoi le contrôle par étiquette n'aurait rien à rapprocher."""
@@ -297,3 +317,52 @@ class TestTheReportNamesWhatIsUndeclared:
         _feed(service, monkeypatch, [_row()])
         outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
         assert outcome.details["scopeUndeclared"] == []
+
+
+class TestTheCountingDateComesFromTheLines:
+    """L'ERP la donne sur chaque ligne ; elle n'a plus à être retapée.
+
+    Elle a longtemps été lue au contrat, portée par l'objet importé, puis
+    **jetée** : aucune colonne ne la recevait. L'application redemandait donc à
+    l'exploitant une date que le fichier contenait déjà. Or c'est elle qui date
+    la référence d'un emplacement scellé, donc l'inventaire de cet emplacement.
+    """
+
+    # Le contrat déclare la colonne en `datetime` et le lecteur la convertit :
+    # ces contrôles alimentent donc ce que le lecteur produit, pas la chaîne
+    # brute du fichier — sinon ils décriraient un pipeline qui n'existe pas.
+    def test_the_header_carries_it(self, service, campaign, monkeypatch):
+        _feed(service, monkeypatch, [
+            _row(erp_line_number=1, counting_date=dt.datetime(2026, 6, 10, 6, 30, tzinfo=dt.UTC)),
+        ])
+        service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        journal = service.ctx.erp_journals.get_by_number(campaign.id, "NPEM-1")
+        assert journal.counted_on == dt.date(2026, 6, 10)
+
+    def test_the_latest_line_wins(self, service, campaign, monkeypatch):
+        """Un journal se compte sur une journée ; si les lignes divergent, la
+        plus récente reste un fait, et un fait vaut mieux qu'un champ vide."""
+        _feed(service, monkeypatch, [
+            _row(erp_line_number=1, counting_date=dt.datetime(2026, 6, 10, 6, 30, tzinfo=dt.UTC)),
+            _row(erp_line_number=2, counting_date=dt.datetime(2026, 6, 11, 17, 5, tzinfo=dt.UTC)),
+        ])
+        service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        journal = service.ctx.erp_journals.get_by_number(campaign.id, "NPEM-1")
+        assert journal.counted_on == dt.date(2026, 6, 11)
+
+    def test_an_export_without_it_does_not_erase_it(
+        self, service, campaign, monkeypatch
+    ):
+        """Un export qui omet la colonne ne doit pas effacer ce qu'un
+        précédent portait : l'absence n'est pas une correction."""
+        _feed(service, monkeypatch, [
+            _row(erp_line_number=1, counting_date=dt.datetime(2026, 6, 10, 6, 30, tzinfo=dt.UTC)),
+        ])
+        service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+        _feed(service, monkeypatch, [_row(erp_line_number=1)])
+        service.import_journal_lines(campaign, payload=b"x", filename="j2.csv")
+
+        journal = service.ctx.erp_journals.get_by_number(campaign.id, "NPEM-1")
+        assert journal.counted_on == dt.date(2026, 6, 10)

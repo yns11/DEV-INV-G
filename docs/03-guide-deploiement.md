@@ -595,6 +595,30 @@ curl -s -w "\nready:%{http_code}\n"           "$URL/api/health/ready"
 > Rien de tout cela n'est nécessaire pour une campagne qui ne précompte pas :
 > les colonnes restent vides et les trois tables vides.
 >
+> **Mise à jour : le journal ERP devient le précomptage.** Le lot disparaît, et
+> la déclaration du périmètre vaut scellement. Deux gestes, dans cet ordre.
+>
+> 1. **Redéployer l'App**, qui applique la migration `026` à son démarrage. Elle
+>    reporte d'abord ce que les lots portaient — scellement, date de comptage,
+>    rattachement des références et des dérives — vers le journal ERP qui couvre
+>    les mêmes emplacements, **puis** supprime `early_count_batch` et les
+>    colonnes `early_batch_id`. Le report précède la suppression ; l'inverse ne
+>    se rattraperait pas.
+> 2. **Rejouer `make uc`**, qui crée `early_count_label_decision`. Les colonnes
+>    renommées sur des tables Delta existantes demandent un geste explicite, pour
+>    la même raison qu'à la version précédente :
+>
+> ```sql
+> ALTER TABLE inventory.book_stock_snapshot RENAME COLUMN early_batch_id TO erp_journal_id;
+> ALTER TABLE inventory.count_result RENAME COLUMN early_batch_id TO sealed_by;
+> ALTER TABLE inventory.early_count_drift RENAME COLUMN batch_id TO erp_journal_id;
+> DROP TABLE IF EXISTS inventory.early_count_batch;
+> ```
+>
+> La table Delta `early_count_batch` peut être conservée telle quelle si l'on
+> tient à l'archive des campagnes déjà publiées : le job ne l'écrit plus, et une
+> table qu'on n'écrit plus ne ment pas — elle date.
+
 > **Correctif de séquencement.** Une version suivante ouvre l'écran des
 > comptages avancés dès le référentiel articles chargé, au lieu d'attendre le
 > stock ERP général — qui arrive le jour J, donc après. Le correctif est

@@ -33,9 +33,9 @@ from .book_stock import BookStockRepository
 from .campaign import CampaignRepository
 from .consolidation import ConsolidationRepository
 from .erp_journal import (
-    EarlyCountBatchRepository,
     EarlyCountDriftRepository,
     ErpJournalRepository,
+    LabelDecisionRepository,
 )
 from .evidence import EvidenceBlobRepository
 from .journal import JournalRepository
@@ -52,7 +52,7 @@ __all__ = [
     "BookStockRepository",
     "JournalRepository",
     "ErpJournalRepository",
-    "EarlyCountBatchRepository",
+    "LabelDecisionRepository",
     "EarlyCountDriftRepository",
     "SheetRepository",
     "ConsolidationRepository",

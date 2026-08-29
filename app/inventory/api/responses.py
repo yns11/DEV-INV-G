@@ -53,7 +53,7 @@ __all__ = [
     "ErpJournalResponse",
     "ScopeCandidate",
     "ScopeDeclared",
-    "EarlyBatchResponse",
+    "RescanLocation",
     "DriftResponse",
     "DriftsResolved",
     "LabelAlert",
@@ -404,6 +404,12 @@ class ErpJournalResponse(Payload):
     #: Faux tant que personne n'a désigné les emplacements du journal — et tant
     #: qu'il l'est, aucun lot ne peut s'ouvrir dessus.
     scope_declared: bool = Field(alias="scopeDeclared")
+    #: Déclarer le périmètre scelle : les deux gestes n'en font qu'un.
+    is_sealed: bool = Field(default=False, alias="isSealed")
+    sealed_at: str | None = Field(default=None, alias="sealedAt")
+    sealed_by: str = Field(default="", alias="sealedBy")
+    #: La date du relevé physique, lue dans les lignes du journal.
+    counted_on: str | None = Field(default=None, alias="countedOn")
     warehouses: list[str] = Field(default_factory=list)
 
 
@@ -422,20 +428,30 @@ class ScopeDeclared(Payload):
     locations: int
 
 
-class EarlyBatchResponse(Payload):
-    id: str
-    campaign_id: str = Field(alias="campaignId")
-    code: str
-    label: str = ""
-    counted_on: str | None = Field(default=None, alias="countedOn")
-    opened_at: str | None = Field(default=None, alias="openedAt")
-    opened_by: str = Field(default="", alias="openedBy")
-    closed_at: str | None = Field(default=None, alias="closedAt")
-    sealed_at: str | None = Field(default=None, alias="sealedAt")
-    sealed_by: str = Field(default="", alias="sealedBy")
-    is_closed: bool = Field(default=False, alias="isClosed")
+class RescanLabel(Payload):
+    """Une étiquette qui met un emplacement scellé en question."""
+
+    label_id: str = Field(alias="labelId")
+    item_number: str = Field(alias="itemNumber")
+    other_warehouse_id: str = Field(alias="otherWarehouseId")
+    other_location_id: str = Field(alias="otherLocationId")
+    comment: str = ""
+    decided_by: str = Field(default="", alias="decidedBy")
+
+
+class RescanLocation(Payload):
+    """Un emplacement scellé qu'il faut desceller et rescanner.
+
+    Ce que l'issue « signaler » produit : on n'a pas tranché sur pièce, et la
+    façon d'en sortir est d'aller recompter.
+    """
+
+    warehouse_id: str = Field(alias="warehouseId")
+    location_id: str = Field(alias="locationId")
+    journal_number: str = Field(default="", alias="journalNumber")
+    erp_journal_id: str | None = Field(default=None, alias="erpJournalId")
     is_sealed: bool = Field(default=False, alias="isSealed")
-    locations: list[ScopeLocation] = Field(default_factory=list)
+    labels: list[RescanLabel] = Field(default_factory=list)
 
 
 class DriftResponse(Payload):
@@ -443,7 +459,7 @@ class DriftResponse(Payload):
 
     id: str
     campaign_id: str = Field(alias="campaignId")
-    batch_id: str | None = Field(default=None, alias="batchId")
+    erp_journal_id: str | None = Field(default=None, alias="erpJournalId")
     warehouse_id: str = Field(alias="warehouseId")
     location_id: str = Field(alias="locationId")
     item_number: str = Field(alias="itemNumber")
@@ -484,3 +500,8 @@ class LabelAlert(Payload):
     other_location_id: str = Field(alias="otherLocationId")
     other_journal_number: str = Field(alias="otherJournalNumber")
     other_qty_counted: float = Field(alias="otherQtyCounted")
+    #: L'issue donnée, ou rien tant que personne n'est allé voir.
+    decision: str | None = None
+    comment: str = ""
+    decided_by: str = Field(default="", alias="decidedBy")
+    decided_at: str | None = Field(default=None, alias="decidedAt")

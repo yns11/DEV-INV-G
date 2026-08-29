@@ -193,7 +193,7 @@ flowchart LR
     class C1,C2 r
 ```
 
-**Le point clé : `ERP@T0` et `compté@T0` sortent du même fichier.** Un lot avancé
+**Le point clé : `ERP@T0` et `compté@T0` sortent du même fichier.** Un précomptage
 ne demande aucun chargement séparé — le journal apporte à la fois le comptage et
 ce contre quoi il se compare.
 
@@ -223,20 +223,14 @@ flowchart TD
     E -->|non| GEN
 
     E -->|oui| L1[Compter et POSTER le journal<br/>dans l'ERP]
-    L1 --> L2[Exécuter le notebook<br/>sur la fenêtre du lot]
-    L2 --> L3{Sélectionner le périmètre<br/>du ou des journaux}
-    L3 --> L4[/"ERP@T0 et compté@T0 agrégés<br/>depuis le journal, par emplacement et article"/]
-    L4 --> L5[Ajustement du lot<br/>si nécessaire]
-    L5 --> L6{Journaux postés<br/>dans l'ERP ?}
-    L6 -->|non| L6X[Scellement refusé]
-    L6X --> L1
-    L6 -->|oui| L7[Créer le lot, le clore<br/>et le SCELLER]
-    L7 --> L8[Baliser physiquement]
+    L1 --> L2[Exécuter le notebook<br/>sur la fenêtre du comptage]
+    L2 --> L3{Sélectionner le périmètre<br/>du journal}
+    L3 --> L4[/"Déclarer SCELLE : ERP@T0 agrégé depuis le journal,<br/>daté par sa colonne Date de comptage"/]
+    L4 --> L5[Ajustement si nécessaire]
+    L5 --> L8[Baliser physiquement]
     L8 --> E
 
-    GEN[Ouvrir le comptage général] --> G1{Des lots non scellés ?}
-    G1 -->|oui| G1W[Avertissement] --> G2
-    G1 -->|non| G2[Charger l'ERP général]
+    GEN[Ouvrir le comptage général] --> G2[Charger l'ERP général]
 
     G2 --> G3[/"Référence remplacée partout<br/>SAUF sur les emplacements scellés"/]
     G3 --> G3B[Désactiver INV / 01<br/>lignes conservées]
@@ -402,8 +396,9 @@ stateDiagram-v2
 
     OUVERT --> OUVERT : réimport, remplacement par numéro de journal
     OUVERT --> POSTE : posté dans l'ERP
-    POSTE --> SCELLE : sceller le lot avancé
-    SCELLE --> POSTE : desceller, motif obligatoire
+    PERIMETRE_A_DECLARER --> SCELLE : déclarer le périmètre SCELLE
+    SCELLE --> SCELLE : réimport, référence recalculée
+    SCELLE --> PERIMETRE_A_DECLARER : desceller, motif obligatoire
 
     POSTE --> [*] : passage en ANALYSE
     SCELLE --> [*] : passage en ANALYSE

@@ -229,8 +229,8 @@ export const SECTIONS: Section[] = [
     ],
   },
   {
-    // Avant les journaux, parce que c'est ce qui se fait avant : un lot avancé
-    // s'ouvre, se compte et se scelle des jours avant le comptage général. Et
+    // Avant les journaux, parce que c'est ce qui se fait avant : un journal de
+    // précomptage se déclare et se scelle des jours avant le comptage général. Et
     // le jour J, c'est ici que les dérives se tranchent — le passage en analyse
     // les attend.
     to: 'comptages-avances',
@@ -246,9 +246,9 @@ export const SECTIONS: Section[] = [
     locked: (o) => blocked(o, 'early_counts') ?? '',
     subs: [
       { id: 'journaux', label: 'Journaux ERP' },
-      { id: 'lots', label: 'Lots avancés' },
       { id: 'derives', label: 'Dérives' },
       { id: 'etiquettes', label: 'Étiquettes' },
+      { id: 'rescanner', label: 'À rescanner' },
     ],
   },
   {

@@ -140,7 +140,7 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      2583 contrôles ; 155 exigent un PostgreSQL, ignorés sinon
+tests/                      2598 contrôles ; 165 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -167,13 +167,13 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 2583 contrôles, ~55 s ; 155 ignorés sans PostgreSQL
+make test            # 2598 contrôles, ~50 s ; 165 ignorés sans PostgreSQL
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000
 make dev-ui          # Vite avec proxy vers l'API, port 5173
 
-npm --prefix frontend run test   # 459 contrôles navigateur (vitest + jsdom)
+npm --prefix frontend run test   # 456 contrôles navigateur (vitest + jsdom)
 npm --prefix frontend run e2e    # le parcours complet, Playwright, app démarrée
 ```
 

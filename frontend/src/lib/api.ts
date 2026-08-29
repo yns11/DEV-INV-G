@@ -11,9 +11,10 @@
 import type {
   Drift,
   DriftResolution,
-  EarlyBatch,
   ErpJournal,
   LabelAlert,
+  LabelResolution,
+  RescanLocation,
   ScopeCandidate,
   ClosureChecklist,
   CampaignPage,
@@ -494,29 +495,30 @@ export const api = {
       `/campaigns/${id}/early-counts/journals/${journalId}/scope`,
       { method: 'PUT', body: JSON.stringify({ locations }) },
     ),
-  earlyBatches: (id: string) =>
-    request<EarlyBatch[]>(`/campaigns/${id}/early-counts/batches`),
-  createEarlyBatch: (
+  unsealJournal: (id: string, journalId: string, reason: string) =>
+    request<{ locations: number }>(
+      `/campaigns/${id}/early-counts/journals/${journalId}/unseal`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+  decideLabel: (
     id: string,
-    body: { code: string; label?: string; countedOn?: string | null; erpJournalIds: string[] },
+    body: {
+      labelId: string
+      itemNumber: string
+      decision: LabelResolution
+      sealedWarehouseId: string
+      sealedLocationId: string
+      otherWarehouseId: string
+      otherLocationId: string
+      comment?: string
+    },
   ) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches`, {
+    request<LabelAlert>(`/campaigns/${id}/early-counts/label-alerts/decide`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  closeEarlyBatch: (id: string, batchId: string) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/close`, {
-      method: 'POST',
-    }),
-  sealEarlyBatch: (id: string, batchId: string) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/seal`, {
-      method: 'POST',
-    }),
-  unsealEarlyBatch: (id: string, batchId: string, reason: string) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/unseal`, {
-      method: 'POST',
-      body: JSON.stringify({ reason }),
-    }),
+  toRescan: (id: string) =>
+    request<RescanLocation[]>(`/campaigns/${id}/early-counts/to-rescan`),
   drifts: (id: string) =>
     request<Drift[]>(`/campaigns/${id}/early-counts/drifts`),
   resolveDrifts: (

@@ -1,0 +1,407 @@
+"""Le scellement d'un journal de précomptage, contre une vraie base.
+
+Le journal ERP *est* le précomptage : il n'y a pas d'objet « lot » entre les
+deux, et déclarer le périmètre d'un journal **scelle** ses emplacements.
+
+Ce qui s'y décide :
+
+* **la référence vient du journal**, pas d'un chargement séparé — c'est ce qui
+  rend un précomptage autonome ;
+* **sa date vient des lignes du journal**, pas d'un formulaire ;
+* **la référence d'un emplacement scellé est celle de son précomptage**, sans
+  quoi son écart d'inventaire tomberait à zéro dans le cas nominal et
+  disparaîtrait de la campagne ;
+* **le descellement demande un motif**, parce qu'il annule une preuve datée.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+from decimal import Decimal
+from typing import Any
+
+import pytest
+from tests.early_count_db import disposable_database, make_campaign
+
+from inventory.domain.enums import CampaignStatus, JournalKind, LabelResolution
+from inventory.domain.models import Campaign, ErpJournalLine, Item, LocationKey
+from inventory.errors import ValidationError
+
+pytestmark = pytest.mark.postgres
+
+SOL = LocationKey(warehouse_id="ATP", location_id="SOL")
+STK = LocationKey(warehouse_id="ATP", location_id="STK P FI")
+
+
+@pytest.fixture(scope="module")
+def db():
+    with disposable_database("inventaire_scellement") as database:
+        yield database
+
+
+@pytest.fixture
+def campaign(db):
+    campaign_id = make_campaign(db, f"LOT-{uuid.uuid4().hex[:8]}")
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE campaign SET status = 'COUNTING' WHERE id = %s", (campaign_id,)
+        )
+    return Campaign(
+        id=campaign_id,
+        code=f"LOT-{campaign_id[:8]}",
+        label="",
+        count_date=dt.date(2026, 6, 13),
+        status=CampaignStatus.COUNTING,
+        created_by="test",
+        created_at=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
+    )
+
+
+@pytest.fixture
+def ctx(db, monkeypatch):
+    from inventory.config import get_settings
+    from inventory.services.context import ServiceContext
+
+    context = ServiceContext(actor="alice", db=db, settings=get_settings())
+    monkeypatch.setattr(context, "guard", lambda campaign, what: None, raising=False)
+    return context
+
+
+@pytest.fixture
+def service(ctx):
+    from inventory.services.early_count_service import EarlyCountService
+
+    return EarlyCountService(ctx)
+
+
+def _erp_line(campaign_id: str, journal_id: str, **kwargs) -> ErpJournalLine:
+    base = {
+        "id": "",
+        "erp_journal_id": journal_id,
+        "campaign_id": campaign_id,
+        "warehouse_id": SOL.warehouse_id,
+        "location_id": SOL.location_id,
+        "item_number": "MASS-1",
+        "qty_on_hand": 0,
+        "qty_counted": 0,
+    }
+    return ErpJournalLine(**{**base, **kwargs})
+
+
+def _journal(ctx, campaign, *, number="NPEM-1", posted=True, lines=None,
+             scope=(SOL,), counted_on=dt.date(2026, 6, 11)) -> str:
+    # La date de comptage vient de l'en-tête, alimenté à l'import par la
+    # colonne « Date de comptage » des lignes. C'est elle qui datera la
+    # référence des emplacements scellés.
+    journal_id = ctx.erp_journals.upsert_journal(
+        campaign.id, journal_number=number, kind=JournalKind.INVE,
+        erp_posted=posted, counted_on=counted_on,
+    )
+    ctx.erp_journals.replace_lines(
+        campaign.id, journal_id,
+        lines if lines is not None else [
+            _erp_line(campaign.id, journal_id, erp_line_number=1,
+                      qty_on_hand=10, qty_counted=12),
+        ],
+    )
+    ctx.journals.ensure_journals(campaign.id, list(scope))
+    if scope:
+        ctx.erp_journals.set_scope(campaign.id, journal_id, list(scope), actor="alice")
+    return journal_id
+
+
+def _priced(ctx, campaign, number="MASS-1", cost="4.00") -> None:
+    ctx.referentials.upsert_items([
+        Item(campaign_id=campaign.id, item_number=number, name="X",
+             std_price=Decimal(cost)),
+    ], actor="alice")
+
+
+class TestTheScopeProposal:
+    def test_the_buffer_cannot_be_declared(self, service, ctx, campaign):
+        journal = _journal(ctx, campaign, scope=())
+        with pytest.raises(ValidationError) as caught:
+            service.declare_scope(campaign, journal, [campaign.config.buffer_key])
+        assert "tampon" in str(caught.value)
+
+    def test_declaring_a_scope_records_who_and_when(self, service, ctx, campaign):
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+        stored = ctx.erp_journals.get_by_number(campaign.id, "NPEM-1")
+        assert stored.scope == [SOL]
+        assert stored.scope_declared_by == "alice"
+
+
+class TestDeclaringSeals:
+    """Un seul geste. C'est tout l'intérêt de la révision."""
+
+    def test_a_journal_without_locations_is_refused(self, service, ctx, campaign):
+        """Un périmètre vide ne scelle rien, et prétendre le contraire mentirait."""
+        journal = _journal(ctx, campaign, scope=())
+        with pytest.raises(ValidationError) as caught:
+            service.declare_scope(campaign, journal, [])
+        assert "vide" in str(caught.value)
+
+    def test_the_buffer_cannot_be_declared(self, service, ctx, campaign):
+        journal = _journal(ctx, campaign, scope=())
+        with pytest.raises(ValidationError) as caught:
+            service.declare_scope(campaign, journal, [campaign.config.buffer_key])
+        assert "tampon" in str(caught.value)
+
+    def test_declaring_seals_the_locations(self, service, ctx, campaign):
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+        assert ctx.journals.sealed_keys(campaign.id) == {("ATP", "SOL")}
+
+    def test_declaring_writes_the_reference_read_from_the_journal(
+        self, service, ctx, campaign
+    ):
+        """`ERP@T0` sort de la colonne « Stock ERP », pas d'un chargement."""
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+
+        reference = ctx.book_stock.list(campaign.id)
+        assert len(reference) == 1
+        assert reference[0].qty == Decimal(10), "le stock ERP d'avant comptage"
+        assert reference[0].erp_journal_id == journal
+        assert reference[0].reference_date == dt.date(2026, 6, 11), (
+            "la date vient du journal, pas d'un formulaire"
+        )
+        assert reference[0].unit_cost == Decimal("4.00")
+
+    def test_an_unposted_journal_seals_all_the_same(self, service, ctx, campaign):
+        """La garde d'origine exigeait le postage ; le métier l'a retirée.
+
+        Un journal de précomptage se charge une fois posté et validé dans l'ERP
+        — il y en a peu, et ils n'ont pas l'urgence du jour J. Une garde qui ne
+        se déclenche jamais est une garde qu'on ne sait pas maintenir.
+        """
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, posted=False, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+        assert ctx.journals.sealed_keys(campaign.id) == {("ATP", "SOL")}
+
+    def test_redeclaring_replaces_the_reference(self, service, ctx, campaign):
+        """Un réimport remplace et met à jour : c'est la règle métier."""
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+        ctx.erp_journals.replace_lines(campaign.id, journal, [
+            _erp_line(campaign.id, journal, erp_line_number=1,
+                      qty_on_hand=99, qty_counted=99),
+        ])
+        service.declare_scope(campaign, journal, [SOL])
+
+        reference = ctx.book_stock.list(campaign.id)
+        assert [line.qty for line in reference] == [Decimal(99)]
+
+
+class TestUnsealing:
+    def _sealed(self, service, ctx, campaign) -> str:
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+        return journal
+
+    def test_a_reason_is_required(self, service, ctx, campaign):
+        journal = self._sealed(service, ctx, campaign)
+        with pytest.raises(ValidationError) as caught:
+            service.unseal(campaign, journal, reason="   ")
+        assert "motif" in str(caught.value)
+
+    def test_unsealing_gives_the_locations_back(self, service, ctx, campaign):
+        journal = self._sealed(service, ctx, campaign)
+        service.unseal(campaign, journal, reason="recomptage demandé")
+        assert ctx.journals.sealed_keys(campaign.id) == set()
+
+    def test_unsealing_drops_the_reference(self, service, ctx, campaign):
+        """L'emplacement rejoint le comptage général : sa référence redevient
+        celle du jour J, donc l'ancienne ne doit pas rester en travers."""
+        journal = self._sealed(service, ctx, campaign)
+        service.unseal(campaign, journal, reason="recomptage demandé")
+        assert ctx.book_stock.list(campaign.id) == []
+
+    def test_unsealing_takes_the_scope_with_it(self, service, ctx, campaign):
+        """Sans périmètre, plus rien à couvrir : redéclarer est ce qui rescelle."""
+        journal = self._sealed(service, ctx, campaign)
+        service.unseal(campaign, journal, reason="recomptage demandé")
+        stored = ctx.erp_journals.get_by_number(campaign.id, "NPEM-1")
+        assert stored.scope == [] and stored.is_sealed is False
+
+
+class TestTheGeneralLoadPreservesSealedReferences:
+    def test_a_sealed_location_keeps_its_own_date(self, service, ctx, campaign):
+        """La règle de référence, appliquée à deux dates.
+
+        Sans elle, l'écart d'un emplacement précompté vaudrait zéro dans le cas
+        nominal — poster son journal ayant réaligné l'ERP sur le physique — et
+        le résultat de son inventaire disparaîtrait de la campagne.
+        """
+        from inventory.domain.models import BookStockLine
+
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+
+        # Le jour J : le chargement général couvre tout, scellés compris.
+        ctx.book_stock.replace(campaign.id, [
+            BookStockLine(campaign_id=campaign.id, item_number="MASS-1",
+                          warehouse_id="ATP", location_id="SOL", qty=12,
+                          reference_date=dt.date(2026, 6, 13)),
+            BookStockLine(campaign_id=campaign.id, item_number="MASS-2",
+                          warehouse_id="B06", location_id="AUTRE", qty=5,
+                          reference_date=dt.date(2026, 6, 13)),
+        ], batch_id=None)
+
+        by_key: dict[tuple[str, str], Any] = {
+            (line.warehouse_id, line.location_id): line
+            for line in ctx.book_stock.list(campaign.id)
+        }
+        assert by_key[("ATP", "SOL")].qty == Decimal(10), (
+            "l'emplacement scellé garde la référence de son précomptage"
+        )
+        assert by_key[("ATP", "SOL")].reference_date == dt.date(2026, 6, 11)
+        assert by_key[("B06", "AUTRE")].reference_date == dt.date(2026, 6, 13)
+
+
+class TestTheLabelDecisions:
+    """Où est la pièce, et ce que la réponse change aux quantités.
+
+    Une étiquette d'un emplacement scellé qui reparaît ailleurs pose la seule
+    question du dispositif qu'aucun calcul ne tranche. Trois réponses, et
+    chacune doit **agir** : une décision qui ne changerait rien serait une
+    opinion consignée, pas une décision.
+    """
+
+    def _two_places(self, ctx, campaign) -> str:
+        """SOL scellé porte l'étiquette ; QUAI EXP la recompte le jour J."""
+        _priced(ctx, campaign)
+        sealed = ctx.erp_journals.upsert_journal(
+            campaign.id, journal_number="NPEM-1", kind=JournalKind.INVE,
+            erp_posted=True, counted_on=dt.date(2026, 6, 11),
+        )
+        ctx.erp_journals.replace_lines(campaign.id, sealed, [
+            _erp_line(campaign.id, sealed, erp_line_number=1,
+                      label_id="001609233", qty_on_hand=8, qty_counted=8),
+            _erp_line(campaign.id, sealed, erp_line_number=2,
+                      label_id="001609234", qty_on_hand=8, qty_counted=8),
+        ])
+        other = ctx.erp_journals.upsert_journal(
+            campaign.id, journal_number="NPEM-2", kind=JournalKind.INVE,
+        )
+        ctx.erp_journals.replace_lines(campaign.id, other, [
+            _erp_line(campaign.id, other, erp_line_number=1,
+                      warehouse_id="ATP", location_id="QUAI EXP",
+                      label_id="001609233", qty_on_hand=0, qty_counted=8),
+        ])
+        ctx.journals.ensure_journals(campaign.id, [SOL])
+        return sealed
+
+    def test_the_alert_names_both_places(self, service, ctx, campaign):
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+
+        alerts = service.label_alerts(campaign.id)
+        assert len(alerts) == 1
+        assert alerts[0]["labelId"] == "001609233"
+        assert alerts[0]["sealedLocationId"] == "SOL"
+        assert alerts[0]["otherLocationId"] == "QUAI EXP"
+        assert alerts[0]["decision"] is None
+
+    def test_keeping_the_new_place_empties_the_sealed_reference(
+        self, service, ctx, campaign
+    ):
+        """La pièce est ailleurs : l'emplacement scellé perd sa quantité."""
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+        assert ctx.book_stock.list(campaign.id)[0].qty == Decimal(16)
+
+        service.decide_label(
+            campaign, label_id="001609233", item_number="MASS-1",
+            decision=LabelResolution.KEEP_NEW,
+            sealed=SOL, other=LocationKey(warehouse_id="ATP", location_id="QUAI EXP"),
+        )
+
+        assert ctx.book_stock.list(campaign.id)[0].qty == Decimal(8), (
+            "l'étiquette sort de l'emplacement scellé"
+        )
+
+    def test_keeping_the_sealed_place_leaves_the_reference_alone(
+        self, service, ctx, campaign
+    ):
+        """Elle n'a pas bougé : c'est l'autre ligne qui est l'erreur."""
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+
+        service.decide_label(
+            campaign, label_id="001609233", item_number="MASS-1",
+            decision=LabelResolution.KEEP_SEALED,
+            sealed=SOL, other=LocationKey(warehouse_id="ATP", location_id="QUAI EXP"),
+        )
+
+        assert ctx.book_stock.list(campaign.id)[0].qty == Decimal(16)
+
+    def test_the_decision_shows_on_the_alert(self, service, ctx, campaign):
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+        service.decide_label(
+            campaign, label_id="001609233", item_number="MASS-1",
+            decision=LabelResolution.RECOUNT,
+            sealed=SOL, other=LocationKey(warehouse_id="ATP", location_id="QUAI EXP"),
+            comment="palette introuvable",
+        )
+
+        alert = service.label_alerts(campaign.id)[0]
+        assert alert["decision"] == "RECOUNT"
+        assert alert["comment"] == "palette introuvable"
+
+    def test_signalling_lists_the_place_to_rescan(self, service, ctx, campaign):
+        """C'est l'ancien emplacement qu'il faut desceller, pas le nouveau."""
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+        service.decide_label(
+            campaign, label_id="001609233", item_number="MASS-1",
+            decision=LabelResolution.RECOUNT,
+            sealed=SOL, other=LocationKey(warehouse_id="ATP", location_id="QUAI EXP"),
+        )
+
+        places = service.locations_to_rescan(campaign.id)
+        assert len(places) == 1
+        assert (places[0]["warehouseId"], places[0]["locationId"]) == ("ATP", "SOL")
+        assert places[0]["journalNumber"] == "NPEM-1"
+        assert places[0]["isSealed"] is True
+        assert [lab["labelId"] for lab in places[0]["labels"]] == ["001609233"]
+
+    def test_the_other_two_outcomes_ask_for_no_rescan(self, service, ctx, campaign):
+        """On a tranché : il n'y a plus rien à aller voir."""
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+        service.decide_label(
+            campaign, label_id="001609233", item_number="MASS-1",
+            decision=LabelResolution.KEEP_NEW,
+            sealed=SOL, other=LocationKey(warehouse_id="ATP", location_id="QUAI EXP"),
+        )
+        assert service.locations_to_rescan(campaign.id) == []
+
+    def test_a_decision_survives_the_next_import(self, service, ctx, campaign):
+        """Le notebook est rejoué toutes les quelques minutes le jour J.
+
+        Repartir de zéro effacerait des décisions prises entre deux imports —
+        un exploitant tranche à neuf heures et retrouve la question vierge à
+        neuf heures cinq, sans que rien ne le lui dise.
+        """
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+        service.decide_label(
+            campaign, label_id="001609233", item_number="MASS-1",
+            decision=LabelResolution.KEEP_NEW,
+            sealed=SOL, other=LocationKey(warehouse_id="ATP", location_id="QUAI EXP"),
+        )
+
+        service.reseal_after_import(campaign)
+
+        assert ctx.book_stock.list(campaign.id)[0].qty == Decimal(8)
+        assert service.label_alerts(campaign.id)[0]["decision"] == "KEEP_NEW"

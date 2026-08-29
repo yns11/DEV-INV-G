@@ -1090,7 +1090,8 @@ export interface StockFlowReport {
 
 export type ErpJournal = Schemas['ErpJournalResponse']
 export type ScopeCandidate = Schemas['ScopeCandidate']
-export type EarlyBatch = Schemas['EarlyBatchResponse']
+export type RescanLocation = Schemas['RescanLocation']
+export type LabelResolution = 'KEEP_NEW' | 'KEEP_SEALED' | 'RECOUNT'
 export type Drift = Schemas['DriftResponse']
 export type LabelAlert = Schemas['LabelAlert']
 export type DriftResolution = 'KEEP_EARLY' | 'RECOUNT'

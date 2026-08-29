@@ -130,11 +130,21 @@ class TestTheMigrationReplays:
     """
 
     def test_applying_it_a_second_time_changes_nothing(self, db):
+        """Les deux dans l'ordre : la 026 défait ce que la 025 a posé.
+
+        Rejouer la 025 seule recréerait le lot que la 026 supprime, et
+        l'assertion finale décrirait un schéma qui n'existe nulle part. C'est la
+        séquence qui est idempotente, pas chaque fichier pris isolément.
+        """
         from inventory.db.migrations import MIGRATIONS_DIR
 
-        sql = (MIGRATIONS_DIR / "025_comptages_avances.sql").read_text(encoding="utf-8")
-        with db.transaction() as conn, conn.cursor() as cur:
-            cur.execute(sql)
+        for name in (
+            "025_comptages_avances.sql",
+            "026_le_journal_est_le_precomptage.sql",
+        ):
+            sql = (MIGRATIONS_DIR / name).read_text(encoding="utf-8")
+            with db.transaction() as conn, conn.cursor() as cur:
+                cur.execute(sql)
         with db.connection() as conn:
             tables = {
                 row["table_name"]
@@ -146,7 +156,7 @@ class TestTheMigrationReplays:
             }
         assert tables == {
             "erp_journal", "erp_journal_scope", "erp_journal_line",
-            "early_count_batch", "early_count_drift",
+            "early_count_label_decision", "early_count_drift",
         }
 
 

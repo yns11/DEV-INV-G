@@ -10,22 +10,23 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
+from ...domain.enums import LabelResolution
 from ...domain.models import LocationKey
 from ...services import DriftService, EarlyCountService
 from ..deps import CampaignDep, drift_service, early_count_service
 from ..responses import (
     DriftResponse,
     DriftsResolved,
-    EarlyBatchResponse,
     ErpJournalResponse,
     LabelAlert,
+    RescanLocation,
     ScopeCandidate,
     ScopeDeclared,
 )
 from ..schemas import (
     DriftResolutionRequest,
-    EarlyBatchRequest,
     JournalScopeRequest,
+    LabelDecisionRequest,
     UnsealRequest,
 )
 
@@ -98,88 +99,28 @@ def declare_scope(
     return {"locations": service.declare_scope(campaign, erp_journal_id, _keys(payload))}
 
 
-# ----------------------------------------------------------------------- lots
-
-
-@router.get(
-    "/batches",
-    summary="Lister les lots de comptage avancé",
-    responses={200: {"model": list[EarlyBatchResponse]}},
-)
-def list_batches(campaign: CampaignDep, service: Early) -> list[EarlyBatchResponse]:
-    return [
-        {
-            **batch.model_dump(mode="json", exclude={"locations"}),
-            "locations": [
-                {"warehouseId": k.warehouse_id, "locationId": k.location_id}
-                for k in batch.locations
-            ],
-            "isClosed": batch.is_closed,
-            "isSealed": batch.is_sealed,
-        }
-        for batch in service.list_batches(campaign.id)
-    ]
+# ----------------------------------------------------- descellement du journal
 
 
 @router.post(
-    "/batches",
-    summary="Ouvrir un lot de comptage avancé",
-    status_code=201,
-    responses={201: {"model": EarlyBatchResponse}},
+    "/journals/{erp_journal_id}/unseal",
+    summary="Desceller un journal de précomptage",
+    responses={200: {"model": ScopeDeclared}},
 )
-def create_batch(
-    campaign: CampaignDep, service: Early, payload: EarlyBatchRequest
-) -> EarlyBatchResponse:
-    batch = service.create_batch(
-        campaign,
-        code=payload.code,
-        label=payload.label,
-        counted_on=payload.counted_on,
-        erp_journal_ids=payload.erp_journal_ids,
-    )
-    return batch.model_dump(mode="json", exclude={"locations"})
+def unseal_journal(
+    campaign: CampaignDep,
+    service: Early,
+    erp_journal_id: str,
+    payload: UnsealRequest,
+) -> ScopeDeclared:
+    """Rendre ses emplacements au comptage général.
 
-
-@router.post(
-    "/batches/{batch_id}/close",
-    summary="Clore un lot",
-    responses={200: {"model": EarlyBatchResponse}},
-)
-def close_batch(
-    campaign: CampaignDep, service: Early, batch_id: str
-) -> EarlyBatchResponse:
-    batch = service.close_batch(campaign, batch_id)
-    return batch.model_dump(mode="json", exclude={"locations"})
-
-
-@router.post(
-    "/batches/{batch_id}/seal",
-    summary="Sceller un lot",
-    responses={200: {"model": EarlyBatchResponse}},
-)
-def seal_batch(
-    campaign: CampaignDep, service: Early, batch_id: str
-) -> EarlyBatchResponse:
-    """Poser la référence des emplacements du lot, et interdire qu'on y touche.
-
-    Refusé si l'un des journaux du périmètre n'est pas posté dans l'ERP : c'est
-    le postage qui réaligne l'ERP sur le physique compté, et le scellement tient
-    ce réalignement pour acquis.
+    Le périmètre part avec le scellement : sans périmètre, le journal n'a plus
+    d'emplacement à couvrir. Redéclarer est le geste qui rescelle.
     """
-    batch = service.seal_batch(campaign, batch_id)
-    return batch.model_dump(mode="json", exclude={"locations"})
-
-
-@router.post(
-    "/batches/{batch_id}/unseal",
-    summary="Desceller un lot",
-    responses={200: {"model": EarlyBatchResponse}},
-)
-def unseal_batch(
-    campaign: CampaignDep, service: Early, batch_id: str, payload: UnsealRequest
-) -> EarlyBatchResponse:
-    batch = service.unseal_batch(campaign, batch_id, reason=payload.reason)
-    return batch.model_dump(mode="json", exclude={"locations"})
+    return {
+        "locations": service.unseal(campaign, erp_journal_id, reason=payload.reason)
+    }
 
 
 # -------------------------------------------------------------------- dérives
@@ -248,3 +189,62 @@ def label_alerts(campaign: CampaignDep, service: Early) -> list[LabelAlert]:
     re-scannée ailleurs, son étiquette apparaît dans un second journal.
     """
     return service.label_alerts(campaign.id)
+
+
+@router.post(
+    "/label-alerts/decide",
+    summary="Dire où est la pièce",
+    responses={200: {"model": LabelAlert}},
+)
+def decide_label(
+    campaign: CampaignDep, service: Early, payload: LabelDecisionRequest
+) -> LabelAlert:
+    """Trois issues, et chacune agit sur les quantités.
+
+    La mettre au nouvel emplacement retire l'étiquette de l'emplacement scellé ;
+    l'en enlever retire la ligne de l'autre journal ; la signaler ne retire
+    rien et met l'emplacement scellé sur la liste de ceux à rescanner.
+    """
+    decision = service.decide_label(
+        campaign,
+        label_id=payload.label_id,
+        item_number=payload.item_number,
+        decision=LabelResolution(payload.decision),
+        sealed=LocationKey(
+            warehouse_id=payload.sealed_warehouse_id,
+            location_id=payload.sealed_location_id,
+        ),
+        other=LocationKey(
+            warehouse_id=payload.other_warehouse_id,
+            location_id=payload.other_location_id,
+        ),
+        comment=payload.comment,
+    )
+    return {
+        "labelId": decision.label_id,
+        "itemNumber": decision.item_number,
+        "sealedWarehouseId": decision.sealed_warehouse_id,
+        "sealedLocationId": decision.sealed_location_id,
+        "otherWarehouseId": decision.other_warehouse_id,
+        "otherLocationId": decision.other_location_id,
+        "otherJournalNumber": "",
+        "otherQtyCounted": 0.0,
+        "decision": str(decision.decision),
+        "comment": decision.comment,
+        "decidedBy": decision.decided_by,
+    }
+
+
+@router.get(
+    "/to-rescan",
+    summary="Emplacements à desceller et rescanner",
+    responses={200: {"model": list[RescanLocation]}},
+)
+def to_rescan(campaign: CampaignDep, service: Early) -> list[RescanLocation]:
+    """Les emplacements scellés dont une étiquette reste en question.
+
+    Ceux que l'issue « signaler » désigne : on n'a pas voulu trancher sur pièce,
+    et la façon d'en sortir est d'aller recompter. C'est l'ancien emplacement —
+    le scellé — qu'il faut desceller pour que le jour J le reprenne.
+    """
+    return service.locations_to_rescan(campaign.id)

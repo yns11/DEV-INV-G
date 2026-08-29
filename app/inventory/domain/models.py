@@ -36,6 +36,7 @@ from .enums import (
     ItemType,
     JournalKind,
     JournalStatus,
+    LabelResolution,
     LocationStatus,
     LocationType,
     SheetPass,
@@ -64,7 +65,7 @@ __all__ = [
     "CountJournalLine",
     "ErpJournal",
     "ErpJournalLine",
-    "EarlyCountBatch",
+    "LabelDecision",
     "EarlyCountDrift",
     "Zone",
     "CountSheet",
@@ -622,7 +623,7 @@ class BookStockLine(DomainModel):
     #: trouverait une différence que rien n'expliquerait.
     reference_date: dt.date | None = None
     #: Le lot avancé d'où vient cette référence, quand elle n'est pas du jour J.
-    early_batch_id: str | None = None
+    erp_journal_id: str | None = None
 
     @field_validator("item_number", "warehouse_id", "location_id", "unit", mode="before")
     @classmethod
@@ -672,7 +673,7 @@ class CountJournal(DomainModel):
     auto_created: bool = False
     updated_at: dt.datetime | None = None
     #: Le lot de comptage avancé auquel cet emplacement appartient, s'il y en a.
-    early_batch_id: str | None = None
+    erp_journal_id: str | None = None
     #: Quand le comptage de cet emplacement a été scellé, et par qui.
     #:
     #: **Le premier gel par objet du produit.** Jusqu'ici, tout ce que
@@ -800,10 +801,11 @@ class ErpJournal(DomainModel):
     #: Le postage tel que l'en-tête ERP le déclare (``IsPosted``), distinct du
     #: statut de workflow d'un :class:`CountJournal` qu'un humain fait avancer.
     #:
-    #: C'est cette valeur-ci que le scellement d'un lot avancé exige. Poster un
-    #: journal réaligne l'ERP sur le physique compté ; n'accepter de sceller
-    #: qu'un journal posté rend donc ce réalignement acquis **par construction**,
-    #: au lieu d'avoir à le diagnostiquer plus tard depuis la forme d'une dérive.
+    #: Poster un journal réaligne l'ERP sur le physique compté. L'application ne
+    #: l'exige plus pour sceller : un journal de précomptage se charge une fois
+    #: posté et validé dans l'ERP — il y en a peu, et ils n'ont pas l'urgence du
+    #: jour J. Le cas du journal non posté ne se rencontre pas, et une garde qui
+    #: ne se déclenche jamais est une garde qu'on ne sait pas maintenir.
     erp_posted: bool = False
     erp_posted_at: dt.datetime | None = None
     line_count: int = 0
@@ -820,6 +822,15 @@ class ErpJournal(DomainModel):
     scope: list[LocationKey] = Field(default_factory=list)
     scope_declared_at: dt.datetime | None = None
     scope_declared_by: str = ""
+    #: La date du relevé physique, lue dans la colonne « Date de comptage » des
+    #: lignes du journal — jamais retapée. C'est elle qui date la référence des
+    #: emplacements scellés, donc l'inventaire de chacun d'eux.
+    counted_on: dt.date | None = None
+    #: Déclarer le périmètre **scelle**. Les deux gestes n'en font qu'un : dire
+    #: quels emplacements ce journal couvre, c'est dire lesquels sont comptés et
+    #: ne bougeront plus.
+    sealed_at: dt.datetime | None = None
+    sealed_by: str = ""
 
     @field_validator("journal_number", "site_id", mode="before")
     @classmethod
@@ -829,6 +840,10 @@ class ErpJournal(DomainModel):
     @property
     def scope_declared(self) -> bool:
         return self.scope_declared_at is not None
+
+    @property
+    def is_sealed(self) -> bool:
+        return self.sealed_at is not None
 
     @property
     def warehouses(self) -> set[str]:
@@ -918,41 +933,65 @@ class ErpJournalLine(DomainModel):
 # Comptages avancés
 # --------------------------------------------------------------------------- #
 
-class EarlyCountBatch(DomainModel):
-    """Un lot d'emplacements comptés avant le jour J.
+class LabelDecision(DomainModel):
+    """Où est la pièce, quand une étiquette scellée reparaît ailleurs.
 
-    Sa référence ne vient d'aucun chargement séparé : elle est déjà dans le
-    journal, colonne « Stock ERP », agrégée par emplacement et article sur le
-    périmètre déclaré.
+    Le contrôle par étiquette rattrape ce que la dérive ne voit pas : une pièce
+    sortie d'un emplacement scellé sans transaction ERP laisse une dérive nulle,
+    mais si elle est re-scannée ailleurs, son étiquette apparaît dans un second
+    journal. La question posée est alors simple et une seule personne peut y
+    répondre — où est-elle réellement ?
+
+    Trois réponses, et chacune a un effet mesurable sur les quantités :
+
+    * :attr:`LabelResolution.KEEP_NEW` — elle est au nouvel emplacement, donc
+      elle sort de l'agrégation de l'emplacement scellé ;
+    * :attr:`LabelResolution.KEEP_SEALED` — elle n'a pas bougé, donc c'est la
+      ligne de l'autre journal qui sort ;
+    * :attr:`LabelResolution.RECOUNT` — on ne tranche pas sur pièce. Rien n'est
+      exclu, et l'ancien emplacement rejoint la liste des emplacements à
+      desceller et rescanner.
+
+    Les emplacements sont figés à la décision. Un réimport qui déplacerait
+    encore l'étiquette ne réécrit pas ce qu'un humain a constaté.
     """
 
     id: str
     campaign_id: str
-    code: str
-    label: str = ""
-    #: La date du comptage physique, telle que l'exploitant la déclare.
-    counted_on: dt.date | None = None
-    opened_at: dt.datetime | None = None
-    opened_by: str = ""
-    closed_at: dt.datetime | None = None
-    closed_by: str = ""
-    sealed_at: dt.datetime | None = None
-    sealed_by: str = ""
-    #: Les emplacements du lot, repris des journaux ERP qui le composent.
-    locations: list[LocationKey] = Field(default_factory=list)
+    label_id: str
+    item_number: str
+    decision: LabelResolution
+    sealed_warehouse_id: str = ""
+    sealed_location_id: str = ""
+    other_warehouse_id: str = ""
+    other_location_id: str = ""
+    comment: str = ""
+    decided_at: dt.datetime | None = None
+    decided_by: str = ""
 
-    @field_validator("code", mode="before")
+    @field_validator("item_number", "sealed_warehouse_id", "sealed_location_id",
+                     "other_warehouse_id", "other_location_id", mode="before")
     @classmethod
-    def _code(cls, v: Any) -> str:
-        return normalise_key(str(v) if v is not None else "").replace(" ", "-")
+    def _key(cls, v: Any) -> str:
+        return normalise_key(str(v) if v is not None else "")
+
+    @field_validator("label_id", mode="before")
+    @classmethod
+    def _label(cls, v: Any) -> str:
+        # Jamais normalisée : « 001609231 » perd ses zéros de tête au premier
+        # passage par autre chose qu'une chaîne, et une étiquette tronquée ne se
+        # rattache plus à rien.
+        return "" if v is None else str(v).strip()
 
     @property
-    def is_closed(self) -> bool:
-        return self.closed_at is not None
+    def excluded_from_sealed(self) -> bool:
+        """L'étiquette quitte l'emplacement scellé."""
+        return self.decision is LabelResolution.KEEP_NEW
 
     @property
-    def is_sealed(self) -> bool:
-        return self.sealed_at is not None
+    def excluded_from_other(self) -> bool:
+        """L'étiquette reste où elle était ; l'autre ligne est l'erreur."""
+        return self.decision is LabelResolution.KEEP_SEALED
 
 
 class EarlyCountDrift(DomainModel):
@@ -974,7 +1013,7 @@ class EarlyCountDrift(DomainModel):
 
     id: str
     campaign_id: str
-    batch_id: str | None = None
+    erp_journal_id: str | None = None
     warehouse_id: str
     location_id: str
     item_number: str

@@ -18,7 +18,6 @@ liste vide au lieu de s'abstenir.
 
 from __future__ import annotations
 
-import datetime as dt
 import os
 import uuid
 from decimal import Decimal
@@ -53,16 +52,16 @@ def seeded(client) -> str:
     from inventory.config import get_settings
     from inventory.db.engine import Database
     from inventory.db.repositories.erp_journal import (
-        EarlyCountBatchRepository,
         EarlyCountDriftRepository,
         ErpJournalRepository,
+        LabelDecisionRepository,
     )
     from inventory.db.repositories.journal import JournalRepository
-    from inventory.domain.enums import JournalKind
+    from inventory.domain.enums import JournalKind, LabelResolution
     from inventory.domain.models import (
-        EarlyCountBatch,
         EarlyCountDrift,
         ErpJournalLine,
+        LabelDecision,
         LocationKey,
     )
 
@@ -104,14 +103,19 @@ def seeded(client) -> str:
     JournalRepository(db).ensure_journals(campaign_id, [key])
     journals.set_scope(campaign_id, journal_id, [key], actor="test")
 
-    batch = EarlyCountBatch(
-        id=str(uuid.uuid4()),
-        campaign_id=campaign_id,
-        code="LOT-J2",
-        counted_on=dt.date(2026, 6, 10),
-        opened_by="test",
+    LabelDecisionRepository(db).decide(
+        LabelDecision(
+            id=str(uuid.uuid4()),
+            campaign_id=campaign_id,
+            label_id="001609231",
+            item_number="MASS-1",
+            decision=LabelResolution.RECOUNT,
+            sealed_warehouse_id=SOL[0],
+            sealed_location_id=SOL[1],
+            other_warehouse_id="ATP",
+            other_location_id="QUAI EXP",
+        )
     )
-    EarlyCountBatchRepository(db).create(batch)
 
     EarlyCountDriftRepository(db).replace(
         campaign_id,
@@ -119,7 +123,7 @@ def seeded(client) -> str:
             EarlyCountDrift(
                 id=str(uuid.uuid4()),
                 campaign_id=campaign_id,
-                batch_id=batch.id,
+                erp_journal_id=journal_id,
                 warehouse_id=SOL[0],
                 location_id=SOL[1],
                 item_number="MASS-1",
@@ -156,11 +160,11 @@ class TestTheDeclarationMatchesWhatComesBack:
         row = _rows(client, seeded, "journals")[0]
         ErpJournalResponse.model_validate(row)
 
-    def test_the_batches(self, client, seeded):
-        from inventory.api.responses import EarlyBatchResponse
+    def test_the_locations_to_rescan(self, client, seeded):
+        from inventory.api.responses import RescanLocation
 
-        row = _rows(client, seeded, "batches")[0]
-        EarlyBatchResponse.model_validate(row)
+        row = _rows(client, seeded, "to-rescan")[0]
+        RescanLocation.model_validate(row)
 
     def test_the_drifts(self, client, seeded):
         from inventory.api.responses import DriftResponse
@@ -184,8 +188,10 @@ class TestTheScreenFindsTheKeysItReads:
             ("journals", "lineCount"),
             ("journals", "erpPosted"),
             ("journals", "scopeDeclared"),
-            ("batches", "isSealed"),
-            ("batches", "isClosed"),
+            ("journals", "countedOn"),
+            ("journals", "isSealed"),
+            ("to-rescan", "warehouseId"),
+            ("to-rescan", "labels"),
             ("drifts", "driftQty"),
             ("drifts", "qtyErpJ"),
             ("drifts", "blocksAnalysis"),

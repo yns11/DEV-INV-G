@@ -25,7 +25,7 @@ class BookStockRepository(_Base):
     def list(self, campaign_id: str) -> list[BookStockLine]:
         rows = self._fetch_all(
             "SELECT campaign_id, item_number, warehouse_id, location_id, qty, unit, "
-            "unit_cost, reference_date, early_batch_id "
+            "unit_cost, reference_date, erp_journal_id "
             "FROM book_stock WHERE campaign_id = %s",
             (campaign_id,),
         )
@@ -35,8 +35,8 @@ class BookStockRepository(_Base):
                 warehouse_id=r["warehouse_id"], location_id=r["location_id"],
                 qty=r["qty"], unit=r["unit"], unit_cost=r["unit_cost"],
                 reference_date=r["reference_date"],
-                early_batch_id=(
-                    str(r["early_batch_id"]) if r["early_batch_id"] else None
+                erp_journal_id=(
+                    str(r["erp_journal_id"]) if r["erp_journal_id"] else None
                 ),
             )
             for r in rows
@@ -79,12 +79,12 @@ class BookStockRepository(_Base):
             # disparaîtrait de la campagne.
             cur.execute(
                 "DELETE FROM book_stock "
-                "WHERE campaign_id = %s AND early_batch_id IS NULL",
+                "WHERE campaign_id = %s AND erp_journal_id IS NULL",
                 (campaign_id,),
             )
             cur.execute(
                 "SELECT DISTINCT warehouse_id, location_id FROM book_stock "
-                "WHERE campaign_id = %s AND early_batch_id IS NOT NULL",
+                "WHERE campaign_id = %s AND erp_journal_id IS NOT NULL",
                 (campaign_id,),
             )
             reserved = {(r["warehouse_id"], r["location_id"]) for r in cur.fetchall()}
@@ -107,37 +107,42 @@ class BookStockRepository(_Base):
                     ))
         return len(kept)
 
-    def replace_for_batch(
+    def replace_for_journal(
         self,
         campaign_id: str,
-        batch_id: str,
+        erp_journal_id: str,
         lines: Sequence[BookStockLine],
         *,
         conn: psycopg.Connection | None = None,
     ) -> int:
-        """Poser la référence d'un lot avancé : `ERP@T0`, lue dans son journal.
+        """Poser la référence d'un journal de précomptage : `ERP@T0`.
 
         Aucun chargement de stock séparé n'est nécessaire — la colonne
         « Stock ERP » du journal *est* le stock d'avant comptage.
+
+        Remplace : un réimport recalcule la référence de ce journal et écrase
+        la précédente. C'est la règle métier, et la bonne — la dernière lecture
+        de l'ERP est la plus juste.
         """
         owns_transaction = conn is None
         ctx = self.db.transaction() if owns_transaction else _NullContext(conn)
         with ctx as connection, connection.cursor() as cur:
             cur.execute(
-                "DELETE FROM book_stock WHERE campaign_id = %s AND early_batch_id = %s",
-                (campaign_id, batch_id),
+                "DELETE FROM book_stock "
+                "WHERE campaign_id = %s AND erp_journal_id = %s",
+                (campaign_id, erp_journal_id),
             )
             if not lines:
                 return 0
             with cur.copy(
                 "COPY book_stock (id, campaign_id, item_number, warehouse_id, "
-                "location_id, qty, unit, unit_cost, reference_date, early_batch_id) "
+                "location_id, qty, unit, unit_cost, reference_date, erp_journal_id) "
                 "FROM STDIN"
             ) as copy:
                 for line in lines:
                     copy.write_row((
                         new_id(), campaign_id, line.item_number,
                         line.warehouse_id, line.location_id, line.qty,
-                        line.unit, line.unit_cost, line.reference_date, batch_id,
+                        line.unit, line.unit_cost, line.reference_date, erp_journal_id,
                     ))
         return len(lines)

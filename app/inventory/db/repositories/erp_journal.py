@@ -14,23 +14,23 @@ le reste de l'application est écrit : emplacement plus article.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Any
 
 import psycopg
 
-from ...domain.enums import DriftResolution, JournalKind
+from ...domain.enums import DriftResolution, JournalKind, LabelResolution
 from ...domain.models import (
-    EarlyCountBatch,
     EarlyCountDrift,
     ErpJournal,
     ErpJournalLine,
+    LabelDecision,
     LocationKey,
 )
 from ._base import _Base, _NullContext, new_id
 
 __all__ = [
-    "EarlyCountBatchRepository",
+    "LabelDecisionRepository",
     "EarlyCountDriftRepository",
     "ErpJournalRepository",
 ]
@@ -42,7 +42,8 @@ class ErpJournalRepository(_Base):
     _COLUMNS = (
         "id, campaign_id, journal_number, kind, description, site_id, "
         "erp_posted, erp_posted_at, line_count, first_imported_at, "
-        "last_imported_at, scope_declared_at, scope_declared_by"
+        "last_imported_at, scope_declared_at, scope_declared_by, "
+        "counted_on, sealed_at, sealed_by"
     )
 
     _LINE_COLUMNS = (
@@ -125,29 +126,36 @@ class ErpJournalRepository(_Base):
         erp_posted: bool = False,
         erp_posted_at: dt.datetime | None = None,
         line_count: int = 0,
+        counted_on: dt.date | None = None,
         conn: psycopg.Connection | None = None,
     ) -> str:
         """Enregistrer ou rafraîchir l'en-tête d'un journal ERP, et rendre son id.
 
-        Le périmètre déclaré n'est **jamais** touché ici : un réimport rafraîchit
-        les faits que l'ERP annonce, pas la décision qu'un humain a prise.
+        Le périmètre déclaré et le scellement ne sont **jamais** touchés ici :
+        un réimport rafraîchit les faits que l'ERP annonce — postage, nombre de
+        lignes, date de comptage — pas la décision qu'un humain a prise.
         """
         owns = conn is None
         ctx = self.db.transaction() if owns else _NullContext(conn)
         with ctx as connection, connection.cursor() as cur:
             cur.execute(
                 "INSERT INTO erp_journal (id, campaign_id, journal_number, kind, "
-                "description, site_id, erp_posted, erp_posted_at, line_count) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "description, site_id, erp_posted, erp_posted_at, line_count, "
+                "counted_on) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "ON CONFLICT (campaign_id, journal_number) "
                 "WHERE deleted_at IS NULL DO UPDATE SET "
                 "kind = EXCLUDED.kind, description = EXCLUDED.description, "
                 "site_id = EXCLUDED.site_id, erp_posted = EXCLUDED.erp_posted, "
                 "erp_posted_at = EXCLUDED.erp_posted_at, "
-                "line_count = EXCLUDED.line_count, last_imported_at = now() "
+                "line_count = EXCLUDED.line_count, "
+                # `COALESCE` dans cet ordre : un export qui omet la colonne ne
+                # doit pas effacer la date qu'un export précédent portait.
+                "counted_on = COALESCE(EXCLUDED.counted_on, erp_journal.counted_on), "
+                "last_imported_at = now() "
                 "RETURNING id",
                 (new_id(), campaign_id, journal_number, str(kind), description,
-                 site_id, erp_posted, erp_posted_at, line_count),
+                 site_id, erp_posted, erp_posted_at, line_count, counted_on),
             )
             return str(cur.fetchone()["id"])
 
@@ -204,7 +212,11 @@ class ErpJournalRepository(_Base):
         actor: str,
         conn: psycopg.Connection | None = None,
     ) -> int:
-        """Déclarer les emplacements que ce journal couvre.
+        """Déclarer les emplacements que ce journal couvre, **et les sceller**.
+
+        Les deux gestes n'en font qu'un. Dire quels emplacements ce journal
+        couvre, c'est dire lesquels sont comptés et ne bougeront plus : il n'y
+        avait aucune décision entre les deux, seulement des clics.
 
         Un emplacement n'appartient au périmètre que d'un seul journal — c'est
         un index unique de la migration 025, pas une vérification faite ici :
@@ -231,10 +243,40 @@ class ErpJournalRepository(_Base):
                 )
             cur.execute(
                 "UPDATE erp_journal SET scope_declared_at = now(), "
-                "scope_declared_by = %s WHERE campaign_id = %s AND id = %s",
-                (actor, campaign_id, erp_journal_id),
+                "scope_declared_by = %s, sealed_at = now(), sealed_by = %s "
+                "WHERE campaign_id = %s AND id = %s",
+                (actor, actor, campaign_id, erp_journal_id),
             )
             return len(keys)
+
+    def unseal(
+        self,
+        campaign_id: str,
+        erp_journal_id: str,
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Retirer le périmètre et le scellement du journal.
+
+        Le périmètre part avec le scellement, et c'est voulu : sans périmètre,
+        le journal n'a plus d'emplacement à couvrir, donc plus rien à sceller.
+        Redéclarer est le geste qui rescelle.
+        """
+        owns = conn is None
+        ctx = self.db.transaction() if owns else _NullContext(conn)
+        with ctx as connection, connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM erp_journal_scope "
+                "WHERE campaign_id = %s AND erp_journal_id = %s",
+                (campaign_id, erp_journal_id),
+            )
+            cur.execute(
+                "UPDATE erp_journal SET scope_declared_at = NULL, "
+                "scope_declared_by = '', sealed_at = NULL, sealed_by = '' "
+                "WHERE campaign_id = %s AND id = %s",
+                (campaign_id, erp_journal_id),
+            )
+            return cur.rowcount
 
     def touch_import(
         self, campaign_id: str, *, conn: psycopg.Connection | None = None
@@ -301,7 +343,11 @@ class ErpJournalRepository(_Base):
     # ------------------------------------------------------------- agrégations
 
     def aggregate_in_scope(
-        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+        self,
+        campaign_id: str,
+        *,
+        excluded_labels: Collection[tuple[str, str]] = (),
+        conn: psycopg.Connection | None = None,
     ) -> list[dict[str, Any]]:
         """Référence et comptage par (entrepôt, emplacement, article), dans le périmètre.
 
@@ -312,6 +358,11 @@ class ErpJournalRepository(_Base):
         La jointure sur le périmètre déclaré n'est pas décorative : sans elle,
         une ligne de passage créerait une référence sur un emplacement que le
         journal ne couvre pas.
+
+        ``excluded_labels`` porte les étiquettes qu'une décision a fait sortir de
+        leur emplacement scellé — la pièce est ailleurs, quelqu'un est allé
+        voir. Les exclure ici plutôt qu'après coup est ce qui fait que la
+        référence, le comptage et l'écart racontent la même histoire.
         """
         return self._fetch_all(
             """
@@ -332,11 +383,18 @@ class ErpJournalRepository(_Base):
              AND s.campaign_id = l.campaign_id
              AND s.warehouse_id = l.warehouse_id
              AND s.location_id = l.location_id
-            WHERE l.campaign_id = %s AND j.deleted_at IS NULL
+            WHERE l.campaign_id = %(cid)s AND j.deleted_at IS NULL
+              AND (l.label_id, l.item_number) <> ALL (
+                    SELECT * FROM unnest(%(labels)s::text[], %(items)s::text[])
+              )
             GROUP BY l.warehouse_id, l.location_id, l.item_number
             ORDER BY l.warehouse_id, l.location_id, l.item_number
             """,
-            (campaign_id,),
+            {
+                "cid": campaign_id,
+                "labels": [label for label, _ in excluded_labels],
+                "items": [item for _, item in excluded_labels],
+            },
             conn=conn,
         )
 
@@ -419,6 +477,9 @@ class ErpJournalRepository(_Base):
             scope=scope,
             scope_declared_at=row["scope_declared_at"],
             scope_declared_by=row["scope_declared_by"] or "",
+            counted_on=row["counted_on"],
+            sealed_at=row["sealed_at"],
+            sealed_by=row["sealed_by"] or "",
         )
 
     @staticmethod
@@ -441,119 +502,95 @@ class ErpJournalRepository(_Base):
         )
 
 
-class EarlyCountBatchRepository(_Base):
-    """Les lots de comptage avancé d'une campagne.
+class LabelDecisionRepository(_Base):
+    """Les issues données aux étiquettes scellées recomptées ailleurs.
 
-    Le périmètre d'un lot n'a pas de table à lui : c'est l'ensemble des
-    emplacements dont le journal porte son identifiant. Une seule écriture, donc
-    une seule vérité — un périmètre stocké deux fois finirait par diverger du
-    scellement qu'il est censé décrire.
+    Une table minuscule et une règle simple : la décision survit aux réimports.
+    Le notebook est rejoué toutes les quelques minutes le jour J, et repartir de
+    zéro effacerait des décisions prises entre deux imports — un exploitant
+    tranche à neuf heures et retrouve la question vierge à neuf heures cinq,
+    sans que rien ne le lui dise.
     """
 
     _COLUMNS = (
-        "id, campaign_id, code, label, counted_on, opened_at, opened_by, "
-        "closed_at, closed_by, sealed_at, sealed_by"
+        "id, campaign_id, label_id, item_number, decision, "
+        "sealed_warehouse_id, sealed_location_id, other_warehouse_id, "
+        "other_location_id, comment, decided_at, decided_by"
     )
 
     def list(
         self, campaign_id: str, *, conn: psycopg.Connection | None = None
-    ) -> list[EarlyCountBatch]:
+    ) -> list[LabelDecision]:
         rows = self._fetch_all(
-            f"SELECT {self._COLUMNS} FROM early_count_batch "
-            "WHERE campaign_id = %s AND deleted_at IS NULL "
-            "ORDER BY counted_on NULLS LAST, code",
+            f"SELECT {self._COLUMNS} FROM early_count_label_decision "
+            "WHERE campaign_id = %s ORDER BY label_id, item_number",
             (campaign_id,),
             conn=conn,
         )
-        locations = self._locations(campaign_id, conn=conn)
-        return [self._batch(row, locations.get(str(row["id"]), [])) for row in rows]
+        return [self._decision(row) for row in rows]
 
-    def _locations(
-        self, campaign_id: str, *, conn: psycopg.Connection | None = None
-    ) -> dict[str, list[LocationKey]]:
-        rows = self._fetch_all(
-            "SELECT early_batch_id, warehouse_id, location_id FROM count_journal "
-            "WHERE campaign_id = %s AND early_batch_id IS NOT NULL "
-            "ORDER BY warehouse_id, location_id",
-            (campaign_id,),
-            conn=conn,
-        )
-        out: dict[str, list[LocationKey]] = {}
-        for row in rows:
-            out.setdefault(str(row["early_batch_id"]), []).append(
-                LocationKey(
-                    warehouse_id=row["warehouse_id"], location_id=row["location_id"]
-                )
-            )
-        return out
-
-    def create(
-        self, batch: EarlyCountBatch, *, conn: psycopg.Connection | None = None
+    def decide(
+        self,
+        decision: LabelDecision,
+        *,
+        conn: psycopg.Connection | None = None,
     ) -> str:
-        self._execute(
-            "INSERT INTO early_count_batch (id, campaign_id, code, label, "
-            "counted_on, opened_at, opened_by) VALUES (%s,%s,%s,%s,%s,now(),%s)",
-            (batch.id, batch.campaign_id, batch.code, batch.label,
-             batch.counted_on, batch.opened_by),
-            conn=conn,
-        )
-        return batch.id
+        """Poser ou remplacer l'issue d'une étiquette.
 
-    def close(
-        self, campaign_id: str, batch_id: str, *, actor: str,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        return self._execute(
-            "UPDATE early_count_batch SET closed_at = now(), closed_by = %s "
-            "WHERE campaign_id = %s AND id = %s",
-            (actor, campaign_id, batch_id),
-            conn=conn,
-        )
-
-    def seal(
-        self, campaign_id: str, batch_id: str, *, actor: str,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        return self._execute(
-            "UPDATE early_count_batch SET sealed_at = now(), sealed_by = %s "
-            "WHERE campaign_id = %s AND id = %s",
-            (actor, campaign_id, batch_id),
-            conn=conn,
-        )
-
-    def unseal(
-        self, campaign_id: str, batch_id: str, *,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Rouvrir le lot : il redevient modifiable, et son périmètre repart.
-
-        Clore et sceller sont deux gestes, et desceller défait les deux : un lot
-        descellé mais toujours clos serait figé sans être scellé, c'est-à-dire
-        dans un état d'où l'on ne pourrait ni corriger ni resceller.
+        Remplacer, et non refuser : se raviser sur une étiquette est un geste
+        légitime — on est allé voir, et ce qu'on a vu n'est pas ce qu'on croyait.
         """
+        self._execute(
+            "INSERT INTO early_count_label_decision "
+            "(id, campaign_id, label_id, item_number, decision, "
+            " sealed_warehouse_id, sealed_location_id, other_warehouse_id, "
+            " other_location_id, comment, decided_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (campaign_id, label_id, item_number) DO UPDATE SET "
+            "decision = EXCLUDED.decision, comment = EXCLUDED.comment, "
+            "decided_at = now(), decided_by = EXCLUDED.decided_by",
+            (
+                decision.id, decision.campaign_id, decision.label_id,
+                decision.item_number, str(decision.decision),
+                decision.sealed_warehouse_id, decision.sealed_location_id,
+                decision.other_warehouse_id, decision.other_location_id,
+                decision.comment, decision.decided_by,
+            ),
+            conn=conn,
+        )
+        return decision.id
+
+    def clear(
+        self,
+        campaign_id: str,
+        label_id: str,
+        item_number: str,
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Retirer l'issue : la question redevient ouverte."""
         return self._execute(
-            "UPDATE early_count_batch SET sealed_at = NULL, sealed_by = NULL, "
-            "closed_at = NULL, closed_by = NULL "
-            "WHERE campaign_id = %(cid)s AND id = %(bid)s",
-            {"cid": campaign_id, "bid": batch_id},
+            "DELETE FROM early_count_label_decision "
+            "WHERE campaign_id = %s AND label_id = %s AND item_number = %s",
+            (campaign_id, label_id, item_number),
             conn=conn,
         )
 
     @staticmethod
-    def _batch(row: dict[str, Any], locations: list[LocationKey]) -> EarlyCountBatch:
-        return EarlyCountBatch(
+    def _decision(row: dict[str, Any]) -> LabelDecision:
+        return LabelDecision(
             id=str(row["id"]),
             campaign_id=str(row["campaign_id"]),
-            code=row["code"],
-            label=row["label"],
-            counted_on=row["counted_on"],
-            opened_at=row["opened_at"],
-            opened_by=row["opened_by"] or "",
-            closed_at=row["closed_at"],
-            closed_by=row["closed_by"] or "",
-            sealed_at=row["sealed_at"],
-            sealed_by=row["sealed_by"] or "",
-            locations=locations,
+            label_id=row["label_id"],
+            item_number=row["item_number"],
+            decision=LabelResolution(row["decision"]),
+            sealed_warehouse_id=row["sealed_warehouse_id"],
+            sealed_location_id=row["sealed_location_id"],
+            other_warehouse_id=row["other_warehouse_id"],
+            other_location_id=row["other_location_id"],
+            comment=row["comment"] or "",
+            decided_at=row["decided_at"],
+            decided_by=row["decided_by"] or "",
         )
 
 
@@ -561,7 +598,7 @@ class EarlyCountDriftRepository(_Base):
     """Les dérives d'une campagne, et l'issue qu'un humain leur donne."""
 
     _COLUMNS = (
-        "id, campaign_id, batch_id, warehouse_id, location_id, item_number, "
+        "id, campaign_id, erp_journal_id, warehouse_id, location_id, item_number, "
         "qty_erp_t0, qty_physical_t0, qty_erp_j, drift_value, is_material, "
         "resolution, cause_code, comment, resolved_at, resolved_by"
     )
@@ -611,14 +648,14 @@ class EarlyCountDriftRepository(_Base):
             if not drifts:
                 return 0
             cur.executemany(
-                "INSERT INTO early_count_drift (id, campaign_id, batch_id, "
+                "INSERT INTO early_count_drift (id, campaign_id, erp_journal_id, "
                 "warehouse_id, location_id, item_number, qty_erp_t0, "
                 "qty_physical_t0, qty_erp_j, drift_qty, drift_value, is_material, "
                 "resolution, cause_code, comment, resolved_at, resolved_by) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [
                     (
-                        drift.id, campaign_id, drift.batch_id, drift.warehouse_id,
+                        drift.id, campaign_id, drift.erp_journal_id, drift.warehouse_id,
                         drift.location_id, drift.item_number, drift.qty_erp_t0,
                         drift.qty_physical_t0, drift.qty_erp_j, drift.drift_qty,
                         drift.drift_value, drift.is_material,
@@ -668,7 +705,9 @@ class EarlyCountDriftRepository(_Base):
         return EarlyCountDrift(
             id=str(row["id"]),
             campaign_id=str(row["campaign_id"]),
-            batch_id=str(row["batch_id"]) if row["batch_id"] else None,
+            erp_journal_id=(
+                str(row["erp_journal_id"]) if row["erp_journal_id"] else None
+            ),
             warehouse_id=row["warehouse_id"],
             location_id=row["location_id"],
             item_number=row["item_number"],

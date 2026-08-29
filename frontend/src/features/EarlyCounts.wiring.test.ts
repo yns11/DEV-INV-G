@@ -47,7 +47,7 @@ describe("l'écran est atteignable", () => {
   })
 
   it('déclare ses quatre sous-sections', () => {
-    for (const sub of ['journaux', 'lots', 'derives', 'etiquettes']) {
+    for (const sub of ['journaux', 'derives', 'etiquettes', 'rescanner']) {
       expect(NAVIGATION).toContain(`id: '${sub}'`)
       expect(SCREEN).toContain(`'${sub}'`)
     }
@@ -60,22 +60,24 @@ describe('le client vise des adresses que le serveur sert', () => {
     ...ROUTER.matchAll(/@router\.(get|post|put)\(\s*\n?\s*"([^"]+)"/g),
   ].map((match) => match[2] ?? '')
 
-  it('le routeur en déclare onze', () => {
-    expect(served).toHaveLength(11)
+  it('le routeur en déclare neuf', () => {
+    // Onze avant : le lot avancé en portait cinq — ouvrir, lister, clore,
+    // sceller, desceller. Le journal ERP *est* le précomptage, et déclarer son
+    // périmètre scelle ; il reste le descellement, plus les deux routes que le
+    // traitement des étiquettes a demandées.
+    expect(served).toHaveLength(9)
   })
 
   it.each([
     ['erpJournals', '/journals'],
     ['scopeProposal', '/scope-proposal'],
     ['declareScope', '/scope'],
-    ['earlyBatches', '/batches'],
-    ['createEarlyBatch', '/batches'],
-    ['closeEarlyBatch', '/close'],
-    ['sealEarlyBatch', '/seal'],
-    ['unsealEarlyBatch', '/unseal'],
+    ['unsealJournal', '/unseal'],
     ['drifts', '/drifts'],
     ['resolveDrifts', '/drifts/resolve'],
     ['labelAlerts', '/label-alerts'],
+    ['decideLabel', '/label-alerts/decide'],
+    ['toRescan', '/to-rescan'],
   ])('%s appelle une route servie', (method, fragment) => {
     expect(API).toContain(`${method}:`)
     const call = API.slice(API.indexOf(`${method}:`), API.indexOf(`${method}:`) + 500)
@@ -103,8 +105,8 @@ describe("l'écran appelle réellement le client", () => {
       return API.slice(start, start + 600).includes('/early-counts')
     })
 
-  it('le client en expose onze, une par route', () => {
-    expect(methods).toHaveLength(11)
+  it('le client en expose neuf, une par route', () => {
+    expect(methods).toHaveLength(9)
   })
 
   it.each(methods.map((name) => [name]))('api.%s', (name) => {
@@ -113,9 +115,15 @@ describe("l'écran appelle réellement le client", () => {
 })
 
 describe('les décisions que porte l’écran', () => {
+  /** Les deux tables d'issues partagent `RECOUNT` : on lit chacune chez elle. */
+  const block = (name: string) => {
+    const start = SCREEN.indexOf(`const ${name}`)
+    return SCREEN.slice(start, SCREEN.indexOf('\n]', start))
+  }
+
   it('nomme les deux issues d’une dérive, et pas une troisième', () => {
-    const resolutions = [...SCREEN.matchAll(/id: '(KEEP_EARLY|RECOUNT)'/g)]
-    expect(resolutions).toHaveLength(2)
+    const resolutions = [...block('RESOLUTIONS').matchAll(/id: '(\w+)'/g)]
+    expect(resolutions.map((m) => m[1])).toEqual(['KEEP_EARLY', 'RECOUNT'])
   })
 
   it('dit que conserver le comptage avancé demande une cause', () => {
@@ -124,6 +132,20 @@ describe('les décisions que porte l’écran', () => {
 
   it('exige un motif pour desceller', () => {
     expect(SCREEN).toContain('Desceller annule une preuve datée')
+  })
+
+  it('nomme les trois issues d’une étiquette, et pas une quatrième', () => {
+    // Où est la pièce : au nouvel emplacement, à l'ancien, ou on ne tranche
+    // pas. Aucun calcul ne répond ; seul quelqu'un qui va voir le peut.
+    const actions = [...block('LABEL_ACTIONS').matchAll(/id: '(\w+)'/g)]
+    expect(actions.map((m) => m[1])).toEqual([
+      'KEEP_NEW', 'KEEP_SEALED', 'RECOUNT',
+    ])
+  })
+
+  it('n’a plus de lot : le journal ERP est le précomptage', () => {
+    expect(SCREEN).not.toContain('earlyBatches')
+    expect(SCREEN).not.toContain('createEarlyBatch')
   })
 
   it('affiche l’heure du dernier import', () => {

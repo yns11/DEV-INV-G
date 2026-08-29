@@ -176,7 +176,10 @@ class TestTheAdvanceCountDoesNotWaitForTheGeneralLoad:
         declared = EarlyCountService(ctx).declare_scope(campaign, journal.id, [SOL])
 
         assert declared == 1
-        assert _stock_lines(ctx, campaign) == 0
+        # Les seules lignes de stock sont celles que le journal vient de poser :
+        # aucun chargement général n'a eu lieu, et il n'en fallait aucun.
+        reference = ctx.book_stock.list(campaign.id)
+        assert [line.erp_journal_id for line in reference] == [journal.id]
 
 
 class TestWhatTheRelaxationDoesNotTouch:

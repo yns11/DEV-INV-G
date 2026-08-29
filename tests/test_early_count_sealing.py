@@ -24,8 +24,15 @@ from typing import Any
 import pytest
 from tests.early_count_db import disposable_database, make_campaign
 
+from inventory.db import new_id
 from inventory.domain.enums import CampaignStatus, JournalKind, LabelResolution
-from inventory.domain.models import Campaign, ErpJournalLine, Item, LocationKey
+from inventory.domain.models import (
+    Campaign,
+    CountJournalLine,
+    ErpJournalLine,
+    Item,
+    LocationKey,
+)
 from inventory.errors import ValidationError
 
 pytestmark = pytest.mark.postgres
@@ -405,3 +412,123 @@ class TestTheLabelDecisions:
 
         assert ctx.book_stock.list(campaign.id)[0].qty == Decimal(8)
         assert service.label_alerts(campaign.id)[0]["decision"] == "KEEP_NEW"
+
+
+class TestPassThroughLinesDoNotCount:
+    """Une ligne de passage n'est pas un comptage.
+
+    Un journal ERP porte des lignes sur des emplacements qu'il ne couvre pas :
+    elles matérialisent un déplacement — 1 932 sur 58 345 dans l'export du
+    13 juin. L'import créait un journal de comptage pour chacune, **avec ses
+    quantités**, sur des emplacements que personne n'avait sélectionnés. Ils
+    apparaissaient ensuite dans la vue des journaux de comptage, entraient dans
+    le dénominateur d'avancement, et produisaient un écart au jour J.
+    """
+
+    def _with_a_pass_through(self, ctx, campaign) -> str:
+        _priced(ctx, campaign)
+        journal = ctx.erp_journals.upsert_journal(
+            campaign.id, journal_number="NPEM-1", kind=JournalKind.INVE,
+            erp_posted=True, counted_on=dt.date(2026, 6, 11),
+        )
+        ctx.erp_journals.replace_lines(campaign.id, journal, [
+            _erp_line(campaign.id, journal, erp_line_number=1,
+                      qty_on_hand=10, qty_counted=10),
+            # La ligne de passage : un autre emplacement, que ce journal ne
+            # couvre pas.
+            _erp_line(campaign.id, journal, erp_line_number=2,
+                      warehouse_id="ATP", location_id="STK P FI",
+                      qty_on_hand=4, qty_counted=4),
+        ])
+        # Ce que l'import avait fait : un journal de comptage par emplacement
+        # touché, quantités comprises.
+        ctx.journals.ensure_journals(campaign.id, [SOL, STK])
+        journals = {j.key: j for j in ctx.journals.list(campaign.id)}
+        ctx.journals.replace_imported_lines(
+            campaign.id, [journals[SOL].id, journals[STK].id],
+            [
+                CountJournalLine(
+                    id=new_id(), journal_id=journals[SOL].id,
+                    campaign_id=campaign.id, item_number="MASS-1",
+                    qty_imported=Decimal(10), erp_journal_number="NPEM-1",
+                ),
+                CountJournalLine(
+                    id=new_id(), journal_id=journals[STK].id,
+                    campaign_id=campaign.id, item_number="MASS-1",
+                    qty_imported=Decimal(4), erp_journal_number="NPEM-1",
+                ),
+            ],
+        )
+        return journal
+
+    def test_declaring_removes_the_journal_of_a_pass_through(
+        self, service, ctx, campaign
+    ):
+        journal = self._with_a_pass_through(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+
+        keys = {j.key for j in ctx.journals.list(campaign.id)}
+        assert SOL in keys
+        assert STK not in keys, (
+            "personne n'a sélectionné cet emplacement : son journal n'a pas lieu "
+            "d'être"
+        )
+
+    def test_the_raw_erp_line_survives(self, service, ctx, campaign):
+        """C'est la trace, et c'est ce que le contrôle par étiquette relit."""
+        journal = self._with_a_pass_through(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+
+        lines = ctx.erp_journals.lines(campaign.id, journal)
+        assert {line.location_id for line in lines} == {"SOL", "STK P FI"}
+
+    def test_a_manual_quantity_protects_the_journal(self, service, ctx, campaign):
+        """La règle ne doit jamais emporter du travail humain."""
+        journal = self._with_a_pass_through(ctx, campaign)
+        journals = {j.key: j for j in ctx.journals.list(campaign.id)}
+        line = ctx.journals.lines_by_journal(campaign.id)[journals[STK].id][0]
+        ctx.journals.upsert_line(
+            line.model_copy(update={"qty_manual": Decimal(7)}), actor="alice"
+        )
+
+        service.declare_scope(campaign, journal, [SOL])
+
+        keys = {j.key for j in ctx.journals.list(campaign.id)}
+        assert STK in keys, "quelqu'un y a compté à la main : on n'y touche pas"
+
+    def test_a_reimport_does_not_bring_it_back(self, service, ctx, campaign):
+        """Sinon le nettoyage ne tiendrait que jusqu'au prochain notebook."""
+        from inventory.services.import_service import ImportService
+
+        journal = self._with_a_pass_through(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+
+        imports = ImportService(ctx)
+        imports.batches.archive = lambda *a, **k: None
+        rows = [
+            {
+                "journal_number": "NPEM-1", "erp_line_number": 1,
+                "warehouse_id": "ATP", "location_id": "SOL",
+                "item_number": "MASS-1", "counted_quantity": 10,
+                "qty_on_hand": 10, "journal_name_id": "INVE",
+                "is_posted": True, "unit": "PCE",
+            },
+            {
+                "journal_number": "NPEM-1", "erp_line_number": 2,
+                "warehouse_id": "ATP", "location_id": "STK P FI",
+                "item_number": "MASS-1", "counted_quantity": 4,
+                "qty_on_hand": 4, "journal_name_id": "INVE",
+                "is_posted": True, "unit": "PCE",
+            },
+        ]
+        from inventory.ingest import ParseResult
+
+        imports.parser.parse = lambda contract, **kw: (  # type: ignore[method-assign]
+            None,
+            ParseResult(contract_key=contract, rows=rows, rows_received=len(rows)),
+        )
+        imports.import_journal_lines(campaign, mode="file", payload=b"x",
+                                     filename="j.csv")
+
+        keys = {j.key for j in ctx.journals.list(campaign.id)}
+        assert STK not in keys

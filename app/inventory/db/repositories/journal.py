@@ -215,6 +215,71 @@ class JournalRepository(_Base):
             conn=conn,
         )
 
+    def delete_pass_through_journals(
+        self,
+        campaign_id: str,
+        erp_journal_number: str,
+        keep: Sequence[LocationKey],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> list[str]:
+        """Retirer les journaux nés des lignes de passage d'un journal ERP.
+
+        Un journal ERP porte des lignes sur des emplacements qu'il ne couvre
+        pas : elles matérialisent un déplacement — 1 932 sur 58 345 dans
+        l'export analysé. L'import créait un journal de comptage pour chacune,
+        avec ses quantités, sur des emplacements que personne n'avait
+        sélectionnés. Déclarer le périmètre est le moment où l'on sait
+        lesquels : ceux qui restent s'en vont.
+
+        Trois conditions, et elles sont là pour ne jamais emporter du travail :
+        toutes les lignes du journal viennent de **ce** journal ERP, aucune ne
+        porte de quantité manuelle, et l'emplacement n'est pas dans le périmètre
+        qu'on vient de déclarer. Un emplacement recompté à la main, ou touché par
+        un autre journal, reste.
+
+        Rend les emplacements retirés, pour que l'appelant puisse le dire.
+        """
+        rows = self._fetch_all(
+            """
+            SELECT j.id, j.warehouse_id, j.location_id
+            FROM count_journal j
+            WHERE j.campaign_id = %(cid)s
+              AND (j.warehouse_id, j.location_id) <> ALL (
+                    SELECT * FROM unnest(%(wh)s::text[], %(loc)s::text[]))
+              AND EXISTS (
+                    SELECT 1 FROM count_journal_line l
+                    WHERE l.journal_id = j.id AND l.deleted_at IS NULL)
+              AND NOT EXISTS (
+                    SELECT 1 FROM count_journal_line l
+                    WHERE l.journal_id = j.id
+                      AND l.deleted_at IS NULL
+                      AND (l.qty_manual IS NOT NULL
+                           OR l.erp_journal_number <> %(num)s))
+            """,
+            {
+                "cid": campaign_id,
+                "num": erp_journal_number,
+                "wh": [k.warehouse_id for k in keep] or [""],
+                "loc": [k.location_id for k in keep] or [""],
+            },
+            conn=conn,
+        )
+        if not rows:
+            return []
+        ids = [str(row["id"]) for row in rows]
+        self._execute(
+            "DELETE FROM count_journal_line WHERE journal_id = ANY(%s::uuid[])",
+            (ids,),
+            conn=conn,
+        )
+        self._execute(
+            "DELETE FROM count_journal WHERE id = ANY(%s::uuid[])",
+            (ids,),
+            conn=conn,
+        )
+        return [f"{row['warehouse_id']} / {row['location_id']}" for row in rows]
+
     # -- lines ---------------------------------------------------------------
 
     _LINE_COLUMNS = (

@@ -786,7 +786,20 @@ class ImportService:
         # résultat de leur inventaire disparaîtrait le jour J. Deux imports,
         # deux règles, et elles ne se contredisent pas — l'un rafraîchit le
         # précomptage, l'autre ne doit pas l'écraser.
-        skipped = disabled
+        # Les lignes de passage ne créent pas de comptage. Un journal ERP porte
+        # des lignes sur des emplacements qu'il ne couvre pas — elles
+        # matérialisent un déplacement, 1 932 sur 58 345 dans l'export analysé.
+        # Tant que son périmètre n'est pas déclaré, on ne sait pas lesquelles :
+        # tout entre, et la déclaration fera le tri. Une fois déclaré, on sait,
+        # et une ligne hors périmètre reste ce qu'elle est — une trace dans
+        # `erp_journal_line`, que le contrôle par étiquette relit, et rien de
+        # plus.
+        # Importé ici : les deux services se citent l'un l'autre — l'import
+        # rescelle, le comptage avancé lit ce que l'import a écrit.
+        from .early_count_service import EarlyCountService
+
+        out_of_scope = EarlyCountService(ctx).out_of_scope_keys(campaign, imported)
+        skipped = disabled | out_of_scope
         to_create = [
             k for k in keys_in_file
             if k not in journals and k not in skipped
@@ -949,8 +962,6 @@ class ImportService:
 
         # Hors transaction, et après elle : rescellez d'abord ce que l'import
         # vient de rafraîchir, sinon la référence resterait celle de la veille.
-        from .early_count_service import EarlyCountService
-
         resealed = EarlyCountService(ctx).reseal_after_import(campaign)
 
         undeclared = [

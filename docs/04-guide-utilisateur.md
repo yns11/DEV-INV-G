@@ -458,6 +458,16 @@ Le déroulé, pour chaque journal de précomptage :
 4. **Balisez physiquement** les emplacements. Cette étape n'est pas dans
    l'application, mais c'est elle qui rend tout le reste valable.
 
+**Les emplacements que vous ne cochez pas ne sont pas comptés par ce journal.**
+Un journal ERP porte des lignes sur des emplacements qu'il ne couvre pas : elles
+matérialisent un déplacement. Tant que le périmètre n'est pas déclaré,
+l'application ne sait pas les distinguer et crée un journal de comptage pour
+chacune ; **la déclaration fait le tri** et retire ceux que vous n'avez pas
+retenus. Deux exceptions, et elles protègent votre travail : un emplacement où
+quelqu'un a saisi une quantité à la main, ou qu'un autre journal touche aussi,
+est conservé. Les lignes brutes, elles, restent toutes dans le journal ERP —
+c'est la trace, et c'est ce que le contrôle par étiquette relit.
+
 **Recharger un journal déjà scellé est permis, et normal.** L'import remplace ses
 lignes, recalcule la référence et rescelle : la dernière lecture de l'ERP est la
 plus juste. Le chargement du **stock ERP général**, lui, ne touche pas aux

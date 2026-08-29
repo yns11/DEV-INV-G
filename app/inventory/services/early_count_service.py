@@ -123,6 +123,13 @@ class EarlyCountService:
                 actor=ctx.actor,
                 conn=conn,
             )
+            # Les lignes de passage de ce journal avaient créé, à l'import, un
+            # journal de comptage par emplacement touché — y compris ceux que
+            # l'utilisateur vient précisément de ne pas sélectionner. Déclarer
+            # le périmètre est le moment où l'on sait lesquels : ils s'en vont.
+            dropped = ctx.journals.delete_pass_through_journals(
+                campaign.id, journal.journal_number, keys, conn=conn
+            )
             ctx.record(
                 campaign_id=campaign.id,
                 action=AuditAction.FREEZE,
@@ -131,7 +138,7 @@ class EarlyCountService:
                 summary=(
                     f"Journal {journal.journal_number} : {count} emplacement(s) "
                     f"déclarés et scellés, {len(reference)} ligne(s) de "
-                    "référence."
+                    f"référence, {len(dropped)} journal(aux) de passage retiré(s)."
                 ),
                 after={
                     "locations": [str(k) for k in keys],
@@ -139,6 +146,7 @@ class EarlyCountService:
                     "countedOn": (
                         journal.counted_on.isoformat() if journal.counted_on else None
                     ),
+                    "passThroughJournalsRemoved": dropped,
                 },
                 conn=conn,
             )
@@ -226,6 +234,39 @@ class EarlyCountService:
                 )
                 resealed += 1
         return resealed
+
+    def out_of_scope_keys(
+        self, campaign: Campaign, imported: Sequence[Any]
+    ) -> set[LocationKey]:
+        """Les emplacements que le fichier touche hors du périmètre déclaré.
+
+        Seulement pour les journaux **dont le périmètre est déclaré** : pour les
+        autres — un journal qui vient d'arriver, un journal du comptage général
+        qui n'en a pas — on ne sait rien, et présumer serait pire que de laisser
+        entrer.
+        """
+        declared = {
+            journal.journal_number: set(journal.scope)
+            for journal in self.ctx.erp_journals.list(campaign.id)
+            if journal.scope_declared and journal.scope
+        }
+        if not declared:
+            return set()
+        out: set[LocationKey] = set()
+        for line in imported:
+            scope = declared.get(line.journal_number or "")
+            if scope is None:
+                continue
+            key = LocationKey(
+                warehouse_id=line.warehouse_id, location_id=line.location_id
+            )
+            if key not in scope:
+                out.add(key)
+        # Un emplacement hors périmètre d'un journal peut être *dans* celui d'un
+        # autre, ou compté par le jour J : ne l'écarter que si aucun journal
+        # déclaré ne le revendique.
+        claimed = {key for scope in declared.values() for key in scope}
+        return out - claimed
 
     # ---------------------------------------------------------------- lectures
 

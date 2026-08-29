@@ -532,3 +532,37 @@ class TestPassThroughLinesDoNotCount:
 
         keys = {j.key for j in ctx.journals.list(campaign.id)}
         assert STK not in keys
+
+
+class TestTheOverviewReportsWhatIsSealed:
+    """C'est ce compteur qui ouvre l'analyse avant le gel général.
+
+    Le gel du stock ERP est global et arrive au jour J ; le scellement d'un
+    précomptage est un gel par emplacement. L'écran a besoin de savoir qu'il
+    existe une référence figée, même partielle, sinon il cache un écart déjà
+    définitif pendant les jours où l'on peut encore aller voir sur le terrain.
+    """
+
+    def test_it_counts_the_sealed_locations(self, service, ctx, campaign):
+        from inventory.services.campaign_service import CampaignService
+
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        before = CampaignService(ctx).overview(campaign.id)["counts"]
+        assert before["sealedLocations"] == 0
+
+        service.declare_scope(campaign, journal, [SOL])
+
+        after = CampaignService(ctx).overview(campaign.id)["counts"]
+        assert after["sealedLocations"] == 1
+
+    def test_unsealing_brings_it_back_to_zero(self, service, ctx, campaign):
+        from inventory.services.campaign_service import CampaignService
+
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+        service.unseal(campaign, journal, reason="recomptage demandé")
+
+        counts = CampaignService(ctx).overview(campaign.id)["counts"]
+        assert counts["sealedLocations"] == 0

@@ -3148,6 +3148,11 @@ export interface components {
             bookStockLines: number;
             /** Items */
             items: number;
+            /**
+             * Sealedlocations
+             * @default 0
+             */
+            sealedLocations: number;
         } & {
             [key: string]: unknown;
         };

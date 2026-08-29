@@ -156,6 +156,17 @@ class CampaignService:
             "counts": {
                 "items": ctx.referentials.count_items(campaign_id),
                 "bookStockLines": ctx.book_stock.count(campaign_id),
+                # Le nombre d'emplacements précomptés et scellés, et il décide
+                # de l'ouverture de l'analyse.
+                #
+                # Le gel du stock ERP est **global** : il arrive au chargement
+                # du jour J. Le scellement, lui, est le premier gel **par
+                # objet** du produit — pour un emplacement scellé, la référence
+                # et le comptage sont déjà là et ne bougeront plus, puisque le
+                # chargement général les préserve. Son écart est donc définitif
+                # dès la déclaration, et l'attendre serait le cacher au seul
+                # moment où l'on peut encore agir sur le terrain.
+                "sealedLocations": len(ctx.journals.sealed_keys(campaign_id)),
             },
             # What is unlocked, and why not — the same function the guard uses,
             # so a step is never offered and then refused.

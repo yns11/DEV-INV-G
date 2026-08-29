@@ -283,6 +283,9 @@ class GenericProgress(Payload):
 class CampaignCounts(Payload):
     items: int
     book_stock_lines: int = Field(alias="bookStockLines")
+    #: Emplacements précomptés et scellés. Non nul, l'analyse s'ouvre même sans
+    #: gel : leur référence est déjà posée et ne bougera plus.
+    sealed_locations: int = Field(default=0, alias="sealedLocations")
 
 
 class Sequence(Payload):

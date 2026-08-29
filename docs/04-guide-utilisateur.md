@@ -478,6 +478,15 @@ jour J.
 jour J — mais demande un motif : le descellement annule une preuve datée. Le
 périmètre part avec ; redéclarer est le geste qui rescelle.
 
+**Les écarts sont visibles tout de suite.** Dès qu'un précomptage est scellé, la
+vue **Écarts** s'ouvre et le carrousel affiche les planches *Stock et écarts* et
+*Couverture*, sans attendre le chargement ni le gel du stock ERP général : la
+référence et le comptage de ces emplacements sont déjà là, et ne bougeront plus.
+Un bandeau rappelle sur combien d'emplacements portent les chiffres, et les
+titres du carrousel le disent aussi. Le reste de la campagne s'y ajoute au
+chargement général. C'est le but même du précomptage : voir l'écart quand on
+peut encore aller voir sur le terrain.
+
 ### 2.1 Charger le stock ERP
 
 **Référentiels & seuils → Stock ERP.** Le référentiel articles doit être chargé

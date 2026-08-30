@@ -12,6 +12,7 @@ import { api, download, downloads } from '../lib/api'
 import { compositeKey, splitCompositeKey } from '../lib/rowKey'
 import type { GridContract, Journal, JournalStatus, Overview } from '../lib/types'
 import {
+  DASH,
   JOURNAL_STATUS_LABELS,
   moneyShort,
   qty,
@@ -176,7 +177,17 @@ function JournalsTab({
       ),
       value: (row) => row.status,
     },
-    { key: 'journal_number', label: 'N° ERP', width: 140 },
+    {
+      // Lu dans les lignes, pas dans l'en-tête. `journal_number` est un champ
+      // de `count_journal` que rien n'écrit jamais : un journal de comptage
+      // naît d'un emplacement, le numéro ERP arrive plus tard avec les lignes.
+      // La colonne était donc vide sur tous les écrans, ici comme dans l'export.
+      key: 'erpJournalNumbers',
+      label: 'N° ERP',
+      width: 160,
+      value: (row) => row.erpJournalNumbers.join(', '),
+      render: (row) => row.erpJournalNumbers.join(', ') || DASH,
+    },
     {
       key: 'lineCount',
       label: 'Lignes',

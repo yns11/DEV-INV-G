@@ -494,6 +494,35 @@ cas se dit autrement :
 | Remplacer des lignes fausses | **Réimporter** le journal : chaque import remplace les journaux qu'il rapporte |
 | Retirer de l'écran un journal chargé par erreur | Rien à faire : sans périmètre déclaré, il ne produit ni référence, ni comptage, ni écart |
 
+### Et le jour J ? On ne déclare rien
+
+**Le gel du stock ERP ferme la fenêtre du précomptage, et c'en est la
+définition** : précompter veut dire *avant* la référence générale. Une fois le
+stock gelé, les journaux ERP que vous importez sont ceux du jour J, et il n'y a
+ni périmètre à déclarer, ni emplacement à sceller :
+
+| | Précomptage (avant le gel) | Jour J (après le gel) |
+|---|---|---|
+| Sa référence | La colonne « Stock ERP » de ses propres lignes, à sa date | Le stock ERP gelé |
+| Ce qui la pose | **Déclarer et sceller** son périmètre | Le chargement du stock ERP, une fois pour toute la campagne |
+| Son comptage | L'import de ses lignes | L'import de ses lignes |
+| Le geste à faire | Déclarer, puis baliser physiquement | **Aucun** — importer suffit |
+
+L'écran le dit : une fois le stock gelé, la colonne *Périmètre* affiche
+« Comptage du jour J » au lieu de « À déclarer », le bouton *Déclarer et
+sceller* disparaît, et un bandeau rappelle pourquoi. Déclarer quand même est
+refusé — auparavant le geste écrivait une seconde référence sur un emplacement
+qui en avait déjà une, et l'écran remontait une erreur technique.
+
+**Desceller reste possible après le gel**, et c'est ce qui rend un emplacement
+précompté au comptage du jour J.
+
+**Où voir les emplacements comptés et leur journal ERP :** *Comptage →
+Journaux*. La colonne **N° ERP** porte le ou les journaux ERP dont viennent les
+lignes de chaque emplacement, avec le nombre de lignes, la quantité comptée et
+le statut. C'est la vue d'avancement du jour, et elle part telle quelle dans
+l'export Excel.
+
 **Un emplacement n'appartient qu'à un journal.** Si un second comptage avancé
 passe par un emplacement déjà scellé, la liste proposée ne vous l'offre pas, et
 le déclarer quand même est refusé en nommant le journal propriétaire. Ses lignes
@@ -655,6 +684,14 @@ re-scannée ailleurs, son étiquette apparaît dans un second journal, et
 l'application désigne les deux emplacements à aller voir. Reste le cas où elle
 n'est scannée nulle part : rien ne la voit, et seul le balisage physique
 l'évite.
+
+**Les emplacements vrac n'ont pas d'étiquette.** Les lignes d'un journal `INVV`
+portent toutes la même valeur générique — littéralement « VRAC » : un
+emplacement vrac se compte en quantité, pas en lots identifiés. Ces lignes sont
+donc hors du contrôle par étiquette. Sans cela, deux emplacements vrac
+quelconques devenaient « la même étiquette comptée aux deux endroits », et la
+liste se remplissait de centaines de faux doublons qui noyaient les vrais
+déplacements.
 
 **Ce que la liste ne contient pas.** Une étiquette n'y figure que si elle a été
 comptée **à un autre emplacement**. Quand deux journaux ont compté le *même*

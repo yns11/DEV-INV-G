@@ -279,10 +279,16 @@ export interface Journal {
   location_id: string
   kind: 'INVE' | 'INVV'
   status: JournalStatus
+  /**
+   * Toujours vide : rien n'écrit jamais ce champ. Le numéro ERP se lit dans
+   * `erpJournalNumbers`, dérivé des lignes.
+   */
   journal_number: string
   description: string
   posted_at: string | null
   auto_created: boolean
+  /** Le ou les journaux ERP dont viennent les lignes de cet emplacement. */
+  erpJournalNumbers: string[]
   lineCount: number
   countedQty: number
   overriddenLines: number

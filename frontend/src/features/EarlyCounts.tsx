@@ -176,7 +176,15 @@ export default function EarlyCounts() {
         onChange={setView}
       />
       {view === 'journaux' && (
-        <Journals campaignId={campaignId} canWrite={overview.permissions.earlyCounts} />
+        <Journals
+          campaignId={campaignId}
+          canWrite={overview.permissions.earlyCounts}
+          // Le gel ferme la fenêtre du précomptage, et c'en est la définition :
+          // précompter veut dire *avant* la référence générale. Après, il n'y a
+          // plus rien à déclarer ni à sceller — l'écran cessait pourtant de le
+          // dire et le geste finissait en 500.
+          frozen={overview.campaign.book_stock_frozen_at !== null}
+        />
       )}
       {view === 'derives' && <Drifts campaignId={campaignId} />}
       {view === 'etiquettes' && (
@@ -228,9 +236,11 @@ function LastImport({ overview }: { overview: Overview }) {
 function Journals({
   campaignId,
   canWrite,
+  frozen,
 }: {
   campaignId: string
   canWrite: boolean
+  frozen: boolean
 }) {
   const client = useQueryClient()
   const toast = useToast()
@@ -317,12 +327,19 @@ function Journals({
         <span>
           {row.scopeDeclared ? (
             <span title={scopeText(row)}>{scopeSummary(row)}</span>
+          ) : frozen ? (
+            // « À déclarer » réclamerait un geste qui n'a plus de sens et que
+            // le serveur refuse : ce journal est celui du jour J, il n'a rien
+            // à sceller.
+            <Badge tone="neutral">Comptage du jour J</Badge>
           ) : (
             <Badge tone="warning">À déclarer</Badge>
           )}{' '}
-          <Button size="sm" variant="ghost" onClick={() => setOpen(row.id)}>
-            {row.scopeDeclared ? 'Modifier' : 'Déclarer et sceller'}
-          </Button>
+          {!frozen && (
+            <Button size="sm" variant="ghost" onClick={() => setOpen(row.id)}>
+              {row.scopeDeclared ? 'Modifier' : 'Déclarer et sceller'}
+            </Button>
+          )}
           {row.isSealed && canWrite && (
             <>
               {' '}
@@ -379,6 +396,16 @@ function Journals({
     >
       {(journals) => (
         <div className="stack">
+          {frozen && (
+            <Alert tone="info" title="Le stock ERP est gelé">
+              La fenêtre du précomptage est fermée : précompter veut dire
+              <em> avant</em> la référence générale. Les journaux importés
+              maintenant sont ceux du jour J — leur référence est le stock ERP
+              gelé, leur comptage entre par l’import, et il n’y a rien à
+              déclarer ni à sceller. Un emplacement scellé se reprend en
+              descellant son journal.
+            </Alert>
+          )}
           <Card
             title="Journaux ERP"
             message="Un journal tient à un entrepôt et couvre plusieurs emplacements. Ceux de ses lignes ne suffisent pas à dire lesquels : certaines ne sont là que pour matérialiser un déplacement."

@@ -29,28 +29,59 @@ from ._base import _Base, _NullContext, new_id
 
 __all__ = ["ErpJournalRepository"]
 
+#: Un emplacement vrac se compte **en quantité**, pas en lots étiquetés.
+#:
+#: Les lignes d'un journal ``INVV`` portent toutes la même étiquette générique —
+#: littéralement « VRAC » dans l'export. Ce n'est pas l'identité d'une palette :
+#: c'est un remplissage de colonne. Le contrôle par étiquette la lisait pourtant
+#: comme une identité, et deux emplacements vrac quelconques se retrouvaient
+#: donc « la même étiquette comptée aux deux endroits » — quatre cents lignes de
+#: faux doublons, à trancher une par une, devant lesquelles il n'y a rien à
+#: faire.
+#:
+#: La règle porte sur le **type de journal**, pas sur la valeur de l'étiquette :
+#: c'est ce que le métier dit — un journal vrac ne compte pas des lots — et non
+#: une chaîne de caractères qui pourrait changer au prochain export.
+_NO_LABEL_KIND = "INVV"
+
+
+#: Une ligne qui porte une **étiquette identifiante**, et le journal qui la dit.
+#:
+#: Une seule définition pour les deux contrôles et pour les deux côtés de
+#: chacun — l'emplacement scellé comme l'autre. Écrite quatre fois, la règle
+#: aurait divergé au premier ajout : il a suffi d'oublier les journaux vrac d'un
+#: seul côté pour que le contrôle continue de les lire de l'autre.
+_LABELLED_LINES = f"""
+    SELECT l.label_id, l.warehouse_id, l.location_id, l.item_number,
+           l.erp_journal_id, l.qty_counted, j.journal_number
+    FROM erp_journal_line l
+    JOIN erp_journal j
+      ON j.id = l.erp_journal_id AND j.campaign_id = l.campaign_id
+     AND j.deleted_at IS NULL
+     AND j.kind <> '{_NO_LABEL_KIND}'
+    WHERE l.campaign_id = %(cid)s
+      AND l.label_id <> ''
+      AND l.qty_counted <> 0
+"""
+
 #: Les lignes qui *portent la preuve* d'un emplacement scellé.
 #:
 #: Celles de son journal propriétaire, et d'aucun autre : la jointure sur
 #: ``erp_journal_scope`` est ce qui distingue le comptage retenu d'une simple
-#: ligne de passage. Les deux contrôles par étiquette partent de là, et c'est
-#: pourquoi la définition est écrite une fois — deux copies auraient divergé, et
-#: la première divergence aurait fait dire à l'un ce que l'autre nie.
+#: ligne de passage. Sans elle, la ligne de passage d'un troisième journal
+#: servait de point de départ, et la même paire ressortait autant de fois que de
+#: journaux ayant touché l'emplacement.
 _SEALED_EVIDENCE = """
-    SELECT l.label_id, l.warehouse_id, l.location_id,
-           l.item_number, l.erp_journal_id
-    FROM erp_journal_line l
+    SELECT e.*
+    FROM etiquetee e
     JOIN erp_journal_scope sc
-      ON sc.campaign_id = l.campaign_id
-     AND sc.erp_journal_id = l.erp_journal_id
-     AND sc.warehouse_id = l.warehouse_id
-     AND sc.location_id = l.location_id
-    WHERE l.campaign_id = %(cid)s
-      AND l.label_id <> ''
-      AND l.qty_counted <> 0
-      AND (l.warehouse_id, l.location_id) IN (
+      ON sc.campaign_id = %(cid)s
+     AND sc.erp_journal_id = e.erp_journal_id
+     AND sc.warehouse_id = e.warehouse_id
+     AND sc.location_id = e.location_id
+    WHERE (e.warehouse_id, e.location_id) IN (
             SELECT * FROM unnest(%(wh)s::text[], %(loc)s::text[])
-      )
+    )
 """
 
 
@@ -450,26 +481,22 @@ class ErpJournalRepository(_Base):
             return []
         return self._fetch_all(
             f"""
-            WITH scelle AS ({_SEALED_EVIDENCE})
+            WITH etiquetee AS ({_LABELLED_LINES}),
+                 scelle AS ({_SEALED_EVIDENCE})
             SELECT s.label_id,
                    s.item_number,
                    s.warehouse_id            AS sealed_warehouse_id,
                    s.location_id             AS sealed_location_id,
                    o.warehouse_id            AS other_warehouse_id,
                    o.location_id             AS other_location_id,
-                   j.journal_number          AS other_journal_number,
+                   o.journal_number          AS other_journal_number,
                    o.qty_counted             AS other_qty_counted
             FROM scelle s
-            JOIN erp_journal_line o
-              ON o.campaign_id = %(cid)s
-             AND o.label_id = s.label_id
+            JOIN etiquetee o
+              ON o.label_id = s.label_id
              AND o.erp_journal_id <> s.erp_journal_id
-             AND o.qty_counted <> 0
              AND (o.warehouse_id, o.location_id)
                  <> (s.warehouse_id, s.location_id)
-            JOIN erp_journal j
-              ON j.id = o.erp_journal_id AND j.campaign_id = o.campaign_id
-             AND j.deleted_at IS NULL
             ORDER BY s.label_id, o.warehouse_id, o.location_id
             """,
             {
@@ -503,27 +530,21 @@ class ErpJournalRepository(_Base):
             return []
         return self._fetch_all(
             f"""
-            WITH scelle AS ({_SEALED_EVIDENCE})
+            WITH etiquetee AS ({_LABELLED_LINES}),
+                 scelle AS ({_SEALED_EVIDENCE})
             SELECT s.warehouse_id              AS sealed_warehouse_id,
                    s.location_id               AS sealed_location_id,
-                   max(own.journal_number)     AS owner_journal_number,
-                   j.journal_number            AS other_journal_number,
+                   max(s.journal_number)       AS owner_journal_number,
+                   o.journal_number            AS other_journal_number,
                    count(DISTINCT o.label_id)  AS label_count
             FROM scelle s
-            JOIN erp_journal_line o
-              ON o.campaign_id = %(cid)s
-             AND o.label_id = s.label_id
+            JOIN etiquetee o
+              ON o.label_id = s.label_id
              AND o.erp_journal_id <> s.erp_journal_id
-             AND o.qty_counted <> 0
              AND o.warehouse_id = s.warehouse_id
              AND o.location_id = s.location_id
-            JOIN erp_journal j
-              ON j.id = o.erp_journal_id AND j.campaign_id = o.campaign_id
-             AND j.deleted_at IS NULL
-            JOIN erp_journal own
-              ON own.id = s.erp_journal_id AND own.campaign_id = %(cid)s
-            GROUP BY s.warehouse_id, s.location_id, j.journal_number
-            ORDER BY s.warehouse_id, s.location_id, j.journal_number
+            GROUP BY s.warehouse_id, s.location_id, o.journal_number
+            ORDER BY s.warehouse_id, s.location_id, o.journal_number
             """,
             {
                 "cid": campaign_id,

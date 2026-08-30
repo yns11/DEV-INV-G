@@ -274,6 +274,121 @@ class TestTheGeneralLoadPreservesSealedReferences:
         assert by_key[("B06", "AUTRE")].reference_date == dt.date(2026, 6, 13)
 
 
+class TestSealingOverAnExistingReference:
+    """Sceller un emplacement que le stock ERP général sert déjà.
+
+    L'ordre nominal est : sceller, puis charger. Mais rien ne l'impose, et un
+    chargement partiel fait le jour même suffit à inverser les deux. La
+    suppression ne portait alors que sur ``erp_journal_id`` : l'insertion
+    tombait sur ``book_stock_uq``, et le scellement remontait un 500 en
+    production, sur un geste que l'écran proposait lui-même.
+    """
+
+    def _loaded(self, ctx, campaign) -> None:
+        from inventory.domain.models import BookStockLine
+
+        ctx.book_stock.replace(campaign.id, [
+            BookStockLine(campaign_id=campaign.id, item_number="MASS-1",
+                          warehouse_id="ATP", location_id="SOL", qty=99,
+                          reference_date=dt.date(2026, 6, 13)),
+        ], batch_id=None)
+
+    def test_the_precount_reference_replaces_the_general_one(
+        self, service, ctx, campaign
+    ):
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        self._loaded(ctx, campaign)
+
+        service.declare_scope(campaign, journal, [SOL])
+
+        [line] = ctx.book_stock.list(campaign.id)
+        assert line.qty == Decimal(10), "celle du précomptage, pas celle du jour"
+        assert line.reference_date == dt.date(2026, 6, 11)
+        assert line.erp_journal_id == journal
+
+    def test_the_rest_of_the_stock_is_left_alone(self, service, ctx, campaign):
+        """Remplacer par clé ne doit pas devenir remplacer tout court."""
+        from inventory.domain.models import BookStockLine
+
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        ctx.book_stock.replace(campaign.id, [
+            BookStockLine(campaign_id=campaign.id, item_number="MASS-1",
+                          warehouse_id="ATP", location_id="SOL", qty=99),
+            BookStockLine(campaign_id=campaign.id, item_number="MASS-2",
+                          warehouse_id="B06", location_id="AUTRE", qty=5),
+        ], batch_id=None)
+
+        service.declare_scope(campaign, journal, [SOL])
+
+        by_key = {
+            (line.warehouse_id, line.location_id): line
+            for line in ctx.book_stock.list(campaign.id)
+        }
+        assert by_key[("B06", "AUTRE")].qty == Decimal(5)
+
+
+class TestOnceTheStockIsFrozen:
+    """Le gel ferme la fenêtre du précomptage, et c'en est la définition.
+
+    « Précompter » veut dire *avant* la référence générale. Après le gel,
+    l'emplacement a déjà la sienne, le journal du jour apporte son comptage par
+    l'import, et il n'y a rien à sceller. L'écran proposait pourtant « Déclarer
+    et sceller » sur les journaux du jour J, et le geste écrivait une seconde
+    référence sur des clés déjà servies.
+    """
+
+    def _frozen(self, ctx, campaign) -> Campaign:
+        with ctx.db.transaction() as conn:
+            conn.execute(
+                "UPDATE campaign SET book_stock_frozen_at = now() WHERE id = %s",
+                (campaign.id,),
+            )
+        return campaign.model_copy(
+            update={"book_stock_frozen_at": dt.datetime(2026, 6, 13, tzinfo=dt.UTC)}
+        )
+
+    def test_declaring_is_refused_and_says_why(self, service, ctx, campaign):
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        frozen = self._frozen(ctx, campaign)
+
+        with pytest.raises(ConflictError) as caught:
+            service.declare_scope(frozen, journal, [SOL])
+
+        assert "gelé" in str(caught.value)
+        assert "jour J" in str(caught.value)
+
+    def test_nothing_is_written_before_the_refusal(self, service, ctx, campaign):
+        """Un refus qui laisse un périmètre déclaré serait pire que le crash."""
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        frozen = self._frozen(ctx, campaign)
+
+        with pytest.raises(ConflictError):
+            service.declare_scope(frozen, journal, [SOL])
+
+        assert ctx.journals.sealed_keys(campaign.id) == set()
+        assert ctx.erp_journals.get_by_number(campaign.id, "NPEM-1").scope == []
+
+    def test_a_precount_sealed_before_the_freeze_still_reseals(
+        self, service, ctx, campaign
+    ):
+        """Le gel ferme la déclaration, pas le rafraîchissement.
+
+        Un journal déjà scellé se recharge le jour J comme les autres, et sa
+        référence se recalcule : fermer cela couperait le réimport de tous les
+        journaux, puisque l'import rescelle au passage.
+        """
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+        frozen = self._frozen(ctx, campaign)
+
+        assert service.reseal_after_import(frozen) == 1
+
+
 class TestTheLabelDecisions:
     """Où est la pièce, et ce que la réponse change aux quantités.
 
@@ -391,6 +506,46 @@ class TestTheLabelDecisions:
         assert [(a["sealedLocationId"], a["otherLocationId"]) for a in alerts] == [
             ("SOL", "QUAI EXP")
         ]
+
+    def test_a_bulk_journal_carries_no_label_at_all(self, service, ctx, campaign):
+        """« VRAC » n'est pas une étiquette, c'est un remplissage de colonne.
+
+        Toutes les lignes d'un journal ``INVV`` portent la même : un emplacement
+        vrac se compte en quantité, pas en lots identifiés. Le contrôle la
+        lisait comme une identité de palette, et deux emplacements vrac
+        quelconques devenaient « la même étiquette comptée aux deux endroits » —
+        quatre cents lignes de faux doublons devant lesquelles il n'y a rien à
+        faire, et qui noient les vrais déplacements.
+        """
+        _priced(ctx, campaign)
+        sealed = ctx.erp_journals.upsert_journal(
+            campaign.id, journal_number="NPEM-VRAC-1", kind=JournalKind.INVV,
+            erp_posted=True, counted_on=dt.date(2026, 6, 11),
+        )
+        ctx.erp_journals.replace_lines(campaign.id, sealed, [
+            _erp_line(campaign.id, sealed, erp_line_number=1,
+                      label_id="VRAC", qty_on_hand=8, qty_counted=8),
+        ])
+        other = ctx.erp_journals.upsert_journal(
+            campaign.id, journal_number="NPEM-VRAC-2", kind=JournalKind.INVV,
+        )
+        ctx.erp_journals.replace_lines(campaign.id, other, [
+            _erp_line(campaign.id, other, erp_line_number=1,
+                      warehouse_id="ATP", location_id="QUAI EXP",
+                      label_id="VRAC", qty_on_hand=0, qty_counted=3),
+        ])
+        ctx.journals.ensure_journals(campaign.id, [SOL])
+        service.declare_scope(campaign, sealed, [SOL])
+
+        assert service.label_alerts(campaign.id) == []
+        assert service.labels_recounted_in_place(campaign.id) == []
+
+    def test_a_scanned_journal_is_still_controlled(self, service, ctx, campaign):
+        """L'exclusion porte sur le type de journal, et s'arrête là."""
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+
+        assert len(service.label_alerts(campaign.id)) == 1
 
     def test_the_alert_names_both_places(self, service, ctx, campaign):
         journal = self._two_places(ctx, campaign)

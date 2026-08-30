@@ -27,7 +27,7 @@ from ..ai.assistant import (
     profile_for,
 )
 from ..domain.enums import AuditAction
-from ..domain.models import Campaign
+from ..domain.models import Campaign, erp_journal_numbers
 from ..domain.workflow import mutability_of
 from .analysis_service import AnalysisService
 from .context import ServiceContext
@@ -269,7 +269,9 @@ class AssistantService:
                 "emplacement": j.location_id,
                 "type": str(j.kind),
                 "statut": str(j.status),
-                "numéroErp": j.journal_number,
+                "numéroErp": ", ".join(
+                    erp_journal_numbers(lines.get(j.id, []))
+                ),
                 "lignes": len(lines.get(j.id, [])),
                 "quantitéComptée": float(sum(l.qty for l in lines.get(j.id, []))),
                 "postéLe": j.posted_at,

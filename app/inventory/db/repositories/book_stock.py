@@ -123,6 +123,14 @@ class BookStockRepository(_Base):
         Remplace : un réimport recalcule la référence de ce journal et écrase
         la précédente. C'est la règle métier, et la bonne — la dernière lecture
         de l'ERP est la plus juste.
+
+        **Remplace aussi ce qui n'est pas à lui.** La suppression ne portait que
+        sur ``erp_journal_id`` : sur un emplacement que le chargement du stock
+        ERP général avait déjà servi, l'insertion tombait sur ``book_stock_uq``
+        et le scellement remontait un 500. La règle du domaine est pourtant
+        écrite — « la référence d'un emplacement scellé est celle de son
+        précomptage » — et elle dit exactement ce qu'il faut faire de la ligne
+        générale : la remplacer.
         """
         owns_transaction = conn is None
         ctx = self.db.transaction() if owns_transaction else _NullContext(conn)
@@ -134,6 +142,20 @@ class BookStockRepository(_Base):
             )
             if not lines:
                 return 0
+            cur.execute(
+                "DELETE FROM book_stock WHERE campaign_id = %(cid)s "
+                "AND (item_number, warehouse_id, location_id) IN ("
+                "  SELECT * FROM unnest("
+                "    %(items)s::text[], %(wh)s::text[], %(loc)s::text[]"
+                "  )"
+                ")",
+                {
+                    "cid": campaign_id,
+                    "items": [line.item_number for line in lines],
+                    "wh": [line.warehouse_id for line in lines],
+                    "loc": [line.location_id for line in lines],
+                },
+            )
             with cur.copy(
                 "COPY book_stock (id, campaign_id, item_number, warehouse_id, "
                 "location_id, qty, unit, unit_cost, reference_date, erp_journal_id) "

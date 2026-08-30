@@ -99,6 +99,22 @@ class EarlyCountService:
         """
         ctx = self.ctx
         ctx.guard(campaign, "early_counts")
+        # Le gel du stock ERP ferme la fenêtre du précomptage, et c'est la
+        # définition même du précomptage : *avant* la référence générale. Après
+        # le gel, l'emplacement a déjà la sienne — celle du jour J —, le journal
+        # du jour apporte son comptage par l'import, et il n'y a rien à sceller.
+        # Déclarer quand même écrivait une seconde référence sur des clés déjà
+        # servies : l'écran remontait une violation d'unicité, c'est-à-dire un
+        # 500 sur un geste que l'application proposait elle-même.
+        if campaign.book_stock_frozen_at is not None:
+            raise ConflictError(
+                "Le stock ERP est gelé : il n'y a plus de précomptage à "
+                "déclarer. Un journal du jour J n'a rien à sceller — sa "
+                "référence est le stock ERP gelé, et son comptage est entré "
+                "par l'import. Pour reprendre un emplacement déjà scellé, "
+                "descellez son journal.",
+                frozenAt=campaign.book_stock_frozen_at.isoformat(),
+            )
         journal = self._erp_journal(campaign, erp_journal_id)
         buffer_key = campaign.config.buffer_key
         if any(key == buffer_key for key in keys):

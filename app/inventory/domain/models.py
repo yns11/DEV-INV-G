@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Annotated, Any, Self
 
@@ -63,6 +63,7 @@ __all__ = [
     "BookStockLine",
     "CountJournal",
     "CountJournalLine",
+    "erp_journal_numbers",
     "ErpJournal",
     "ErpJournalLine",
     "LabelDecision",
@@ -779,6 +780,22 @@ class CountJournalLine(DomainModel):
 
 # --------------------------------------------------------------------------- #
 # Le journal ERP, tel que l'ERP le produit
+def erp_journal_numbers(lines: Sequence[CountJournalLine]) -> list[str]:
+    """De quel(s) document(s) ERP vient le comptage de cet emplacement.
+
+    Lu **dans les lignes**, jamais recopié. ``CountJournal`` porte bien un champ
+    ``journal_number``, et trois écrans l'affichaient — la grille des journaux
+    sous l'en-tête « N° ERP », l'export Excel, l'assistant. Rien ne l'écrit
+    jamais : les journaux de comptage naissent d'un emplacement, pas d'un
+    document, et le numéro arrive plus tard avec les lignes. La colonne était
+    donc vide dans les trois, sans que rien ne le signale.
+
+    Plusieurs valeurs quand plusieurs journaux ont alimenté l'emplacement. C'est
+    un fait — pas une anomalie — et n'en garder qu'un le cacherait.
+    """
+    return sorted({line.erp_journal_number for line in lines if line.erp_journal_number})
+
+
 # --------------------------------------------------------------------------- #
 #
 # Un objet **à côté** de :class:`CountJournal`, pas à sa place. ``CountJournal``

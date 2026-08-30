@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..domain.enums import AuditAction, SheetPass
-from ..domain.models import Campaign, CountSheetLine, Item
+from ..domain.models import Campaign, CountSheetLine, Item, erp_journal_numbers
 from ..domain.printing import PrintMode, print_refusal
 from ..errors import NotFoundError, ValidationError
 from ..reporting.exports import (
@@ -377,7 +377,8 @@ class ReportService:
              "Quantité comptée", "Posté le"],
             [
                 [j.warehouse_id, j.location_id, str(j.kind), str(j.status),
-                 j.journal_number, len(journal_lines.get(j.id, [])),
+                 ", ".join(erp_journal_numbers(journal_lines.get(j.id, []))),
+                 len(journal_lines.get(j.id, [])),
                  float(sum(l.qty for l in journal_lines.get(j.id, []))),
                  j.posted_at.isoformat() if j.posted_at else ""]
                 for j in journals

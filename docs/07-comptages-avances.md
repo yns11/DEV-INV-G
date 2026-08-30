@@ -164,6 +164,34 @@ Le tri se fait **ligne par ligne**, pas emplacement par emplacement : un même
 fichier apporte les lignes du propriétaire et celles des journaux de passage, et
 écarter la clé entière priverait l'emplacement scellé de sa quantité comptée.
 
+### La fenêtre du précomptage se ferme au gel
+
+`declare_scope` refuse une fois `campaign.book_stock_frozen_at` posé, et le
+refus se lit. La raison n'est pas prudentielle, elle est définitionnelle :
+précompter veut dire *avant* la référence générale. Après le gel, l'emplacement
+a déjà la sienne, le journal du jour apporte son comptage par l'import, et il
+n'y a rien à sceller.
+
+Le geste était pourtant offert sur tous les journaux, y compris ceux du jour J,
+et il écrivait alors une seconde référence sur des clés déjà servies par le
+chargement général : `book_stock_uq`, donc un **500** sur une action que
+l'application proposait elle-même.
+
+Deux corrections, et elles ne se remplacent pas :
+
+* **le geste disparaît quand il n'a plus de sens** — l'écran affiche « Comptage
+  du jour J » au lieu de « À déclarer », et un bandeau dit pourquoi ;
+* **l'écriture, elle, remplace au lieu de heurter** — `replace_for_journal`
+  supprimait ses seules lignes, il supprime maintenant aussi celles qui portent
+  les mêmes clés. C'est ce que le domaine dit depuis le début : « la référence
+  d'un emplacement scellé est celle de son précomptage ». Sceller après un
+  chargement partiel est un ordre inhabituel, pas une faute, et il ne doit pas
+  produire une erreur technique.
+
+**Ce que le gel ne ferme pas** : le descellement, et le rafraîchissement d'un
+journal déjà scellé. L'import rescelle au passage — le fermer couperait le
+réimport de tous les journaux du jour.
+
 ### Pourquoi un journal ERP ne se supprime pas
 
 Le geste inverse de « déclarer et sceller » est **desceller**, pas supprimer, et
@@ -282,6 +310,25 @@ fines servent à deux choses, et à deux choses seulement :
 C'est le seul contrôle du dispositif qui descende au grain de l'étiquette, et il
 est proportionné : sur l'export du 13 juin, 433 étiquettes sur 39 558 apparaissent
 dans plus d'un journal — environ 1 %, une liste qu'on peut réellement traiter.
+
+### Un journal vrac ne compte pas des lots
+
+Les lignes d'un journal `INVV` portent toutes la même étiquette générique —
+littéralement « VRAC » dans l'export. Ce n'est pas l'identité d'une palette,
+c'est un remplissage de colonne : un emplacement vrac se gère **en quantité**.
+
+Le contrôle la lisait pourtant comme une identité, et deux emplacements vrac
+quelconques devenaient donc « la même étiquette comptée aux deux endroits » —
+quatre cents lignes de faux doublons sur une campagne réelle, à trancher une par
+une, devant lesquelles il n'y a rien à faire.
+
+La règle porte sur le **type de journal**, pas sur la valeur de l'étiquette :
+c'est ce que le métier dit, et non une chaîne de caractères qui pourrait changer
+au prochain export. Elle est écrite une seule fois, dans la définition des
+lignes qui portent une étiquette identifiante, et les deux contrôles — les deux
+côtés de chacun — la lisent de là. Écrite quatre fois, il aurait suffi de
+l'oublier d'un côté pour que le contrôle continue de lire les journaux vrac de
+l'autre.
 
 ### Deux journaux ne font pas un déplacement
 

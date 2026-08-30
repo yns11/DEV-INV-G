@@ -147,13 +147,13 @@ vi.mock('../lib/api', () => ({
   downloads: { importTemplate: () => '', gridTemplate: () => '' },
 }))
 
-function overview(importedAt: string | null): Overview {
+function overview(importedAt: string | null, frozen = false): Overview {
   return {
     campaign: {
       id: 'camp-1',
       code: 'INV-2026-T3',
       status: 'COUNTING',
-      book_stock_frozen_at: null,
+      book_stock_frozen_at: frozen ? '2026-06-13T05:00:00Z' : null,
       journals_imported_at: importedAt,
     },
     permissions: { earlyCounts: true },
@@ -163,7 +163,7 @@ function overview(importedAt: string | null): Overview {
   } as unknown as Overview
 }
 
-function show(importedAt: string | null, search = '') {
+function show(importedAt: string | null, search = '', frozen = false) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
@@ -172,7 +172,7 @@ function show(importedAt: string | null, search = '') {
       <ToastProvider>
         <MemoryRouter initialEntries={[`/${search}`]}>
           <Routes>
-            <Route path="/" element={<Outlet context={overview(importedAt)} />}>
+            <Route path="/" element={<Outlet context={overview(importedAt, frozen)} />}>
               <Route index element={<EarlyCounts />} />
             </Route>
           </Routes>
@@ -274,6 +274,42 @@ describe('les étiquettes', () => {
     expect(body.decision).toBe('RECOUNT')
     expect(body.sealedLocationId).toBe('SOL')
     expect(body.otherLocationId).toBe('QUAI EXP')
+  })
+})
+
+describe('une fois le stock ERP gelé', () => {
+  /**
+   * Précompter veut dire *avant* la référence générale. Après le gel,
+   * l'emplacement a déjà la sienne, le journal du jour apporte son comptage par
+   * l'import, et il n'y a rien à sceller. L'écran proposait pourtant « Déclarer
+   * et sceller », et le geste finissait en violation d'unicité — un 500 sur une
+   * action que l'application offrait elle-même.
+   */
+  it('n’offre plus de déclarer un périmètre', async () => {
+    show(null, '', true)
+    await screen.findByText('NPEM-521301')
+    expect(screen.queryByRole('button', { name: 'Déclarer et sceller' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Modifier' })).toBeNull()
+  })
+
+  it('dit pourquoi, au lieu de laisser l’écran muet', async () => {
+    show(null, '', true)
+    expect(await screen.findByText(/Le stock ERP est gelé/)).toBeTruthy()
+  })
+
+  it('ne réclame plus un geste qui n’a plus de sens', async () => {
+    // « À déclarer » sur un journal du jour J envoie l'exploitant vers un
+    // refus. Le badge dit ce que le journal est.
+    show(null, '', true)
+    expect(await screen.findByText('Comptage du jour J')).toBeTruthy()
+    expect(screen.queryByText('À déclarer')).toBeNull()
+  })
+
+  it('laisse desceller ce qui a été scellé avant', async () => {
+    show(null, '', true)
+    expect(
+      await screen.findByRole('button', { name: 'Desceller' }),
+    ).toBeTruthy()
   })
 })
 

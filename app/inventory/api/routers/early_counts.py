@@ -19,6 +19,7 @@ from ..responses import (
     DriftsResolved,
     ErpJournalResponse,
     LabelAlert,
+    RecountedInPlace,
     RescanLocation,
     ScopeCandidate,
     ScopeDeclared,
@@ -189,6 +190,25 @@ def label_alerts(campaign: CampaignDep, service: Early) -> list[LabelAlert]:
     re-scannée ailleurs, son étiquette apparaît dans un second journal.
     """
     return service.label_alerts(campaign.id)
+
+
+@router.get(
+    "/recounted-in-place",
+    summary="Emplacements scellés recomptés par un second journal",
+    responses={200: {"model": list[RecountedInPlace]}},
+)
+def recounted_in_place(
+    campaign: CampaignDep, service: Early
+) -> list[RecountedInPlace]:
+    """Le pendant des étiquettes comptées ailleurs, et ce qui les en sort.
+
+    Deux journaux sur le même emplacement scellé ne décrivent pas un
+    déplacement : l'étiquette est là où elle doit être. Ils remplissaient
+    pourtant la liste des étiquettes comptées ailleurs de lignes dont les deux
+    colonnes d'emplacement portaient la même valeur. Ils sont ici, résumés, avec
+    le journal retenu et celui qui ne l'est pas.
+    """
+    return service.labels_recounted_in_place(campaign.id)
 
 
 @router.post(

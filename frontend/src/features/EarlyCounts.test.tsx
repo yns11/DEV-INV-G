@@ -119,6 +119,16 @@ vi.mock('../lib/api', () => ({
       ]),
     decideLabel: fixtures.decideLabel,
     unsealJournal: fixtures.unsealJournal,
+    recountedInPlace: () =>
+      Promise.resolve([
+        {
+          sealedWarehouseId: 'ATP',
+          sealedLocationId: 'SF1',
+          ownerJournalNumber: 'NPEM-521215',
+          otherJournalNumber: 'NPEM-522821',
+          labelCount: 6,
+        },
+      ]),
     drifts: () => Promise.resolve([]),
     contracts: () =>
       Promise.resolve([
@@ -264,6 +274,25 @@ describe('les étiquettes', () => {
     expect(body.decision).toBe('RECOUNT')
     expect(body.sealedLocationId).toBe('SOL')
     expect(body.otherLocationId).toBe('QUAI EXP')
+  })
+})
+
+describe('les emplacements recomptés sur place', () => {
+  /**
+   * Ces lignes-là remplissaient la liste des étiquettes comptées ailleurs,
+   * avec le même emplacement dans les deux colonnes — « ATP / SF1 comptée
+   * aussi en ATP / SF1 ». La pièce n'a pas bougé, et aucune des trois issues
+   * n'a de sens sans nouvel emplacement. Elles en sortent ; le bandeau dit
+   * qu'elles existent, sans quoi les retirer les cacherait.
+   */
+  it('sont dits au-dessus de la liste, pas dedans', async () => {
+    show(null, '?vue=etiquettes')
+    expect(
+      await screen.findByText(/Emplacements recomptés sur place/),
+    ).toBeTruthy()
+    // Le journal retenu et celui qui ne l'est pas : c'est la seule chose à
+    // savoir, puisqu'il n'y a rien à trancher.
+    expect(screen.getByText(/retenu NPEM-521215, ignoré NPEM-522821/)).toBeTruthy()
   })
 })
 

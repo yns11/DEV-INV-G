@@ -1106,6 +1106,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/early-counts/recounted-in-place": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Emplacements scellés recomptés par un second journal
+         * @description Le pendant des étiquettes comptées ailleurs, et ce qui les en sort.
+         *
+         *     Deux journaux sur le même emplacement scellé ne décrivent pas un
+         *     déplacement : l'étiquette est là où elle doit être. Ils remplissaient
+         *     pourtant la liste des étiquettes comptées ailleurs de lignes dont les deux
+         *     colonnes d'emplacement portaient la même valeur. Ils sont ici, résumés, avec
+         *     le journal retenu et celui qui ne l'est pas.
+         */
+        get: operations["recounted_in_place_api_campaigns__campaign_id__early_counts_recounted_in_place_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/early-counts/to-rescan": {
         parameters: {
             query?: never;
@@ -4067,6 +4093,29 @@ export interface components {
             section: components["schemas"]["CountSection"];
         };
         /**
+         * RecountedInPlace
+         * @description Un emplacement scellé qu'un second journal a recompté **sur place**.
+         *
+         *     Distinct de :class:`LabelAlert`, et la distinction porte : là, l'étiquette
+         *     est où elle doit être, il n'y a pas de nouvel emplacement, et aucune des
+         *     trois issues ne s'applique. Ce qui se joue est un second comptage du même
+         *     emplacement — seul le journal qui le possède est retenu.
+         */
+        RecountedInPlace: {
+            /** Labelcount */
+            labelCount: number;
+            /** Otherjournalnumber */
+            otherJournalNumber: string;
+            /** Ownerjournalnumber */
+            ownerJournalNumber: string;
+            /** Sealedlocationid */
+            sealedLocationId: string;
+            /** Sealedwarehouseid */
+            sealedWarehouseId: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * RescanLabel
          * @description Une étiquette qui met un emplacement scellé en question.
          */
@@ -6544,6 +6593,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LabelAlert"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recounted_in_place_api_campaigns__campaign_id__early_counts_recounted_in_place_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecountedInPlace"][];
                 };
             };
             /** @description Validation Error */

@@ -1094,4 +1094,5 @@ export type RescanLocation = Schemas['RescanLocation']
 export type LabelResolution = 'KEEP_NEW' | 'KEEP_SEALED' | 'RECOUNT'
 export type Drift = Schemas['DriftResponse']
 export type LabelAlert = Schemas['LabelAlert']
+export type RecountedInPlace = Schemas['RecountedInPlace']
 export type DriftResolution = 'KEEP_EARLY' | 'RECOUNT'

@@ -57,6 +57,7 @@ __all__ = [
     "DriftResponse",
     "DriftsResolved",
     "LabelAlert",
+    "RecountedInPlace",
     "CampaignPage",
     "ClosureChecklistResponse",
     "DeletedResponse",
@@ -508,3 +509,19 @@ class LabelAlert(Payload):
     comment: str = ""
     decided_by: str = Field(default="", alias="decidedBy")
     decided_at: str | None = Field(default=None, alias="decidedAt")
+
+
+class RecountedInPlace(Payload):
+    """Un emplacement scellé qu'un second journal a recompté **sur place**.
+
+    Distinct de :class:`LabelAlert`, et la distinction porte : là, l'étiquette
+    est où elle doit être, il n'y a pas de nouvel emplacement, et aucune des
+    trois issues ne s'applique. Ce qui se joue est un second comptage du même
+    emplacement — seul le journal qui le possède est retenu.
+    """
+
+    sealed_warehouse_id: str = Field(alias="sealedWarehouseId")
+    sealed_location_id: str = Field(alias="sealedLocationId")
+    owner_journal_number: str = Field(alias="ownerJournalNumber")
+    other_journal_number: str = Field(alias="otherJournalNumber")
+    label_count: int = Field(alias="labelCount")

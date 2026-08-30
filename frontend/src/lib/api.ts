@@ -13,6 +13,7 @@ import type {
   DriftResolution,
   ErpJournal,
   LabelAlert,
+  RecountedInPlace,
   LabelResolution,
   RescanLocation,
   ScopeCandidate,
@@ -536,6 +537,10 @@ export const api = {
     }),
   labelAlerts: (id: string) =>
     request<LabelAlert[]>(`/campaigns/${id}/early-counts/label-alerts`),
+  recountedInPlace: (id: string) =>
+    request<RecountedInPlace[]>(
+      `/campaigns/${id}/early-counts/recounted-in-place`,
+    ),
 
   // ---------------------------------------------------------------- counting
   // `focus` is a server-side filter: the browser asks for it, the server

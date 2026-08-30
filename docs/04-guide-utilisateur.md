@@ -656,6 +656,13 @@ l'application désigne les deux emplacements à aller voir. Reste le cas où ell
 n'est scannée nulle part : rien ne la voit, et seul le balisage physique
 l'évite.
 
+**Ce que la liste ne contient pas.** Une étiquette n'y figure que si elle a été
+comptée **à un autre emplacement**. Quand deux journaux ont compté le *même*
+emplacement scellé, la pièce n'a pas bougé : il n'y a pas de nouvel emplacement,
+donc rien à trancher. Ces emplacements-là sont résumés dans un bandeau au-dessus
+de la liste, avec le journal retenu et celui qui ne l'est pas — c'est le seul
+renseignement utile, et sans lui les retirer de la liste les cacherait.
+
 **Trancher une étiquette signalée.** Cochez les lignes, puis choisissez. Aucun
 calcul ne peut répondre à la question posée — deux journaux affirment détenir la
 même étiquette, et seul quelqu'un qui va voir le sait.

@@ -414,6 +414,34 @@ class EarlyCountService:
             })
         return alerts
 
+    def labels_recounted_in_place(self, campaign_id: str) -> list[dict[str, Any]]:
+        """Les emplacements scellés qu'un second journal a recomptés sur place.
+
+        Le pendant de :meth:`label_alerts`, et ce qui explique pourquoi cette
+        liste-là s'est vidée. Deux journaux passés sur le même emplacement n'y
+        ont jamais eu leur place — la pièce n'a pas bougé — mais ils y étaient,
+        et les en retirer sans le dire cacherait un fait réel : deux comptages
+        du même emplacement, dont un seul est retenu.
+        """
+        sealed = [
+            LocationKey(warehouse_id=warehouse, location_id=location)
+            for warehouse, location in sorted(
+                self.ctx.journals.sealed_keys(campaign_id)
+            )
+        ]
+        return [
+            {
+                "sealedWarehouseId": row["sealed_warehouse_id"],
+                "sealedLocationId": row["sealed_location_id"],
+                "ownerJournalNumber": row["owner_journal_number"],
+                "otherJournalNumber": row["other_journal_number"],
+                "labelCount": int(row["label_count"]),
+            }
+            for row in self.ctx.erp_journals.labels_recounted_in_place(
+                campaign_id, sealed
+            )
+        ]
+
     def decide_label(
         self,
         campaign: Campaign,

@@ -19,21 +19,39 @@ from typing import Any
 
 import psycopg
 
-from ...domain.enums import DriftResolution, JournalKind, LabelResolution
+from ...domain.enums import JournalKind
 from ...domain.models import (
-    EarlyCountDrift,
     ErpJournal,
     ErpJournalLine,
-    LabelDecision,
     LocationKey,
 )
 from ._base import _Base, _NullContext, new_id
 
-__all__ = [
-    "LabelDecisionRepository",
-    "EarlyCountDriftRepository",
-    "ErpJournalRepository",
-]
+__all__ = ["ErpJournalRepository"]
+
+#: Les lignes qui *portent la preuve* d'un emplacement scellé.
+#:
+#: Celles de son journal propriétaire, et d'aucun autre : la jointure sur
+#: ``erp_journal_scope`` est ce qui distingue le comptage retenu d'une simple
+#: ligne de passage. Les deux contrôles par étiquette partent de là, et c'est
+#: pourquoi la définition est écrite une fois — deux copies auraient divergé, et
+#: la première divergence aurait fait dire à l'un ce que l'autre nie.
+_SEALED_EVIDENCE = """
+    SELECT l.label_id, l.warehouse_id, l.location_id,
+           l.item_number, l.erp_journal_id
+    FROM erp_journal_line l
+    JOIN erp_journal_scope sc
+      ON sc.campaign_id = l.campaign_id
+     AND sc.erp_journal_id = l.erp_journal_id
+     AND sc.warehouse_id = l.warehouse_id
+     AND sc.location_id = l.location_id
+    WHERE l.campaign_id = %(cid)s
+      AND l.label_id <> ''
+      AND l.qty_counted <> 0
+      AND (l.warehouse_id, l.location_id) IN (
+            SELECT * FROM unnest(%(wh)s::text[], %(loc)s::text[])
+      )
+"""
 
 
 class ErpJournalRepository(_Base):
@@ -405,7 +423,7 @@ class ErpJournalRepository(_Base):
         *,
         conn: psycopg.Connection | None = None,
     ) -> list[dict[str, Any]]:
-        """Les étiquettes d'un emplacement scellé retrouvées dans un autre journal.
+        """Les étiquettes d'un emplacement scellé retrouvées **ailleurs**.
 
         Le seul contrôle du dispositif qui descende au grain de l'étiquette, et
         celui qui rattrape ce que la dérive ne voit pas : une pièce sortie d'un
@@ -413,25 +431,26 @@ class ErpJournalRepository(_Base):
         mais si elle est re-scannée ailleurs, son étiquette apparaît dans un
         second journal.
 
-        Proportionné : sur l'export du 13 juin, 433 étiquettes sur 39 558
-        figurent dans plus d'un journal — de l'ordre du pour cent, une liste
-        qu'on peut réellement traiter.
+        Deux restrictions, et chacune corrige une liste qui ne voulait rien dire.
+
+        **Ailleurs veut dire un autre emplacement.** La condition ne portait que
+        sur le journal : deux journaux passant sur le même emplacement scellé
+        remplissaient l'écran de lignes « ATP / SF1 comptée aussi en ATP / SF1 ».
+        La pièce n'a pas bougé, et les trois issues proposées — la mettre au
+        nouvel emplacement, l'en enlever, la rescanner — n'ont aucun sens quand
+        il n'y a pas de nouvel emplacement. Ce cas-là est un second passage sur
+        le même emplacement : :meth:`labels_recounted_in_place` le dit.
+
+        **Le point de vue est celui du journal propriétaire.** Sans cela, la
+        ligne de l'autre journal servait à son tour de départ et la même paire
+        ressortait deux fois, une par sens. Un emplacement scellé appartient à un
+        seul journal ; c'est le sien qui porte la preuve.
         """
         if not sealed:
             return []
         return self._fetch_all(
-            """
-            WITH scelle AS (
-                SELECT l.label_id, l.warehouse_id, l.location_id,
-                       l.item_number, l.erp_journal_id
-                FROM erp_journal_line l
-                WHERE l.campaign_id = %(cid)s
-                  AND l.label_id <> ''
-                  AND l.qty_counted <> 0
-                  AND (l.warehouse_id, l.location_id) IN (
-                        SELECT * FROM unnest(%(wh)s::text[], %(loc)s::text[])
-                  )
-            )
+            f"""
+            WITH scelle AS ({_SEALED_EVIDENCE})
             SELECT s.label_id,
                    s.item_number,
                    s.warehouse_id            AS sealed_warehouse_id,
@@ -446,9 +465,65 @@ class ErpJournalRepository(_Base):
              AND o.label_id = s.label_id
              AND o.erp_journal_id <> s.erp_journal_id
              AND o.qty_counted <> 0
+             AND (o.warehouse_id, o.location_id)
+                 <> (s.warehouse_id, s.location_id)
             JOIN erp_journal j
               ON j.id = o.erp_journal_id AND j.campaign_id = o.campaign_id
+             AND j.deleted_at IS NULL
             ORDER BY s.label_id, o.warehouse_id, o.location_id
+            """,
+            {
+                "cid": campaign_id,
+                "wh": [k.warehouse_id for k in sealed],
+                "loc": [k.location_id for k in sealed],
+            },
+            conn=conn,
+        )
+
+    def labels_recounted_in_place(
+        self,
+        campaign_id: str,
+        sealed: Sequence[LocationKey],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        """Les emplacements scellés qu'un second journal a recomptés **sur place**.
+
+        Ce n'est pas un déplacement — l'étiquette est là où elle doit être — et
+        ça n'a donc rien à faire dans la liste des étiquettes comptées ailleurs,
+        qu'elle noyait. C'est autre chose, et qui mérite d'être dit : deux
+        journaux ont compté le même emplacement, parfois avec des quantités
+        différentes, et seul celui qui le possède est retenu.
+
+        Résumé par (emplacement scellé, autre journal) : la liste ligne à ligne
+        n'apprendrait rien de plus, et un emplacement à cinq cents étiquettes en
+        produirait cinq cents.
+        """
+        if not sealed:
+            return []
+        return self._fetch_all(
+            f"""
+            WITH scelle AS ({_SEALED_EVIDENCE})
+            SELECT s.warehouse_id              AS sealed_warehouse_id,
+                   s.location_id               AS sealed_location_id,
+                   max(own.journal_number)     AS owner_journal_number,
+                   j.journal_number            AS other_journal_number,
+                   count(DISTINCT o.label_id)  AS label_count
+            FROM scelle s
+            JOIN erp_journal_line o
+              ON o.campaign_id = %(cid)s
+             AND o.label_id = s.label_id
+             AND o.erp_journal_id <> s.erp_journal_id
+             AND o.qty_counted <> 0
+             AND o.warehouse_id = s.warehouse_id
+             AND o.location_id = s.location_id
+            JOIN erp_journal j
+              ON j.id = o.erp_journal_id AND j.campaign_id = o.campaign_id
+             AND j.deleted_at IS NULL
+            JOIN erp_journal own
+              ON own.id = s.erp_journal_id AND own.campaign_id = %(cid)s
+            GROUP BY s.warehouse_id, s.location_id, j.journal_number
+            ORDER BY s.warehouse_id, s.location_id, j.journal_number
             """,
             {
                 "cid": campaign_id,
@@ -499,228 +574,4 @@ class ErpJournalRepository(_Base):
             qty_counted=row["qty_counted"],
             unit=row["unit"],
             inventory_status_id=row["inventory_status_id"],
-        )
-
-
-class LabelDecisionRepository(_Base):
-    """Les issues données aux étiquettes scellées recomptées ailleurs.
-
-    Une table minuscule et une règle simple : la décision survit aux réimports.
-    Le notebook est rejoué toutes les quelques minutes le jour J, et repartir de
-    zéro effacerait des décisions prises entre deux imports — un exploitant
-    tranche à neuf heures et retrouve la question vierge à neuf heures cinq,
-    sans que rien ne le lui dise.
-    """
-
-    _COLUMNS = (
-        "id, campaign_id, label_id, item_number, decision, "
-        "sealed_warehouse_id, sealed_location_id, other_warehouse_id, "
-        "other_location_id, comment, decided_at, decided_by"
-    )
-
-    def list(
-        self, campaign_id: str, *, conn: psycopg.Connection | None = None
-    ) -> list[LabelDecision]:
-        rows = self._fetch_all(
-            f"SELECT {self._COLUMNS} FROM early_count_label_decision "
-            "WHERE campaign_id = %s ORDER BY label_id, item_number",
-            (campaign_id,),
-            conn=conn,
-        )
-        return [self._decision(row) for row in rows]
-
-    def decide(
-        self,
-        decision: LabelDecision,
-        *,
-        conn: psycopg.Connection | None = None,
-    ) -> str:
-        """Poser ou remplacer l'issue d'une étiquette.
-
-        Remplacer, et non refuser : se raviser sur une étiquette est un geste
-        légitime — on est allé voir, et ce qu'on a vu n'est pas ce qu'on croyait.
-        """
-        self._execute(
-            "INSERT INTO early_count_label_decision "
-            "(id, campaign_id, label_id, item_number, decision, "
-            " sealed_warehouse_id, sealed_location_id, other_warehouse_id, "
-            " other_location_id, comment, decided_by) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-            "ON CONFLICT (campaign_id, label_id, item_number) DO UPDATE SET "
-            "decision = EXCLUDED.decision, comment = EXCLUDED.comment, "
-            "decided_at = now(), decided_by = EXCLUDED.decided_by",
-            (
-                decision.id, decision.campaign_id, decision.label_id,
-                decision.item_number, str(decision.decision),
-                decision.sealed_warehouse_id, decision.sealed_location_id,
-                decision.other_warehouse_id, decision.other_location_id,
-                decision.comment, decision.decided_by,
-            ),
-            conn=conn,
-        )
-        return decision.id
-
-    def clear(
-        self,
-        campaign_id: str,
-        label_id: str,
-        item_number: str,
-        *,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Retirer l'issue : la question redevient ouverte."""
-        return self._execute(
-            "DELETE FROM early_count_label_decision "
-            "WHERE campaign_id = %s AND label_id = %s AND item_number = %s",
-            (campaign_id, label_id, item_number),
-            conn=conn,
-        )
-
-    @staticmethod
-    def _decision(row: dict[str, Any]) -> LabelDecision:
-        return LabelDecision(
-            id=str(row["id"]),
-            campaign_id=str(row["campaign_id"]),
-            label_id=row["label_id"],
-            item_number=row["item_number"],
-            decision=LabelResolution(row["decision"]),
-            sealed_warehouse_id=row["sealed_warehouse_id"],
-            sealed_location_id=row["sealed_location_id"],
-            other_warehouse_id=row["other_warehouse_id"],
-            other_location_id=row["other_location_id"],
-            comment=row["comment"] or "",
-            decided_at=row["decided_at"],
-            decided_by=row["decided_by"] or "",
-        )
-
-
-class EarlyCountDriftRepository(_Base):
-    """Les dérives d'une campagne, et l'issue qu'un humain leur donne."""
-
-    _COLUMNS = (
-        "id, campaign_id, erp_journal_id, warehouse_id, location_id, item_number, "
-        "qty_erp_t0, qty_physical_t0, qty_erp_j, drift_value, is_material, "
-        "resolution, cause_code, comment, resolved_at, resolved_by"
-    )
-
-    def list(
-        self, campaign_id: str, *, conn: psycopg.Connection | None = None
-    ) -> list[EarlyCountDrift]:
-        rows = self._fetch_all(
-            f"SELECT {self._COLUMNS} FROM early_count_drift WHERE campaign_id = %s "
-            "ORDER BY warehouse_id, location_id, item_number",
-            (campaign_id,),
-            conn=conn,
-        )
-        return [self._drift(row) for row in rows]
-
-    def replace(
-        self,
-        campaign_id: str,
-        drifts: Sequence[EarlyCountDrift],
-        *,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Recalculer les dérives **en conservant les issues déjà données**.
-
-        Le notebook est rejoué très régulièrement le jour J, et chaque import
-        relance ce calcul. Repartir de zéro effacerait les décisions prises
-        entre deux imports — un exploitant tranche une dérive à neuf heures et
-        la retrouve vierge à neuf heures cinq, sans que rien ne le dise.
-        """
-        owns = conn is None
-        ctx = self.db.transaction() if owns else _NullContext(conn)
-        with ctx as connection, connection.cursor() as cur:
-            cur.execute(
-                "SELECT warehouse_id, location_id, item_number, resolution, "
-                "cause_code, comment, resolved_at, resolved_by "
-                "FROM early_count_drift "
-                "WHERE campaign_id = %s AND resolution IS NOT NULL",
-                (campaign_id,),
-            )
-            decided = {
-                (r["warehouse_id"], r["location_id"], r["item_number"]): r
-                for r in cur.fetchall()
-            }
-            cur.execute(
-                "DELETE FROM early_count_drift WHERE campaign_id = %s", (campaign_id,)
-            )
-            if not drifts:
-                return 0
-            cur.executemany(
-                "INSERT INTO early_count_drift (id, campaign_id, erp_journal_id, "
-                "warehouse_id, location_id, item_number, qty_erp_t0, "
-                "qty_physical_t0, qty_erp_j, drift_qty, drift_value, is_material, "
-                "resolution, cause_code, comment, resolved_at, resolved_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                [
-                    (
-                        drift.id, campaign_id, drift.erp_journal_id, drift.warehouse_id,
-                        drift.location_id, drift.item_number, drift.qty_erp_t0,
-                        drift.qty_physical_t0, drift.qty_erp_j, drift.drift_qty,
-                        drift.drift_value, drift.is_material,
-                        *self._carried(decided, drift),
-                    )
-                    for drift in drifts
-                ],
-            )
-            return len(drifts)
-
-    @staticmethod
-    def _carried(decided: dict, drift: EarlyCountDrift) -> tuple:
-        previous = decided.get(
-            (drift.warehouse_id, drift.location_id, drift.item_number)
-        )
-        if previous is None:
-            return (None, "", "", None, None)
-        return (
-            previous["resolution"], previous["cause_code"] or "",
-            previous["comment"] or "", previous["resolved_at"],
-            previous["resolved_by"],
-        )
-
-    def resolve(
-        self,
-        campaign_id: str,
-        drift_ids: Sequence[str],
-        resolution: DriftResolution,
-        *,
-        cause_code: str,
-        comment: str,
-        actor: str,
-        resolved_at: Any,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        return self._execute(
-            "UPDATE early_count_drift SET resolution = %s, cause_code = %s, "
-            "comment = %s, resolved_at = %s, resolved_by = %s "
-            "WHERE campaign_id = %s AND id = ANY(%s::uuid[])",
-            (str(resolution), cause_code, comment, resolved_at, actor,
-             campaign_id, list(drift_ids)),
-            conn=conn,
-        )
-
-    @staticmethod
-    def _drift(row: dict[str, Any]) -> EarlyCountDrift:
-        return EarlyCountDrift(
-            id=str(row["id"]),
-            campaign_id=str(row["campaign_id"]),
-            erp_journal_id=(
-                str(row["erp_journal_id"]) if row["erp_journal_id"] else None
-            ),
-            warehouse_id=row["warehouse_id"],
-            location_id=row["location_id"],
-            item_number=row["item_number"],
-            qty_erp_t0=row["qty_erp_t0"],
-            qty_physical_t0=row["qty_physical_t0"],
-            qty_erp_j=row["qty_erp_j"],
-            drift_value=row["drift_value"],
-            is_material=row["is_material"],
-            resolution=(
-                DriftResolution(row["resolution"]) if row["resolution"] else None
-            ),
-            cause_code=row["cause_code"] or "",
-            comment=row["comment"] or "",
-            resolved_at=row["resolved_at"],
-            resolved_by=row["resolved_by"] or "",
         )

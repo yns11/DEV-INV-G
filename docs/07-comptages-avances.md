@@ -277,11 +277,32 @@ fines servent à deux choses, et à deux choses seulement :
 
 1. la traçabilité ;
 2. **signaler qu'une étiquette enregistrée sur un emplacement précompté et scellé
-   se retrouve comptée dans un autre journal.**
+   se retrouve comptée à un *autre emplacement*.**
 
 C'est le seul contrôle du dispositif qui descende au grain de l'étiquette, et il
 est proportionné : sur l'export du 13 juin, 433 étiquettes sur 39 558 apparaissent
 dans plus d'un journal — environ 1 %, une liste qu'on peut réellement traiter.
+
+### Deux journaux ne font pas un déplacement
+
+La condition portait sur le journal seul : *une autre ligne, dans un autre
+journal*. Deux journaux passant sur le même emplacement scellé remplissaient
+donc l'écran de lignes dont les deux colonnes d'emplacement portaient la même
+valeur — « ATP / SF1 comptée aussi en ATP / SF1 » — et l'application proposait de
+mettre la pièce « au nouvel emplacement ». Il n'y en a pas.
+
+Le contrôle exige maintenant **un autre emplacement**, et part du **journal
+propriétaire** : celui dont le périmètre contient l'emplacement scellé. Sans
+cela, la ligne de passage d'un troisième journal servait à son tour de point de
+départ, et la même paire ressortait autant de fois que de journaux ayant touché
+l'emplacement.
+
+Ce qui en sort n'est pas perdu. Un second journal qui recompte un emplacement
+scellé **au même endroit** est un fait réel — les quantités peuvent différer,
+104 contre 93 sur l'export observé — et il est résumé à part, par emplacement et
+par journal, avec celui qui est retenu et celui qui ne l'est pas. C'est le seul
+renseignement utile : il n'y a rien à trancher, puisque la pièce est là où elle
+doit être.
 
 ---
 

@@ -681,6 +681,47 @@ function Drifts({ campaignId }: { campaignId: string }) {
 // Étiquettes
 // --------------------------------------------------------------------------
 
+/**
+ * Ce qui a été retiré de la liste des étiquettes comptées ailleurs, et pourquoi.
+ *
+ * Deux journaux passés sur le même emplacement scellé y produisaient une ligne
+ * par étiquette, avec « ATP / SF1 » dans les deux colonnes d'emplacement — la
+ * pièce n'a pas bougé, et aucune des trois issues n'a de sens sans nouvel
+ * emplacement. Elles noyaient les vrais déplacements, seuls à traiter.
+ *
+ * Les retirer en silence cacherait pourtant un fait : deux journaux ont compté
+ * le même emplacement, parfois avec des quantités différentes, et un seul est
+ * retenu. C'est ce que ce bandeau dit — au-dessus de la frontière asynchrone,
+ * parce qu'il doit rester visible quand la liste, elle, est vide.
+ */
+function RecountedInPlaceNotice({ campaignId }: { campaignId: string }) {
+  const query = useQuery({
+    queryKey: ['recounted-in-place', campaignId],
+    queryFn: () => api.recountedInPlace(campaignId),
+  })
+  const rows = query.data ?? []
+  if (rows.length === 0) return null
+  const labels = rows.reduce((sum, row) => sum + row.labelCount, 0)
+  return (
+    <Alert tone="info" title="Emplacements recomptés sur place">
+      {rows.length} emplacement(s) scellés, {labels} étiquette(s) : un second
+      journal les a comptés au même endroit. Ce n’est pas un déplacement — rien à
+      trancher — mais seul le journal qui possède l’emplacement est retenu.
+      <ul>
+        {rows.map((row) => (
+          <li
+            key={`${row.sealedWarehouseId}-${row.sealedLocationId}-${row.otherJournalNumber}`}
+          >
+            {row.sealedWarehouseId} / {row.sealedLocationId} — retenu{' '}
+            {row.ownerJournalNumber || DASH}, ignoré {row.otherJournalNumber} (
+            {row.labelCount} étiquette(s))
+          </li>
+        ))}
+      </ul>
+    </Alert>
+  )
+}
+
 function Labels({
   campaignId,
   canWrite,
@@ -774,13 +815,15 @@ function Labels({
   ]
 
   return (
+    <div className="stack">
+    <RecountedInPlaceNotice campaignId={campaignId} />
     <AsyncBoundary
       query={query}
       skeleton={<Skeleton height={200} />}
       isEmpty={(rows) => rows.length === 0}
       empty={
         <EmptyState title="Aucune étiquette signalée">
-            Aucune étiquette d’un emplacement scellé ne se retrouve comptée dans un autre journal.
+            Aucune étiquette d’un emplacement scellé ne se retrouve comptée à un autre emplacement.
         </EmptyState>
       }
     >
@@ -834,6 +877,7 @@ function Labels({
         )
       }}
     </AsyncBoundary>
+    </div>
   )
 }
 

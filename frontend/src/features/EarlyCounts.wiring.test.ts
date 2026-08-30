@@ -60,12 +60,12 @@ describe('le client vise des adresses que le serveur sert', () => {
     ...ROUTER.matchAll(/@router\.(get|post|put)\(\s*\n?\s*"([^"]+)"/g),
   ].map((match) => match[2] ?? '')
 
-  it('le routeur en déclare neuf', () => {
+  it('le routeur en déclare dix', () => {
     // Onze avant : le lot avancé en portait cinq — ouvrir, lister, clore,
     // sceller, desceller. Le journal ERP *est* le précomptage, et déclarer son
     // périmètre scelle ; il reste le descellement, plus les deux routes que le
     // traitement des étiquettes a demandées.
-    expect(served).toHaveLength(9)
+    expect(served).toHaveLength(10)
   })
 
   it.each([
@@ -105,8 +105,8 @@ describe("l'écran appelle réellement le client", () => {
       return API.slice(start, start + 600).includes('/early-counts')
     })
 
-  it('le client en expose neuf, une par route', () => {
-    expect(methods).toHaveLength(9)
+  it('le client en expose dix, une par route', () => {
+    expect(methods).toHaveLength(10)
   })
 
   it.each(methods.map((name) => [name]))('api.%s', (name) => {

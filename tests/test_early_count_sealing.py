@@ -307,6 +307,91 @@ class TestTheLabelDecisions:
         ctx.journals.ensure_journals(campaign.id, [SOL])
         return sealed
 
+    def _same_place_twice(self, ctx, campaign) -> str:
+        """SOL scellé par NPEM-1 ; NPEM-2 repasse dessus, au même endroit.
+
+        Le cas réel : deux journaux de comptage avancé à deux jours d'écart sur
+        le même emplacement. Ce n'est pas un déplacement — l'étiquette est là où
+        elle doit être — et les quantités peuvent différer.
+        """
+        _priced(ctx, campaign)
+        sealed = ctx.erp_journals.upsert_journal(
+            campaign.id, journal_number="NPEM-1", kind=JournalKind.INVE,
+            erp_posted=True, counted_on=dt.date(2026, 6, 11),
+        )
+        ctx.erp_journals.replace_lines(campaign.id, sealed, [
+            _erp_line(campaign.id, sealed, erp_line_number=1,
+                      label_id="000235471", qty_on_hand=104, qty_counted=104),
+        ])
+        other = ctx.erp_journals.upsert_journal(
+            campaign.id, journal_number="NPEM-2", kind=JournalKind.INVE,
+        )
+        ctx.erp_journals.replace_lines(campaign.id, other, [
+            _erp_line(campaign.id, other, erp_line_number=1,
+                      label_id="000235471", qty_on_hand=93, qty_counted=93),
+        ])
+        ctx.journals.ensure_journals(campaign.id, [SOL])
+        return sealed
+
+    def test_the_same_place_is_not_somewhere_else(self, service, ctx, campaign):
+        """« Comptée ailleurs » exigeait un autre *journal*, pas un autre endroit.
+
+        L'écran affichait donc des lignes dont les deux colonnes d'emplacement
+        portaient la même valeur — « ATP / SF1 comptée aussi en ATP / SF1 » — et
+        proposait de la mettre au nouvel emplacement. Il n'y en a pas.
+        """
+        journal = self._same_place_twice(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+
+        assert service.label_alerts(campaign.id) == []
+
+    def test_it_is_said_somewhere_else_instead(self, service, ctx, campaign):
+        """Les retirer sans le dire cacherait deux comptages du même endroit."""
+        journal = self._same_place_twice(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+
+        [row] = service.labels_recounted_in_place(campaign.id)
+        assert row["sealedLocationId"] == "SOL"
+        assert row["ownerJournalNumber"] == "NPEM-1", "celui qui est retenu"
+        assert row["otherJournalNumber"] == "NPEM-2", "celui qui ne l'est pas"
+        assert row["labelCount"] == 1
+
+    def test_a_real_move_is_not_swept_up_with_them(self, service, ctx, campaign):
+        """La correction ne doit pas emporter ce que le contrôle sert à voir."""
+        journal = self._two_places(ctx, campaign)
+        service.declare_scope(campaign, journal, [SOL])
+
+        assert len(service.label_alerts(campaign.id)) == 1
+        assert service.labels_recounted_in_place(campaign.id) == []
+
+    def test_the_pair_is_listed_once_per_owner_not_per_line(
+        self, service, ctx, campaign
+    ):
+        """Le départ était n'importe quelle ligne posée sur l'emplacement scellé.
+
+        Celle d'un journal de passage en faisait donc partie, et la même paire
+        ressortait autant de fois que de journaux ayant touché l'emplacement.
+        Un emplacement scellé appartient à un seul journal : c'est le sien qui
+        porte la preuve, et les autres ne sont qu'une trace.
+        """
+        journal = self._two_places(ctx, campaign)
+        # Un troisième journal repasse sur l'emplacement scellé — la ligne de
+        # passage, celle qui ne compte pas. Elle servait pourtant de point de
+        # départ, et redoublait l'alerte de son propriétaire.
+        passing = ctx.erp_journals.upsert_journal(
+            campaign.id, journal_number="NPEM-3", kind=JournalKind.INVE,
+        )
+        ctx.erp_journals.replace_lines(campaign.id, passing, [
+            _erp_line(campaign.id, passing, erp_line_number=1,
+                      label_id="001609233", qty_on_hand=8, qty_counted=8),
+        ])
+        service.declare_scope(campaign, journal, [SOL])
+
+        alerts = service.label_alerts(campaign.id)
+        assert [(a["sealedLocationId"], a["otherLocationId"]) for a in alerts] == [
+            ("SOL", "QUAI EXP")
+        ]
+
     def test_the_alert_names_both_places(self, service, ctx, campaign):
         journal = self._two_places(ctx, campaign)
         service.declare_scope(campaign, journal, [SOL])

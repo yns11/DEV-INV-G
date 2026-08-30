@@ -51,11 +51,11 @@ def seeded(client) -> str:
     """
     from inventory.config import get_settings
     from inventory.db.engine import Database
-    from inventory.db.repositories.erp_journal import (
+    from inventory.db.repositories.early_count import (
         EarlyCountDriftRepository,
-        ErpJournalRepository,
         LabelDecisionRepository,
     )
+    from inventory.db.repositories.erp_journal import ErpJournalRepository
     from inventory.db.repositories.journal import JournalRepository
     from inventory.domain.enums import JournalKind, LabelResolution
     from inventory.domain.models import (
@@ -95,6 +95,7 @@ def seeded(client) -> str:
                 location_id=SOL[1],
                 item_number="MASS-1",
                 erp_line_number=1,
+                label_id="000235471",
                 qty_on_hand=Decimal(10),
                 qty_counted=Decimal(12),
             )
@@ -102,6 +103,34 @@ def seeded(client) -> str:
     )
     JournalRepository(db).ensure_journals(campaign_id, [key])
     journals.set_scope(campaign_id, journal_id, [key], actor="test")
+    # Le scellement du journal de comptage, que `declare_scope` pose dans la
+    # même transaction : c'est lui que les contrôles par étiquette lisent pour
+    # savoir quels emplacements sont scellés.
+    JournalRepository(db).seal(campaign_id, [SOL], actor="test")
+
+    # Un second journal repasse sur l'emplacement scellé, au même endroit :
+    # pas un déplacement, et c'est ce que « recounted-in-place » résume.
+    second_id = journals.upsert_journal(
+        campaign_id, journal_number="NPEM-522821", kind=JournalKind.INVE,
+    )
+    journals.replace_lines(
+        campaign_id,
+        second_id,
+        [
+            ErpJournalLine(
+                id="",
+                erp_journal_id=second_id,
+                campaign_id=campaign_id,
+                warehouse_id=SOL[0],
+                location_id=SOL[1],
+                item_number="MASS-1",
+                erp_line_number=1,
+                label_id="000235471",
+                qty_on_hand=Decimal(9),
+                qty_counted=Decimal(11),
+            )
+        ],
+    )
 
     LabelDecisionRepository(db).decide(
         LabelDecision(
@@ -172,6 +201,12 @@ class TestTheDeclarationMatchesWhatComesBack:
         row = _rows(client, seeded, "drifts")[0]
         DriftResponse.model_validate(row)
 
+    def test_the_locations_recounted_in_place(self, client, seeded):
+        from inventory.api.responses import RecountedInPlace
+
+        row = _rows(client, seeded, "recounted-in-place")[0]
+        RecountedInPlace.model_validate(row)
+
 
 class TestTheScreenFindsTheKeysItReads:
     """La validation dit que la forme est licite, pas que l'écran s'y retrouve.
@@ -195,6 +230,10 @@ class TestTheScreenFindsTheKeysItReads:
             ("drifts", "driftQty"),
             ("drifts", "qtyErpJ"),
             ("drifts", "blocksAnalysis"),
+            ("recounted-in-place", "sealedLocationId"),
+            ("recounted-in-place", "ownerJournalNumber"),
+            ("recounted-in-place", "otherJournalNumber"),
+            ("recounted-in-place", "labelCount"),
         ],
     )
     def test_this_key_is_there(self, client, seeded, path, field):

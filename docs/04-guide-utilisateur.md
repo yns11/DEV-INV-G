@@ -476,7 +476,23 @@ jour J.
 
 **Desceller** est possible — c'est ce qui rend un emplacement au comptage du
 jour J — mais demande un motif : le descellement annule une preuve datée. Le
-périmètre part avec ; redéclarer est le geste qui rescelle.
+périmètre part avec ; redéclarer est le geste qui rescelle. Le bouton est sur la
+ligne du journal, à côté de *Modifier*, sur les seuls journaux scellés ; il est
+aussi sur les lignes de l'onglet *À rescanner*, où c'est une étiquette qui a mis
+l'emplacement en question.
+
+**Il n'y a pas de bouton *Supprimer* sur un journal ERP, et c'est délibéré.** Un
+journal n'est pas une saisie mais le reflet d'un document de l'ERP : le supprimer
+ne le ferait pas disparaître de l'ERP, et laisserait derrière lui un emplacement
+scellé sans le journal qui justifie sa référence — donc impossible à desceller,
+et impossible à donner à un autre journal. Ce qu'on veut vraiment faire dans ce
+cas se dit autrement :
+
+| Ce que vous vouliez | Le geste |
+|---|---|
+| Défaire un périmètre coché de travers | **Desceller**, puis redéclarer |
+| Remplacer des lignes fausses | **Réimporter** le journal : chaque import remplace les journaux qu'il rapporte |
+| Retirer de l'écran un journal chargé par erreur | Rien à faire : sans périmètre déclaré, il ne produit ni référence, ni comptage, ni écart |
 
 **Un emplacement n'appartient qu'à un journal.** Si un second comptage avancé
 passe par un emplacement déjà scellé, la liste proposée ne vous l'offre pas, et

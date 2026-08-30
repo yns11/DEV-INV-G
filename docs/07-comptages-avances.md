@@ -164,6 +164,32 @@ Le tri se fait **ligne par ligne**, pas emplacement par emplacement : un même
 fichier apporte les lignes du propriétaire et celles des journaux de passage, et
 écarter la clé entière priverait l'emplacement scellé de sa quantité comptée.
 
+### Pourquoi un journal ERP ne se supprime pas
+
+Le geste inverse de « déclarer et sceller » est **desceller**, pas supprimer, et
+c'est le seul offert. Un journal ERP n'est pas une saisie : c'est le reflet d'un
+document de l'ERP. Le supprimer ne le retirerait pas de l'ERP, et le prochain
+import le ramènerait.
+
+Ce qu'une suppression laisserait derrière elle est pire que le journal qu'elle
+retire. `erp_journal.deleted_at` existe — hérité du gabarit de toutes les tables
+— mais aucun dépôt, aucune route et aucun écran ne l'écrit, et le poser à la main
+en base produirait :
+
+| Ce qui reste | Effet |
+|---|---|
+| `count_journal.sealed_at` | L'emplacement reste **scellé**, sans journal sur l'écran pour le desceller |
+| `erp_journal_scope` | Le périmètre n'est pas en cascade sur un effacement logique : l'emplacement reste **pris**, et `candidate_locations` continue de l'écarter pour tout autre journal |
+| `book_stock.erp_journal_id` | La **référence survit** au journal qui la justifiait, sans lien pour la relire |
+| `scope_owners` | Ne voit plus le propriétaire : les lignes d'un autre journal **recommencent à compter** l'emplacement |
+
+Un emplacement scellé, sans propriétaire, indéclarable et indescellable : la
+suppression fabriquerait exactement l'incohérence que le scellement existe pour
+empêcher. Les trois besoins réels ont chacun leur geste — desceller pour un
+périmètre coché de travers, réimporter pour des lignes fausses, et ne rien faire
+pour un journal chargé par erreur, qui sans périmètre déclaré ne produit ni
+référence, ni comptage, ni écart.
+
 L'ordre des gestes est indifférent. Si les deux journaux entrent avant qu'aucun
 ne soit déclaré, l'import ne sait pas encore trier et l'emplacement porte leur
 somme ; **déclarer le périmètre recalcule le comptage** sur le seul

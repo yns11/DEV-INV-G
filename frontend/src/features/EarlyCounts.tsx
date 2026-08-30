@@ -176,7 +176,7 @@ export default function EarlyCounts() {
         onChange={setView}
       />
       {view === 'journaux' && (
-        <Journals campaignId={campaignId} canImport={overview.permissions.earlyCounts} />
+        <Journals campaignId={campaignId} canWrite={overview.permissions.earlyCounts} />
       )}
       {view === 'derives' && <Drifts campaignId={campaignId} />}
       {view === 'etiquettes' && (
@@ -227,12 +227,14 @@ function LastImport({ overview }: { overview: Overview }) {
 
 function Journals({
   campaignId,
-  canImport,
+  canWrite,
 }: {
   campaignId: string
-  canImport: boolean
+  canWrite: boolean
 }) {
   const client = useQueryClient()
+  const toast = useToast()
+  const onError = useErrorToast()
   const query = useQuery({
     queryKey: ['erp-journals', campaignId],
     queryFn: () => api.erpJournals(campaignId),
@@ -245,6 +247,26 @@ function Journals({
   const contracts = useQuery({ queryKey: ['contracts'], queryFn: api.contracts })
   const contract = contracts.data?.find((c) => c.key === 'count_journal_lines')
   const [open, setOpen] = useState<string | null>(null)
+
+  // Le geste inverse de « Déclarer et sceller », au même endroit que lui. Il
+  // n'existait que dans l'onglet « À rescanner », c'est-à-dire là où une
+  // étiquette avait signalé l'emplacement : hors de ce cas — un périmètre coché
+  // de travers, un journal chargé par erreur — l'écran ne proposait aucun
+  // retour en arrière, alors que la route et le service l'assuraient déjà.
+  const unseal = useMutation({
+    mutationFn: ({ journalId, reason }: { journalId: string; reason: string }) =>
+      api.unsealJournal(campaignId, journalId, reason),
+    onSuccess: (result) => {
+      toast.success(
+        `Journal descellé : ${result.locations} emplacement(s) rendus au comptage général.`,
+      )
+      client.invalidateQueries({ queryKey: ['erp-journals', campaignId] })
+      client.invalidateQueries({ queryKey: ['overview', campaignId] })
+      client.invalidateQueries({ queryKey: ['to-rescan', campaignId] })
+      client.invalidateQueries({ queryKey: ['drifts', campaignId] })
+    },
+    onError: (error: unknown) => onError(error),
+  })
 
   const columns: Column<ErpJournal>[] = [
     { key: 'journalNumber', label: 'Journal ERP', width: 150 },
@@ -301,6 +323,25 @@ function Journals({
           <Button size="sm" variant="ghost" onClick={() => setOpen(row.id)}>
             {row.scopeDeclared ? 'Modifier' : 'Déclarer et sceller'}
           </Button>
+          {row.isSealed && canWrite && (
+            <>
+              {' '}
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  const reason = window.prompt(
+                    'Desceller annule une preuve datée. Motif :',
+                  )
+                  if (reason?.trim()) {
+                    unseal.mutate({ journalId: row.id, reason })
+                  }
+                }}
+              >
+                Desceller
+              </Button>
+            </>
+          )}
         </span>
       ),
     },
@@ -313,7 +354,7 @@ function Journals({
           campaignId={campaignId}
           contract={contract}
           target="count_journal_lines"
-          disabled={!canImport}
+          disabled={!canWrite}
           disabledReason="Les comptages avancés sont gelés hors de la phase de comptage."
           onImported={() => {
             client.invalidateQueries({ queryKey: ['erp-journals', campaignId] })

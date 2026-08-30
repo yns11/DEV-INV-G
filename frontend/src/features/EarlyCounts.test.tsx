@@ -48,6 +48,10 @@ const fixtures = vi.hoisted(() => {
         body: { labelId: string; decision: string },
       ) => Promise.resolve({ ...body }),
     ),
+    unsealJournal: vi.fn(
+      (_campaignId: string, _journalId: string, _reason: string) =>
+        Promise.resolve({ locations: 57 }),
+    ),
   }
 })
 
@@ -114,6 +118,7 @@ vi.mock('../lib/api', () => ({
         },
       ]),
     decideLabel: fixtures.decideLabel,
+    unsealJournal: fixtures.unsealJournal,
     drifts: () => Promise.resolve([]),
     contracts: () =>
       Promise.resolve([
@@ -280,5 +285,62 @@ describe('la grille des journaux', () => {
     // ne l'est pas, et un troisième « Scellé » voudrait dire qu'il l'est.
     expect((await screen.findAllByText('Scellé')).length).toBe(2)
     expect(screen.getByText('10/06/2026')).toBeTruthy()
+  })
+
+  it('offre le geste inverse là où le scellement s’est fait', async () => {
+    // Desceller n'existait que dans l'onglet « À rescanner », c'est-à-dire
+    // dans le seul cas où une étiquette avait signalé l'emplacement. Un
+    // périmètre coché de travers n'avait aucun retour en arrière, alors que la
+    // route et le service l'assuraient déjà.
+    show(null)
+    expect(
+      await screen.findByRole('button', { name: 'Desceller' }),
+    ).toBeTruthy()
+  })
+
+  it('ne l’offre que sur les journaux scellés', async () => {
+    // Le second journal n'est pas déclaré : rien à desceller, et un bouton qui
+    // ne peut que refuser vaut moins que pas de bouton.
+    show(null)
+    await screen.findByText('NPEM-521301')
+    expect(screen.getAllByRole('button', { name: 'Desceller' }).length).toBe(1)
+  })
+
+  it('demande un motif, parce que desceller annule une preuve datée', async () => {
+    const prompt = vi
+      .spyOn(window, 'prompt')
+      .mockReturnValue('périmètre coché de travers')
+    fixtures.unsealJournal.mockClear()
+    show(null)
+    fireEvent.click(await screen.findByRole('button', { name: 'Desceller' }))
+
+    await waitFor(() => expect(fixtures.unsealJournal).toHaveBeenCalled())
+    expect(prompt).toHaveBeenCalled()
+    expect(fixtures.unsealJournal.mock.calls[0]?.slice(1)).toEqual([
+      'j-1',
+      'périmètre coché de travers',
+    ])
+    prompt.mockRestore()
+  })
+
+  it('n’appelle rien si le motif est laissé vide', async () => {
+    // Deux clics : le premier avec un motif blanc, le second avec un vrai. Si
+    // le blanc passait, le mock porterait deux appels — et l'ordre le dirait.
+    // Vérifier l'absence d'appel juste après le premier clic ne prouverait
+    // rien : `mutate` diffère l'appel d'une micro-tâche, et l'assertion
+    // passerait aussi bien avec la garde qu'en son absence.
+    const prompt = vi
+      .spyOn(window, 'prompt')
+      .mockReturnValueOnce('   ')
+      .mockReturnValueOnce('bon motif')
+    fixtures.unsealJournal.mockClear()
+    show(null)
+    const button = await screen.findByRole('button', { name: 'Desceller' })
+    fireEvent.click(button)
+    fireEvent.click(button)
+
+    await waitFor(() => expect(fixtures.unsealJournal).toHaveBeenCalledTimes(1))
+    expect(fixtures.unsealJournal.mock.calls[0]?.[2]).toBe('bon motif')
+    prompt.mockRestore()
   })
 })

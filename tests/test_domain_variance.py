@@ -62,6 +62,18 @@ def book(item: str, wh: str, loc: str, qty, cost="10") -> BookStockLine:
     )
 
 
+def precount(item: str, wh: str, loc: str, qty, cost="10") -> BookStockLine:
+    """Une ligne de référence posée par le scellement d'un précomptage.
+
+    Ce qui la distingue : `erp_journal_id`. Sa valorisation est le prix standard
+    du référentiel, pas le coût que l'ERP portait au gel.
+    """
+    return BookStockLine(
+        campaign_id="c", item_number=item, warehouse_id=wh, location_id=loc,
+        qty=qty, unit_cost=cost, erp_journal_id="j-1",
+    )
+
+
 def counted(item: str, wh: str, loc: str, qty) -> CountedQty:
     return CountedQty(item_number=item, warehouse_id=wh, location_id=loc,
                       qty=Decimal(str(qty)))
@@ -451,3 +463,61 @@ class TestAnExcludedArticleProducesNoVariance:
         )
 
         assert sum(line.variance_value for line in lines) == 0
+
+
+class TestTheStockHasTwoOrigins:
+    """Le snapshot général et la référence d'un emplacement précompté.
+
+    Depuis les comptages avancés, `book_stock` porte les deux, et elles ne
+    valorisent pas pareil : le snapshot porte le coût que l'ERP tenait au gel,
+    le précomptage porte le prix standard du référentiel. Le coût retenu est
+    pourtant **un par article**.
+
+    Le choisir par `setdefault` sur une lecture sans ordre laissait donc l'ordre
+    physique des lignes décider de la valorisation de tout l'article — y compris
+    des quantités que le snapshot valorisait autrement. La règle voulue était
+    écrite en commentaire depuis le début : le coût du snapshot l'emporte.
+    """
+
+    def _lines(self, camp, book_stock):
+        return build_variances(
+            campaign=camp, book_stock=book_stock,
+            counted=[], items=ITEMS, granularity="item",
+        )
+
+    def test_the_snapshot_cost_wins_over_the_referential_price(self, campaign):
+        [line] = self._lines(campaign, [
+            precount("A", "ATP", "SOL", Decimal(10), cost="4"),
+            book("A", "B06", "AUTRE", Decimal(100), cost="9"),
+        ])
+        assert line.book_qty == Decimal(110)
+        assert line.unit_cost == Decimal(9), "le coût que l'ERP portait au gel"
+        assert line.book_value == Decimal(990)
+
+    def test_and_wins_whichever_line_comes_first(self, campaign):
+        """C'est tout l'enjeu : le total ne doit pas dépendre de l'ordre.
+
+        Sans ordre garanti côté base, un VACUUM suffisait à changer un chiffre
+        que quelqu'un a signé.
+        """
+        [first] = self._lines(campaign, [
+            precount("A", "ATP", "SOL", Decimal(10), cost="4"),
+            book("A", "B06", "AUTRE", Decimal(100), cost="9"),
+        ])
+        [second] = self._lines(campaign, [
+            book("A", "B06", "AUTRE", Decimal(100), cost="9"),
+            precount("A", "ATP", "SOL", Decimal(10), cost="4"),
+        ])
+        assert first.book_value == second.book_value == Decimal(990)
+
+    def test_a_precount_alone_keeps_its_own_valuation(self, campaign):
+        """Avant le chargement général, il n'y a pas d'autre coût à préférer.
+
+        C'est le cas des jours qui précèdent le jour J, quand l'écart d'un
+        emplacement scellé est déjà lisible.
+        """
+        [line] = self._lines(
+            campaign, [precount("A", "ATP", "SOL", Decimal(10), cost="4")]
+        )
+        assert line.unit_cost == Decimal(4)
+        assert line.book_value == Decimal(40)

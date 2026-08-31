@@ -543,6 +543,27 @@ titres du carrousel le disent aussi. Le reste de la campagne s'y ajoute au
 chargement général. C'est le but même du précomptage : voir l'écart quand on
 peut encore aller voir sur le terrain.
 
+**Ce que le KPI « Stock ERP » additionne alors.** Une fois les deux en place, le
+total du carrousel mélange deux origines, et c'est voulu : chaque emplacement y
+figure **une fois**, avec la référence contre laquelle il a réellement été
+compté — le snapshot du jour J pour un emplacement ordinaire, la colonne « Stock
+ERP » de son propre journal pour un emplacement précompté et scellé. Les
+emplacements désactivés (`INV / 01`) et les articles exclus n'y sont pas, ni en
+quantités ni en valeurs.
+
+Deux conséquences à connaître :
+
+- **le total est composite en dates.** Un rapprochement avec un état ERP tiré à
+  une date unique trouvera une différence, égale à la somme des écarts des
+  précomptages. La date de référence de chaque ligne est portée à l'écran et
+  dans l'export ;
+- **la valorisation vient du snapshot** quand l'article y figure. Un
+  emplacement précompté est valorisé au prix standard du référentiel — son
+  journal ne transporte pas de valorisation —, mais dès que le stock ERP
+  général est chargé, c'est le coût que l'ERP portait au gel qui vaut pour
+  l'article entier. Le total peut donc bouger au chargement général sans
+  qu'aucune quantité n'ait changé.
+
 ### 2.1 Charger le stock ERP
 
 **Référentiels & seuils → Stock ERP.** Le référentiel articles doit être chargé

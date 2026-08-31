@@ -428,6 +428,51 @@ trouvera une différence, égale à la somme des écarts des précomptages. L'é
 l'export doivent porter la date de référence de chaque ligne, faute de quoi la
 première question posée sur ce total n'aura pas de réponse.
 
+### Comment le total « Stock ERP » se calcule
+
+Une seule table, `book_stock`, une seule ligne par (article, entrepôt,
+emplacement) — l'index `book_stock_uq` l'impose — et **deux origines** :
+
+| Origine | Écrite par | `erp_journal_id` | Date de référence |
+|---|---|---|---|
+| Snapshot général | Le chargement du stock ERP | `NULL` | Celle du snapshot (jour J) |
+| Précomptage scellé | La déclaration du périmètre | Le journal | `counted_on` du journal |
+
+Les deux ne se marchent jamais dessus, et c'est écrit des deux côtés :
+
+* le chargement général ne supprime que les lignes `erp_journal_id IS NULL`,
+  puis **saute** les emplacements qu'un précomptage réserve déjà ;
+* le scellement supprime ses propres lignes **et** celles qui portent les mêmes
+  clés : il reprend l'emplacement, quel que soit l'ordre des deux gestes.
+
+Le KPI est alors la somme sur ces lignes, agrégée par article :
+
+```
+Stock ERP (unités) = Σ book_stock.qty
+Stock ERP (valeur) = Σ (qty de l'article) × (coût unitaire de l'article)
+```
+
+hors emplacements **désactivés** — `INV / 01` en particulier — et hors articles
+exclus du périmètre : les deux sont retirés quantités *et* valeurs.
+
+**Le coût unitaire est un par article, et son origine décide.** Le snapshot
+porte le coût que l'ERP tenait au gel ; un emplacement précompté porte le prix
+standard du référentiel, puisque son journal ne transporte pas de valorisation.
+Quand un article figure dans les deux, **c'est le coût du snapshot qui vaut** —
+il est ce que l'ERP portait, et la règle était écrite en commentaire bien avant
+d'être appliquée. Elle ne l'était pas : le premier des deux à sortir de la base
+fixait le coût de **tout** l'article, y compris des quantités que le snapshot
+valorisait autrement. Sur une campagne à deux origines, cent unités à 9 € se
+valorisaient à 4 € parce qu'une ligne de précomptage sortait la première, et un
+`VACUUM` suffisait à changer le total. La lecture est maintenant ordonnée et la
+préférence explicite.
+
+> Ce qu'il reste, et qui est un choix : **un seul coût par article**, même quand
+> ses lignes viennent de deux dates. Valoriser chaque ligne à son propre coût
+> ferait diverger le total ERP et l'écart, qui se calcule lui aussi à ce coût-là.
+> Si le rapprochement comptable l'exige, c'est une décision à prendre, pas un
+> défaut à corriger.
+
 ---
 
 ## 9. La dérive : une quantité, deux issues

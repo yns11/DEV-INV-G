@@ -108,7 +108,22 @@ def build_variances(
         return entry is None or entry.status is LocationStatus.ACTIVE
 
     book_qty: dict[tuple[str, str, str], Decimal] = defaultdict(Decimal)
-    unit_cost: dict[str, Decimal] = {}
+    #: Le coût unitaire par article, et **d'où il vient**.
+    #:
+    #: Le stock ERP a maintenant deux origines dans la même table : le snapshot
+    #: général du jour J, et la référence d'un emplacement précompté, posée au
+    #: scellement. Les deux ne valorisent pas pareil — le snapshot porte le coût
+    #: que l'ERP tenait au gel, le précomptage porte le prix standard du
+    #: référentiel.
+    #:
+    #: Un seul dictionnaire alimenté par ``setdefault`` laissait donc **l'ordre
+    #: physique des lignes** décider du coût de tout l'article : une campagne
+    #: dont un article apparaît dans un précomptage *et* dans le snapshot
+    #: valorisait ses 100 unités générales au prix standard parce que la ligne
+    #: du précomptage était sortie la première. La règle voulue est écrite juste
+    #: en dessous depuis toujours ; elle n'était pas appliquée.
+    snapshot_cost: dict[str, Decimal] = {}
+    precount_cost: dict[str, Decimal] = {}
     units: dict[str, str] = {}
 
     for line in book_stock:
@@ -119,9 +134,12 @@ def build_variances(
         # The snapshot cost wins over the referential price: it is the value the
         # ERP actually carried at freeze time.
         if line.unit_cost:
-            unit_cost.setdefault(line.item_number, line.unit_cost)
+            costs = precount_cost if line.erp_journal_id else snapshot_cost
+            costs.setdefault(line.item_number, line.unit_cost)
         if line.unit:
             units.setdefault(line.item_number, line.unit)
+
+    unit_cost: dict[str, Decimal] = {**precount_cost, **snapshot_cost}
 
     counted_qty: dict[tuple[str, str, str], Decimal] = defaultdict(Decimal)
     for c in counted:

@@ -184,12 +184,35 @@ def service(*, variances, analyses, batches, published: bool = True):
     svc._unexplained_material = (  # type: ignore[method-assign]
         lambda c: CampaignService._unexplained_material(svc, c)
     )
+    # Posé sur la classe, parce que `_unexplained_material` construit son propre
+    # `AnalysisService` : le remplacer sur une instance ne serait jamais vu.
+    # Ce qui manquait, c'est de le **défaire** — voir la fixture ci-dessous.
     import inventory.services.analysis_service as analysis_module
 
     analysis_module.AnalysisService.variances = (  # type: ignore[method-assign]
         lambda self, campaign, granularity="item": variances
     )
     return svc
+
+
+@pytest.fixture(autouse=True)
+def _restore_analysis_variances():
+    """Rendre `AnalysisService.variances` après chaque test de ce fichier.
+
+    Le remplacement était écrit sur la classe et jamais défait : il survivait au
+    fichier, et `AnalysisService` rendait ensuite la dernière liste passée à
+    :func:`service` — presque toujours vide — pour **tout le reste de la
+    session**. Un contrôle écrit plus tard, qui attendait de vrais écarts,
+    voyait donc zéro.
+
+    C'est le pire réglage possible : le défaut est chez l'un et la panne chez
+    l'autre, et l'ordre des fichiers décide laquelle des deux on constate.
+    """
+    from inventory.services.analysis_service import AnalysisService
+
+    original = AnalysisService.variances
+    yield
+    AnalysisService.variances = original  # type: ignore[method-assign]
 
 
 class TestWhatCountsAsUnexplained:

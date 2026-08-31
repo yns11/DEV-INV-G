@@ -41,6 +41,7 @@ __all__ = [
     "VarianceSet",
     "KpiBlock",
     "build_variances",
+    "at_standard_price",
     "aggregate_by",
     "compute_kpis",
     "is_material",
@@ -62,6 +63,40 @@ class CountedQty:
 # --------------------------------------------------------------------------- #
 # Variance construction
 # --------------------------------------------------------------------------- #
+
+def at_standard_price(
+    lines: Iterable[BookStockLine], items: Mapping[str, Item]
+) -> list[BookStockLine]:
+    """Revaloriser des lignes de stock ERP au prix standard du référentiel.
+
+    **Une seule base de valorisation dans toute la campagne** : `prix standard ×
+    quantité`, pour le stock ERP comme pour le stock compté. C'est ce qui rend
+    les deux totaux comparables — un écart en euros mesure alors une différence
+    de *quantité*, et rien d'autre.
+
+    Les lignes de stock portent bien un coût, mais il n'a pas une origine
+    unique : celles du snapshot général portent ce que l'ERP tenait au gel,
+    celles d'un emplacement précompté portent déjà le prix standard. Les écrans
+    qui les affichaient telles quelles — la grille Stock ERP, son total, l'export
+    Excel, la liste des articles non comptés — valorisaient donc autrement que
+    les écarts et les KPI, sur les mêmes lignes.
+
+    Le coût d'origine reste le secours : pour un article que le référentiel ne
+    connaît pas, ou dont le prix standard est nul, mieux vaut la valeur que
+    l'ERP portait que zéro.
+    """
+    out: list[BookStockLine] = []
+    for line in lines:
+        item = items.get(line.item_number)
+        price = item.std_price if item else ZERO
+        cost = price or line.unit_cost
+        out.append(
+            line if cost == line.unit_cost else line.model_copy(
+                update={"unit_cost": cost}
+            )
+        )
+    return out
+
 
 def build_variances(
     *,
@@ -108,22 +143,23 @@ def build_variances(
         return entry is None or entry.status is LocationStatus.ACTIVE
 
     book_qty: dict[tuple[str, str, str], Decimal] = defaultdict(Decimal)
-    #: Le coût unitaire par article, et **d'où il vient**.
+    #: Le coût porté par les lignes de stock, gardé en **secours seulement**.
     #:
-    #: Le stock ERP a maintenant deux origines dans la même table : le snapshot
-    #: général du jour J, et la référence d'un emplacement précompté, posée au
-    #: scellement. Les deux ne valorisent pas pareil — le snapshot porte le coût
-    #: que l'ERP tenait au gel, le précomptage porte le prix standard du
-    #: référentiel.
+    #: La valorisation de la campagne est le **prix standard du référentiel**,
+    #: partout et des deux côtés — stock ERP comme stock compté. C'est ce qui
+    #: rend les deux totaux comparables : un écart de quantité vaut le prix de
+    #: l'article, pas la différence entre deux façons de le valoriser.
     #:
-    #: Un seul dictionnaire alimenté par ``setdefault`` laissait donc **l'ordre
-    #: physique des lignes** décider du coût de tout l'article : une campagne
-    #: dont un article apparaît dans un précomptage *et* dans le snapshot
-    #: valorisait ses 100 unités générales au prix standard parce que la ligne
-    #: du précomptage était sortie la première. La règle voulue est écrite juste
-    #: en dessous depuis toujours ; elle n'était pas appliquée.
-    snapshot_cost: dict[str, Decimal] = {}
-    precount_cost: dict[str, Decimal] = {}
+    #: Le stock ERP a maintenant deux origines dans la même table — le snapshot
+    #: général du jour J et la référence d'un emplacement précompté — et elles
+    #: ne portent pas le même coût. Les laisser décider revenait à faire dépendre
+    #: la valeur d'un article de l'ordre de ses lignes, et à valoriser le stock
+    #: ERP et le comptage à deux bases différentes.
+    #:
+    #: Ce coût-là ne sert donc plus que pour un article que le référentiel ne
+    #: connaît pas, ou dont le prix standard est nul : mieux vaut la valeur que
+    #: l'ERP portait que zéro.
+    fallback_cost: dict[str, Decimal] = {}
     units: dict[str, str] = {}
 
     for line in book_stock:
@@ -131,15 +167,10 @@ def build_variances(
             continue
         k = key_of(line.item_number, line.warehouse_id, line.location_id)
         book_qty[k] += line.qty
-        # The snapshot cost wins over the referential price: it is the value the
-        # ERP actually carried at freeze time.
         if line.unit_cost:
-            costs = precount_cost if line.erp_journal_id else snapshot_cost
-            costs.setdefault(line.item_number, line.unit_cost)
+            fallback_cost.setdefault(line.item_number, line.unit_cost)
         if line.unit:
             units.setdefault(line.item_number, line.unit)
-
-    unit_cost: dict[str, Decimal] = {**precount_cost, **snapshot_cost}
 
     counted_qty: dict[tuple[str, str, str], Decimal] = defaultdict(Decimal)
     for c in counted:
@@ -186,9 +217,13 @@ def build_variances(
         # troncature muette que ce projet refuse.
         if item is not None and item.excluded_everywhere:
             continue
-        cost = unit_cost.get(item_number)
-        if cost is None:
-            cost = item.std_price if item else ZERO
+        # `prix standard × quantité`, des deux côtés de l'écart. Une seule base
+        # de valorisation pour le stock ERP et pour le comptage : sinon l'écart
+        # en euros mélangerait une différence de quantité et une différence de
+        # méthode, et personne ne saurait dire laquelle il regarde.
+        cost = item.std_price if item else ZERO
+        if not cost:
+            cost = fallback_cost.get(item_number, ZERO)
         out.append(
             VarianceLine(
                 campaign_id=campaign.id,

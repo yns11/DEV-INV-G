@@ -27,11 +27,12 @@ class BookStockRepository(_Base):
             "SELECT campaign_id, item_number, warehouse_id, location_id, qty, unit, "
             "unit_cost, reference_date, erp_journal_id "
             "FROM book_stock WHERE campaign_id = %s "
-            # Un ordre, parce que des euros s'en déduisent. Le coût unitaire
-            # retenu pour un article est celui de la première ligne qui en
-            # porte un ; sans `ORDER BY`, « la première » est l'ordre physique
-            # de la table, et un VACUUM suffisait à changer un total que
-            # quelqu'un a signé. L'index unique porte déjà ces trois colonnes.
+            # Un ordre, pour que deux lectures rendent la même chose. La
+            # valorisation ne s'en déduit plus — c'est le prix standard du
+            # référentiel, partout —, mais une grille et un export qu'on
+            # compare d'un jour à l'autre n'ont aucune raison de changer de
+            # tri au gré des réécritures. L'index unique porte déjà ces trois
+            # colonnes.
             "ORDER BY item_number, warehouse_id, location_id",
             (campaign_id,),
         )

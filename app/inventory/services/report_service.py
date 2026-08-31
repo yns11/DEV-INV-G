@@ -10,6 +10,7 @@ from typing import Any
 from ..domain.enums import AuditAction, SheetPass
 from ..domain.models import Campaign, CountSheetLine, Item, erp_journal_numbers
 from ..domain.printing import PrintMode, print_refusal
+from ..domain.variance import at_standard_price
 from ..errors import NotFoundError, ValidationError
 from ..reporting.exports import (
     build_counting_sheet_pdf,
@@ -365,7 +366,10 @@ class ReportService:
                  items[b.item_number].name if b.item_number in items else "",
                  b.warehouse_id, b.location_id, float(b.qty), b.unit,
                  float(b.unit_cost), float(b.value)]
-                for b in ctx.book_stock.list(campaign.id)
+                # Au prix standard, comme le reste du classeur.
+                for b in at_standard_price(
+                    ctx.book_stock.list(campaign.id), items
+                )
             ],
         )
 

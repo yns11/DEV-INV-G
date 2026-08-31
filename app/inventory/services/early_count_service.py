@@ -44,7 +44,12 @@ from collections.abc import Callable, Collection, Sequence
 from typing import Any
 
 from ..db import new_id
-from ..domain.enums import AuditAction, DataSource, LabelResolution
+from ..domain.enums import (
+    AuditAction,
+    DataSource,
+    JournalStatus,
+    LabelResolution,
+)
 from ..domain.models import (
     BookStockLine,
     Campaign,
@@ -53,7 +58,7 @@ from ..domain.models import (
     LocationKey,
 )
 from ..errors import ConflictError, NotFoundError, ValidationError
-from .context import ServiceContext
+from .context import ServiceContext, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +172,23 @@ class EarlyCountService:
             ctx.journals.replace_imported_lines(
                 campaign.id, touched, counted, conn=conn
             )
+            # **Sceller, c'est déclarer compté.** Le statut du journal de
+            # comptage suit, comme il suit à l'import : seuls les journaux
+            # `IN_PROGRESS` et `POSTED` entrent dans les quantités comptées.
+            # Un emplacement resté `PENDING` apportait donc sa référence au
+            # stock ERP et **rien** au stock physique — un manquant fantôme de
+            # la totalité de sa quantité, sur un emplacement dont le scellement
+            # affirme précisément qu'il est compté.
+            if touched:
+                ctx.journals.set_status(
+                    campaign.id,
+                    touched,
+                    JournalStatus.POSTED if journal.erp_posted
+                    else JournalStatus.IN_PROGRESS,
+                    actor=ctx.actor,
+                    posted_at=utcnow() if journal.erp_posted else None,
+                    conn=conn,
+                )
             ctx.journals.seal(
                 campaign.id,
                 [(k.warehouse_id, k.location_id) for k in keys],

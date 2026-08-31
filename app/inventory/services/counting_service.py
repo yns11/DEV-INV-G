@@ -21,6 +21,7 @@ from ..domain.models import (
     LocationKey,
     erp_journal_numbers,
 )
+from ..domain.variance import at_standard_price
 from ..errors import ConflictError, NotFoundError, ValidationError
 from .context import ServiceContext, utcnow
 from .manager_service import Perimeter
@@ -97,7 +98,11 @@ class CountingService:
         lines = ctx.journals.list_lines(journal_id)
         book = {
             (b.item_number): b
-            for b in ctx.book_stock.list(campaign_id)
+            # Même valorisation que partout ailleurs : prix standard × quantité.
+            for b in at_standard_price(
+                ctx.book_stock.list(campaign_id),
+                ctx.referentials.items_by_number(campaign_id),
+            )
             if b.warehouse_id == journal.warehouse_id
             and b.location_id == journal.location_id
         }

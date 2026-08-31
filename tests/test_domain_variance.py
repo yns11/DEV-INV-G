@@ -21,6 +21,7 @@ from inventory.domain.models import (
 from inventory.domain.variance import (
     CountedQty,
     aggregate_by,
+    at_standard_price,
     build_variances,
     compute_kpis,
     is_material,
@@ -204,15 +205,34 @@ class TestReconciliation:
         assert lines[0].physical_qty == lines[0].counted_qty
         assert lines[0].variance_qty == lines[0].counted_variance_qty
 
-    def test_snapshot_cost_wins_over_the_referential_price(self, campaign):
+    def test_the_standard_price_values_both_sides(self, campaign):
+        """`prix standard × quantité`, pour le stock ERP comme pour le comptage.
+
+        Le coût porté par la ligne de stock — celui que l'ERP tenait au gel —
+        ne valorise plus rien : les deux côtés de l'écart doivent se mesurer à
+        la même base, sans quoi l'écart en euros mélangerait une différence de
+        quantité et une différence de méthode.
+        """
         lines = build_variances(
             campaign=campaign,
             book_stock=[book("B", "B06", "L1", 10, cost="250")],
             counted=[counted("B", "B06", "L1", 9)],
             items=ITEMS,
         )
+        assert lines[0].unit_cost == Decimal("100.00"), "std_price de B"
+        assert lines[0].book_value == Decimal("1000.00")
+        assert lines[0].physical_value == Decimal("900.00")
+        assert lines[0].variance_value == Decimal("-100.00")
+
+    def test_the_line_cost_is_the_fallback_for_an_unknown_article(self, campaign):
+        """Mieux vaut la valeur que l'ERP portait que zéro."""
+        lines = build_variances(
+            campaign=campaign,
+            book_stock=[book("INCONNU", "B06", "L1", 10, cost="250")],
+            counted=[],
+            items=ITEMS,
+        )
         assert lines[0].unit_cost == Decimal("250.00")
-        assert lines[0].variance_value == Decimal("-250.00")
 
 
 class TestMateriality:
@@ -468,15 +488,14 @@ class TestAnExcludedArticleProducesNoVariance:
 class TestTheStockHasTwoOrigins:
     """Le snapshot général et la référence d'un emplacement précompté.
 
-    Depuis les comptages avancés, `book_stock` porte les deux, et elles ne
-    valorisent pas pareil : le snapshot porte le coût que l'ERP tenait au gel,
-    le précomptage porte le prix standard du référentiel. Le coût retenu est
-    pourtant **un par article**.
+    Depuis les comptages avancés, `book_stock` porte les deux dans la même
+    table, et elles ne portent pas le même coût : le snapshot porte celui que
+    l'ERP tenait au gel, le précomptage porte le prix standard.
 
-    Le choisir par `setdefault` sur une lecture sans ordre laissait donc l'ordre
-    physique des lignes décider de la valorisation de tout l'article — y compris
-    des quantités que le snapshot valorisait autrement. La règle voulue était
-    écrite en commentaire depuis le début : le coût du snapshot l'emporte.
+    Aucune des deux ne valorise la campagne. La base est **le prix standard du
+    référentiel, partout et des deux côtés** — c'est ce qui rend le stock ERP et
+    le stock compté comparables, et ce qui met le total à l'abri de l'ordre des
+    lignes.
     """
 
     def _lines(self, camp, book_stock):
@@ -485,21 +504,17 @@ class TestTheStockHasTwoOrigins:
             counted=[], items=ITEMS, granularity="item",
         )
 
-    def test_the_snapshot_cost_wins_over_the_referential_price(self, campaign):
+    def test_both_origins_are_valued_at_the_standard_price(self, campaign):
         [line] = self._lines(campaign, [
             precount("A", "ATP", "SOL", Decimal(10), cost="4"),
             book("A", "B06", "AUTRE", Decimal(100), cost="9"),
         ])
-        assert line.book_qty == Decimal(110)
-        assert line.unit_cost == Decimal(9), "le coût que l'ERP portait au gel"
-        assert line.book_value == Decimal(990)
+        assert line.book_qty == Decimal(110), "les quantités s'additionnent"
+        assert line.unit_cost == Decimal(10), "std_price de A, et rien d'autre"
+        assert line.book_value == Decimal(1100)
 
-    def test_and_wins_whichever_line_comes_first(self, campaign):
-        """C'est tout l'enjeu : le total ne doit pas dépendre de l'ordre.
-
-        Sans ordre garanti côté base, un VACUUM suffisait à changer un chiffre
-        que quelqu'un a signé.
-        """
+    def test_the_total_does_not_depend_on_the_order_of_the_lines(self, campaign):
+        """Sans cela, un VACUUM suffisait à changer un chiffre signé."""
         [first] = self._lines(campaign, [
             precount("A", "ATP", "SOL", Decimal(10), cost="4"),
             book("A", "B06", "AUTRE", Decimal(100), cost="9"),
@@ -508,16 +523,54 @@ class TestTheStockHasTwoOrigins:
             book("A", "B06", "AUTRE", Decimal(100), cost="9"),
             precount("A", "ATP", "SOL", Decimal(10), cost="4"),
         ])
-        assert first.book_value == second.book_value == Decimal(990)
+        assert first.book_value == second.book_value == Decimal(1100)
 
-    def test_a_precount_alone_keeps_its_own_valuation(self, campaign):
-        """Avant le chargement général, il n'y a pas d'autre coût à préférer.
+    def test_loading_the_general_stock_does_not_move_the_valuation(self, campaign):
+        """Avant le chargement général, un précomptage vaut déjà son prix.
 
-        C'est le cas des jours qui précèdent le jour J, quand l'écart d'un
-        emplacement scellé est déjà lisible.
+        Il valait le prix standard puis, au chargement, celui du snapshot : le
+        total bougeait sans qu'aucune quantité n'ait changé.
         """
-        [line] = self._lines(
+        [alone] = self._lines(
             campaign, [precount("A", "ATP", "SOL", Decimal(10), cost="4")]
         )
-        assert line.unit_cost == Decimal(4)
-        assert line.book_value == Decimal(40)
+        assert alone.unit_cost == Decimal(10)
+        assert alone.book_value == Decimal(100)
+
+
+class TestValuingBookStockLines:
+    """La même règle pour les écrans qui affichent les lignes de stock.
+
+    La grille Stock ERP, son total, l'export Excel et la liste des articles non
+    comptés lisaient le coût porté par la ligne. Sur les mêmes lignes, ils
+    valorisaient donc autrement que les écarts et les KPI — et le total de la
+    grille ne tombait pas sur celui du carrousel.
+    """
+
+    def test_the_referential_price_replaces_the_line_cost(self):
+        [line] = at_standard_price([book("A", "B06", "L1", 10, cost="250")], ITEMS)
+        assert line.unit_cost == Decimal(10)
+        assert line.value == Decimal(100)
+
+    def test_a_precount_line_is_valued_the_same_way(self):
+        [line] = at_standard_price(
+            [precount("A", "ATP", "SOL", Decimal(10), cost="4")], ITEMS
+        )
+        assert line.unit_cost == Decimal(10)
+
+    def test_an_unknown_article_keeps_what_the_erp_carried(self):
+        [line] = at_standard_price(
+            [book("INCONNU", "B06", "L1", 10, cost="250")], ITEMS
+        )
+        assert line.unit_cost == Decimal(250)
+
+    def test_and_so_does_an_article_priced_at_zero(self):
+        """Un prix standard manquant ne doit pas effacer une valeur connue."""
+        items = {**ITEMS, "Z": Item(campaign_id="c", item_number="Z", std_price="0")}
+        [line] = at_standard_price([book("Z", "B06", "L1", 10, cost="250")], items)
+        assert line.unit_cost == Decimal(250)
+
+    def test_the_quantities_are_left_alone(self):
+        """Cette fonction valorise ; elle ne touche à aucune quantité."""
+        lines = at_standard_price([book("A", "B06", "L1", 10, cost="250")], ITEMS)
+        assert lines[0].qty == Decimal(10)

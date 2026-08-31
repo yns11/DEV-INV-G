@@ -445,33 +445,69 @@ Les deux ne se marchent jamais dessus, et c'est écrit des deux côtés :
 * le scellement supprime ses propres lignes **et** celles qui portent les mêmes
   clés : il reprend l'emplacement, quel que soit l'ordre des deux gestes.
 
-Le KPI est alors la somme sur ces lignes, agrégée par article :
+#### Les quantités
 
 ```
-Stock ERP (unités) = Σ book_stock.qty
-Stock ERP (valeur) = Σ (qty de l'article) × (coût unitaire de l'article)
+Stock ERP        = Σ book_stock.qty                    (une ligne par clé)
+Stock compté     = Σ quantités des journaux de comptage
+                   + consolidation GENERIQUE en direct
+Stock physique   = Stock compté + ajustements postés
+Écart net        = Stock physique − Stock ERP
 ```
 
-hors emplacements **désactivés** — `INV / 01` en particulier — et hors articles
-exclus du périmètre : les deux sont retirés quantités *et* valeurs.
+Deux exclusions, qui portent sur **les deux côtés à la fois** — quantités *et*
+valeurs : les emplacements **désactivés** (`INV / 01`, le tampon) et les
+articles **exclus du périmètre**.
 
-**Le coût unitaire est un par article, et son origine décide.** Le snapshot
-porte le coût que l'ERP tenait au gel ; un emplacement précompté porte le prix
-standard du référentiel, puisque son journal ne transporte pas de valorisation.
-Quand un article figure dans les deux, **c'est le coût du snapshot qui vaut** —
-il est ce que l'ERP portait, et la règle était écrite en commentaire bien avant
-d'être appliquée. Elle ne l'était pas : le premier des deux à sortir de la base
-fixait le coût de **tout** l'article, y compris des quantités que le snapshot
-valorisait autrement. Sur une campagne à deux origines, cent unités à 9 € se
-valorisaient à 4 € parce qu'une ligne de précomptage sortait la première, et un
-`VACUUM` suffisait à changer le total. La lecture est maintenant ordonnée et la
-préférence explicite.
+Du côté compté, deux règles décident ce qui entre :
 
-> Ce qu'il reste, et qui est un choix : **un seul coût par article**, même quand
-> ses lignes viennent de deux dates. Valoriser chaque ligne à son propre coût
-> ferait diverger le total ERP et l'écart, qui se calcule lui aussi à ce coût-là.
-> Si le rapprochement comptable l'exige, c'est une décision à prendre, pas un
-> défaut à corriger.
+* seuls les journaux **`IN_PROGRESS` et `POSTED`** comptent. Un journal
+  `PENDING` est un emplacement qu'on n'a pas encore touché, et le compter à
+  zéro inventerait un manquant ;
+* un journal **`BOOK_ENFORCED`** contribue la quantité du stock ERP elle-même —
+  écart nul par construction, ce qui est exactement ce que ce statut promet.
+
+> C'est pour cela que **sceller met le journal de comptage en `IN_PROGRESS` ou
+> `POSTED`**, selon que le journal ERP est posté. Un emplacement scellé resté
+> `PENDING` apportait sa référence au stock ERP et rien au stock physique : un
+> manquant fantôme de la totalité de sa quantité, sur un emplacement dont le
+> scellement affirme précisément qu'il est compté.
+
+Un emplacement précompté et scellé est donc présent **des deux côtés** : sa
+ligne `book_stock` (`ERP@T0`) et les lignes de son journal de comptage, posées
+par l'import ou recalculées par la déclaration.
+
+#### Les valeurs
+
+**Une seule base de valorisation dans toute la campagne :**
+
+```
+valeur = prix standard du référentiel × quantité
+```
+
+pour le stock ERP **comme** pour le stock compté. C'est ce qui rend les deux
+comparables : un écart en euros mesure alors une différence de *quantité*, et
+rien d'autre.
+
+Les lignes de stock portent bien un coût — celui que l'ERP tenait au gel pour le
+snapshot, le prix standard pour un précomptage — mais il ne valorise plus rien.
+Le laisser décider avait deux effets, et aucun n'était voulu : la valeur d'un
+article dépendait de l'ordre de ses lignes, et le stock ERP se valorisait
+autrement que le comptage auquel on le compare. Ce coût ne sert plus que de
+**secours** : article inconnu du référentiel, ou prix standard nul — mieux vaut
+la valeur que l'ERP portait que zéro.
+
+La règle vaut partout, et c'est le point : les écarts, les KPI du carrousel, la
+grille Stock ERP et son total, l'export Excel et la liste des articles non
+comptés lisent tous la même valorisation. Trois de ces écrans lisaient le coût
+de la ligne, et le total de la grille ne tombait donc pas sur celui du
+carrousel, sur les mêmes lignes.
+
+**Une conséquence à connaître.** Le total ERP reste composite **en dates** : la
+plupart des lignes au jour J, les lignes scellées à leur date de précomptage. Un
+rapprochement avec un état ERP tiré à une date unique trouvera une différence,
+égale à la somme des écarts des précomptages. La date de référence de chaque
+ligne est portée à l'écran et dans l'export.
 
 ---
 

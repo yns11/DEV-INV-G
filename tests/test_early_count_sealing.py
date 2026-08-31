@@ -25,7 +25,12 @@ import pytest
 from tests.early_count_db import disposable_database, make_campaign
 
 from inventory.db import new_id
-from inventory.domain.enums import CampaignStatus, JournalKind, LabelResolution
+from inventory.domain.enums import (
+    CampaignStatus,
+    JournalKind,
+    JournalStatus,
+    LabelResolution,
+)
 from inventory.domain.models import (
     Campaign,
     CountJournalLine,
@@ -327,6 +332,55 @@ class TestSealingOverAnExistingReference:
             for line in ctx.book_stock.list(campaign.id)
         }
         assert by_key[("B06", "AUTRE")].qty == Decimal(5)
+
+
+class TestSealingDeclaresTheLocationCounted:
+    """Sceller sans dire « compté » produisait un manquant fantôme.
+
+    Seuls les journaux `IN_PROGRESS` et `POSTED` entrent dans les quantités
+    comptées. Un emplacement scellé dont le journal de comptage restait
+    `PENDING` apportait donc sa référence au stock ERP et **rien** au stock
+    physique : un manquant de la totalité de sa quantité, sur un emplacement
+    dont le scellement affirme précisément qu'il est compté.
+    """
+
+    def test_the_counting_journal_stops_being_pending(self, service, ctx, campaign):
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+
+        counting = {j.key: j for j in ctx.journals.list(campaign.id)}[SOL]
+        assert counting.status is not JournalStatus.PENDING
+
+    def test_a_posted_erp_journal_posts_it(self, service, ctx, campaign):
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, posted=True, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+
+        counting = {j.key: j for j in ctx.journals.list(campaign.id)}[SOL]
+        assert counting.status is JournalStatus.POSTED
+
+    def test_an_unposted_one_only_starts_it(self, service, ctx, campaign):
+        """Poster est irréversible côté ERP : on ne l'invente pas ici."""
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, posted=False, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+
+        counting = {j.key: j for j in ctx.journals.list(campaign.id)}[SOL]
+        assert counting.status is JournalStatus.IN_PROGRESS
+
+    def test_and_the_quantity_reaches_the_counted_total(self, service, ctx, campaign):
+        """Le contrôle qui porte : ce que les KPI additionnent réellement."""
+        from inventory.services.analysis_service import AnalysisService
+
+        _priced(ctx, campaign)
+        journal = _journal(ctx, campaign, scope=())
+        service.declare_scope(campaign, journal, [SOL])
+
+        kpi = AnalysisService(ctx).kpis(campaign).as_dict()
+        assert kpi["bookQty"] == 10.0, "le stock ERP du précomptage"
+        assert kpi["countedQty"] == 12.0, "et son comptage, qui doit y répondre"
+        assert kpi["physicalQty"] == 12.0
 
 
 class TestOnceTheStockIsFrozen:

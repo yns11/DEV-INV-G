@@ -543,26 +543,36 @@ titres du carrousel le disent aussi. Le reste de la campagne s'y ajoute au
 chargement général. C'est le but même du précomptage : voir l'écart quand on
 peut encore aller voir sur le terrain.
 
-**Ce que le KPI « Stock ERP » additionne alors.** Une fois les deux en place, le
-total du carrousel mélange deux origines, et c'est voulu : chaque emplacement y
-figure **une fois**, avec la référence contre laquelle il a réellement été
-compté — le snapshot du jour J pour un emplacement ordinaire, la colonne « Stock
-ERP » de son propre journal pour un emplacement précompté et scellé. Les
-emplacements désactivés (`INV / 01`) et les articles exclus n'y sont pas, ni en
-quantités ni en valeurs.
+**Ce que le carrousel additionne alors.** Une fois les deux en place, chaque
+emplacement figure **une fois** dans le stock ERP, avec la référence contre
+laquelle il a réellement été compté — le snapshot du jour J pour un emplacement
+ordinaire, la colonne « Stock ERP » de son propre journal pour un emplacement
+précompté et scellé.
 
-Deux conséquences à connaître :
+| Indicateur | Ce qu'il additionne |
+|---|---|
+| **Stock ERP** | Les lignes de référence, une par (article, entrepôt, emplacement) |
+| **Stock physique** | Ce qui a été compté, plus les ajustements postés depuis |
+| **Écart net** | Stock physique − Stock ERP, signé : les surplus compensent les manques |
+| **Écart brut** | La même différence en valeur absolue : deux erreurs de sens contraire sont deux erreurs |
 
-- **le total est composite en dates.** Un rapprochement avec un état ERP tiré à
-  une date unique trouvera une différence, égale à la somme des écarts des
-  précomptages. La date de référence de chaque ligne est portée à l'écran et
-  dans l'export ;
-- **la valorisation vient du snapshot** quand l'article y figure. Un
-  emplacement précompté est valorisé au prix standard du référentiel — son
-  journal ne transporte pas de valorisation —, mais dès que le stock ERP
-  général est chargé, c'est le coût que l'ERP portait au gel qui vaut pour
-  l'article entier. Le total peut donc bouger au chargement général sans
-  qu'aucune quantité n'ait changé.
+Les emplacements **désactivés** (`INV / 01`) et les articles **exclus** ne sont
+dans aucun des deux, ni en quantités ni en valeurs. Côté compté, un emplacement
+n'entre que si son journal est démarré ou posté — un journal *En attente* est un
+emplacement qu'on n'a pas encore touché, et le compter à zéro inventerait un
+manquant. C'est pourquoi sceller un précomptage démarre aussi son journal de
+comptage : sans cela il apportait sa référence et rien d'autre.
+
+**Les valeurs se calculent toutes de la même façon : `prix standard × quantité`**,
+pour le stock ERP comme pour le stock compté. Un écart en euros mesure donc une
+différence de quantité, et rien d'autre. Corriger un prix dans la grille
+Articles met à jour toute la campagne, sans rien recharger.
+
+**Une seule chose à savoir sur ce total** : il est composite **en dates** — la
+plupart des lignes au jour J, les lignes scellées à leur date de précomptage. Un
+rapprochement avec un état ERP tiré à une date unique trouvera une différence,
+égale à la somme des écarts des précomptages. La date de référence de chaque
+ligne est affichée et exportée.
 
 ### 2.1 Charger le stock ERP
 

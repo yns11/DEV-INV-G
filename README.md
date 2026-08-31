@@ -140,7 +140,8 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      2649 contrôles ; 201 exigent un PostgreSQL, ignorés sinon
+fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
+tests/                      2672 contrôles ; 224 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -160,6 +161,7 @@ Makefile                    Points d'entrée développeur
 | [`06-top20-ameliorations.md`](docs/06-top20-ameliorations.md) | Revue critique : 20 améliorations priorisées, séquencées |
 | [`07-comptages-avances.md`](docs/07-comptages-avances.md) | Comptages avancés : la logique, le modèle et le processus |
 | [`08-algorigrammes.md`](docs/08-algorigrammes.md) | Algorigrammes du processus actuel et du processus avec comptages avancés |
+| [`09-jeu-de-donnees-de-controle.md`](docs/09-jeu-de-donnees-de-controle.md) | Le jeu de données de contrôle, son arithmétique posée, et comment confronter l'application |
 
 ---
 

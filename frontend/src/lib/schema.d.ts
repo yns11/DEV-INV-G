@@ -1725,6 +1725,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/section-labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Textes imprimés en tête des sections d'une zone
+         * @description Remplacer le texte par défaut d'une ou plusieurs sections.
+         *
+         *     Un texte vide remet le défaut : c'est ce que veut dire un champ qu'on vide,
+         *     et une bannière vide laisserait le compteur sans la règle sous laquelle il
+         *     compte.
+         */
+        post: operations["set_section_labels_api_campaigns__campaign_id__generic_zones__zone_id__section_labels_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/import/{target}": {
         parameters: {
             query?: never;
@@ -3293,6 +3317,26 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * CountLineKind
+         * @description Ce qu'une ligne de feuille **est**, au-delà de ce qu'elle porte.
+         *
+         *     Une feuille de comptage n'est pas une liste, c'est un document : les
+         *     feuilles Excel qu'elle remplace alternent des intertitres — « Stock physique
+         *     B6EST », « Stock physique B15 », « Stock physique chez Maldaner » — et des
+         *     lignes vides qui aèrent la page. Ce découpage n'est pas décoratif : il dit
+         *     au compteur *où aller*, et c'est lui qui fait qu'un même article revient
+         *     trois fois sur la même feuille sans être un doublon.
+         *
+         *     * ``ARTICLE``    — une référence à compter, la seule qui porte une quantité.
+         *     * ``SUBSECTION`` — un intertitre, son texte dans ``label``. Les articles qui
+         *       le suivent lui appartiennent, et leur clé d'unicité le porte.
+         *     * ``SPACER``     — une ligne vide. **Pas** une sous-section : elle ne
+         *       regroupe rien, elle sépare. Deux articles identiques séparés par une
+         *       simple ligne vide restent un doublon.
+         * @enum {string}
+         */
+        CountLineKind: "ARTICLE" | "SUBSECTION" | "SPACER";
+        /**
          * CountSection
          * @description Section of a GENERIQUE counting sheet — drives the consolidation rule.
          *
@@ -4268,6 +4312,23 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * SectionLabelsResponse
+         * @description Les en-têtes de section retenus pour une zone, après nettoyage.
+         *
+         *     Ce que la route rend est ce qui est **enregistré**, pas ce qui a été
+         *     envoyé : un texte vide n'est pas stocké — il remet le défaut — et l'écran
+         *     doit voir cette différence tout de suite plutôt qu'au prochain
+         *     rechargement.
+         */
+        SectionLabelsResponse: {
+            /** Labels */
+            labels: {
+                [key: string]: string;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * Sequence
          * @description Ce que la phase courante autorise, et ce qui manque sinon.
          */
@@ -4304,6 +4365,13 @@ export interface components {
             id?: string | null;
             /** Itemnumber */
             itemNumber: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** @default ARTICLE */
+            lineKind: components["schemas"]["CountLineKind"];
             /** Qty */
             qty?: number | string | null;
             /** @default LINE_SIDE */
@@ -4553,6 +4621,20 @@ export interface components {
              * @default
              */
             sector: string;
+        };
+        /**
+         * ZoneSectionLabelsRequest
+         * @description Les en-têtes de section imprimés en tête de feuille, pour une zone.
+         *
+         *     Un code absent — ou dont le texte est vide — reprend le texte par défaut.
+         *     C'est ce qui permet d'en personnaliser un sans recopier les deux autres, et
+         *     d'annuler une personnalisation en vidant le champ.
+         */
+        ZoneSectionLabelsRequest: {
+            /** Labels */
+            labels?: {
+                [key: string]: string;
+            };
         };
     };
     responses: never;
@@ -7655,6 +7737,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_section_labels_api_campaigns__campaign_id__generic_zones__zone_id__section_labels_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                zone_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneSectionLabelsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SectionLabelsResponse"];
                 };
             };
             /** @description Validation Error */

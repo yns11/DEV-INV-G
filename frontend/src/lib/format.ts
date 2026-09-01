@@ -183,6 +183,27 @@ export const SECTION_HINTS: Record<string, string> = {
   WIP_OK: 'Ensemble déclaré dans l’ERP : compté tel quel',
 }
 
+/**
+ * Le texte imprimé en tête de chaque section, par défaut.
+ *
+ * Une phrase entière et non un titre : ce que le métier dicte est une consigne,
+ * et c'est justement la moitié utile. « WIP assemblé » ne dit pas au compteur de
+ * relever un numéro de Galia ; c'est pourtant ce qu'il doit faire, et la feuille
+ * est le seul endroit où il le lira.
+ *
+ * Recopié du serveur — voir `DEFAULT_SECTION_TITLES` dans
+ * `inventory.reporting.exports`. L'écran d'aperçu s'en sert comme *placeholder*
+ * d'un champ laissé vide, jamais comme valeur pré-remplie : le champ vide veut
+ * dire « garde le défaut », et l'y recopier ferait de chaque zone une
+ * personnalisation figée le jour où le texte par défaut changera.
+ */
+export const DEFAULT_SECTION_TITLES: Record<string, string> = {
+  LINE_SIDE: 'Composants en bord de ligne',
+  WIP: 'WIP — en-cours non déclaré (Statut MOM : on progress / waiting for decision)',
+  WIP_OK:
+    'MOM : OK — Si MEL ou STATORS PHEV ou ROTOR PHEV, notez le numéro de Galia ou le numéro de série sur la feuille accompagnante',
+}
+
 export const ITEM_TYPE_LABELS: Record<string, string> = {
   COMPONENT: 'Composant',
   SEMI_FINISHED: 'Semi-fini',

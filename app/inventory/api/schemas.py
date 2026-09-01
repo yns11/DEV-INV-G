@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..domain.enums import (
     CampaignStatus,
+    CountLineKind,
     CountSection,
     DriftResolution,
     ExclusionScope,
@@ -53,6 +54,7 @@ __all__ = [
     "ZoneRequest",
     "ZonePassesRequest",
     "ZoneNegativeRequest",
+    "ZoneSectionLabelsRequest",
     "ZoneAssignmentRequest",
     "ManagerRow",
     "ManagerRowsRequest",
@@ -376,6 +378,17 @@ class ZonePassesRequest(ApiModel):
     passes: int = Field(ge=1, le=2)
 
 
+class ZoneSectionLabelsRequest(ApiModel):
+    """Les en-têtes de section imprimés en tête de feuille, pour une zone.
+
+    Un code absent — ou dont le texte est vide — reprend le texte par défaut.
+    C'est ce qui permet d'en personnaliser un sans recopier les deux autres, et
+    d'annuler une personnalisation en vidant le champ.
+    """
+
+    labels: dict[CountSection, str] = Field(default_factory=dict)
+
+
 class ZoneNegativeRequest(ApiModel):
     """Allow — or forbid again — negative counted quantities on a selection."""
 
@@ -424,6 +437,15 @@ class SheetLineRow(ApiModel):
     id: str | None = None
     item_number: str = Field(alias="itemNumber")
     section: CountSection = CountSection.LINE_SIDE
+    #: Article, intertitre ou ligne vide.
+    #:
+    #: Le défaut est l'article : tout ce qui écrivait des lignes avant que la
+    #: mise en page existe continue de le faire sans rien dire de plus.
+    line_kind: CountLineKind = Field(
+        default=CountLineKind.ARTICLE, alias="lineKind"
+    )
+    #: Le texte d'un intertitre. Ignoré sur toute autre ligne.
+    label: str = ""
     #: Un nombre, ou l'opération que le compteur a écrite (« 3*48+7 »).
     #:
     #: Le type accepte le texte pour que l'expression **arrive jusqu'au

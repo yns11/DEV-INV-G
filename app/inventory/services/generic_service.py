@@ -19,6 +19,7 @@ from ..domain.consolidation import (
 from ..domain.enums import (
     AuditAction,
     CampaignStatus,
+    CountLineKind,
     CountSection,
     DataSource,
     SheetPass,
@@ -30,6 +31,7 @@ from ..domain.models import (
     Zone,
 )
 from ..domain.printing import available_print_modes
+from ..domain.sheet_layout import subsections_of
 from ..domain.workflow import (
     derive_zone_status,
     passes_for,
@@ -364,6 +366,49 @@ class GenericService:
             )
         return updated
 
+    def set_section_labels(
+        self, campaign: Campaign, zone_id: str, labels: dict[str, str]
+    ) -> dict[str, str]:
+        """Le texte imprimé en tête de chaque section d'une zone.
+
+        Un texte vide **efface** la personnalisation au lieu d'imprimer une
+        bannière vide : c'est ce que veut dire un champ qu'on vide, et une
+        section sans titre laisserait le compteur sans la règle sous laquelle il
+        compte.
+
+        Posé sur la zone et non sur la feuille : les deux passages sont le même
+        document imprimé deux fois, et les voir diverger n'aurait aucun sens.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "count_sheets")
+        zone = next(
+            (z for z in ctx.sheets.list_zones(campaign.id) if z.id == zone_id), None
+        )
+        if zone is None:
+            raise NotFoundError("Zone introuvable.", zoneId=zone_id)
+
+        kept = {
+            str(_section(code)): text.strip()
+            for code, text in labels.items()
+            if text.strip()
+        }
+        ctx.sheets.set_section_labels(
+            campaign.id, zone_id, kept, actor=ctx.actor
+        )
+        ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.UPDATE,
+            entity_type="zone",
+            entity_id=zone_id,
+            summary=(
+                f"En-têtes de section de la zone {zone.code} : "
+                f"{len(kept)} personnalisé(s)"
+            ),
+            before={"sectionLabels": zone.section_labels},
+            after={"sectionLabels": kept},
+        )
+        return kept
+
     def delete_zones(
         self, campaign: Campaign, zone_ids: Sequence[str]
     ) -> dict[str, int]:
@@ -532,10 +577,34 @@ class GenericService:
         if _touches_quantities(rows, existing):
             ctx.guard(campaign, "count_entries")
 
+        # La sous-section se **dérive** des séparateurs quand la feuille entière
+        # est réécrite : l'écran envoie l'ordre des lignes, et l'intertitre sous
+        # lequel une ligne se trouve est une lecture de cet ordre, jamais une
+        # saisie. Sur une écriture partielle — une quantité corrigée, une
+        # extraction IA — l'ordre reçu ne dit rien du document, et la valeur déjà
+        # en base est la bonne.
+        derived = list(subsections_of(rows)) if replace else []
+
         lines: list[CountSheetLine] = []
         for order, row in enumerate(rows):
             line_id = str(row.get("id") or "") or new_id()
             previous = existing.get(line_id)
+            kind = _line_kind(row.get("line_kind"))
+            if kind is not CountLineKind.ARTICLE:
+                # Un intertitre et une ligne vide ne portent ni article ni
+                # quantité : les laisser passer par la construction ordinaire
+                # ferait refuser « pas de référence » sur une ligne dont c'est
+                # tout le propos.
+                lines.append(CountSheetLine(
+                    id=line_id, sheet_id=sheet_id, campaign_id=campaign.id,
+                    item_number="", section=_section(row.get("section")),
+                    line_kind=kind,
+                    label=str(row.get("label") or "")
+                    if kind is CountLineKind.SUBSECTION else "",
+                    unit="", source=DataSource.MANUAL,
+                    display_order=int(row.get("display_order") or order),
+                ))
+                continue
             # « 3*48+7 » plutôt que « 151 » : trois palettes de quarante-huit et
             # un fond de bac. La conversion a lieu ici et non dans le contrat
             # d'entrée parce que c'est ici qu'on connaît la campagne — donc le
@@ -572,6 +641,14 @@ class GenericService:
                     qty_formula=formula,
                     comment=str(row.get("comment") or ""),
                     display_order=int(row.get("display_order") or order),
+                    subsection=(
+                        derived[order] if replace
+                        else str(
+                            row.get("subsection")
+                            if row.get("subsection") is not None
+                            else (previous.subsection if previous else "")
+                        )
+                    ),
                 )
             )
 
@@ -865,6 +942,11 @@ class GenericService:
         the two counters must be asked about the same articles, or the
         arbitration compares a count against nothing. Quantities are of course
         not copied — that would not be a second count.
+
+        Intertitres et lignes vides suivent : les deux passages sont le **même
+        document** compté deux fois, et un article rangé sous « Stock physique
+        B15 » au premier passage et nulle part au second n'envoie pas les deux
+        compteurs au même endroit.
         """
         ctx = self.ctx
         sheets = {
@@ -874,9 +956,12 @@ class GenericService:
         first, second = sheets.get(SheetPass.PASS_1), sheets.get(SheetPass.PASS_2)
         if first is None or second is None:
             return 0
+        def key(line: CountSheetLine) -> tuple[Any, ...]:
+            return (line.line_kind, line.item_number, line.section,
+                    line.subsection, line.label, line.display_order)
+
         existing = {
-            (l.item_number, l.section)
-            for l in ctx.sheets.list_sheet_lines(second.id, conn=conn)
+            key(l) for l in ctx.sheets.list_sheet_lines(second.id, conn=conn)
         }
         blanks = [
             CountSheetLine(
@@ -885,12 +970,15 @@ class GenericService:
                 campaign_id=campaign.id,
                 item_number=line.item_number,
                 section=line.section,
+                line_kind=line.line_kind,
+                label=line.label,
+                subsection=line.subsection,
                 unit=line.unit,
                 source=DataSource.SYSTEM,
                 display_order=line.display_order,
             )
             for line in ctx.sheets.list_sheet_lines(first.id, conn=conn)
-            if (line.item_number, line.section) not in existing
+            if key(line) not in existing
         ]
         if not blanks:
             return 0
@@ -909,6 +997,24 @@ class GenericService:
             lines_by_sheet=ctx.sheets.lines_by_sheet(campaign.id),
             arbitrations=ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id),
         )
+
+
+def _line_kind(value: Any) -> CountLineKind:
+    """Article, intertitre ou ligne vide — l'article par défaut.
+
+    Le défaut compte : tout ce qui écrivait des lignes avant que la mise en page
+    existe continue d'écrire des articles sans rien dire.
+    """
+    text = str(value or "").strip().upper()
+    if text in CountLineKind.__members__:
+        return CountLineKind[text]
+    if text:
+        raise ValidationError(
+            f"Genre de ligne inconnu : {value!r}. Attendu ARTICLE, SUBSECTION "
+            "ou SPACER.",
+            lineKind=str(value),
+        )
+    return CountLineKind.ARTICLE
 
 
 def _section(value: Any) -> CountSection:

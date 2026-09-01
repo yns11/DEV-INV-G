@@ -39,6 +39,11 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   deux passages. Un article absent du référentiel est une erreur de ligne, jamais
   un article créé par effet de bord — et la règle vaut pour le stock ERP comme
   pour les feuilles, dans les trois modes d'import.
+- **La feuille est un document, pas une liste.** Intertitres — « Stock physique
+  B6EST », « Stock physique B15 » — et lignes vides se posent en préparation, se
+  voient dans l'aperçu avant impression, et se retrouvent à l'identique sur le
+  papier et dans le formulaire de saisie. Un même article sous deux intertitres
+  est deux comptages, à deux endroits : ce n'est plus refusé comme un doublon.
 - **La photo du stock se désigne.** Le snapshot ERP est publié chaque jour ;
   c'est celui de la journée de comptage qui fait foi, pas celui du jour où on le
   charge. La campagne dit lequel elle a chargé, et l'historique le garde.
@@ -141,7 +146,7 @@ frontend/                   React + TypeScript + Vite
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
 fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
-tests/                      2709 contrôles ; 241 exigent un PostgreSQL, ignorés sinon
+tests/                      2731 contrôles ; 252 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur

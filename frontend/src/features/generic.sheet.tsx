@@ -15,6 +15,19 @@ import { ZONE_TONE } from './generic.zones'
 import { ScanProgress } from './generic.scan'
 
 /**
+ * Une ligne qui porte un article — par opposition à un intertitre ou à une
+ * ligne vide.
+ *
+ * Ces deux-là vivent dans la même liste que les articles, et c'est voulu : ce
+ * qu'il faut conserver d'un intertitre, c'est **sa place**. Mais ils ne portent
+ * ni référence, ni quantité, ni unité : leur offrir un champ de saisie invite à
+ * les transformer en articles.
+ */
+export function isArticle(row: Record<string, unknown>): boolean {
+  return String(row.line_kind ?? 'ARTICLE') === 'ARTICLE'
+}
+
+/**
  * Ce qui part au serveur pour une cellule de quantité.
  *
  * Un nombre quand c'en est un, et **le texte tel quel** sinon. C'est ce second
@@ -82,6 +95,12 @@ export function SheetModal({
           id: row.id ?? null,
           itemNumber: String(row.item_number ?? ''),
           section: String(row.section ?? 'LINE_SIDE'),
+          // Le genre et le texte de l'intertitre repartent tels quels. Sans
+          // eux, enregistrer la saisie transformait chaque intertitre en ligne
+          // d'article sans référence — c'est-à-dire en ligne à jeter : la
+          // feuille perdait sa forme au premier « Enregistrer ».
+          lineKind: String(row.line_kind ?? 'ARTICLE'),
+          label: String(row.label ?? ''),
           qty: quantityToSend(row.qty),
           unit: String(row.unit ?? 'PCE'),
           comment: String(row.comment ?? ''),
@@ -225,8 +244,34 @@ export function SheetModal({
   const isPass2 = sheet.pass_no === 'PASS_2'
 
   const columns: Column[] = [
-    { key: 'item_number', label: 'Référence', width: 170, editable: true },
-    { key: 'name', label: 'Désignation', width: 240, editable: false },
+    {
+      key: 'item_number',
+      label: 'Référence',
+      width: 170,
+      editable: true,
+      editableRow: isArticle,
+    },
+    {
+      key: 'name',
+      label: 'Désignation',
+      width: 240,
+      editable: false,
+      // L'intertitre s'écrit ici, en toutes lettres. La feuille de papier le
+      // porte à cet endroit précis, et c'est ce qui permet à celui qui recopie
+      // de suivre la page ligne à ligne au lieu de chercher où il en est.
+      render: (row) =>
+        String(row.line_kind ?? 'ARTICLE') === 'SUBSECTION' ? (
+          <strong>{String(row.label ?? '')}</strong>
+        ) : String(row.line_kind ?? 'ARTICLE') === 'SPACER' ? (
+          <span className="subtle">— ligne vide —</span>
+        ) : (
+          <span>{String(row.name ?? '')}</span>
+        ),
+      value: (row) =>
+        String(row.line_kind ?? 'ARTICLE') === 'ARTICLE'
+          ? String(row.name ?? '')
+          : String(row.label ?? ''),
+    },
     sectionColumn({
       editable: true,
       render: draft
@@ -246,6 +291,7 @@ export function SheetModal({
       numeric: true,
       width: 130,
       editable: true,
+      editableRow: isArticle,
       render: draft
         ? undefined
         : (row) =>
@@ -307,7 +353,7 @@ export function SheetModal({
           } satisfies Column,
         ]
       : []),
-    { key: 'unit', label: 'Unité', width: 90, editable: true },
+    { key: 'unit', label: 'Unité', width: 90, editable: true, editableRow: isArticle },
     {
       key: 'source',
       label: 'Source',
@@ -322,7 +368,13 @@ export function SheetModal({
       ),
       value: (row) => String(row.source),
     },
-    { key: 'comment', label: 'Commentaire', width: 220, editable: true },
+    {
+      key: 'comment',
+      label: 'Commentaire',
+      width: 220,
+      editable: true,
+      editableRow: isArticle,
+    },
   ]
 
   return (
@@ -455,6 +507,11 @@ export function SheetModal({
               exportTitle="Arbitrages"
               campaignId={campaignId}
               getRowId={(row, index) => String(row.id ?? index)}
+              rowClassName={(row) =>
+                String(row.line_kind ?? 'ARTICLE') === 'ARTICLE'
+                  ? undefined
+                  : 'row--layout'
+              }
               editable={editable && Boolean(draft)}
               onRowsChange={setDraft}
               onPaste={editable ? appendPasted : undefined}

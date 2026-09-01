@@ -380,3 +380,221 @@ class TestLImportPoseLesIntertitres:
 
         headings = [l for l in lines() if l.line_kind is CountLineKind.SUBSECTION]
         assert [str(l.section) for l in headings] == ["LINE_SIDE", "WIP"]
+
+
+class TestLaFeuilleSeRelitCommeElleSEcrit:
+    """L'aller-retour par l'écran, où la mise en page se perdait.
+
+    ``upsert_sheet_lines`` reconstruisait chaque ligne à partir de trois champs
+    — article, section, quantité. Un intertitre qui repassait par là revenait en
+    ligne d'article sans référence, c'est-à-dire en ligne à jeter : la feuille
+    perdait sa forme au premier enregistrement de l'écran.
+    """
+
+    @pytest.fixture
+    def bench(self, db, sheets, sheet):
+        from inventory.config import get_settings
+        from inventory.domain.models import Item
+        from inventory.services.context import ServiceContext
+        from inventory.services.generic_service import GenericService
+
+        campaign_id, zone, sh = sheet
+        ctx = ServiceContext(actor="test", db=db, settings=get_settings())
+        # Le séquencement l'exige avant toute feuille, et il a raison : une
+        # feuille qui liste des références qu'aucun référentiel ne connaît ne
+        # peut être comparée à rien.
+        ctx.referentials.upsert_items(
+            [
+                Item(campaign_id=campaign_id, item_number=n, name=n)
+                for n in ("P-1", "P-2")
+            ],
+            actor="test",
+        )
+        return GenericService(ctx), ctx.campaigns.get(campaign_id), zone, sh
+
+    def test_un_intertitre_survit_a_l_enregistrement(self, bench, sheets):
+        service, campaign, _zone, sh = bench
+        service.upsert_sheet_lines(campaign, sh.id, [
+            {"line_kind": "SUBSECTION", "label": "Stock physique B15"},
+            {"item_number": "P-1", "section": "LINE_SIDE"},
+        ], replace=True)
+
+        lines = sheets.list_sheet_lines(sh.id)
+        assert [(l.line_kind, l.label) for l in lines] == [
+            (CountLineKind.SUBSECTION, "Stock physique B15"),
+            (CountLineKind.ARTICLE, ""),
+        ]
+
+    def test_la_ligne_vide_aussi(self, bench, sheets):
+        service, campaign, _zone, sh = bench
+        service.upsert_sheet_lines(campaign, sh.id, [
+            {"item_number": "P-1"},
+            {"line_kind": "SPACER"},
+        ], replace=True)
+
+        assert [l.line_kind for l in sheets.list_sheet_lines(sh.id)] == [
+            CountLineKind.ARTICLE, CountLineKind.SPACER
+        ]
+
+    def test_la_sous_section_se_deduit_de_la_place_de_l_intertitre(
+        self, bench, sheets
+    ):
+        """L'écran envoie un ordre ; la colonne se lit dans cet ordre.
+
+        La faire saisir séparément laisserait les deux formes diverger, et un
+        article serait compté sous un intertitre et dédoublonné sous un autre.
+        """
+        service, campaign, _zone, sh = bench
+        service.upsert_sheet_lines(campaign, sh.id, [
+            {"line_kind": "SUBSECTION", "label": "Stock physique B6EST"},
+            {"item_number": "P-1"},
+            {"line_kind": "SPACER"},
+            {"item_number": "P-2"},
+            {"line_kind": "SUBSECTION", "label": "Stock physique B15"},
+            {"item_number": "P-1"},
+        ], replace=True)
+
+        lines = sheets.list_sheet_lines(sh.id)
+        # Une ligne de mise en page n'appartient à aucun intertitre — elle en
+        # est un, ou elle n'est rien. Mais la ligne vide ne **ferme** pas le
+        # groupe : sinon un espace laissé par un préparateur couperait « Stock
+        # physique B6EST » en deux, et P-2 se retrouverait sous aucun titre.
+        assert [(l.line_kind, l.subsection) for l in lines] == [
+            (CountLineKind.SUBSECTION, ""),
+            (CountLineKind.ARTICLE, "Stock physique B6EST"),
+            (CountLineKind.SPACER, ""),
+            (CountLineKind.ARTICLE, "Stock physique B6EST"),
+            (CountLineKind.SUBSECTION, ""),
+            (CountLineKind.ARTICLE, "Stock physique B15"),
+        ]
+
+    def test_deplacer_un_intertitre_deplace_ce_qu_il_chapeaute(
+        self, bench, sheets
+    ):
+        service, campaign, _zone, sh = bench
+        service.upsert_sheet_lines(campaign, sh.id, [
+            {"line_kind": "SUBSECTION", "label": "B6EST"},
+            {"item_number": "P-1"},
+        ], replace=True)
+        first = {l.item_number: l.id for l in sheets.list_sheet_lines(sh.id)}
+
+        service.upsert_sheet_lines(campaign, sh.id, [
+            {"id": first["P-1"], "item_number": "P-1"},
+            {"line_kind": "SUBSECTION", "label": "B6EST"},
+        ], replace=True)
+
+        moved = {l.item_number: l for l in sheets.list_sheet_lines(sh.id)}
+        assert moved["P-1"].subsection == ""
+
+    def test_un_genre_inconnu_est_refuse(self, bench):
+        """Stocké, il ne casserait qu'à la relecture, sur tous les écrans."""
+        from inventory.errors import ValidationError
+
+        service, campaign, _zone, sh = bench
+        with pytest.raises(ValidationError):
+            service.upsert_sheet_lines(
+                campaign, sh.id, [{"line_kind": "TITRE"}], replace=True
+            )
+
+
+class TestUnScanNEffacePasLaMiseEnPage:
+    """La lecture IA porte sur des quantités, pas sur la forme du document.
+
+    Elle réécrit la feuille entière avec ce qu'elle a lu sur la photo. Sans
+    garde, scanner une feuille comptée effaçait tous ses intertitres : la
+    réimpression ne ressemblait plus au papier qu'on venait de scanner.
+    """
+
+    def test_les_lignes_de_mise_en_page_restent(self, db, sheets, sheet):
+        from inventory.db import new_id
+
+        campaign_id, _zone, sh = sheet
+        sheets.upsert_sheet_lines([
+            _line(campaign_id, sh.id, 0, line_kind=CountLineKind.SUBSECTION,
+                  label="Stock physique B15"),
+            _line(campaign_id, sh.id, 1, item_number="P-1"),
+            _line(campaign_id, sh.id, 2, line_kind=CountLineKind.SPACER),
+        ], actor="alice")
+
+        sheets.replace_sheet_lines(
+            sh.id,
+            [_line(campaign_id, sh.id, 0, id=new_id(), item_number="P-1")],
+            actor="ia", keep_layout=True,
+        )
+
+        kinds = [l.line_kind for l in sheets.list_sheet_lines(sh.id)]
+        assert CountLineKind.SUBSECTION in kinds and CountLineKind.SPACER in kinds
+
+    def test_mais_un_article_absent_de_la_lecture_part_bien(self, db, sheets, sheet):
+        """La garde ne doit pas transformer « remplacer » en « ajouter »."""
+        from inventory.db import new_id
+
+        campaign_id, _zone, sh = sheet
+        sheets.upsert_sheet_lines([
+            _line(campaign_id, sh.id, 0, item_number="P-1"),
+            _line(campaign_id, sh.id, 1, item_number="P-2"),
+        ], actor="alice")
+
+        sheets.replace_sheet_lines(
+            sh.id,
+            [_line(campaign_id, sh.id, 0, id=new_id(), item_number="P-1")],
+            actor="ia", keep_layout=True,
+        )
+
+        assert [l.item_number for l in sheets.list_sheet_lines(sh.id)] == ["P-1"]
+
+
+class TestLEcranPoseLesEnTetes:
+    """``set_section_labels`` — ce que l'écran d'aperçu enregistre."""
+
+    @pytest.fixture
+    def service(self, db, sheets, sheet):
+        from inventory.config import get_settings
+        from inventory.domain.models import Item
+        from inventory.services.context import ServiceContext
+        from inventory.services.generic_service import GenericService
+
+        campaign_id, zone, _sh = sheet
+        ctx = ServiceContext(actor="test", db=db, settings=get_settings())
+        ctx.referentials.upsert_items(
+            [Item(campaign_id=campaign_id, item_number="P-1", name="VIS")],
+            actor="test",
+        )
+        return GenericService(ctx), ctx.campaigns.get(campaign_id), zone
+
+    def test_un_texte_se_pose_et_se_relit(self, service, sheets):
+        generic, campaign, zone = service
+        generic.set_section_labels(
+            campaign, zone.id, {"LINE_SIDE": "Stock physique B6EST"}
+        )
+
+        stored = {z.id: z for z in sheets.list_zones(campaign.id)}[zone.id]
+        assert stored.section_labels == {"LINE_SIDE": "Stock physique B6EST"}
+
+    def test_un_texte_vide_efface_la_personnalisation(self, service, sheets):
+        """Vider le champ veut dire « remets le défaut », pas « n'imprime rien ».
+
+        Une bannière vide laisserait le compteur sans la règle sous laquelle il
+        compte — exactement ce que ces en-têtes existent pour dire.
+        """
+        generic, campaign, zone = service
+        generic.set_section_labels(campaign, zone.id, {"WIP": "En attente"})
+        generic.set_section_labels(campaign, zone.id, {"WIP": "   "})
+
+        stored = {z.id: z for z in sheets.list_zones(campaign.id)}[zone.id]
+        assert stored.section_labels == {}
+
+    def test_une_section_inconnue_est_refusee(self, service):
+        """Enregistrée, elle ne s'imprimerait jamais et rien ne le dirait."""
+        from inventory.errors import ValidationError
+
+        generic, campaign, zone = service
+        with pytest.raises(ValidationError):
+            generic.set_section_labels(campaign, zone.id, {"ENTREPOT": "B15"})
+
+    def test_une_zone_inconnue_est_refusee(self, service):
+        from inventory.errors import NotFoundError
+
+        generic, campaign, _zone = service
+        with pytest.raises(NotFoundError):
+            generic.set_section_labels(campaign, new_id(), {"WIP": "x"})

@@ -473,6 +473,14 @@ export interface Zone {
   manager_code: string
   /** Whether a negative counted quantity is accepted on this zone's sheets. */
   allow_negative: boolean
+  /**
+   * Les en-têtes de section personnalisés, par code de section.
+   *
+   * Une section absente prend le texte par défaut — voir
+   * `DEFAULT_SECTION_TITLES`. C'est ce qui permet d'en personnaliser une sans
+   * recopier les deux autres, et de revenir au défaut en vidant le champ.
+   */
+  section_labels: Record<string, string>
   status: ZoneStatus
   /** Quand la zone a été déclarée terminée, et par qui. Null = encore ouverte. */
   closed_at: string | null

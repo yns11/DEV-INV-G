@@ -489,6 +489,7 @@ class SheetRepository(_Base):
     def replace_sheet_lines(
         self, sheet_id: str, lines: Sequence[CountSheetLine], *, actor: str,
         conn: psycopg.Connection | None = None,
+        keep_layout: bool = False,
     ) -> int:
         """Make the sheet's content exactly *lines* — grid save, AI extraction.
 
@@ -501,6 +502,12 @@ class SheetRepository(_Base):
         lines that are *no longer* there, and upsert the ones that are. Ids stay
         stable across saves, which is what the grid and optimistic concurrency
         both rely on, and a line that leaves the sheet keeps its audit trail.
+
+        ``keep_layout`` dit que l'appelant ne décrit **que** des articles.
+        L'extraction IA est dans ce cas : elle lit des quantités sur une photo,
+        elle ne connaît pas la mise en page de la feuille. Sans ce drapeau, un
+        scan effaçait tous les intertitres et toutes les lignes vides — la
+        feuille réimprimée ne ressemblait plus au papier qu'on venait de scanner.
         """
         # `sheet_id` is authoritative: the AI extractor builds lines without
         # knowing which sheet they will land on.
@@ -516,7 +523,8 @@ class SheetRepository(_Base):
                 "UPDATE count_sheet_line SET deleted_at = now(), updated_by = %s "
                 "WHERE sheet_id = %s AND deleted_at IS NULL "
                 # ::uuid[] — the ids arrive as text and the column is uuid.
-                "AND NOT (id = ANY(%s::uuid[]))",
+                "AND NOT (id = ANY(%s::uuid[]))"
+                + (" AND line_kind = 'ARTICLE'" if keep_layout else ""),
                 (actor, sheet_id, kept),
             )
             if owned:

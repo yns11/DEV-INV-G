@@ -52,6 +52,16 @@ export interface Column<T extends Row = Record<string, unknown>> {
   width?: number
   sortable?: boolean
   editable?: boolean
+  /**
+   * Rendre la cellule non modifiable **sur certaines lignes**.
+   *
+   * Une cellule peut être verrouillée par sa ligne et non par sa colonne : sur
+   * une feuille de comptage, un intertitre et une ligne vide ne portent ni
+   * référence ni quantité, et leur offrir un champ de saisie invite à
+   * transformer un séparateur en article — ce qui casse la feuille sans rien
+   * dire.
+   */
+  editableRow?: (row: T) => boolean
   /** Values offered when the cell is edited. */
   choices?: string[]
   render?: (row: T, index: number) => ReactNode
@@ -1081,7 +1091,11 @@ export function DataGrid<T extends Row>({
                         ? cellOf(row, column.key)
                         : defaultValue(row, column)
                       const text = raw === null || raw === undefined || raw === '' ? '' : String(raw)
-                      if (editable && column.editable !== false) {
+                      if (
+                        editable
+                        && column.editable !== false
+                        && (column.editableRow?.(row) ?? true)
+                      ) {
                         return (
                           <td key={column.key} className="editable">
                             {column.choices ? (

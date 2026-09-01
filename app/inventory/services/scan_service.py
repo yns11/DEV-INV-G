@@ -215,7 +215,11 @@ class ScanService:
         # plus rien ne rattache au papier.
         with ctx.db.transaction() as conn:
             ctx.sheets.replace_sheet_lines(
-                sheet_id, result.lines, actor=ctx.actor, conn=conn
+                # La lecture porte sur des quantités, pas sur la mise en page :
+                # elle ne connaît ni les intertitres ni les lignes vides, et
+                # n'a donc rien à dire sur leur sort.
+                sheet_id, result.lines, actor=ctx.actor, conn=conn,
+                keep_layout=True,
             )
             ctx.sheets.update_sheet(
                 campaign.id,
@@ -474,7 +478,8 @@ class ScanService:
                 # preuve qui les justifie.
                 with ctx.db.transaction() as conn:
                     ctx.sheets.replace_sheet_lines(
-                        sheet_id, result.lines, actor=ctx.actor, conn=conn
+                        sheet_id, result.lines, actor=ctx.actor, conn=conn,
+                        keep_layout=True,
                     )
                     ctx.sheets.update_sheet(
                         campaign.id,

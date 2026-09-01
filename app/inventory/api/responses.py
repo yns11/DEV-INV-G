@@ -61,6 +61,7 @@ __all__ = [
     "CampaignPage",
     "ClosureChecklistResponse",
     "DeletedResponse",
+    "SectionLabelsResponse",
     "GridContractResponse",
     "HealthResponse",
     "MeResponse",
@@ -231,6 +232,18 @@ class CampaignPage(Payload):
 
 class DeletedResponse(Payload):
     deleted: bool
+
+
+class SectionLabelsResponse(Payload):
+    """Les en-têtes de section retenus pour une zone, après nettoyage.
+
+    Ce que la route rend est ce qui est **enregistré**, pas ce qui a été
+    envoyé : un texte vide n'est pas stocké — il remet le défaut — et l'écran
+    doit voir cette différence tout de suite plutôt qu'au prochain
+    rechargement.
+    """
+
+    labels: dict[str, str]
 
 
 class Permissions(Payload):

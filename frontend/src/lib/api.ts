@@ -650,6 +650,18 @@ export const api = {
     request<{ deleted: boolean }>(`/campaigns/${id}/generic/lines/${lineId}`, {
       method: 'DELETE',
     }),
+  /**
+   * Le texte imprimé en tête de chaque section d'une zone.
+   *
+   * Un texte vide n'est pas enregistré : il remet le défaut. La réponse rend ce
+   * qui est **retenu**, pas ce qui a été envoyé, pour que l'écran voie cette
+   * différence tout de suite plutôt qu'au prochain rechargement.
+   */
+  setSectionLabels: (id: string, zoneId: string, labels: Record<string, string>) =>
+    request<{ labels: Record<string, string> }>(
+      `/campaigns/${id}/generic/zones/${zoneId}/section-labels`,
+      { method: 'POST', body: JSON.stringify({ labels }) },
+    ),
   setZoneNegative: (id: string, zoneIds: string[], allowed: boolean) =>
     request<{ updated: number }>(`/campaigns/${id}/generic/zones/negative`, {
       method: 'POST',

@@ -10,6 +10,7 @@ import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { PrintModal } from '../components/PrintModal'
 import { ZonesAdminGrid } from './zones'
+import { SheetLayoutModal } from './generic.layout'
 import { Alert, AsyncBoundary, Button, Card, ConfirmDelete, EmptyState, Icons, useErrorToast, useToast } from '../components/ui'
 import { DRAFT_PREFIX, rowKey } from './preparation.shared'
 
@@ -31,6 +32,10 @@ export function CountSheetsTab({
   const [printZones, setPrintZones] = useState<string[] | null>(null)
   const [sheetView, setSheetView] = useState<'zones' | 'lines'>('zones')
   const [zoneFilter, setZoneFilter] = useState('')
+  // La feuille ouverte en aperçu — ce qui sortira de l'imprimante, et qui
+  // s'édite ici. « Ouvrir » basculait vers « Toutes les lignes », c'est-à-dire
+  // vers la liste plate : on y voyait les articles d'une zone, jamais la page.
+  const [preview, setPreview] = useState<Zone | null>(null)
   const managers = useQuery({
     queryKey: ['managers', campaignId],
     queryFn: () => api.managers(campaignId),
@@ -140,10 +145,7 @@ export function CountSheetsTab({
           }
           managers={managers.data?.managers ?? []}
           onPrint={(selection) => setPrintZones(selection.map((z) => z.id))}
-          onOpen={(zone) => {
-            setZoneFilter(zone.id)
-            setSheetView('lines')
-          }}
+          onOpen={setPreview}
         />
       ) : (
         <SheetLinesView
@@ -152,6 +154,17 @@ export function CountSheetsTab({
           zoneId={zoneFilter}
           onZoneChange={setZoneFilter}
           editable={overview.permissions.countSheets}
+        />
+      )}
+
+      {/* Le premier passage : les deux portent le même document, et c'est le
+          document qu'on prépare ici. Le second en hérite à la création. */}
+      {preview && preview.sheets[0] && (
+        <SheetLayoutModal
+          campaignId={campaignId}
+          zone={preview}
+          sheet={preview.sheets[0]}
+          onClose={() => setPreview(null)}
         />
       )}
 

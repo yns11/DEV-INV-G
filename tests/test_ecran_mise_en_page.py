@@ -71,6 +71,31 @@ class TestLApercuEstBrancheSurCeQuiExiste:
         assert "section-labels" in client
 
 
+class TestLeBoutonOuvrirDeLaPreparation:
+    """Celui sur lequel on clique vraiment pour préparer une feuille.
+
+    Le contrôle précédent regardait l'écran Comptage, où le même aperçu est
+    branché — et il passait, pendant que le bouton « Ouvrir » de la Préparation
+    continuait de basculer vers « Toutes les lignes », c'est-à-dire vers la
+    liste plate où l'on ne voit justement pas la page. Vérifier un écran quand
+    l'utilisateur en ouvre un autre, c'est vérifier que la fonctionnalité existe
+    quelque part, pas qu'elle est atteignable.
+    """
+
+    def source(self) -> str:
+        return screen_source("features/Preparation.tsx")
+
+    def test_il_ouvre_l_apercu_de_la_feuille(self):
+        # Le rendu, pas l'import : un composant importé et jamais posé est
+        # exactement la forme que prenait le défaut.
+        assert "<SheetLayoutModal" in self.source()
+
+    def test_et_non_la_liste_plate_des_lignes(self):
+        """« Toutes les lignes » reste accessible — par son propre onglet."""
+        source = self.source()
+        assert "onOpen={setPreview}" in source
+
+
 class TestLesTroisTextesParDefautSontLesMemesDesDeuxCotes:
     """Le serveur les imprime ; le navigateur les affiche en filigrane."""
 
@@ -95,7 +120,7 @@ class TestLesTroisTextesParDefautSontLesMemesDesDeuxCotes:
     def test_et_les_memes_phrases(self):
         """Mot pour mot : c'est une consigne de comptage, pas une étiquette.
 
-        « MOM : OK — Si MEL ou STATORS PHEV… notez le numéro de Galia » dit au
+        « MOM OK — si MEL, notez le numéro de Galia » dit au
         compteur ce qu'il doit faire. Une version raccourcie à l'écran et une
         version complète sur le papier, et la moitié des feuilles reviennent
         sans numéro de série.

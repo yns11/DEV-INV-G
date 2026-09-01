@@ -724,8 +724,8 @@ DEFAULT_SECTION_TITLES = {
         "(Statut MOM : on progress / waiting for decision)"
     ),
     "WIP_OK": (
-        "MOM : OK — Si MEL ou STATORS PHEV ou ROTOR PHEV, notez le numéro de "
-        "Galia ou le numéro de série sur la feuille accompagnante"
+        "MOM OK — si MEL, notez le numéro de Galia ou le numéro de série sur "
+        "la feuille accompagnante"
     ),
 }
 

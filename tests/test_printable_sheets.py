@@ -70,7 +70,7 @@ class TestSheetWithoutQuantities:
         # All three tables print, even though only the line side has content.
         assert "Composants en bord de ligne" in text
         assert "en-cours non déclaré" in text
-        assert "MOM : OK" in text
+        assert "MOM OK" in text
 
     def test_a_line_that_was_never_counted_is_still_printed(self):
         pages = render([line("P-001", qty=None), line("P-002", qty=7)])
@@ -324,7 +324,7 @@ class TestLesEnTetesDeSection:
         endroit où il le lira.
         """
         text = "\n".join(render([line("P-001", section="WIP_OK", qty=None)]))
-        assert "MOM : OK" in text
+        assert "MOM OK" in text
         assert "notez le numéro de Galia" in text
 
     def test_la_zone_remplace_le_texte(self):

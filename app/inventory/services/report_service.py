@@ -7,7 +7,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..domain.enums import AuditAction, SheetPass
+from ..domain.enums import AuditAction, CountLineKind, SheetPass
 from ..domain.models import Campaign, CountSheetLine, Item, erp_journal_numbers
 from ..domain.printing import PrintMode, print_refusal
 from ..domain.variance import at_standard_price
@@ -99,6 +99,7 @@ class ReportService:
             mode=mode,
             with_sources=with_sources,
             blank_lines=blank_lines,
+            section_titles=zone.section_labels,
         )
         filename = (
             f"feuille-comptage-{_MODE_SLUGS[mode]}_{_slug(zone.code)}_"
@@ -188,6 +189,7 @@ class ReportService:
                 mode=mode,
                 with_sources=with_sources,
                 blank_lines=blank_lines,
+                section_titles=zone.section_labels,
             ))
 
         if not documents:
@@ -784,12 +786,31 @@ def _printable_lines(
     """
     out: list[dict[str, Any]] = []
     for line in lines:
+        # Un intertitre et une ligne vide n'ont pas d'article, et c'est
+        # précisément ce qui les distinguait d'une ligne à jeter : le filtre
+        # « pas de référence, on saute » les aurait fait disparaître de la
+        # feuille imprimée, où ils sont tout l'intérêt.
+        if line.line_kind is not CountLineKind.ARTICLE:
+            out.append({
+                "item_number": "",
+                "name": "",
+                "section": str(line.section),
+                "line_kind": str(line.line_kind),
+                "label": line.label,
+                "unit": "",
+                "qty": None,
+                "source": str(line.source),
+                "comment": "",
+            })
+            continue
         if not line.item_number:
             continue
         out.append({
             "item_number": line.item_number,
             "name": items[line.item_number].name if line.item_number in items else "",
             "section": str(line.section),
+            "line_kind": str(line.line_kind),
+            "label": "",
             "unit": line.unit,
             "qty": float(line.qty) if line.is_counted else None,
             "source": str(line.source),
@@ -839,12 +860,17 @@ def _grid_rows(ctx: ServiceContext, campaign: Campaign, key: str) -> list[list[A
 
             zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
             lines_by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
+            # Les intertitres et les lignes vides ne sortent pas : le fichier
+            # porte la sous-section en colonne, et l'import repose les
+            # séparateurs à partir d'elle. Les exporter en plus les
+            # dédoublerait au rechargement.
             return [
                 [zones[sheet.zone_id].code, line.item_number, str(line.section),
-                 line.unit]
+                 line.subsection, line.unit]
                 for sheet in ctx.sheets.list_sheets(campaign.id)
                 if sheet.pass_no is SheetPass.PASS_1 and sheet.zone_id in zones
                 for line in lines_by_sheet.get(sheet.id, ())
+                if line.line_kind is CountLineKind.ARTICLE
             ]
         case "adjustments":
             return [

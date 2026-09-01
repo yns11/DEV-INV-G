@@ -438,12 +438,21 @@ COUNT_SHEETS = GridContract(
         "référentiel. Sections : « Bord de ligne » (compté tel quel) · "
         "« WIP (à éclater) » (assemblage non déclaré, éclaté en nomenclature) · "
         "« WIP assemblé » (assemblage déclaré, compté tel quel). Les anciens "
-        "libellés « BDL », « MOM waiting » et « MOM OK » sont acceptés."
+        "libellés « BDL », « MOM waiting » et « MOM OK » sont acceptés. "
+        "La sous-section est l'intertitre imprimé au-dessus du groupe : un même "
+        "article sous deux intertitres est deux comptages, pas un doublon."
     ),
     # A same article legitimately appears twice on one sheet in two different
     # sections (line side *and* WIP): it is the trio that must be unique, not
     # the article.
-    natural_key=("sheet_code", "item_number", "section"),
+    #
+    # La sous-section entre dans la clé pour la même raison, une fois de plus :
+    # « Stock physique B6EST », « Stock physique B15 », « Stock physique chez
+    # Maldaner » portent les mêmes articles sur la même feuille, et ce sont
+    # trois comptages, à trois endroits. Sans elle, deux des trois étaient
+    # refusés comme doublons. Une sous-section vide laisse la clé exactement
+    # telle qu'elle était : les feuilles existantes ne bougent pas.
+    natural_key=("sheet_code", "item_number", "section", "subsection"),
     fields=(
         FieldSpec("sheet_code", "Feuille", required=True,
                   aliases=("feuille", "zone", "code feuille", "code zone",
@@ -455,14 +464,27 @@ COUNT_SHEETS = GridContract(
                   choice_labels=_SECTION_LABELS, default="LINE_SIDE",
                   aliases=("source", "statut", "statut mom", "type"),
                   help="Vide = bord de ligne.", width=150),
+        FieldSpec("subsection", "Sous-section",
+                  aliases=("sous section", "intertitre", "emplacement",
+                           "sous-titre", "groupe"),
+                  help=(
+                      "Intertitre imprimé au-dessus du groupe, comme « Stock "
+                      "physique B15 ». Le même article peut revenir sous "
+                      "plusieurs."
+                  ),
+                  width=200),
         FieldSpec("unit", "Unité de comptage", default="PCE",
                   aliases=("unite de comptage", "unite", "unit"), width=140),
     ),
     examples=(
         {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
-         "section": "Bord de ligne", "unit": "PCE"},
+         "section": "Bord de ligne", "subsection": "Stock physique B6EST",
+         "unit": "PCE"},
         {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
-         "section": "WIP (à éclater)", "unit": "PCE"},
+         "section": "Bord de ligne", "subsection": "Stock physique B15",
+         "unit": "PCE"},
+        {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
+         "section": "WIP (à éclater)", "subsection": "", "unit": "PCE"},
     ),
 )
 

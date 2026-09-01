@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import datetime as dt
 import io
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from html import escape
 from typing import Any
 
 from ..domain.printing import BLANK_ROWS_PER_SECTION, PrintMode
@@ -167,6 +168,7 @@ def build_counting_sheet_pdf(
     mode: PrintMode = PrintMode.LIST,
     with_sources: bool = False,
     blank_lines: int = 0,
+    section_titles: Mapping[str, str] | None = None,
 ) -> bytes:
     """Render a printable counting sheet in one of its three modes.
 
@@ -293,6 +295,17 @@ def build_counting_sheet_pdf(
         "banner", parent=styles["BodyText"], fontSize=9.5, leading=11.5,
         textColor=colors.white, spaceBefore=0, spaceAfter=0,
     )
+    subsection_style = ParagraphStyle(
+        "subsection", parent=styles["BodyText"], fontSize=9, leading=11,
+        textColor=colors.HexColor("#0F172A"), spaceBefore=0, spaceAfter=0,
+    )
+
+    # Le texte de la zone quand elle en a un, celui par défaut sinon. Résolu
+    # ici et non à l'appel : une section absente du dictionnaire doit garder son
+    # défaut, ce qui permet d'en personnaliser une sans recopier les deux autres.
+    section_titles = {**DEFAULT_SECTION_TITLES, **{
+        code: text for code, text in (section_titles or {}).items() if text.strip()
+    }}
 
     by_section: dict[str, list[dict[str, Any]]] = {}
     for line in lines:
@@ -323,19 +336,37 @@ def build_counting_sheet_pdf(
         # on somebody's desk without saying whether it is line side or WIP is
         # exactly how a component gets counted under the wrong rule.
         banner = Paragraph(
-            f"<b>{_SECTION_TITLES[section]}</b> — {_SECTION_HINTS[section]}",
-            banner_style,
+            f"<b>{escape(section_titles[section])}</b>", banner_style
         )
         data: list[list[Any]] = [
             [banner] + [""] * (len(columns) - 1),
             list(columns),
         ]
+        # Les lignes de mise en page — intertitres et lignes vides — sont
+        # rendues **dans le tableau, à leur place**, et sans colonne
+        # supplémentaire : un intertitre occupe toute la largeur, une ligne vide
+        # est une ligne vide. C'est ce que faisaient les classeurs qu'on
+        # remplace, et c'est ce que le compteur cherche des yeux sur la page.
+        subsection_rows: list[int] = []
+        spacer_rows: list[int] = []
         for line in section_lines:
-            data.append(_body_row(
-                line, filled=filled, with_sources=with_sources,
-                cell=cell_style, quiet=quiet_style, paragraph=Paragraph,
-                name_width=name_width,
-            ))
+            kind = str(line.get("line_kind") or "ARTICLE")
+            if kind == "SUBSECTION":
+                subsection_rows.append(len(data))
+                data.append(
+                    [Paragraph(f"<b>{escape(str(line.get('label') or ''))}</b>",
+                               subsection_style)]
+                    + [""] * (len(columns) - 1)
+                )
+            elif kind == "SPACER":
+                spacer_rows.append(len(data))
+                data.append([""] * len(columns))
+            else:
+                data.append(_body_row(
+                    line, filled=filled, with_sources=with_sources,
+                    cell=cell_style, quiet=quiet_style, paragraph=Paragraph,
+                    name_width=name_width,
+                ))
         data.extend([[""] * len(columns) for _ in range(extras)])
 
         body_rows = len(data) - 2
@@ -363,6 +394,16 @@ def build_counting_sheet_pdf(
             # Quantity and unit centred; the trailing provenance columns are
             # prose and stay left-aligned.
             ("ALIGN", (2, 1), (3, -1), "CENTER"),
+            # L'intertitre traverse la largeur et se distingue du fond alterné :
+            # sans cela, « Stock physique B15 » se lirait comme une référence.
+            *[("SPAN", (0, r), (-1, r)) for r in subsection_rows],
+            *[("BACKGROUND", (0, r), (-1, r), colors.HexColor("#E2E8F0"))
+              for r in subsection_rows],
+            *[("LEFTPADDING", (0, r), (-1, r), 6) for r in subsection_rows],
+            # Une ligne vide n'a pas de quadrillage : c'est une respiration, pas
+            # une ligne à remplir.
+            *[("SPAN", (0, r), (-1, r)) for r in spacer_rows],
+            *[("BACKGROUND", (0, r), (-1, r), colors.white) for r in spacer_rows],
         ]))
         # The gap goes *before* each table but the first, never after the last:
         # a trailing spacer is still a flowable, so a table ending exactly at the
@@ -666,16 +707,26 @@ def _fr_number(value: Any, *, signed: bool = False) -> str:
     return text.replace(",", " ")
 
 
-_SECTION_TITLES = {
+#: Le texte imprimé en tête de chaque section, par défaut.
+#:
+#: Un seul texte, et non un titre plus un indice comme auparavant : ce que le
+#: métier dicte est une phrase entière, dont la moitié utile est justement la
+#: consigne. « WIP — ensembles déclarés » ne dit pas au compteur de noter le
+#: numéro de Galia ; c'est pourtant ce qu'il doit faire.
+#:
+#: Chaque zone peut les remplacer — voir ``section_labels`` sur
+#: :class:`~inventory.domain.models.Zone`. Le défaut est ce qui s'imprime quand
+#: personne n'a rien dit, pas une valeur qu'on recopie pour la modifier.
+DEFAULT_SECTION_TITLES = {
     "LINE_SIDE": "Composants en bord de ligne",
-    "WIP": "WIP — en-cours non déclaré",
-    "WIP_OK": "WIP — ensembles déclarés",
-}
-
-_SECTION_HINTS = {
-    "LINE_SIDE": "compter les pièces à l'unité",
-    "WIP": "compter les ensembles ; ils seront éclatés en nomenclature",
-    "WIP_OK": "compter les ensembles terminés et déclarés dans l'ERP",
+    "WIP": (
+        "WIP — en-cours non déclaré "
+        "(Statut MOM : on progress / waiting for decision)"
+    ),
+    "WIP_OK": (
+        "MOM : OK — Si MEL ou STATORS PHEV ou ROTOR PHEV, notez le numéro de "
+        "Galia ou le numéro de série sur la feuille accompagnante"
+    ),
 }
 
 

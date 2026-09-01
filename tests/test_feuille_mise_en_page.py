@@ -168,3 +168,215 @@ class TestLesEnTetesDeSectionDeLaZone:
         stored = {z.id: z for z in sheets.list_zones(campaign_id)}[zone.id]
         assert len(sheets.list_sheets(campaign_id)) == 2
         assert stored.section_labels == {"WIP_OK": "MOM : OK"}
+
+
+class TestLEnTeteDeLaZoneAtteintLePapier:
+    """Le défaut de ce dépôt est « existe mais n'est pas branché ».
+
+    Une colonne posée en base, un paramètre ajouté au générateur de PDF, et
+    personne pour relier les deux : la feuille sort avec le texte par défaut et
+    rien ne le signale. Ces deux contrôles partent donc de la zone et lisent la
+    page.
+    """
+
+    @staticmethod
+    def _text(payload: bytes) -> str:
+        import pypdfium2
+
+        assert payload[:4] == b"%PDF"
+        document = pypdfium2.PdfDocument(payload)
+        try:
+            return "\n".join(
+                page.get_textpage().get_text_bounded() for page in document
+            )
+        finally:
+            document.close()
+
+    @pytest.fixture
+    def printable(self, db, sheets, sheet):
+        """Une zone dont l'en-tête est personnalisé, et sa feuille garnie."""
+        from inventory.config import get_settings
+        from inventory.services.context import ServiceContext
+        from inventory.services.report_service import ReportService
+
+        campaign_id, zone, sh = sheet
+        sheets.upsert_sheet_lines(
+            [_line(campaign_id, sh.id, 0, item_number="P-00042")], actor="alice"
+        )
+        sheets.set_section_labels(
+            campaign_id, zone.id,
+            {"LINE_SIDE": "Stock physique chez Maldaner"},
+            actor="alice",
+        )
+        ctx = ServiceContext(actor="test", db=db, settings=get_settings())
+        return ReportService(ctx), ctx.campaigns.get(campaign_id)
+
+    def test_a_l_impression_d_une_feuille(self, printable):
+        reports, campaign = printable
+        sheet_id = reports.ctx.sheets.list_sheets(campaign.id)[0].id
+        payload, _name = reports.counting_sheet_pdf(campaign, sheet_id)
+
+        text = self._text(payload)
+        assert "Stock physique chez Maldaner" in text
+        assert "Composants en bord de ligne" not in text
+
+    def test_et_a_l_impression_groupee(self, printable):
+        """La pile imprimée la veille est le vrai usage : c'est elle qu'on plie.
+
+        Brancher la feuille seule et oublier la pile donnerait deux documents
+        différents pour la même zone — celui qu'on relit à l'écran et celui que
+        le compteur tient.
+        """
+        reports, campaign = printable
+        payload, _name = reports.all_counting_sheets_pdf(campaign)
+
+        text = self._text(payload)
+        assert "Stock physique chez Maldaner" in text
+        assert "Composants en bord de ligne" not in text
+
+
+class TestLImportPoseLesIntertitres:
+    """Le fichier est plat ; la feuille est un document.
+
+    Le fichier ne sait dire qu'une chose par ligne : « cet article est sous
+    *Stock physique B15* ». C'est à l'import de tirer de cette colonne le
+    séparateur qui s'imprimera, et de le poser **une fois**, à sa place.
+    """
+
+    @pytest.fixture
+    def imported(self, db):
+        from inventory.config import get_settings
+        from inventory.domain.models import Item
+        from inventory.services.context import ServiceContext
+        from inventory.services.import_service import ImportService
+
+        campaign_id = make_campaign(db, f"SS-{uuid.uuid4().hex[:8]}")
+        ctx = ServiceContext(actor="test", db=db, settings=get_settings())
+        campaign = ctx.campaigns.get(campaign_id)
+        ctx.referentials.upsert_items(
+            [
+                Item(campaign_id=campaign_id, item_number=n, name=n)
+                for n in ("P-1", "P-2")
+            ],
+            actor="test",
+        )
+
+        def load(text: str) -> None:
+            ImportService(ctx).import_count_sheets(
+                campaign, mode="paste", text=text
+            )
+
+        def lines() -> list:
+            zone = next(
+                z for z in ctx.sheets.list_zones(campaign_id) if z.code == "Z-SS"
+            )
+            sheet = ctx.sheets.list_sheets(campaign_id, zone_id=zone.id)[0]
+            return ctx.sheets.list_sheet_lines(sheet.id)
+
+        return load, lines
+
+    HEADER = "Feuille\tArticle\tSection\tSous-section\tUnité\n"
+
+    def test_un_separateur_est_pose_au_changement_de_sous_section(self, imported):
+        load, lines = imported
+        load(self.HEADER + (
+            "Z-SS\tP-1\tBDL\tStock physique B6EST\tPCE\n"
+            "Z-SS\tP-2\tBDL\tStock physique B6EST\tPCE\n"
+            "Z-SS\tP-1\tBDL\tStock physique B15\tPCE\n"
+        ))
+
+        assert [(l.line_kind, l.label or l.item_number) for l in lines()] == [
+            (CountLineKind.SUBSECTION, "Stock physique B6EST"),
+            (CountLineKind.ARTICLE, "P-1"),
+            (CountLineKind.ARTICLE, "P-2"),
+            (CountLineKind.SUBSECTION, "Stock physique B15"),
+            (CountLineKind.ARTICLE, "P-1"),
+        ]
+
+    def test_le_meme_article_sous_deux_intertitres_n_est_pas_un_doublon(
+        self, imported
+    ):
+        """Le refus qu'on lève : deux comptages, à deux endroits."""
+        load, lines = imported
+        load(self.HEADER + (
+            "Z-SS\tP-1\tBDL\tStock physique B6EST\tPCE\n"
+            "Z-SS\tP-1\tBDL\tStock physique B15\tPCE\n"
+        ))
+
+        articles = [l for l in lines() if l.line_kind is CountLineKind.ARTICLE]
+        assert [l.subsection for l in articles] == [
+            "Stock physique B6EST", "Stock physique B15"
+        ]
+
+    def test_la_sous_section_est_recopiee_sur_chaque_ligne_d_article(self, imported):
+        """Recopiée, et non déduite de l'ordre — c'est elle qui fait la clé."""
+        load, lines = imported
+        load(self.HEADER + (
+            "Z-SS\tP-1\tBDL\tStock physique B15\tPCE\n"
+            "Z-SS\tP-2\tBDL\tStock physique B15\tPCE\n"
+        ))
+
+        articles = [l for l in lines() if l.line_kind is CountLineKind.ARTICLE]
+        assert {l.subsection for l in articles} == {"Stock physique B15"}
+
+    def test_recharger_le_meme_fichier_ne_double_rien(self, imported):
+        """Ni les articles, ni les séparateurs.
+
+        Un fichier corrigé se recharge : la feuille se complète, elle ne se
+        recrée pas. Un intertitre reposé à chaque chargement aurait fait grossir
+        la page à chaque correction.
+        """
+        load, lines = imported
+        text = self.HEADER + (
+            "Z-SS\tP-1\tBDL\tStock physique B15\tPCE\n"
+            "Z-SS\tP-2\tBDL\tStock physique B15\tPCE\n"
+        )
+        load(text)
+        before = [(l.line_kind, l.label, l.item_number) for l in lines()]
+        load(text)
+
+        assert [(l.line_kind, l.label, l.item_number) for l in lines()] == before
+
+    def test_un_article_ajoute_ne_repose_pas_l_intertitre(self, imported):
+        """Le cas que le rechargement à l'identique ne montre pas.
+
+        Un fichier corrigé apporte une référence de plus sous un intertitre déjà
+        présent. La ligne, elle, est bien nouvelle : sans garde, elle traînerait
+        avec elle un second « Stock physique B15 », et la feuille en gagnerait un
+        à chaque correction.
+        """
+        load, lines = imported
+        load(self.HEADER + "Z-SS\tP-1\tBDL\tStock physique B15\tPCE\n")
+        load(self.HEADER + (
+            "Z-SS\tP-1\tBDL\tStock physique B15\tPCE\n"
+            "Z-SS\tP-2\tBDL\tStock physique B15\tPCE\n"
+        ))
+
+        assert [(l.line_kind, l.label or l.item_number) for l in lines()] == [
+            (CountLineKind.SUBSECTION, "Stock physique B15"),
+            (CountLineKind.ARTICLE, "P-1"),
+            (CountLineKind.ARTICLE, "P-2"),
+        ]
+
+    def test_une_feuille_sans_sous_section_n_en_recoit_aucune(self, imported):
+        """Les campagnes existantes ne bougent pas."""
+        load, lines = imported
+        load(self.HEADER + "Z-SS\tP-1\tBDL\t\tPCE\n")
+
+        assert [l.line_kind for l in lines()] == [CountLineKind.ARTICLE]
+
+    def test_l_intertitre_appartient_a_sa_section(self, imported):
+        """Le même texte sous deux sections donne deux séparateurs.
+
+        « Stock physique B15 » au bord de ligne et « Stock physique B15 » en WIP
+        ne chapeautent pas les mêmes lignes : les confondre placerait les
+        articles WIP sous le séparateur du bord de ligne.
+        """
+        load, lines = imported
+        load(self.HEADER + (
+            "Z-SS\tP-1\tBDL\tStock physique B15\tPCE\n"
+            "Z-SS\tP-1\tWIP\tStock physique B15\tPCE\n"
+        ))
+
+        headings = [l for l in lines() if l.line_kind is CountLineKind.SUBSECTION]
+        assert [str(l.section) for l in headings] == ["LINE_SIDE", "WIP"]

@@ -19,6 +19,7 @@ from typing import Any
 from ..db import new_id
 from ..domain.enums import (
     AuditAction,
+    CountLineKind,
     DataSource,
     JournalKind,
     JournalStatus,
@@ -28,7 +29,6 @@ from ..domain.enums import (
 from ..domain.models import (
     Campaign,
     CountJournalLine,
-    CountSheetLine,
     ErpJournalLine,
     LocationKey,
     Warehouse,
@@ -50,6 +50,7 @@ from ..ingest import (
     map_items,
     map_journal_lines,
     map_locations,
+    sheet_lines_from_rows,
 )
 from .context import ServiceContext, utcnow
 from .import_batches import (
@@ -1158,29 +1159,24 @@ class ImportService:
                     campaign.id, zone_id=zone.id, conn=conn
                 ):
                     existing = ctx.sheets.list_sheet_lines(sheet.id, conn=conn)
-                    known = {(l.item_number, l.section) for l in existing}
-                    order = max((l.display_order for l in existing), default=-1)
-                    new_lines: list[CountSheetLine] = []
-                    for row in rows:
-                        if row.key in known:
-                            continue
-                        known.add(row.key)
-                        order += 1
-                        new_lines.append(
-                            CountSheetLine(
-                                id=new_id(),
-                                sheet_id=sheet.id,
-                                campaign_id=campaign.id,
-                                item_number=row.item_number,
-                                section=row.section,
-                                # Both quantities left unset: a prepared line is
-                                # not a counted line, and a blank cell is not a
-                                # zero anywhere in this application.
-                                unit=row.unit,
-                                source=source,
-                                display_order=order,
-                            )
-                        )
+                    new_lines = sheet_lines_from_rows(
+                        rows,
+                        sheet_id=sheet.id,
+                        campaign_id=campaign.id,
+                        source=source,
+                        known={
+                            (l.item_number, l.section, l.subsection)
+                            for l in existing
+                        },
+                        headings={
+                            (l.section, l.label) for l in existing
+                            if l.line_kind is CountLineKind.SUBSECTION
+                        },
+                        first_order=max(
+                            (l.display_order for l in existing), default=-1
+                        ) + 1,
+                        id_factory=new_id,
+                    )
                     if new_lines:
                         lines_created += ctx.sheets.upsert_sheet_lines(
                             new_lines, actor=ctx.actor, conn=conn

@@ -14,6 +14,7 @@ from typing import Any
 import psycopg
 
 from ...domain.enums import (
+    CountLineKind,
     CountSection,
     DataSource,
     SheetPass,
@@ -36,7 +37,7 @@ class SheetRepository(_Base):
 
     _ZONE_COLUMNS = (
         "id, campaign_id, code, label, sector, display_order, passes, free_entry, "
-        "manager_code, allow_negative, closed_at, closed_by"
+        "manager_code, allow_negative, closed_at, closed_by, section_labels"
     )
 
     def list_zones(
@@ -64,6 +65,29 @@ class SheetRepository(_Base):
             conn=conn,
         )
         return zone
+
+    def set_section_labels(
+        self,
+        campaign_id: str,
+        zone_id: str,
+        labels: dict[str, str],
+        *,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Les en-têtes de section personnalisés de cette zone.
+
+        Une section absente du dictionnaire garde le texte par défaut : c'est ce
+        qui permet d'en personnaliser une sans avoir à recopier les deux autres.
+        """
+        from psycopg.types.json import Jsonb
+
+        self._execute(
+            "UPDATE zone SET section_labels = %s, updated_by = %s, updated_at = now() "
+            "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
+            (Jsonb(labels), actor, campaign_id, zone_id),
+            conn=conn,
+        )
 
     def set_zone_closed(
         self,
@@ -300,8 +324,9 @@ class SheetRepository(_Base):
     # -- sheet lines ---------------------------------------------------------
 
     _SHEET_LINE_COLUMNS = (
-        "id, sheet_id, campaign_id, item_number, section, qty_imported, qty_manual, "
-        "unit, source, confidence, qty_formula, comment, display_order, row_version"
+        "id, sheet_id, campaign_id, item_number, section, line_kind, label, "
+        "subsection, qty_imported, qty_manual, unit, source, confidence, "
+        "qty_formula, comment, display_order, row_version"
     )
 
     def list_sheet_lines(
@@ -383,11 +408,14 @@ class SheetRepository(_Base):
     ) -> int:
         return self._execute_many(
             "INSERT INTO count_sheet_line (id, sheet_id, campaign_id, item_number, "
-            "section, qty_imported, qty_manual, unit, source, confidence, "
+            "section, line_kind, label, subsection, qty_imported, qty_manual, "
+            "unit, source, confidence, "
             "qty_formula, comment, display_order, updated_by, updated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
             "ON CONFLICT (id) DO UPDATE SET item_number = EXCLUDED.item_number, "
-            "section = EXCLUDED.section, qty_imported = EXCLUDED.qty_imported, "
+            "section = EXCLUDED.section, line_kind = EXCLUDED.line_kind, "
+            "label = EXCLUDED.label, subsection = EXCLUDED.subsection, "
+            "qty_imported = EXCLUDED.qty_imported, "
             "qty_manual = EXCLUDED.qty_manual, unit = EXCLUDED.unit, "
             "source = EXCLUDED.source, confidence = EXCLUDED.confidence, "
             "qty_formula = EXCLUDED.qty_formula, "
@@ -396,6 +424,7 @@ class SheetRepository(_Base):
             "row_version = count_sheet_line.row_version + 1, deleted_at = NULL",
             [
                 (l.id, l.sheet_id, l.campaign_id, l.item_number, str(l.section),
+                 str(l.line_kind), l.label, l.subsection,
                  l.qty_imported, l.qty_manual, l.unit, str(l.source), l.confidence,
                  l.qty_formula, l.comment, l.display_order, actor)
                 for l in lines
@@ -611,6 +640,7 @@ class SheetRepository(_Base):
             free_entry=row["free_entry"], manager_code=row["manager_code"],
             allow_negative=row["allow_negative"],
             closed_at=row["closed_at"], closed_by=row["closed_by"] or "",
+            section_labels=row.get("section_labels") or {},
         )
 
     @staticmethod
@@ -633,7 +663,11 @@ class SheetRepository(_Base):
         return CountSheetLine(
             id=str(row["id"]), sheet_id=str(row["sheet_id"]),
             campaign_id=str(row["campaign_id"]), item_number=row["item_number"],
-            section=CountSection(row["section"]), qty_imported=row["qty_imported"],
+            section=CountSection(row["section"]),
+            line_kind=CountLineKind(row.get("line_kind") or "ARTICLE"),
+            label=row.get("label") or "",
+            subsection=row.get("subsection") or "",
+            qty_imported=row["qty_imported"],
             qty_manual=row["qty_manual"], unit=row["unit"],
             source=DataSource(row["source"]), confidence=row["confidence"],
             qty_formula=row.get("qty_formula") or "",

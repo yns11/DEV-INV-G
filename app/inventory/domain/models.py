@@ -26,6 +26,7 @@ from .enums import (
     CampaignStatus,
     ControlSeverity,
     CountingStage,
+    CountLineKind,
     CountSection,
     DataSource,
     DriftResolution,
@@ -1106,6 +1107,13 @@ class Zone(DomainModel):
     closed_by: str = ""
     #: Free-text owner/sector, used for dispatching printed sheets.
     sector: str = ""
+    #: Les en-têtes de section personnalisés, par code de section.
+    #:
+    #: Sur la zone et non sur la feuille : les deux passages sont le même
+    #: document imprimé deux fois, et les voir diverger n'aurait aucun sens.
+    #: Une section absente prend le texte par défaut — un dictionnaire vide est
+    #: donc l'état normal, pas un manque.
+    section_labels: dict[str, str] = Field(default_factory=dict)
     display_order: int = 0
     #: Number of independent counts this zone requires. Two is the rule; one is
     #: the assumed exception for an area where a second team adds nothing.
@@ -1172,6 +1180,21 @@ class CountSheetLine(DomainModel):
     campaign_id: str
     item_number: str
     section: CountSection = CountSection.LINE_SIDE
+    #: Article, intertitre ou ligne vide — voir :class:`CountLineKind`.
+    #:
+    #: La mise en page vit dans la même table que les articles, et c'est
+    #: délibéré : ce qu'il faut conserver d'un intertitre, c'est **sa place**
+    #: dans la feuille. Rangé à côté, il faudrait le réinsérer à l'affichage,
+    #: à l'impression et à la saisie, et les trois finiraient par diverger.
+    line_kind: CountLineKind = CountLineKind.ARTICLE
+    #: Le texte d'un intertitre. Vide sur toute autre ligne.
+    label: str = ""
+    #: L'intertitre sous lequel cette ligne d'article se trouve.
+    #:
+    #: Recopié depuis l'intertitre plutôt que déduit de l'ordre, parce que la
+    #: clé d'unicité doit se calculer sur une ligne **seule** — à l'import, où
+    #: l'ordre du fichier ne veut encore rien dire.
+    subsection: str = ""
     #: Pre-printed / imported value.
     qty_imported: Decimal | None = None
     #: Value typed by the encoder, or corrected after an AI extraction.

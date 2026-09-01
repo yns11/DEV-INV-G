@@ -28,6 +28,7 @@ __all__ = [
     "SheetPass",
     "ZoneStatus",
     "CountSection",
+    "CountLineKind",
     "DataSource",
     "AdjustmentKind",
     "CountingStage",
@@ -194,6 +195,29 @@ class CountSection(StrEnum):
     LINE_SIDE = "LINE_SIDE"
     WIP = "WIP"
     WIP_OK = "WIP_OK"
+
+
+class CountLineKind(StrEnum):
+    """Ce qu'une ligne de feuille **est**, au-delà de ce qu'elle porte.
+
+    Une feuille de comptage n'est pas une liste, c'est un document : les
+    feuilles Excel qu'elle remplace alternent des intertitres — « Stock physique
+    B6EST », « Stock physique B15 », « Stock physique chez Maldaner » — et des
+    lignes vides qui aèrent la page. Ce découpage n'est pas décoratif : il dit
+    au compteur *où aller*, et c'est lui qui fait qu'un même article revient
+    trois fois sur la même feuille sans être un doublon.
+
+    * ``ARTICLE``    — une référence à compter, la seule qui porte une quantité.
+    * ``SUBSECTION`` — un intertitre, son texte dans ``label``. Les articles qui
+      le suivent lui appartiennent, et leur clé d'unicité le porte.
+    * ``SPACER``     — une ligne vide. **Pas** une sous-section : elle ne
+      regroupe rien, elle sépare. Deux articles identiques séparés par une
+      simple ligne vide restent un doublon.
+    """
+
+    ARTICLE = "ARTICLE"
+    SUBSECTION = "SUBSECTION"
+    SPACER = "SPACER"
 
 
 class DataSource(StrEnum):

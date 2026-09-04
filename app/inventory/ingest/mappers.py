@@ -741,8 +741,9 @@ def sheet_lines_from_rows(
             id=id_factory(), sheet_id=sheet_id, campaign_id=campaign_id,
             item_number=row.item_number, section=row.section,
             subsection=row.subsection,
-            # Both quantities left unset: a prepared line is not a counted line,
-            # and a blank cell is not a zero anywhere in this application.
+            # Both quantities left unset: a prepared line is a line nobody has
+            # written on yet. It already weighs zero in every stock computation;
+            # what stays open is whether somebody has been to look.
             unit=row.unit, source=source, display_order=order,
         ))
         order += 1

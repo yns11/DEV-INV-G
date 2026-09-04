@@ -553,8 +553,10 @@ export interface SheetLine {
   section: CountSection
   qty_imported: number | null
   qty_manual: number | null
-  qty: number | null
-  isCounted: boolean
+  qty: number
+  /** Quelqu'un a-t-il écrit quelque chose dans la case — l'avancement, pas la
+   *  quantité. Une case vide vaut zéro et `qty` le dit. */
+  hasEntry: boolean
   unit: string
   source: DataSource
   confidence: number | null

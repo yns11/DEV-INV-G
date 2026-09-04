@@ -340,13 +340,11 @@ function SheetLinesView({
       numeric: true,
       width: 120,
       editable: false,
-      render: (row) =>
-        row.qty === null || row.qty === undefined ? (
-          <span className="subtle">non compté</span>
-        ) : (
-          <span className="num">{qty(Number(row.qty))}</span>
-        ),
-      value: (row) => (row.qty === null ? null : Number(row.qty)),
+      // Une case vide vaut zéro — il n'y a plus de « non compté » sur une
+      // feuille : la ligne y est parce qu'on s'attend à trouver la référence
+      // dans la zone, et n'y avoir rien trouvé est un écart, pas un silence.
+      render: (row) => <span className="num">{qty(Number(row.qty ?? 0))}</span>,
+      value: (row) => Number(row.qty ?? 0),
     },
   ]
 

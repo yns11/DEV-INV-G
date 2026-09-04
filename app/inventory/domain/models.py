@@ -1234,8 +1234,20 @@ class CountSheetLine(DomainModel):
         )
 
     @property
-    def is_counted(self) -> bool:
-        """A blank cell is *not* a zero: it means the line was not counted."""
+    def has_entry(self) -> bool:
+        """Quelqu'un a-t-il écrit quelque chose dans la case ?
+
+        À ne pas confondre avec la quantité comptée, qui est :attr:`qty` et vaut
+        **zéro** quand la case est vide. Une feuille de comptage énumère ce qui
+        est censé se trouver dans la zone ; une ligne laissée vide dit donc qu'il
+        n'y en avait pas, et c'est un écart, pas une absence de mesure.
+
+        Ce que cette propriété sert, c'est l'*avancement* : combien de lignes ont
+        été touchées, une zone est-elle commencée, combien de valeurs le modèle
+        a-t-il lues sur le scan. Les deux notions portaient le même nom et le
+        même booléen, et c'est ainsi qu'une ligne jamais comptée disparaissait
+        du stock au lieu d'y peser zéro.
+        """
         return self.qty_manual is not None or self.qty_imported is not None
 
     @property

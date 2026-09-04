@@ -178,6 +178,29 @@ export const SECTIONS: Section[] = [
 
   // --- Comptage -------------------------------------------------------------
   {
+    // En tête du comptage, parce que c'est ce qui se fait en premier : un
+    // emplacement précompté l'est des jours avant le jour J, avant même que le
+    // stock ERP ne soit gelé. Le mettre après donnait un ordre de lecture qui
+    // contredisait l'ordre des gestes.
+    to: 'comptages-avances',
+    label: 'Comptages avancés',
+    icon: 'history',
+    phase: 'COUNTING',
+    lede: 'Compter certains emplacements avant le jour J, et sceller leur comptage.',
+    // `early_counts`, et pas `count_journals` : ce dernier attend le stock ERP
+    // chargé, qui arrive le jour J. L'écran serait resté fermé jusqu'après le
+    // moment où il sert — un lot avancé se compte des jours avant, et sa
+    // référence est dans son propre journal.
+    enabled: (o) => ready(o, 'early_counts'),
+    locked: (o) => blocked(o, 'early_counts') ?? '',
+    subs: [
+      { id: 'journaux', label: 'Journaux ERP' },
+      { id: 'derives', label: 'Dérives' },
+      { id: 'etiquettes', label: 'Étiquettes' },
+      { id: 'rescanner', label: 'À rescanner' },
+    ],
+  },
+  {
     to: 'stock-erp',
     label: 'Stock ERP',
     icon: 'database',
@@ -226,29 +249,6 @@ export const SECTIONS: Section[] = [
         label: 'Consolidation',
         count: (_o, alerts) => alerts.consolidation || null,
       },
-    ],
-  },
-  {
-    // Avant les journaux, parce que c'est ce qui se fait avant : un journal de
-    // précomptage se déclare et se scelle des jours avant le comptage général. Et
-    // le jour J, c'est ici que les dérives se tranchent — le passage en analyse
-    // les attend.
-    to: 'comptages-avances',
-    label: 'Comptages avancés',
-    icon: 'history',
-    phase: 'COUNTING',
-    lede: 'Compter certains emplacements avant le jour J, et sceller leur comptage.',
-    // `early_counts`, et pas `count_journals` : ce dernier attend le stock ERP
-    // chargé, qui arrive le jour J. L'écran serait resté fermé jusqu'après le
-    // moment où il sert — un lot avancé se compte des jours avant, et sa
-    // référence est dans son propre journal.
-    enabled: (o) => ready(o, 'early_counts'),
-    locked: (o) => blocked(o, 'early_counts') ?? '',
-    subs: [
-      { id: 'journaux', label: 'Journaux ERP' },
-      { id: 'derives', label: 'Dérives' },
-      { id: 'etiquettes', label: 'Étiquettes' },
-      { id: 'rescanner', label: 'À rescanner' },
     ],
   },
   {

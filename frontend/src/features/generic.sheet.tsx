@@ -295,26 +295,26 @@ export function SheetModal({
       render: draft
         ? undefined
         : (row) =>
-            row.isCounted ? (
+            isArticle(row) ? (
+              // Une case vide vaut zéro : la ligne est sur la feuille parce
+              // qu'on s'attend à trouver la référence dans la zone, et n'y
+              // avoir rien trouvé est un écart à expliquer, pas un silence.
+              //
               // L'opération sous le résultat quand il y en avait une. Sans
               // elle, « 151 » calculé et « 151 » tapé seraient identiques à
               // l'écran, et la seule chose que cette fonctionnalité apporte
               // par-dessus une calculatrice — pouvoir recompter — disparaîtrait
               // à l'affichage.
               <span className="stack" style={{ gap: 0 }}>
-                <span className="num">{qty(Number(row.qty))}</span>
+                <span className="num">{qty(Number(row.qty ?? 0))}</span>
                 {row.qty_formula ? (
                   <span className="subtle mono" title="Écrit sur la feuille">
                     {String(row.qty_formula)}
                   </span>
                 ) : null}
               </span>
-            ) : (
-              <span className="subtle" title="Vide ≠ zéro : la ligne n’a pas été comptée">
-                non compté
-              </span>
-            ),
-      value: (row) => (row.qty === null ? null : Number(row.qty)),
+            ) : null,
+      value: (row) => (isArticle(row) ? Number(row.qty ?? 0) : null),
     },
     // Screen only. The printed sheet must never carry the first count, or the
     // second one stops being independent — but on screen, seeing the
@@ -328,14 +328,10 @@ export function SheetModal({
             width: 140,
             editable: false,
             render: (row: Record<string, unknown>) => {
-              const first = row.qtyPass1 as number | null
-              if (first === null || first === undefined) {
-                return <span className="subtle">non compté</span>
-              }
-              const second = row.qty === null || row.qty === undefined
-                ? null
-                : Number(row.qty)
-              const diverges = second !== null && second !== first
+              if (!isArticle(row)) return null
+              const first = Number((row.qtyPass1 as number | null) ?? 0)
+              const second = Number(row.qty ?? 0)
+              const diverges = second !== first
               return (
                 <span className={`num${diverges ? ' neg' : ''}`} title={
                   diverges
@@ -347,9 +343,7 @@ export function SheetModal({
               )
             },
             value: (row: Record<string, unknown>) =>
-              row.qtyPass1 === null || row.qtyPass1 === undefined
-                ? null
-                : Number(row.qtyPass1),
+              isArticle(row) ? Number((row.qtyPass1 as number | null) ?? 0) : null,
           } satisfies Column,
         ]
       : []),
@@ -450,8 +444,10 @@ export function SheetModal({
               </Card>
             )}
 
-            <Alert tone="info" title="Case vide = non compté">
-              Pour déclarer une absence de stock, saisissez explicitement 0.
+            <Alert tone="info" title="Case vide = zéro">
+              Une ligne laissée vide compte pour zéro : elle est sur la feuille
+              parce qu’on s’attend à trouver la référence dans la zone, et n’y
+              avoir rien trouvé est un écart à expliquer.
               {isPass2 && ' La colonne « Comptage n°1 » n’est affichée qu’à l’écran.'}
             </Alert>
 

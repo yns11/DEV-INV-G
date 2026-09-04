@@ -27,7 +27,12 @@ from decimal import Decimal
 from threading import Lock
 from typing import Any, TypeVar
 
-from ..domain.enums import CountSection, DataSource, legacy_section_alias
+from ..domain.enums import (
+    CountLineKind,
+    CountSection,
+    DataSource,
+    legacy_section_alias,
+)
 from ..domain.formula import FormulaError, evaluate, looks_like_formula
 from ..domain.models import CountSheetLine, Item, normalise_key
 from ..domain.quantities import to_decimal
@@ -67,8 +72,9 @@ Règles absolues :
 1. Tu transcris UNIQUEMENT ce qui est écrit. Tu ne calcules rien, tu ne \
 complètes rien, tu ne corriges rien.
 2. Si la case « Comptage » d'une ligne est VIDE, tu renvoies null — jamais 0. \
-Une case vide signifie « non compté », ce qui n'est pas la même chose que \
-« compté à zéro ».
+Tu transcris ce qui est écrit : renvoyer 0 ferait passer « je n'ai rien lu » \
+pour « le compteur a écrit zéro », et l'encodeur ne saurait plus laquelle des \
+deux vérifier sur le papier.
 3. Tu ne renvoies que des références présentes dans la liste attendue fournie. \
 Si tu lis une référence absente de cette liste, tu la places dans \
 « unexpected » sans l'inventer ni la rapprocher d'une autre.
@@ -237,12 +243,24 @@ class PageRouting:
 
 @dataclass(frozen=True, slots=True)
 class ExpectedLine:
-    """One article pre-printed on the sheet."""
+    """One article pre-printed on the sheet, **and where it sits on it**.
+
+    La place et l'intertitre voyagent avec la ligne parce que la lecture les
+    perdait : le modèle rend les quantités dans l'ordre où il les a vues, ce qui
+    n'est pas toujours l'ordre du papier, et la feuille réécrite sortait
+    mélangée — les intertitres restant, eux, à leur rang d'origine.
+    """
 
     item_number: str
     name: str
     section: CountSection
     unit: str = "PCE"
+    #: Le rang de la ligne dans le document. Rendu tel quel, jamais recalculé.
+    display_order: int = 0
+    #: L'intertitre sous lequel elle se trouve. Recopié pour la même raison :
+    #: la clé d'unicité le porte, et une feuille relue sans lui verrait ses
+    #: lignes se dédoublonner entre deux emplacements.
+    subsection: str = ""
 
 
 @dataclass(slots=True)
@@ -266,7 +284,7 @@ class ExtractionResult:
     def as_report(self) -> dict[str, Any]:
         return {
             "linesExtracted": len(self.lines),
-            "counted": sum(1 for l in self.lines if l.is_counted),
+            "counted": sum(1 for l in self.lines if l.has_entry),
             "lowConfidence": self.low_confidence_items,
             "unexpected": self.unexpected,
             "missing": self.missing_items,
@@ -361,7 +379,7 @@ class SheetExtractor:
         confidences: list[float] = []
         seen: set[tuple[str, CountSection]] = set()
 
-        for order, raw in enumerate(payload.get("lines") or []):
+        for raw in payload.get("lines") or []:
             if not isinstance(raw, dict):
                 continue
             number = normalise_key(str(raw.get("item_number") or ""))
@@ -431,7 +449,12 @@ class SheetExtractor:
                     confidence=confidence,
                     qty_formula=formula,
                     comment=str(raw.get("note") or "").strip(),
-                    display_order=order,
+                    # La place de la ligne **sur le papier**, et non le rang de
+                    # la lecture. Le modèle rend ce qu'il voit dans l'ordre où
+                    # il le voit ; reprendre cet ordre-là réécrivait la feuille
+                    # mélangée, sous des intertitres restés à leur place.
+                    display_order=expected_line.display_order,
+                    subsection=expected_line.subsection,
                 )
             )
 
@@ -455,7 +478,9 @@ class SheetExtractor:
         ]
         # A missing expected line still gets a row, blank, so the encoder sees
         # it and can type the value instead of discovering the gap at posting.
-        for order, key in enumerate(unread, start=len(result.lines)):
+        # Elle aussi garde sa place : c'est précisément la ligne qu'on va
+        # chercher des yeux sur le papier pour la saisir à la main.
+        for key in unread:
             expected_line = expected_by_key[key]
             result.lines.append(
                 CountSheetLine(
@@ -468,7 +493,8 @@ class SheetExtractor:
                     source=DataSource.SCAN_AI,
                     confidence=0.0,
                     comment="Non lue sur le scan — à saisir manuellement.",
-                    display_order=order,
+                    display_order=expected_line.display_order,
+                    subsection=expected_line.subsection,
                     qty_imported=None,
                     qty_manual=None,
                 )
@@ -749,15 +775,24 @@ class SheetExtractor:
     def expected_from_items(
         self, lines: Sequence[CountSheetLine], items: dict[str, Item]
     ) -> list[ExpectedLine]:
-        """Build the expected list from a sheet's existing (pre-printed) lines."""
+        """Build the expected list from a sheet's existing (pre-printed) lines.
+
+        Les intertitres et les lignes vides en sont écartés : ils ne portent pas
+        d'article, et les annoncer au modèle comme des lignes attendues le
+        lancerait à la recherche d'une quantité là où il n'y en a pas — puis
+        les compterait parmi les lignes « non lues ».
+        """
         return [
             ExpectedLine(
                 item_number=line.item_number,
                 name=(items[line.item_number].name if line.item_number in items else ""),
                 section=line.section,
                 unit=line.unit,
+                display_order=line.display_order,
+                subsection=line.subsection,
             )
             for line in lines
+            if line.line_kind is CountLineKind.ARTICLE and line.item_number
         ]
 
 

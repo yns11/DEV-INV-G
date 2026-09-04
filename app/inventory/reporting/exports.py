@@ -435,15 +435,14 @@ def _body_row(
     name_width: int,
 ) -> list[Any]:
     """One printed line — blank for a counter, or carrying what was counted."""
-    counted = line.get("qty") if filled else None
     if not filled:
         quantity: Any = ""  # left blank on purpose: the counter fills this in
-    elif counted is None:
-        # A record sheet must not leave the reader guessing: an empty cell and
-        # "counted zero" are different facts, and only the second closes a line.
-        quantity = paragraph("non compté", quiet)
     else:
-        quantity = _fr_number(counted)
+        # Une case laissée vide vaut zéro, et c'est zéro qui s'imprime. Le relevé
+        # portait « non compté », ce qui laissait le lecteur devant deux
+        # documents à rapprocher : la feuille disait « non compté » et l'analyse
+        # comptait la référence à zéro.
+        quantity = _fr_number(line.get("qty") or 0)
 
     row: list[Any] = [
         paragraph(str(line.get("item_number", "")), cell),

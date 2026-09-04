@@ -86,13 +86,23 @@ class TestFilledSheet:
         pages = render([line("P-001", qty=42)], mode=PrintMode.FILLED)
         assert "42" in pages[0]
 
-    def test_a_listed_article_nobody_counted_says_so(self):
-        """Dropping the row would hide the one fact the record exists to carry."""
+    def test_a_listed_article_nobody_counted_prints_a_zero(self):
+        """Le relevé et l'analyse doivent dire la même chose.
+
+        La feuille portait « non compté » là où l'analyse comptait désormais la
+        référence à zéro : deux documents à rapprocher pour une seule ligne, et
+        c'est celui qu'on tient en main qui semblait dire qu'on ne sait pas.
+
+        La ligne reste imprimée : la retirer cacherait le seul fait que le
+        relevé existe pour porter — cette référence était sur la feuille, et il
+        n'y en avait pas.
+        """
         pages = render(
             [line("P-001", qty=42), line("P-002", qty=None)], mode=PrintMode.FILLED
         )
         assert "P-001" in pages[0] and "P-002" in pages[0]
-        assert "non compté" in pages[0]
+        assert "non compté" not in pages[0]
+        assert "0" in pages[0]
 
     def test_no_blank_rows_are_appended(self):
         """Inviting somebody to write on a record would make it not a record."""

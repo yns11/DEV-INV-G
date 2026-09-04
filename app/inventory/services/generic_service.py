@@ -91,7 +91,7 @@ class GenericService:
                 1
                 for sheet in zone_sheets
                 for line in lines.get(sheet.id, [])
-                if line.is_counted
+                if line.has_entry
             )
             status = derive_zone_status(
                 counted_lines=counted, closed=zone.closed_at is not None
@@ -114,7 +114,7 @@ class GenericService:
                         **sheet.model_dump(mode="json"),
                         "lineCount": len(lines.get(sheet.id, [])),
                         "countedLines": sum(
-                            1 for l in lines.get(sheet.id, []) if l.is_counted
+                            1 for l in lines.get(sheet.id, []) if l.has_entry
                         ),
                         # What a second, multi-sheet scan must not overwrite
                         # without being told to.
@@ -149,8 +149,11 @@ class GenericService:
             "lines": [
                 {
                     **line.model_dump(mode="json"),
-                    "qty": float(line.qty) if line.is_counted else None,
-                    "isCounted": line.is_counted,
+                    # La quantité comptée, toujours — une case vide vaut zéro.
+                    "qty": float(line.qty),
+                    # Ce qui reste vrai de l'ancien booléen : quelqu'un a-t-il
+                    # touché cette ligne. Sert à l'avancement, jamais au stock.
+                    "hasEntry": line.has_entry,
                     "name": items[line.item_number].name
                     if line.item_number in items else "",
                     "known": line.item_number in items,
@@ -179,7 +182,7 @@ class GenericService:
             return {}
         totals: dict[tuple[str, CountSection], float] = {}
         for line in ctx.sheets.list_sheet_lines(first.id):
-            if not line.is_counted:
+            if line.line_kind is not CountLineKind.ARTICLE:
                 continue
             key = (line.item_number, line.section)
             # A sheet may list the same article twice (two pallets); the
@@ -733,8 +736,11 @@ class GenericService:
             for line in lines:
                 out.append({
                     **line.model_dump(mode="json"),
-                    "qty": float(line.qty) if line.is_counted else None,
-                    "isCounted": line.is_counted,
+                    # La quantité comptée, toujours — une case vide vaut zéro.
+                    "qty": float(line.qty),
+                    # Ce qui reste vrai de l'ancien booléen : quelqu'un a-t-il
+                    # touché cette ligne. Sert à l'avancement, jamais au stock.
+                    "hasEntry": line.has_entry,
                     "zoneId": sheet.zone_id,
                     "zoneCode": zone.code if zone else "",
                     "zoneLabel": zone.label if zone else "",
@@ -1039,7 +1045,11 @@ def _quantity_of(
 ) -> tuple[Decimal | None, str]:
     """La quantité d'une ligne, et l'opération qui l'a produite s'il y en a une.
 
-    Une case vide reste vide : on ne compte pas zéro parce qu'on n'a pas compté.
+    Une case vide reste vide **en base** : elle vaut zéro partout où l'on
+    calcule un stock — c'est :attr:`CountSheetLine.qty` qui le dit — mais y
+    écrire un zéro effacerait la distinction entre une ligne que personne n'a
+    touchée et une ligne où quelqu'un a écrit « 0 ». C'est cette distinction-là
+    qui fait l'avancement d'une zone.
 
     Le réglage de la campagne décide si « 3*48+7 » est une quantité ou une
     erreur, et le refus le nomme — c'est tout l'objet de

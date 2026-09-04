@@ -727,7 +727,7 @@ def _counted(sheets, lines_by_sheet) -> int:
         1
         for sheet in sheets
         for line in lines_by_sheet.get(sheet.id, ())
-        if line.is_counted
+        if line.has_entry
     )
 
 

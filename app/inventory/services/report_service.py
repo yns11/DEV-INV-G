@@ -779,10 +779,10 @@ def _printable_lines(
     """Sheet lines shaped for the PDF builder.
 
     Every line that carries a reference is printed, counted or not. On a filled
-    sheet an uncounted line is rendered as « non compté » rather than dropped:
-    "this article was on the list and nobody counted it" is precisely the fact a
-    record has to carry, and silently omitting the row is how the legacy
-    workbook lost lines.
+    sheet a line nobody wrote on prints **zero** rather than being dropped: "this
+    article was on the list and there was none" is precisely the fact a record
+    has to carry, and silently omitting the row is how the legacy workbook lost
+    lines.
     """
     out: list[dict[str, Any]] = []
     for line in lines:
@@ -812,7 +812,8 @@ def _printable_lines(
             "line_kind": str(line.line_kind),
             "label": "",
             "unit": line.unit,
-            "qty": float(line.qty) if line.is_counted else None,
+            # Une case vide vaut zéro : c'est ce qui s'imprime.
+            "qty": float(line.qty),
             "source": str(line.source),
             "comment": line.comment,
         })

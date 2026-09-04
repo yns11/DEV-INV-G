@@ -32,8 +32,10 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   journaux et analyses sont versionnés ensemble et restent recalculables à
   l'identique des mois plus tard.
 - **Rien ne disparaît en silence.** Un assemblage sans nomenclature, une ligne
-  d'export corrompue, une case vide : chacun produit un message explicite et une
-  résolution, jamais une quantité perdue.
+  d'export corrompue : chacun produit un message explicite et une résolution,
+  jamais une quantité perdue. Et une ligne de feuille laissée vide compte
+  **zéro** : elle figure sur le papier parce qu'on s'attend à trouver la
+  référence dans la zone, et n'y avoir rien trouvé est un écart à expliquer.
 - **Les feuilles se préparent, elles ne s'improvisent pas.** Un fichier
   `[feuille, article, section]` crée les zones et pré-imprime leur liste, sur les
   deux passages. Un article absent du référentiel est une erreur de ligne, jamais
@@ -146,7 +148,7 @@ frontend/                   React + TypeScript + Vite
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
 fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
-tests/                      2737 contrôles ; 252 exigent un PostgreSQL, ignorés sinon
+tests/                      2759 contrôles ; 252 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur

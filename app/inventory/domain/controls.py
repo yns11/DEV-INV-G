@@ -734,7 +734,10 @@ def check_zones(
     for sheet_id, lines in lines_by_sheet.items():
         for line in lines:
             item = items.get(line.item_number)
-            if item is None or not item.excluded_everywhere or not line.is_counted:
+            # Sur la quantité, et non sur la saisie : un article hors
+            # périmètre compté à zéro ne fausse rien, et le signaler noierait
+            # les vrais constats sous une ligne par référence exclue.
+            if item is None or not item.excluded_everywhere or not line.qty:
                 continue
             excluded_counted[line.item_number].add(zone_of.get(sheet_id, ""))
 

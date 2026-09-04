@@ -267,7 +267,10 @@ class ConsolidationService:
                 continue
             zone = zones.get(sheet.zone_id)
             for line in lines:
-                if line.section is not CountSection.WIP or not line.is_counted:
+                # Le constat porte sur une quantité qu'on ne saura pas
+                # éclater. Zéro s'éclate en zéro : l'annoncer remplirait la
+                # page d'alertes sur des lignes dont rien n'est perdu.
+                if line.section is not CountSection.WIP or not line.qty:
                     continue
                 if bom.has_bom(line.item_number):
                     continue

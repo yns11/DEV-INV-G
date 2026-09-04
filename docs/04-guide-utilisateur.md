@@ -827,7 +827,9 @@ Le modèle lit la feuille **en s'appuyant sur la liste d'articles pré-imprimée
 
 - une référence qu'il croit lire mais qui n'est **pas** sur la feuille est
   signalée comme suspecte, jamais acceptée ;
-- une case vide reste vide — elle ne devient jamais 0 ;
+- une case vide reste vide : le modèle transcrit, il n'invente pas un 0
+  qu'il n'a pas lu — la ligne comptera zéro de toute façon, mais vous verrez
+  qu'il n'a rien lu dessus ;
 - chaque valeur porte une **confiance** ; celles sous 75 % sont mises en avant ;
 - les articles attendus mais non lus apparaissent en ligne vide, à saisir ;
 - une case qui porte une **opération** — `3*48+7` — est calculée, si le réglage
@@ -1219,9 +1221,15 @@ Non. Les corrections vivent dans une colonne distincte de la valeur importée.
 Rechargez autant que vous voulez.
 
 **Une case vide et un zéro, quelle différence ?**
-Une case vide signifie « non compté » : la ligne ne produit rien et reste à
-traiter. Un zéro explicite signifie « compté, il n'y a rien » : la ligne est
-soldée. C'est une distinction que l'ancien outil effaçait.
+Aucune sur la quantité : **une case vide compte pour zéro**. La ligne est sur
+la feuille parce qu'on s'attend à trouver la référence dans la zone ; n'y avoir
+rien trouvé est un écart à expliquer, pas une mesure manquante. L'écarter du
+total laissait l'article avec son stock ERP en face de rien — ni compté, ni
+manquant.
+
+La distinction subsiste ailleurs, et à un seul endroit : **l'avancement**. Une
+zone dont aucune ligne n'a été touchée est « à compter » ; dès qu'une valeur y
+est saisie — zéro compris — elle passe « en cours ».
 
 **Pourquoi mon écart apparaît-il en « par emplacement » mais pas « par référence » ?**
 Parce que c'est un transfert entre deux emplacements du même article : le stock

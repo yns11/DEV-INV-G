@@ -23,7 +23,7 @@ sont communes à toutes les variantes sauf la variante A.
 |---|---|---|
 | Python | 3.11 | `python3 --version` |
 | Node.js | 20 | `node --version` |
-| Databricks CLI | 0.294 (ou 1.x) | `databricks --version` |
+| Databricks CLI | 0.294, ou 1.15.0 en 1.x — **pas 1.14.1** | `databricks --version` |
 | Git | 2.30 | `git --version` |
 
 Installation du CLI Databricks :
@@ -45,6 +45,21 @@ winget install Databricks.DatabricksCLI
 > ressource `postgres` (Lakebase Autoscaling) sont également absents ; le
 > `bundle validate` signale alors `unknown field: postgres`. Vérifiez que
 > `databricks --version` renvoie `v0.29x.x` ou `v1.x.x`.
+
+> ⚠️ **La 1.14.1 ne sait pas déployer une App.** Elle envoie
+> `forward_user_access_token` dans le masque de mise à jour, champ que l'API
+> Apps n'accepte plus, et `databricks apps deploy` s'arrête sur :
+>
+> ```
+> Error: cannot update resources.apps.campagnes_inventaire: Invalid update mask.
+> Supplied update mask: …, forward_user_access_token, …  (400 INVALID_PARAMETER_VALUE)
+> ```
+>
+> Les fichiers sont téléversés avant l'échec — le workspace porte donc le
+> nouveau code, mais l'App n'a pas été redémarrée dessus et continue de servir
+> la version précédente. Rien à corriger dans le bundle : passez en 1.15.0
+> (`winget upgrade Databricks.DatabricksCLI`, `brew upgrade databricks`) et
+> relancez la même commande.
 
 ### 1.2 Droits requis dans le workspace
 
@@ -1380,6 +1395,7 @@ taille du fichier pour un export ERP, plafonnée par `INV_MAX_UPLOAD_BYTES`
 
 | Symptôme | Cause probable | Correction |
 |---|---|---|
+| `Invalid update mask ... forward_user_access_token` (400) au `apps deploy` | Régression du CLI **1.14.1** : il envoie un champ que l'API Apps n'accepte plus. Rien à corriger dans le bundle | Passez en **1.15.0** (`winget upgrade Databricks.DatabricksCLI`, `brew upgrade databricks`) et relancez la même commande. Les fichiers ayant été téléversés avant l'échec, le workspace porte déjà le nouveau code — mais l'App n'a pas redémarré dessus et sert encore la version précédente |
 | **502 Bad Gateway** | L'app n'écoute pas sur `DATABRICKS_APP_PORT`, ou sur `localhost` | La commande est `python main.py` ; `main.py` lit `DATABRICKS_APP_PORT` et se lie à `0.0.0.0`. Vérifiez la ligne `Uvicorn running on http://0.0.0.0:<port>` dans les logs |
 | `[UNSUPPORTED_DATA_SOURCE_WRITE] … allowed to run DML on serverless compute` au `bundle run` de la synchronisation | Le calcul serverless refuse l'écriture JDBC distribuée vers Lakebase | Corrigé : le job retombe de lui-même sur le chemin par le driver et l'écrit dans le journal. Pour éviter d'y venir après la lecture, passez `--driver-side` (§ *Sur calcul serverless…*) |
 | `duplicate key value violates unique constraint "erp_stock_snapshot_pkey"` à la substitution du stock | La source publie légitimement plusieurs lignes pour un même emplacement (lot, statut qualité) ; le miroir exigeait l'unicité | Corrigé par la **migration 024**, qui remplace la clé primaire par un index non unique. Redéployez l'App — c'est elle qui migre — **avant** de relancer la synchronisation. Ne dédupliquez pas au chargement : cela sous-évaluerait le stock |

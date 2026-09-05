@@ -44,6 +44,22 @@ export function ArbitrationTab({
     onError: (error) => showError(error, 'Arbitrage impossible'),
   })
 
+  const decideAll = useMutation({
+    mutationFn: ({ zoneId, choice }: {
+      zoneId: string; choice: 'PASS_1' | 'PASS_2' | 'PROPOSED'
+    }) => api.decideArbitrations(campaignId, zoneId, choice),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries()
+      toast.success(
+        `${result.decided} écart(s) tranché(s)`,
+        result.skipped
+          ? `${result.skipped} ligne(s) laissée(s) ouverte(s) : aucune quantité à retenir.`
+          : undefined,
+      )
+    },
+    onError: (error) => showError(error, 'Arbitrage en lot impossible'),
+  })
+
   const prefillAll = useMutation({
     mutationFn: (zoneId: string) => api.prefillWithPass2(campaignId, zoneId),
     onSuccess: (result) => {
@@ -90,20 +106,58 @@ export function ArbitrationTab({
           tone="warning"
           title={`${pending.length} écart(s) à arbitrer sur cette zone`}
           actions={
-            <Button
-              size="sm"
-              disabled={prefillAll.isPending}
-              onClick={() => prefillAll.mutate(zoneFilter)}
-            >
-              Pré-remplir avec le comptage n°2
-            </Button>
+            <span className="row-wrap" style={{ gap: 'var(--space-2)' }}>
+              <Button
+                size="sm"
+                disabled={prefillAll.isPending}
+                onClick={() => prefillAll.mutate(zoneFilter)}
+              >
+                Pré-remplir avec le n°2
+              </Button>
+              {/* La règle se décide une fois, pas quarante. Quand on sait
+                  laquelle des deux équipes a compté dans de bonnes conditions,
+                  la répéter ligne à ligne n'ajoute aucun jugement — juste des
+                  occasions de se tromper de champ. */}
+              <Button
+                size="sm"
+                disabled={decideAll.isPending}
+                onClick={() =>
+                  decideAll.mutate({ zoneId: zoneFilter, choice: 'PASS_1' })
+                }
+                title="Retenir partout le comptage n°1"
+              >
+                Tout le n°1
+              </Button>
+              <Button
+                size="sm"
+                disabled={decideAll.isPending}
+                onClick={() =>
+                  decideAll.mutate({ zoneId: zoneFilter, choice: 'PASS_2' })
+                }
+                title="Retenir partout le comptage n°2"
+              >
+                Tout le n°2
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={decideAll.isPending}
+                onClick={() =>
+                  decideAll.mutate({ zoneId: zoneFilter, choice: 'PROPOSED' })
+                }
+                title="Valider les quantités déjà proposées"
+              >
+                Valider tout
+              </Button>
+            </span>
           }
         >
           Le comptage n°2 est le plus tardif et le mieux informé, donc c’est le
           point de départ raisonnable. Le pré-remplissage <strong>ne valide
           rien</strong> : il pose la quantité dans le champ, vous la relisez, la
-          corrigez si besoin, puis vous validez. Tant qu’une ligne n’est pas
-          validée, la consolidation l’ignore.
+          corrigez si besoin, puis vous validez — une par une, ou toutes d’un
+          coup avec « Valider tout ». Tant qu’une ligne n’est pas validée, la
+          consolidation l’ignore.
         </Alert>
       )}
 
@@ -230,8 +284,16 @@ function ArbitrationActions({
       <Button
         size="sm"
         variant="ghost"
+        onClick={() => setValue(String(row.qty_pass_1 ?? ''))}
+        title="Reprendre le comptage n°1"
+      >
+        n°1
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
         onClick={() => setValue(String(row.qty_pass_2 ?? ''))}
-        title="Préremplir avec le comptage n°2"
+        title="Reprendre le comptage n°2"
       >
         n°2
       </Button>

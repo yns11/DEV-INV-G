@@ -70,7 +70,7 @@ class TestSheetWithoutQuantities:
         # All three tables print, even though only the line side has content.
         assert "Composants en bord de ligne" in text
         assert "en-cours non déclaré" in text
-        assert "ensembles déclarés" in text
+        assert "MOM OK" in text
 
     def test_a_line_that_was_never_counted_is_still_printed(self):
         pages = render([line("P-001", qty=None), line("P-002", qty=7)])
@@ -86,13 +86,23 @@ class TestFilledSheet:
         pages = render([line("P-001", qty=42)], mode=PrintMode.FILLED)
         assert "42" in pages[0]
 
-    def test_a_listed_article_nobody_counted_says_so(self):
-        """Dropping the row would hide the one fact the record exists to carry."""
+    def test_a_listed_article_nobody_counted_prints_a_zero(self):
+        """Le relevé et l'analyse doivent dire la même chose.
+
+        La feuille portait « non compté » là où l'analyse comptait désormais la
+        référence à zéro : deux documents à rapprocher pour une seule ligne, et
+        c'est celui qu'on tient en main qui semblait dire qu'on ne sait pas.
+
+        La ligne reste imprimée : la retirer cacherait le seul fait que le
+        relevé existe pour porter — cette référence était sur la feuille, et il
+        n'y en avait pas.
+        """
         pages = render(
             [line("P-001", qty=42), line("P-002", qty=None)], mode=PrintMode.FILLED
         )
         assert "P-001" in pages[0] and "P-002" in pages[0]
-        assert "non compté" in pages[0]
+        assert "non compté" not in pages[0]
+        assert "0" in pages[0]
 
     def test_no_blank_rows_are_appended(self):
         """Inviting somebody to write on a record would make it not a record."""
@@ -215,7 +225,7 @@ class TestDesignation:
         long_name = "STATOR ASSEMBLE M3 GEN2 AVEC CONNECTIQUE ET CAPOT ARRIERE"
         pages = render([line("P-001", name=long_name)])
         assert long_name not in pages[0]
-        assert "STATOR ASSEMBLE M3 GEN2 AVEC CO" in pages[0]
+        assert "STATOR ASSEMBLE M3 GEN2 AVEC" in pages[0]
 
     def test_the_budget_shrinks_when_the_provenance_columns_appear(self):
         long_name = "STATOR ASSEMBLE M3 GEN2 AVEC CONNECTIQUE"
@@ -223,8 +233,8 @@ class TestDesignation:
         narrow = render(
             [line("P-001", name=long_name, qty=1)], mode=PrintMode.FILLED, with_sources=True
         )
-        assert "STATOR ASSEMBLE M3 GEN2 AVEC CO" in wide[0]
-        assert "STATOR ASSEMBLE M3 " in narrow[0]
+        assert "STATOR ASSEMBLE M3 GEN2 AVEC" in wide[0]
+        assert "STATOR ASSEMBLE M" in narrow[0]
         assert "STATOR ASSEMBLE M3 GEN2" not in narrow[0]
 
 
@@ -302,3 +312,266 @@ class TestNumbersOnPaper:
         )
         text = "\n".join(pages)
         assert "■" not in text, "un caractère non dessinable a atteint le papier"
+
+
+def layout(kind: str, label: str = "", section: str = "LINE_SIDE") -> dict:
+    """Un intertitre ou une ligne vide, à la forme que le service leur donne."""
+    return {
+        "item_number": "", "name": "", "section": section,
+        "line_kind": kind, "label": label,
+        "unit": "", "qty": None, "source": "MANUAL", "comment": "",
+    }
+
+
+class TestLesEnTetesDeSection:
+    """Le texte imprimé en tête d'une section, par défaut et personnalisé."""
+
+    def test_le_defaut_est_la_phrase_entiere_et_non_un_titre(self):
+        """La consigne *est* l'en-tête.
+
+        « WIP — ensembles déclarés » ne dit pas au compteur de relever un numéro
+        de Galia ; c'est pourtant ce qu'il doit faire, et la feuille est le seul
+        endroit où il le lira.
+        """
+        text = "\n".join(render([line("P-001", section="WIP_OK", qty=None)]))
+        assert "MOM OK" in text
+        assert "notez le numéro de Galia" in text
+
+    def test_la_zone_remplace_le_texte(self):
+        text = "\n".join(render(
+            [line("P-001")],
+            section_titles={"LINE_SIDE": "Stock physique B6EST — pièces à l'unité"},
+        ))
+        assert "Stock physique B6EST — pièces à l'unité" in text
+        assert "Composants en bord de ligne" not in text
+
+    def test_les_sections_non_personnalisees_gardent_leur_defaut(self):
+        """Sinon personnaliser une section reviendrait à recopier les deux autres."""
+        text = "\n".join(render(
+            [line("P-001")], section_titles={"LINE_SIDE": "Bord de ligne, zone B15"}
+        ))
+        assert "Bord de ligne, zone B15" in text
+        assert "en-cours non déclaré" in text
+
+    def test_un_texte_vide_ne_remplace_rien(self):
+        """Un champ effacé dans l'écran d'édition veut dire « remets le défaut ».
+
+        Imprimer une bannière vide donnerait une page où le compteur ne sait plus
+        sous quelle règle il compte.
+        """
+        text = "\n".join(render([line("P-001")], section_titles={"LINE_SIDE": "   "}))
+        assert "Composants en bord de ligne" in text
+
+    def test_le_texte_personnalise_est_echappe(self):
+        """Il vient d'un champ libre : « <B6 & B15> » doit s'imprimer tel quel."""
+        text = "\n".join(render(
+            [line("P-001")], section_titles={"LINE_SIDE": "Stock <B6 & B15>"}
+        ))
+        assert "Stock <B6 & B15>" in text
+
+
+class TestLesLignesDeMiseEnPage:
+    """Intertitres et lignes vides — ce que la feuille Excel savait faire."""
+
+    def test_l_intertitre_s_imprime(self):
+        text = "\n".join(render([
+            layout("SUBSECTION", "Stock physique B6EST"),
+            line("P-001"),
+        ]))
+        assert "Stock physique B6EST" in text
+
+    def test_il_s_imprime_a_sa_place_dans_la_feuille(self):
+        """C'est *l'ordre* qui dit au compteur où aller chercher l'article."""
+        page = render([
+            layout("SUBSECTION", "Stock physique B6EST"),
+            line("P-001"),
+            layout("SUBSECTION", "Stock physique chez Maldaner"),
+            line("P-002"),
+        ])[0]
+        assert (
+            page.index("Stock physique B6EST")
+            < page.index("P-001")
+            < page.index("Stock physique chez Maldaner")
+            < page.index("P-002")
+        )
+
+    def test_le_meme_article_revient_sous_deux_intertitres(self):
+        """Trois emplacements, trois comptages du même article : pas un doublon."""
+        page = render([
+            layout("SUBSECTION", "Stock physique B6EST"),
+            line("P-001"),
+            layout("SUBSECTION", "Stock physique B15"),
+            line("P-001"),
+        ])[0]
+        assert page.count("P-001") == 2
+
+    def test_l_intertitre_ne_porte_ni_quantite_ni_unite(self):
+        """Ce n'est pas une ligne à compter : rien à écrire dessus."""
+        page = render(
+            [layout("SUBSECTION", "Stock physique B15"), line("P-001", qty=7)],
+            mode=PrintMode.FILLED,
+        )[0]
+        assert "Stock physique B15" in page
+        assert page.count("PCE") == 1
+
+    def test_la_ligne_vide_n_imprime_aucun_texte(self):
+        """Une respiration, pas une ligne de plus à remplir."""
+        page = render([line("P-001"), layout("SPACER"), line("P-002")])[0]
+        assert "P-001" in page and "P-002" in page
+
+    def test_l_intertitre_suit_sa_section(self):
+        """Un intertitre WIP n'a rien à faire au-dessus du bord de ligne."""
+        page = render([
+            line("P-001"),
+            layout("SUBSECTION", "Ensembles en attente de décision", section="WIP"),
+            line("P-002", section="WIP"),
+        ])[0]
+        assert (
+            page.index("Composants en bord de ligne")
+            < page.index("P-001")
+            < page.index("Ensembles en attente de décision")
+        )
+
+    def test_le_texte_de_l_intertitre_est_echappe(self):
+        page = render([layout("SUBSECTION", "Stock <B6 & B15>"), line("P-001")])[0]
+        assert "Stock <B6 & B15>" in page
+
+    def test_la_feuille_vierge_ignore_la_mise_en_page(self):
+        """Elle n'a pas de liste ; elle n'a donc pas d'intertitres non plus."""
+        text = "\n".join(render(
+            [layout("SUBSECTION", "Stock physique B6EST"), line("P-001")],
+            mode=PrintMode.BLANK, blank_lines=10,
+        ))
+        assert "Stock physique B6EST" not in text
+
+
+class TestCeQueLeServiceEnvoieALImpression:
+    """``_printable_lines`` — la traduction d'une feuille en lignes imprimables.
+
+    Le filtre qui la précédait était « pas de référence, on saute » : c'est
+    exactement la forme d'un intertitre et d'une ligne vide, qui auraient donc
+    disparu de la page — sans erreur, sans trace, comme le classeur qu'on
+    remplace perdait des lignes.
+    """
+
+    @staticmethod
+    def _line(**kwargs):
+        from inventory.domain.models import CountSheetLine
+
+        base = {"id": "l", "sheet_id": "s", "campaign_id": "c", "item_number": ""}
+        return CountSheetLine(**{**base, **kwargs})
+
+    def _printable(self, lines):
+        from inventory.services.report_service import _printable_lines
+
+        return _printable_lines(lines, {})
+
+    def test_l_intertitre_arrive_jusqu_a_l_impression(self):
+        from inventory.domain.enums import CountLineKind
+
+        [row] = self._printable([
+            self._line(line_kind=CountLineKind.SUBSECTION, label="Stock physique B15")
+        ])
+        assert row["line_kind"] == "SUBSECTION"
+        assert row["label"] == "Stock physique B15"
+
+    def test_la_ligne_vide_aussi(self):
+        from inventory.domain.enums import CountLineKind
+
+        [row] = self._printable([self._line(line_kind=CountLineKind.SPACER)])
+        assert row["line_kind"] == "SPACER"
+
+    def test_une_ligne_d_article_sans_reference_reste_ecartee(self):
+        """Elle, oui : c'est une ligne à jeter, pas un objet de mise en page."""
+        assert self._printable([self._line(item_number="")]) == []
+
+    def test_l_ordre_du_document_est_conserve(self):
+        from inventory.domain.enums import CountLineKind
+
+        rows = self._printable([
+            self._line(line_kind=CountLineKind.SUBSECTION, label="B6EST"),
+            self._line(item_number="P-001"),
+            self._line(line_kind=CountLineKind.SPACER),
+        ])
+        assert [r["line_kind"] for r in rows] == ["SUBSECTION", "ARTICLE", "SPACER"]
+
+
+class TestLaReferenceALaPlaceQuIlLuiFaut:
+    """Ce que la largeur des colonnes décide vraiment.
+
+    Une référence coupée ne s'identifie plus : « MASS-000499… » désigne autant
+    de pièces qu'il y a de suffixes. Une désignation coupée, si — elle l'est
+    déjà par construction, et le compteur reconnaît la pièce à sa référence.
+    Les trois autres colonnes rendent donc de la place à la première.
+    """
+
+    def test_la_page_reste_pleine(self):
+        """Les largeurs somment à la page utile : un millimètre de trop et la
+        dernière colonne sort de la feuille."""
+        from inventory.reporting.exports import (
+            _SIDE_MARGIN_MM,
+            _WIDTHS_PLAIN,
+            _WIDTHS_WITH_SOURCES,
+        )
+
+        usable = 210 - 2 * _SIDE_MARGIN_MM
+        assert round(sum(_WIDTHS_PLAIN), 2) == usable
+        assert round(sum(_WIDTHS_WITH_SOURCES), 2) == usable
+
+    def test_la_reference_est_la_plus_large_apres_la_designation(self):
+        from inventory.reporting.exports import _WIDTHS_PLAIN
+
+        reference, designation, comptage, unite = _WIDTHS_PLAIN
+        assert reference > comptage > unite
+        assert designation > reference
+
+    def test_une_longue_reference_s_imprime_entiere(self):
+        """Le cas réel : les références de l'atelier font quatorze caractères."""
+        pages = render([line("MASS-00049952", qty=1)], mode=PrintMode.FILLED)
+        assert "MASS-00049952" in pages[0]
+
+
+class TestLeCommentaireTientDansSaCase:
+    """Le relevé avec provenance porte les notes du modèle.
+
+    « Réf. manuscrite ajoutée en bas du tableau MOM OK ; lecture des chiffres
+    incertaine » fait trois lignes. La hauteur de ligne étant imposée — un choix
+    fait pour écrire un chiffre avec des gants — le texte débordait par-dessus
+    les lignes suivantes et jusque sur le pied de page. Or ce relevé-là ne se
+    remplit pas : c'est une archive, et c'est la note qui dit pourquoi la ligne
+    est douteuse.
+    """
+
+    NOTE = (
+        "Réf. manuscrite « mass-00049952 » ajoutée en bas du tableau MOM OK ; "
+        "lecture des chiffres incertaine (pourrait être 00049952). Comptage « 3 »."
+    )
+
+    def test_la_note_s_imprime(self):
+        pages = render(
+            [line("P-001", qty=3, comment=self.NOTE)],
+            mode=PrintMode.FILLED, with_sources=True,
+        )
+        assert "manuscrite" in pages[0] and "incertaine" in pages[0]
+
+    def test_elle_ne_pousse_pas_la_ligne_hors_de_la_page(self):
+        """Le témoin du débordement : le pied de page reste lisible sous elle."""
+        pages = render(
+            [line(f"P-{i:03d}", qty=1, comment=self.NOTE) for i in range(12)],
+            mode=PrintMode.FILLED, with_sources=True,
+        )
+        assert all("abcdef12" in page for page in pages)
+
+    def test_une_note_interminable_est_coupee(self):
+        """Sinon une seule ligne prendrait le tiers de la page."""
+        pages = render(
+            [line("P-001", qty=1, comment="Z" * 900)],
+            mode=PrintMode.FILLED, with_sources=True,
+        )
+        assert "Z" * 400 not in "".join(pages)
+
+    def test_les_lignes_hautes_restent_ailleurs(self):
+        """La feuille qu'on remplit à la main garde ses lignes hautes : c'est
+        le relevé archivé, et lui seul, qui laisse la hauteur au contenu."""
+        many = render([line(f"P-{i:03d}") for i in range(24)])
+        assert len(many) >= 1

@@ -3,7 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import type { Overview } from '../lib/types'
 import { SubSectionTabs } from '../components/SubSectionTabs'
 import { useSubSection } from '../lib/subsection'
-import { Card, EmptyState, Icons } from '../components/ui'
+import { Alert, Card, EmptyState, Icons } from '../components/ui'
 import { CausesTab } from './analysis.causes'
 import { VariancesTab } from './analysis.variances'
 import { ControlsTab, SummaryTab } from './analysis.controls'
@@ -22,17 +22,23 @@ export function Analysis({ view }: { view: AnalysisView }) {
   const campaignId = overview.campaign.id
   const [causesTab, setCausesTab] = useSubSection<CausesTab>('causes', CAUSES_TABS)
 
-  // Les contrôles passent cette porte : ils ne calculent aucun écart. Ils
-  // relisent le dossier tel qu'il est, et la plupart d'entre eux portent sur ce
-  // qui se prépare avant le gel — référentiel, nomenclatures, zones, et les
-  // références que le stock ERP n'a pas pu charger. Les retenir jusqu'au gel
-  // cachait ces défauts pendant toute la phase où ils se corrigent encore.
-  if (view !== 'controls' && !overview.campaign.book_stock_frozen_at) {
+  const frozen = Boolean(overview.campaign.book_stock_frozen_at)
+  const sealed = overview.counts.sealedLocations ?? 0
+  // Un écart a besoin d'une référence figée — pas nécessairement de *toute* la
+  // référence. Le gel du stock ERP est global et arrive au jour J ; le
+  // scellement d'un précomptage est un gel **par emplacement**, et pour ceux-là
+  // référence et comptage sont déjà posés et ne bougeront plus. Leur écart est
+  // définitif dès la déclaration : attendre le gel général le cacherait pendant
+  // les jours où l'on peut encore aller voir sur le terrain.
+  //
+  // Les contrôles, eux, passent depuis toujours : ils ne calculent aucun écart.
+  if (view !== 'controls' && !frozen && sealed === 0) {
     return (
       <Card>
         <EmptyState title="Analyse indisponible" icon={<Icons.lock size={20} />}>
-          Les écarts se calculent à partir du stock ERP gelé. Chargez puis gelez-le
-          dans l’onglet Référentiels.
+          Les écarts se calculent à partir d’une référence figée. Scellez un
+          précomptage, ou chargez puis gelez le stock ERP dans l’onglet
+          Référentiels.
         </EmptyState>
       </Card>
     )
@@ -40,6 +46,13 @@ export function Analysis({ view }: { view: AnalysisView }) {
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
+      {view !== 'controls' && !frozen && (
+        <Alert tone="info" title="Écarts partiels — stock ERP pas encore gelé">
+          Les chiffres portent sur les {sealed} emplacement(s) précomptés et
+          scellés, et ils sont définitifs : leur référence ne bougera plus. Le
+          reste de la campagne apparaîtra au chargement du stock ERP général.
+        </Alert>
+      )}
       {view === 'causes' && (
         <SubSectionTabs
           section="causes"

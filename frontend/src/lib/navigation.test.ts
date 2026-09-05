@@ -89,3 +89,28 @@ describe('une section fermée dit toujours pourquoi', () => {
     expect(mute.map((s) => s.to)).toEqual([])
   })
 })
+
+/**
+ * L'ordre de la phase Comptage suit l'ordre des gestes.
+ *
+ * Un emplacement précompté l'est des jours avant le jour J — avant même que le
+ * stock ERP ne soit gelé. « Comptages avancés » listé après « Stock ERP »
+ * donnait donc un ordre de lecture qui contredisait l'ordre du travail, et la
+ * barre latérale est justement ce qui apprend le déroulement à quelqu'un qui
+ * fait sa première campagne.
+ *
+ * Vérifié sur l'ordre entier plutôt que sur une paire : une section insérée au
+ * milieu passerait à travers une comparaison deux à deux.
+ */
+describe('la phase Comptage', () => {
+  it('se lit dans l’ordre où le travail se fait', () => {
+    const counting = SECTIONS.filter((s) => s.phase === 'COUNTING').map((s) => s.to)
+    expect(counting).toEqual([
+      'comptages-avances',
+      'stock-erp',
+      'backflush',
+      'compil',
+      'comptage',
+    ])
+  })
+})

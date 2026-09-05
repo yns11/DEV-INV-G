@@ -17,8 +17,10 @@ from ..deps import (
     scan_job_service,
 )
 from ..paging import MAX_PAGE, page
+from ..responses import BulkArbitrationResponse, SectionLabelsResponse
 from ..schemas import (
     ArbitrationDecisionRequest,
+    BulkArbitrationRequest,
     ReclassifyRequest,
     SheetLineDeleteRequest,
     SheetLinesRequest,
@@ -27,6 +29,7 @@ from ..schemas import (
     ZoneNegativeRequest,
     ZonePassesRequest,
     ZoneRequest,
+    ZoneSectionLabelsRequest,
 )
 from ..uploads import offload, read_upload
 
@@ -122,6 +125,28 @@ def set_zone_negative(
     }
 
 
+@router.post(
+    "/zones/{zone_id}/section-labels",
+    summary="Textes imprimés en tête des sections d'une zone",
+    responses={200: {"model": SectionLabelsResponse}},
+)
+def set_section_labels(
+    campaign: CampaignDep,
+    zone_id: str,
+    payload: ZoneSectionLabelsRequest,
+    service: Service,
+) -> dict[str, str]:
+    """Remplacer le texte par défaut d'une ou plusieurs sections.
+
+    Un texte vide remet le défaut : c'est ce que veut dire un champ qu'on vide,
+    et une bannière vide laisserait le compteur sans la règle sous laquelle il
+    compte.
+    """
+    return service.set_section_labels(
+        campaign, zone_id, {str(k): v for k, v in payload.labels.items()}
+    )
+
+
 @router.post("/zones/delete", summary="Supprimer des zones et leurs feuilles")
 def delete_zones(
     campaign: CampaignDep, payload: ZoneDeleteRequest, service: Service
@@ -214,6 +239,8 @@ def upsert_sheet_lines(
             "id": line.id,
             "item_number": line.item_number,
             "section": str(line.section),
+            "line_kind": str(line.line_kind),
+            "label": line.label,
             "qty": line.qty,
             "unit": line.unit,
             "comment": line.comment,
@@ -392,6 +419,25 @@ def decide_arbitration(
         campaign, arbitration_id, payload.qty, comment=payload.comment
     )
     return {"decided": True}
+
+
+@router.post(
+    "/zones/{zone_id}/arbitrations/decide-all",
+    summary="Trancher en lot les écarts ouverts d'une zone",
+    responses={200: {"model": BulkArbitrationResponse}},
+)
+def decide_arbitrations(
+    campaign: CampaignDep,
+    zone_id: str,
+    payload: BulkArbitrationRequest,
+    service: Service,
+) -> dict[str, int]:
+    """Retenir le comptage n°1, le n°2, ou la proposition — partout à la fois.
+
+    Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
+    jugement pris une par une.
+    """
+    return service.decide_arbitrations(campaign, zone_id, choice=payload.choice)
 
 
 @router.post(

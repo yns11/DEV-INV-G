@@ -99,10 +99,13 @@ class DriftService:
             ) in sealed
         }
         physical = self._physical_at_t0(campaign, sealed)
-        batches = {
-            key: batch.id
-            for batch in ctx.early_counts.list(campaign.id)
-            for key in batch.locations
+        # La dérive nomme le journal qui a scellé l'emplacement : le jour J,
+        # elle ne conteste pas « l'emplacement ATP / SOL », elle conteste le
+        # précomptage que ce journal-là porte, avec sa date et son auteur.
+        journals = {
+            key: journal.id
+            for journal in ctx.erp_journals.list(campaign.id)
+            for key in journal.scope
         }
 
         drifts: list[EarlyCountDrift] = []
@@ -121,7 +124,7 @@ class DriftService:
                 EarlyCountDrift(
                     id=new_id(),
                     campaign_id=campaign.id,
-                    batch_id=batches.get(key),
+                    erp_journal_id=journals.get(key),
                     warehouse_id=key.warehouse_id,
                     location_id=key.location_id,
                     item_number=item_number,
@@ -214,7 +217,7 @@ class DriftService:
         justifie qu'on la nomme.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "early_counts")
         if not drift_ids:
             return 0
         if resolution is DriftResolution.KEEP_EARLY and not cause_code.strip():

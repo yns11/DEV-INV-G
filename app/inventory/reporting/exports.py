@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import datetime as dt
 import io
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from html import escape
 from typing import Any
 
 from ..domain.printing import BLANK_ROWS_PER_SECTION, PrintMode
@@ -167,6 +168,7 @@ def build_counting_sheet_pdf(
     mode: PrintMode = PrintMode.LIST,
     with_sources: bool = False,
     blank_lines: int = 0,
+    section_titles: Mapping[str, str] | None = None,
 ) -> bytes:
     """Render a printable counting sheet in one of its three modes.
 
@@ -293,6 +295,17 @@ def build_counting_sheet_pdf(
         "banner", parent=styles["BodyText"], fontSize=9.5, leading=11.5,
         textColor=colors.white, spaceBefore=0, spaceAfter=0,
     )
+    subsection_style = ParagraphStyle(
+        "subsection", parent=styles["BodyText"], fontSize=9, leading=11,
+        textColor=colors.HexColor("#0F172A"), spaceBefore=0, spaceAfter=0,
+    )
+
+    # Le texte de la zone quand elle en a un, celui par défaut sinon. Résolu
+    # ici et non à l'appel : une section absente du dictionnaire doit garder son
+    # défaut, ce qui permet d'en personnaliser une sans recopier les deux autres.
+    section_titles = {**DEFAULT_SECTION_TITLES, **{
+        code: text for code, text in (section_titles or {}).items() if text.strip()
+    }}
 
     by_section: dict[str, list[dict[str, Any]]] = {}
     for line in lines:
@@ -323,29 +336,55 @@ def build_counting_sheet_pdf(
         # on somebody's desk without saying whether it is line side or WIP is
         # exactly how a component gets counted under the wrong rule.
         banner = Paragraph(
-            f"<b>{_SECTION_TITLES[section]}</b> — {_SECTION_HINTS[section]}",
-            banner_style,
+            f"<b>{escape(section_titles[section])}</b>", banner_style
         )
         data: list[list[Any]] = [
             [banner] + [""] * (len(columns) - 1),
             list(columns),
         ]
+        # Les lignes de mise en page — intertitres et lignes vides — sont
+        # rendues **dans le tableau, à leur place**, et sans colonne
+        # supplémentaire : un intertitre occupe toute la largeur, une ligne vide
+        # est une ligne vide. C'est ce que faisaient les classeurs qu'on
+        # remplace, et c'est ce que le compteur cherche des yeux sur la page.
+        subsection_rows: list[int] = []
+        spacer_rows: list[int] = []
         for line in section_lines:
-            data.append(_body_row(
-                line, filled=filled, with_sources=with_sources,
-                cell=cell_style, quiet=quiet_style, paragraph=Paragraph,
-                name_width=name_width,
-            ))
+            kind = str(line.get("line_kind") or "ARTICLE")
+            if kind == "SUBSECTION":
+                subsection_rows.append(len(data))
+                data.append(
+                    [Paragraph(f"<b>{escape(str(line.get('label') or ''))}</b>",
+                               subsection_style)]
+                    + [""] * (len(columns) - 1)
+                )
+            elif kind == "SPACER":
+                spacer_rows.append(len(data))
+                data.append([""] * len(columns))
+            else:
+                data.append(_body_row(
+                    line, filled=filled, with_sources=with_sources,
+                    cell=cell_style, quiet=quiet_style, paragraph=Paragraph,
+                    name_width=name_width,
+                ))
         data.extend([[""] * len(columns) for _ in range(extras)])
 
         body_rows = len(data) - 2
+        # Les hauteurs sont imposées **sauf** sur le relevé qui porte source et
+        # commentaire. Ailleurs, une ligne haute est un choix : on y écrit un
+        # chiffre à la main, avec des gants. Là, plus personne n'écrit — c'est
+        # une archive — et le commentaire du modèle (« Réf. manuscrite ajoutée
+        # en bas du tableau MOM OK ; lecture des chiffres incertaine ») fait
+        # trois lignes. Imposée, la hauteur le laissait déborder par-dessus les
+        # lignes suivantes, jusque sur le pied de page.
         table = Table(
             data,
             colWidths=widths,
-            # Tall rows: a figure written with gloves on, in a workshop, needs
-            # room. The two heading rows keep their natural height.
-            rowHeights=[_BANNER_ROW_HEIGHT, _BASE_ROW_HEIGHT]
-            + [_ROW_HEIGHT] * body_rows,
+            rowHeights=(
+                None if with_sources
+                else [_BANNER_ROW_HEIGHT, _BASE_ROW_HEIGHT]
+                + [_ROW_HEIGHT] * body_rows
+            ),
             repeatRows=2,
         )
         table.setStyle(TableStyle([
@@ -363,6 +402,16 @@ def build_counting_sheet_pdf(
             # Quantity and unit centred; the trailing provenance columns are
             # prose and stay left-aligned.
             ("ALIGN", (2, 1), (3, -1), "CENTER"),
+            # L'intertitre traverse la largeur et se distingue du fond alterné :
+            # sans cela, « Stock physique B15 » se lirait comme une référence.
+            *[("SPAN", (0, r), (-1, r)) for r in subsection_rows],
+            *[("BACKGROUND", (0, r), (-1, r), colors.HexColor("#E2E8F0"))
+              for r in subsection_rows],
+            *[("LEFTPADDING", (0, r), (-1, r), 6) for r in subsection_rows],
+            # Une ligne vide n'a pas de quadrillage : c'est une respiration, pas
+            # une ligne à remplir.
+            *[("SPAN", (0, r), (-1, r)) for r in spacer_rows],
+            *[("BACKGROUND", (0, r), (-1, r), colors.white) for r in spacer_rows],
         ]))
         # The gap goes *before* each table but the first, never after the last:
         # a trailing spacer is still a flowable, so a table ending exactly at the
@@ -394,15 +443,14 @@ def _body_row(
     name_width: int,
 ) -> list[Any]:
     """One printed line — blank for a counter, or carrying what was counted."""
-    counted = line.get("qty") if filled else None
     if not filled:
         quantity: Any = ""  # left blank on purpose: the counter fills this in
-    elif counted is None:
-        # A record sheet must not leave the reader guessing: an empty cell and
-        # "counted zero" are different facts, and only the second closes a line.
-        quantity = paragraph("non compté", quiet)
     else:
-        quantity = _fr_number(counted)
+        # Une case laissée vide vaut zéro, et c'est zéro qui s'imprime. Le relevé
+        # portait « non compté », ce qui laissait le lecteur devant deux
+        # documents à rapprocher : la feuille disait « non compté » et l'analyse
+        # comptait la référence à zéro.
+        quantity = _fr_number(line.get("qty") or 0)
 
     row: list[Any] = [
         paragraph(str(line.get("item_number", "")), cell),
@@ -415,7 +463,13 @@ def _body_row(
             _SOURCE_LABELS.get(str(line.get("source", "")), str(line.get("source", ""))),
             cell,
         ))
-        row.append(paragraph(str(line.get("comment", "") or ""), cell))
+        # Borné : une note du modèle peut faire dix lignes, et une seule ligne
+        # de tableau prendrait alors le tiers de la page. Ce qui compte est le
+        # début — « lecture incertaine », « référence manuscrite » — et le
+        # détail se relit à l'écran.
+        row.append(paragraph(
+            _shorten(str(line.get("comment", "") or ""), _COMMENT_MAX_CHARS), cell
+        ))
     return row
 
 
@@ -432,16 +486,19 @@ _ROW_HEIGHT = _BASE_ROW_HEIGHT * 1.62 * 0.94
 #: The repeated section banner needs one line of text, no more.
 _BANNER_ROW_HEIGHT = 14.0
 
-#: Column widths in millimetres, summing to the 186 mm of usable page. The
-#: reference, quantity and unit columns were each trimmed — 10 %, 5 % and 15 %
-#: — and every millimetre went to the designation, which is the only column
-#: whose content was being cut.
+#: Column widths in millimetres, summing to the 186 mm of usable page.
+#:
+#: La désignation, le comptage et l'unité rendent 10 %, 5 % et 20 % de leur
+#: largeur, et tout va à la référence. C'est elle qu'on lit pour identifier la
+#: pièce — « MASS-00049952 » tenait tout juste, et un préfixe d'atelier de plus
+#: la coupait. La désignation, elle, est déjà tronquée par construction : elle
+#: perd trois caractères, pas une information.
 _PLAIN_COLUMNS = ("Référence", "Désignation", "Comptage", "Unité")
-_WIDTHS_PLAIN = (32.4, 93.7, 36.1, 23.8)
+_WIDTHS_PLAIN = (48.34, 84.33, 34.29, 19.04)
 
 #: With provenance, the designation gives back what the two extra columns need.
 _SOURCE_COLUMNS = (*_PLAIN_COLUMNS, "Source", "Commentaire")
-_WIDTHS_WITH_SOURCES = (32.4, 56.0, 30.0, 18.0, 22.0, 27.6)
+_WIDTHS_WITH_SOURCES = (43.1, 50.4, 28.5, 14.4, 22.0, 27.6)
 
 _SOURCE_LABELS = {
     "MANUAL": "saisie",
@@ -456,8 +513,12 @@ _SOURCE_LABELS = {
 #: Designations are truncated, not wrapped: a counter identifies a part by its
 #: reference, and letting a long label wrap onto a second line would halve the
 #: number of rows a page can hold. The narrower layout gets a tighter budget.
-_NAME_MAX_CHARS = 32
-_NAME_MAX_CHARS_WITH_SOURCES = 20
+#: Le commentaire est coupé bien plus tard que la désignation : c'est de la
+#: prose, elle s'enroule sur plusieurs lignes, et la hauteur de la ligne suit.
+_COMMENT_MAX_CHARS = 180
+
+_NAME_MAX_CHARS = 29
+_NAME_MAX_CHARS_WITH_SOURCES = 18
 
 
 def _blank_rows_for(section: str, *, mode: PrintMode, requested: int) -> int:
@@ -666,16 +727,26 @@ def _fr_number(value: Any, *, signed: bool = False) -> str:
     return text.replace(",", " ")
 
 
-_SECTION_TITLES = {
+#: Le texte imprimé en tête de chaque section, par défaut.
+#:
+#: Un seul texte, et non un titre plus un indice comme auparavant : ce que le
+#: métier dicte est une phrase entière, dont la moitié utile est justement la
+#: consigne. « WIP — ensembles déclarés » ne dit pas au compteur de noter le
+#: numéro de Galia ; c'est pourtant ce qu'il doit faire.
+#:
+#: Chaque zone peut les remplacer — voir ``section_labels`` sur
+#: :class:`~inventory.domain.models.Zone`. Le défaut est ce qui s'imprime quand
+#: personne n'a rien dit, pas une valeur qu'on recopie pour la modifier.
+DEFAULT_SECTION_TITLES = {
     "LINE_SIDE": "Composants en bord de ligne",
-    "WIP": "WIP — en-cours non déclaré",
-    "WIP_OK": "WIP — ensembles déclarés",
-}
-
-_SECTION_HINTS = {
-    "LINE_SIDE": "compter les pièces à l'unité",
-    "WIP": "compter les ensembles ; ils seront éclatés en nomenclature",
-    "WIP_OK": "compter les ensembles terminés et déclarés dans l'ERP",
+    "WIP": (
+        "WIP — en-cours non déclaré "
+        "(Statut MOM : on progress / waiting for decision)"
+    ),
+    "WIP_OK": (
+        "MOM OK — si MEL, notez le numéro de Galia ou le numéro de série sur "
+        "la feuille accompagnante"
+    ),
 }
 
 

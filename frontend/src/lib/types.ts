@@ -58,6 +58,8 @@ export interface Permissions {
   bookStock: boolean
   zones: boolean
   countJournals: boolean
+  /** Les comptages avancés, qui n'attendent que le référentiel articles. */
+  earlyCounts: boolean
   countSheets: boolean
   adjustments: boolean
   analysis: boolean
@@ -277,10 +279,16 @@ export interface Journal {
   location_id: string
   kind: 'INVE' | 'INVV'
   status: JournalStatus
+  /**
+   * Toujours vide : rien n'écrit jamais ce champ. Le numéro ERP se lit dans
+   * `erpJournalNumbers`, dérivé des lignes.
+   */
   journal_number: string
   description: string
   posted_at: string | null
   auto_created: boolean
+  /** Le ou les journaux ERP dont viennent les lignes de cet emplacement. */
+  erpJournalNumbers: string[]
   lineCount: number
   countedQty: number
   overriddenLines: number
@@ -465,6 +473,14 @@ export interface Zone {
   manager_code: string
   /** Whether a negative counted quantity is accepted on this zone's sheets. */
   allow_negative: boolean
+  /**
+   * Les en-têtes de section personnalisés, par code de section.
+   *
+   * Une section absente prend le texte par défaut — voir
+   * `DEFAULT_SECTION_TITLES`. C'est ce qui permet d'en personnaliser une sans
+   * recopier les deux autres, et de revenir au défaut en vidant le champ.
+   */
+  section_labels: Record<string, string>
   status: ZoneStatus
   /** Quand la zone a été déclarée terminée, et par qui. Null = encore ouverte. */
   closed_at: string | null
@@ -537,8 +553,10 @@ export interface SheetLine {
   section: CountSection
   qty_imported: number | null
   qty_manual: number | null
-  qty: number | null
-  isCounted: boolean
+  qty: number
+  /** Quelqu'un a-t-il écrit quelque chose dans la case — l'avancement, pas la
+   *  quantité. Une case vide vaut zéro et `qty` le dit. */
+  hasEntry: boolean
   unit: string
   source: DataSource
   confidence: number | null
@@ -1088,7 +1106,9 @@ export interface StockFlowReport {
 
 export type ErpJournal = Schemas['ErpJournalResponse']
 export type ScopeCandidate = Schemas['ScopeCandidate']
-export type EarlyBatch = Schemas['EarlyBatchResponse']
+export type RescanLocation = Schemas['RescanLocation']
+export type LabelResolution = 'KEEP_NEW' | 'KEEP_SEALED' | 'RECOUNT'
 export type Drift = Schemas['DriftResponse']
 export type LabelAlert = Schemas['LabelAlert']
+export type RecountedInPlace = Schemas['RecountedInPlace']
 export type DriftResolution = 'KEEP_EARLY' | 'RECOUNT'

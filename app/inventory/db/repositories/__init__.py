@@ -32,9 +32,11 @@ from .backflush import BackflushRepository
 from .book_stock import BookStockRepository
 from .campaign import CampaignRepository
 from .consolidation import ConsolidationRepository
-from .erp_journal import (
-    EarlyCountBatchRepository,
+from .early_count import (
     EarlyCountDriftRepository,
+    LabelDecisionRepository,
+)
+from .erp_journal import (
     ErpJournalRepository,
 )
 from .evidence import EvidenceBlobRepository
@@ -52,7 +54,7 @@ __all__ = [
     "BookStockRepository",
     "JournalRepository",
     "ErpJournalRepository",
-    "EarlyCountBatchRepository",
+    "LabelDecisionRepository",
     "EarlyCountDriftRepository",
     "SheetRepository",
     "ConsolidationRepository",

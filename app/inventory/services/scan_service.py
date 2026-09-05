@@ -204,6 +204,7 @@ class ScanService:
             if free_entry
             else extractor.extract(
                 expected=extractor.expected_from_items(expected_lines, items),
+                known_items=items,
                 **common,
             )
         )
@@ -215,7 +216,11 @@ class ScanService:
         # plus rien ne rattache au papier.
         with ctx.db.transaction() as conn:
             ctx.sheets.replace_sheet_lines(
-                sheet_id, result.lines, actor=ctx.actor, conn=conn
+                # La lecture porte sur des quantités, pas sur la mise en page :
+                # elle ne connaît ni les intertitres ni les lignes vides, et
+                # n'a donc rien à dire sur leur sort.
+                sheet_id, result.lines, actor=ctx.actor, conn=conn,
+                keep_layout=True,
             )
             ctx.sheets.update_sheet(
                 campaign.id,
@@ -411,6 +416,14 @@ class ScanService:
                 "pass_no": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
                 "images": [images[p] for p in pages],
                 "image_mime": mime,
+                # Le même réglage que pour une feuille seule. Il manquait ici, et
+                # `allow_formulas` valant `False` par défaut, « 3*48+7 » écrit
+                # sur une feuille d'une pile devenait une case vide — sans
+                # erreur, sans avertissement, et sans que rien ne distingue ce
+                # cas d'une ligne que personne n'avait comptée. La pile est
+                # justement la voie normale : c'est elle qui perdait les
+                # quantités, pas la feuille seule qu'on scanne pour vérifier.
+                "allow_formulas": campaign.config.allow_formulas,
                 "id_factory": new_id,
             }
             return (
@@ -418,6 +431,7 @@ class ScanService:
                 if not expected_lines
                 else extractor.extract(
                     expected=extractor.expected_from_items(expected_lines, items),
+                    known_items=items,
                     **common,
                 )
             )
@@ -474,7 +488,8 @@ class ScanService:
                 # preuve qui les justifie.
                 with ctx.db.transaction() as conn:
                     ctx.sheets.replace_sheet_lines(
-                        sheet_id, result.lines, actor=ctx.actor, conn=conn
+                        sheet_id, result.lines, actor=ctx.actor, conn=conn,
+                        keep_layout=True,
                     )
                     ctx.sheets.update_sheet(
                         campaign.id,

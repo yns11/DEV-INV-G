@@ -36,7 +36,7 @@ vi.mock('../lib/api', () => ({
   },
 }))
 
-function overview(frozen: string | null): Overview {
+function overview(frozen: string | null, sealed = 0): Overview {
   return {
     campaign: {
       id: 'camp-1',
@@ -44,11 +44,12 @@ function overview(frozen: string | null): Overview {
       status: 'PREPARATION',
       book_stock_frozen_at: frozen,
     },
+    counts: { items: 0, bookStockLines: 0, sealedLocations: sealed },
     permissions: {},
   } as unknown as Overview
 }
 
-function show(view: AnalysisView, frozen: string | null) {
+function show(view: AnalysisView, frozen: string | null, sealed = 0) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
@@ -57,7 +58,7 @@ function show(view: AnalysisView, frozen: string | null) {
       <ToastProvider>
         <MemoryRouter>
           <Routes>
-            <Route path="/" element={<Outlet context={overview(frozen)} />}>
+            <Route path="/" element={<Outlet context={overview(frozen, sealed)} />}>
               <Route index element={<Analysis view={view} />} />
             </Route>
           </Routes>
@@ -78,7 +79,7 @@ describe('sans stock ERP gelé', () => {
   it('les écarts sont refusés, en disant quoi faire', () => {
     show('variances', null)
     expect(refused()).not.toBeNull()
-    expect(screen.getByText(/gelez-le/)).toBeTruthy()
+    expect(screen.getByText(/Scellez un/)).toBeTruthy()
   })
 
   it.each(['variances', 'causes', 'adjustments'] as const)('%s est refusée', (view) => {
@@ -95,4 +96,36 @@ describe('une fois le stock gelé', () => {
       expect(refused()).toBeNull()
     },
   )
+})
+
+
+describe('un précomptage scellé ouvre l’analyse avant le gel', () => {
+  /**
+   * Le gel du stock ERP est **global** et arrive au jour J. Le scellement d'un
+   * précomptage est un gel **par emplacement** : pour ceux-là, référence et
+   * comptage sont déjà posés et ne bougeront plus, puisque le chargement
+   * général les préserve. Leur écart est donc définitif dès la déclaration.
+   *
+   * Attendre le gel général le cachait pendant les jours où l'on peut encore
+   * aller voir sur le terrain — c'est-à-dire au seul moment où il sert.
+   */
+  it('les écarts s’affichent', () => {
+    show('variances', null, 3)
+    expect(refused()).toBeNull()
+  })
+
+  it('et disent sur combien d’emplacements ils portent', () => {
+    show('variances', null, 3)
+    expect(
+      screen.getByText(/Écarts partiels — stock ERP pas encore gelé/),
+    ).toBeTruthy()
+    expect(screen.getByText(/3 emplacement/)).toBeTruthy()
+  })
+
+  it('le bandeau disparaît une fois le stock gelé', () => {
+    show('variances', '2026-06-13T08:00:00Z', 3)
+    expect(
+      screen.queryByText(/Écarts partiels — stock ERP pas encore gelé/),
+    ).toBeNull()
+  })
 })

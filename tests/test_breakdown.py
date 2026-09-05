@@ -293,3 +293,60 @@ class TestThePhysicalColumn:
         """Il ne dénotait plus rien de distinct : l'écart *est* le post-ajustement."""
         with pytest.raises(ValidationError):
             service().breakdown(campaign(), "ART-1", "residual")
+
+
+class TestLesLignesNullesNeSontPasMontrees:
+    """« D'où vient ce chiffre ? » — une ligne à zéro n'en vient pas.
+
+    Ce n'est pas une gêne de confort. Depuis qu'une case vide vaut zéro, une
+    référence listée dans quarante zones et trouvée dans deux produit quarante
+    lignes : les deux qui expliquent le total, et trente-huit qui ne
+    l'expliquent pas. La fenêtre ouverte pour comprendre un chiffre devenait
+    l'endroit où le chiffre se perdait.
+
+    Écartées après le calcul de la valeur et avant les totaux : le total reste
+    la somme de ce qui est affiché, ce que le reste de ce fichier vérifie déjà
+    et qu'un filtre mal placé casserait.
+    """
+
+    def test_une_ligne_a_zero_disparait(self):
+        result = service(
+            book=[book_line("ALLEE-A", "12"), book_line("ALLEE-VIDE", "0")]
+        ).breakdown(campaign(), "ART-1", "book")
+        assert [r["where"] for r in result["rows"]] == ["B06 / ALLEE-A"]
+
+    def test_le_total_ne_bouge_pas_pour_autant(self):
+        """Une ligne nulle n'apportait rien : la retirer n'enlève rien."""
+        result = service(
+            book=[book_line("ALLEE-A", "12"), book_line("ALLEE-VIDE", "0")]
+        ).breakdown(campaign(), "ART-1", "book")
+        assert result["total"] == 12
+        assert sum(r["qty"] for r in result["rows"]) == result["total"]
+
+    def test_une_quantite_negative_reste(self):
+        """« Non nulle » et « positive » ne sont pas la même chose : un écart
+        négatif est précisément ce qu'on ouvre la fenêtre pour comprendre."""
+        result = service(
+            book=[book_line("RETOURS", "-4"), book_line("ALLEE-A", "12")]
+        ).breakdown(campaign(), "ART-1", "book")
+        assert sorted(r["qty"] for r in result["rows"]) == [-4.0, 12.0]
+
+    def test_une_ligne_sans_quantite_mais_avec_une_valeur_reste(self):
+        """Le cas qu'un filtre sur la seule quantité aurait fait disparaître —
+        avec la valeur qu'il portait, et le total s'en serait trouvé faux."""
+        analysis = service(book=[book_line("ALLEE-A", "0")])
+        analysis._book_rows = lambda c, i: [  # type: ignore[method-assign]
+            {"origin": "Stock ERP", "where": "B06 / A", "warehouseId": "B06",
+             "locationId": "A", "detail": "", "qty": 0.0, "value": 30.0},
+        ]
+        result = analysis.breakdown(campaign(), "ART-1", "book")
+        assert len(result["rows"]) == 1
+        assert result["totalValue"] == 30
+
+    def test_une_fenetre_qui_n_a_que_des_zeros_est_vide(self):
+        """Et l'écran le dit — « aucune ligne » vaut mieux qu'une liste de
+        zéros dont le total est zéro."""
+        result = service(book=[book_line("ALLEE-A", "0")]).breakdown(
+            campaign(), "ART-1", "book"
+        )
+        assert result["rows"] == [] and result["total"] == 0

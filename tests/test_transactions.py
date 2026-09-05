@@ -173,7 +173,11 @@ def generic_service() -> tuple[GenericService, Any, Any]:
         set_zone_closed=set_zone_closed,
         list_arbitrations=lambda cid: [],
         get_sheet=lambda sid: sheet,
-        list_sheet_lines=lambda sid: [],
+        # Le service relit les feuilles pour savoir de quelles zones les lignes
+        # supprimées viennent : le document se décide sur le passage 1 et vaut
+        # pour les deux.
+        list_sheets=lambda cid, **kw: [sheet],
+        list_sheet_lines=lambda sid, **kw: [],
         lines_by_sheet=lambda cid: {"s-1": [existing]},
         delete_sheet_line=delete_sheet_line,
         replace_sheet_lines=replace_sheet_lines,

@@ -829,6 +829,18 @@ table.data tbody tr:last-child td {
   border-bottom: none;
 }
 
+/* Une ligne de mise en page — intertitre ou ligne vide — n'est pas une ligne à
+   compter. Le fond gris la sort de la liste, comme le fait la bande grise sur
+   la feuille imprimée : celui qui recopie doit reconnaître au premier coup
+   d'œil la ligne qui lui dit *où aller* de celle sur laquelle il écrit. */
+table.data tbody tr.row--layout {
+  background: var(--bg-active);
+}
+
+table.data tbody tr.row--layout td {
+  color: var(--fg-muted);
+}
+
 table.data td.editable {
   padding: 0;
 }

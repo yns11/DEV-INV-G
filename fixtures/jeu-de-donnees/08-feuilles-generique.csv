@@ -1,0 +1,6 @@
+Feuille;Numéro d'article;Section;Unité de comptage
+ZONE-1;P-100;Bord de ligne;PCE
+ZONE-1;P-300;Bord de ligne;KG
+ZONE-1;P-800;Bord de ligne;LITRE
+ZONE-1;PF-01;Bord de ligne;PCE
+ZONE-1;SF-10;WIP (à éclater);PCE

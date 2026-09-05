@@ -927,82 +927,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/campaigns/{campaign_id}/early-counts/batches": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Lister les lots de comptage avancé */
-        get: operations["list_batches_api_campaigns__campaign_id__early_counts_batches_get"];
-        put?: never;
-        /** Ouvrir un lot de comptage avancé */
-        post: operations["create_batch_api_campaigns__campaign_id__early_counts_batches_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/batches/{batch_id}/close": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Clore un lot */
-        post: operations["close_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__close_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/batches/{batch_id}/seal": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Sceller un lot
-         * @description Poser la référence des emplacements du lot, et interdire qu'on y touche.
-         *
-         *     Refusé si l'un des journaux du périmètre n'est pas posté dans l'ERP : c'est
-         *     le postage qui réaligne l'ERP sur le physique compté, et le scellement tient
-         *     ce réalignement pour acquis.
-         */
-        post: operations["seal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__seal_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/batches/{batch_id}/unseal": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Desceller un lot */
-        post: operations["unseal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__unseal_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/campaigns/{campaign_id}/early-counts/drifts": {
         parameters: {
             query?: never;
@@ -1111,6 +1035,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/early-counts/journals/{erp_journal_id}/unseal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Desceller un journal de précomptage
+         * @description Rendre ses emplacements au comptage général.
+         *
+         *     Le périmètre part avec le scellement : sans périmètre, le journal n'a plus
+         *     d'emplacement à couvrir. Redéclarer est le geste qui rescelle.
+         */
+        post: operations["unseal_journal_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__unseal_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/early-counts/label-alerts": {
         parameters: {
             query?: never;
@@ -1127,6 +1074,80 @@ export interface paths {
          *     re-scannée ailleurs, son étiquette apparaît dans un second journal.
          */
         get: operations["label_alerts_api_campaigns__campaign_id__early_counts_label_alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/label-alerts/decide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dire où est la pièce
+         * @description Trois issues, et chacune agit sur les quantités.
+         *
+         *     La mettre au nouvel emplacement retire l'étiquette de l'emplacement scellé ;
+         *     l'en enlever retire la ligne de l'autre journal ; la signaler ne retire
+         *     rien et met l'emplacement scellé sur la liste de ceux à rescanner.
+         */
+        post: operations["decide_label_api_campaigns__campaign_id__early_counts_label_alerts_decide_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/recounted-in-place": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Emplacements scellés recomptés par un second journal
+         * @description Le pendant des étiquettes comptées ailleurs, et ce qui les en sort.
+         *
+         *     Deux journaux sur le même emplacement scellé ne décrivent pas un
+         *     déplacement : l'étiquette est là où elle doit être. Ils remplissaient
+         *     pourtant la liste des étiquettes comptées ailleurs de lignes dont les deux
+         *     colonnes d'emplacement portaient la même valeur. Ils sont ici, résumés, avec
+         *     le journal retenu et celui qui ne l'est pas.
+         */
+        get: operations["recounted_in_place_api_campaigns__campaign_id__early_counts_recounted_in_place_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/to-rescan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Emplacements à desceller et rescanner
+         * @description Les emplacements scellés dont une étiquette reste en question.
+         *
+         *     Ceux que l'issue « signaler » désigne : on n'a pas voulu trancher sur pièce,
+         *     et la façon d'en sortir est d'aller recompter. C'est l'ancien emplacement —
+         *     le scellé — qu'il faut desceller pour que le jour J le reprenne.
+         */
+        get: operations["to_rescan_api_campaigns__campaign_id__early_counts_to_rescan_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1635,6 +1656,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/arbitrations/decide-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trancher en lot les écarts ouverts d'une zone
+         * @description Retenir le comptage n°1, le n°2, ou la proposition — partout à la fois.
+         *
+         *     Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
+         *     jugement pris une par une.
+         */
+        post: operations["decide_arbitrations_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_decide_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/arbitrations/prefill-pass-2": {
         parameters: {
             query?: never;
@@ -1698,6 +1742,30 @@ export interface paths {
          *     Rouvrir, en revanche, ne se refuse jamais.
          */
         post: operations["set_zone_closure_api_campaigns__campaign_id__generic_zones__zone_id__closure_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/section-labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Textes imprimés en tête des sections d'une zone
+         * @description Remplacer le texte par défaut d'une ou plusieurs sections.
+         *
+         *     Un texte vide remet le défaut : c'est ce que veut dire un champ qu'on vide,
+         *     et une bannière vide laisserait le compteur sans la règle sous laquelle il
+         *     compte.
+         */
+        post: operations["set_section_labels_api_campaigns__campaign_id__generic_zones__zone_id__section_labels_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3012,6 +3080,39 @@ export interface components {
             unit?: string | null;
         };
         /**
+         * BulkArbitrationRequest
+         * @description Trancher d'un geste tout ce qui reste ouvert dans une zone.
+         *
+         *     ``choice`` dit *par quelle règle*, jamais une quantité : sur quarante
+         *     écarts, c'est la règle qui se décide une fois — « le second comptage fait
+         *     foi, la première équipe comptait sous la pluie » — et les quarante
+         *     quantités qui en découlent.
+         */
+        BulkArbitrationRequest: {
+            /**
+             * Choice
+             * @enum {string}
+             */
+            choice: "PASS_1" | "PASS_2" | "PROPOSED";
+        };
+        /**
+         * BulkArbitrationResponse
+         * @description Ce qu'un arbitrage en lot a tranché, et ce qu'il a laissé ouvert.
+         *
+         *     Les deux comptes, parce qu'ils ne disent pas la même chose : une ligne
+         *     laissée de côté — aucune des deux équipes n'a rien trouvé à retenir — reste
+         *     à traiter, et un écran qui n'annoncerait que les tranchées ferait croire la
+         *     zone finie.
+         */
+        BulkArbitrationResponse: {
+            /** Decided */
+            decided: number;
+            /** Skipped */
+            skipped: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * Campaign
          * @description An inventory campaign — the immutable dossier the whole app revolves around.
          */
@@ -3153,6 +3254,11 @@ export interface components {
             bookStockLines: number;
             /** Items */
             items: number;
+            /**
+             * Sealedlocations
+             * @default 0
+             */
+            sealedLocations: number;
         } & {
             [key: string]: unknown;
         };
@@ -3267,6 +3373,26 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * CountLineKind
+         * @description Ce qu'une ligne de feuille **est**, au-delà de ce qu'elle porte.
+         *
+         *     Une feuille de comptage n'est pas une liste, c'est un document : les
+         *     feuilles Excel qu'elle remplace alternent des intertitres — « Stock physique
+         *     B6EST », « Stock physique B15 », « Stock physique chez Maldaner » — et des
+         *     lignes vides qui aèrent la page. Ce découpage n'est pas décoratif : il dit
+         *     au compteur *où aller*, et c'est lui qui fait qu'un même article revient
+         *     trois fois sur la même feuille sans être un doublon.
+         *
+         *     * ``ARTICLE``    — une référence à compter, la seule qui porte une quantité.
+         *     * ``SUBSECTION`` — un intertitre, son texte dans ``label``. Les articles qui
+         *       le suivent lui appartiennent, et leur clé d'unicité le porte.
+         *     * ``SPACER``     — une ligne vide. **Pas** une sous-section : elle ne
+         *       regroupe rien, elle sépare. Deux articles identiques séparés par une
+         *       simple ligne vide restent un doublon.
+         * @enum {string}
+         */
+        CountLineKind: "ARTICLE" | "SUBSECTION" | "SPACER";
+        /**
          * CountSection
          * @description Section of a GENERIQUE counting sheet — drives the consolidation rule.
          *
@@ -3313,10 +3439,10 @@ export interface components {
          *     ne l'est pas, **une seule question se pose** : quelle quantité fait foi au
          *     jour J ?
          *
-         *     Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une :
-         *     on ne scelle qu'un journal déjà posté dans l'ERP, si bien que le
-         *     réalignement est acquis par construction plutôt que diagnostiqué après coup.
-         *     « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
+         *     Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une : un
+         *     journal de précomptage se charge une fois posté et validé dans l'ERP, si
+         *     bien que le réalignement est acquis en pratique plutôt que diagnostiqué
+         *     après coup. « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
          *     d'ajustement, qui a déjà son sens, sa table et sa place dans le calcul —
          *     en faire une issue de la dérive aurait dupliqué une fonction et forcé à
          *     choisir entre deux gestes qui ne s'excluent pas.
@@ -3344,8 +3470,6 @@ export interface components {
          * @description ``ERP@J − physique@T0`` sur un emplacement scellé, attendue nulle.
          */
         DriftResponse: {
-            /** Batchid */
-            batchId: string | null;
             /** Blocksanalysis */
             blocksAnalysis: boolean;
             /** Campaignid */
@@ -3364,6 +3488,8 @@ export interface components {
             driftQty: number;
             /** Driftvalue */
             driftValue: number;
+            /** Erpjournalid */
+            erpJournalId: string | null;
             /** Id */
             id: string;
             /** Ismaterial */
@@ -3401,66 +3527,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** EarlyBatchRequest */
-        EarlyBatchRequest: {
-            /** Code */
-            code: string;
-            /** Countedon */
-            countedOn?: string | null;
-            /** Erpjournalids */
-            erpJournalIds: string[];
-            /**
-             * Label
-             * @default
-             */
-            label: string;
-        };
-        /** EarlyBatchResponse */
-        EarlyBatchResponse: {
-            /** Campaignid */
-            campaignId: string;
-            /** Closedat */
-            closedAt: string | null;
-            /** Code */
-            code: string;
-            /** Countedon */
-            countedOn: string | null;
-            /** Id */
-            id: string;
-            /**
-             * Isclosed
-             * @default false
-             */
-            isClosed: boolean;
-            /**
-             * Issealed
-             * @default false
-             */
-            isSealed: boolean;
-            /**
-             * Label
-             * @default
-             */
-            label: string;
-            /** Locations */
-            locations: components["schemas"]["ScopeLocation"][];
-            /** Openedat */
-            openedAt: string | null;
-            /**
-             * Openedby
-             * @default
-             */
-            openedBy: string;
-            /** Sealedat */
-            sealedAt: string | null;
-            /**
-             * Sealedby
-             * @default
-             */
-            sealedBy: string;
-        } & {
-            [key: string]: unknown;
-        };
         /**
          * ErpJournalResponse
          * @description Un journal tel que l'ERP le tient, avec son périmètre déclaré.
@@ -3468,6 +3534,8 @@ export interface components {
         ErpJournalResponse: {
             /** Campaignid */
             campaignId: string;
+            /** Countedon */
+            countedOn: string | null;
             /**
              * Description
              * @default
@@ -3479,6 +3547,11 @@ export interface components {
             erpPostedAt: string | null;
             /** Id */
             id: string;
+            /**
+             * Issealed
+             * @default false
+             */
+            isSealed: boolean;
             /** Journalnumber */
             journalNumber: string;
             /** Kind */
@@ -3491,6 +3564,13 @@ export interface components {
             scope: components["schemas"]["ScopeLocation"][];
             /** Scopedeclared */
             scopeDeclared: boolean;
+            /** Sealedat */
+            sealedAt: string | null;
+            /**
+             * Sealedby
+             * @default
+             */
+            sealedBy: string;
             /**
              * Siteid
              * @default
@@ -3803,6 +3883,20 @@ export interface components {
          *     ce que la dérive ne voit pas.
          */
         LabelAlert: {
+            /**
+             * Comment
+             * @default
+             */
+            comment: string;
+            /** Decidedat */
+            decidedAt: string | null;
+            /**
+             * Decidedby
+             * @default
+             */
+            decidedBy: string;
+            /** Decision */
+            decision: string | null;
             /** Itemnumber */
             itemNumber: string;
             /** Labelid */
@@ -3822,6 +3916,44 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * LabelDecisionRequest
+         * @description Où est la pièce : les deux emplacements, et ce qu'on a constaté.
+         */
+        LabelDecisionRequest: {
+            /**
+             * Comment
+             * @default
+             */
+            comment: string;
+            decision: components["schemas"]["LabelResolution"];
+            /** Itemnumber */
+            itemNumber: string;
+            /** Labelid */
+            labelId: string;
+            /** Otherlocationid */
+            otherLocationId: string;
+            /** Otherwarehouseid */
+            otherWarehouseId: string;
+            /** Sealedlocationid */
+            sealedLocationId: string;
+            /** Sealedwarehouseid */
+            sealedWarehouseId: string;
+        };
+        /**
+         * LabelResolution
+         * @description Où est la pièce, quand une étiquette scellée reparaît ailleurs.
+         *
+         *     Le contrôle par étiquette est le seul du dispositif qui descende sous le
+         *     grain « emplacement + article », et le seul qui rattrape une pièce sortie
+         *     d'un emplacement scellé **sans aucune transaction ERP** : la dérive, elle,
+         *     reste nulle dans ce cas, faute d'avoir quoi que ce soit à comparer.
+         *
+         *     La question n'a pas de réponse calculable. Deux journaux affirment chacun
+         *     détenir la même étiquette ; seul quelqu'un qui va voir peut trancher.
+         * @enum {string}
+         */
+        LabelResolution: "KEEP_NEW" | "KEEP_SEALED" | "RECOUNT";
         /** LocationKeyPayload */
         LocationKeyPayload: {
             /**
@@ -4015,6 +4147,8 @@ export interface components {
             countJournals: boolean;
             /** Countsheets */
             countSheets: boolean;
+            /** Earlycounts */
+            earlyCounts: boolean;
             /** Items */
             items: boolean;
             /** Locations */
@@ -4057,6 +4191,84 @@ export interface components {
             lineIds: string[];
             /** @default WIP_OK */
             section: components["schemas"]["CountSection"];
+        };
+        /**
+         * RecountedInPlace
+         * @description Un emplacement scellé qu'un second journal a recompté **sur place**.
+         *
+         *     Distinct de :class:`LabelAlert`, et la distinction porte : là, l'étiquette
+         *     est où elle doit être, il n'y a pas de nouvel emplacement, et aucune des
+         *     trois issues ne s'applique. Ce qui se joue est un second comptage du même
+         *     emplacement — seul le journal qui le possède est retenu.
+         */
+        RecountedInPlace: {
+            /** Labelcount */
+            labelCount: number;
+            /** Otherjournalnumber */
+            otherJournalNumber: string;
+            /** Ownerjournalnumber */
+            ownerJournalNumber: string;
+            /** Sealedlocationid */
+            sealedLocationId: string;
+            /** Sealedwarehouseid */
+            sealedWarehouseId: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * RescanLabel
+         * @description Une étiquette qui met un emplacement scellé en question.
+         */
+        RescanLabel: {
+            /**
+             * Comment
+             * @default
+             */
+            comment: string;
+            /**
+             * Decidedby
+             * @default
+             */
+            decidedBy: string;
+            /** Itemnumber */
+            itemNumber: string;
+            /** Labelid */
+            labelId: string;
+            /** Otherlocationid */
+            otherLocationId: string;
+            /** Otherwarehouseid */
+            otherWarehouseId: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * RescanLocation
+         * @description Un emplacement scellé qu'il faut desceller et rescanner.
+         *
+         *     Ce que l'issue « signaler » produit : on n'a pas tranché sur pièce, et la
+         *     façon d'en sortir est d'aller recompter.
+         */
+        RescanLocation: {
+            /** Erpjournalid */
+            erpJournalId: string | null;
+            /**
+             * Issealed
+             * @default false
+             */
+            isSealed: boolean;
+            /**
+             * Journalnumber
+             * @default
+             */
+            journalNumber: string;
+            /** Labels */
+            labels: components["schemas"]["RescanLabel"][];
+            /** Locationid */
+            locationId: string;
+            /** Warehouseid */
+            warehouseId: string;
+        } & {
+            [key: string]: unknown;
         };
         /** RouteMetrics */
         RouteMetrics: {
@@ -4156,6 +4368,23 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * SectionLabelsResponse
+         * @description Les en-têtes de section retenus pour une zone, après nettoyage.
+         *
+         *     Ce que la route rend est ce qui est **enregistré**, pas ce qui a été
+         *     envoyé : un texte vide n'est pas stocké — il remet le défaut — et l'écran
+         *     doit voir cette différence tout de suite plutôt qu'au prochain
+         *     rechargement.
+         */
+        SectionLabelsResponse: {
+            /** Labels */
+            labels: {
+                [key: string]: string;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * Sequence
          * @description Ce que la phase courante autorise, et ce qui manque sinon.
          */
@@ -4192,6 +4421,13 @@ export interface components {
             id?: string | null;
             /** Itemnumber */
             itemNumber: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** @default ARTICLE */
+            lineKind: components["schemas"]["CountLineKind"];
             /** Qty */
             qty?: number | string | null;
             /** @default LINE_SIDE */
@@ -4441,6 +4677,20 @@ export interface components {
              * @default
              */
             sector: string;
+        };
+        /**
+         * ZoneSectionLabelsRequest
+         * @description Les en-têtes de section imprimés en tête de feuille, pour une zone.
+         *
+         *     Un code absent — ou dont le texte est vide — reprend le texte par défaut.
+         *     C'est ce qui permet d'en personnaliser un sans recopier les deux autres, et
+         *     d'annuler une personnalisation en vidant le champ.
+         */
+        ZoneSectionLabelsRequest: {
+            /** Labels */
+            labels?: {
+                [key: string]: string;
+            };
         };
     };
     responses: never;
@@ -6195,192 +6445,6 @@ export interface operations {
             };
         };
     };
-    list_batches_api_campaigns__campaign_id__early_counts_batches_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_batch_api_campaigns__campaign_id__early_counts_batches_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EarlyBatchRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    close_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__close_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                batch_id: string;
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    seal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__seal_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                batch_id: string;
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    unseal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__unseal_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                batch_id: string;
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UnsealRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     list_drifts_api_campaigns__campaign_id__early_counts_drifts_get: {
         parameters: {
             query?: never;
@@ -6566,6 +6630,46 @@ export interface operations {
             };
         };
     };
+    unseal_journal_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__unseal_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                erp_journal_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UnsealRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDeclared"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     label_alerts_api_campaigns__campaign_id__early_counts_label_alerts_get: {
         parameters: {
             query?: never;
@@ -6588,6 +6692,115 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LabelAlert"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_label_api_campaigns__campaign_id__early_counts_label_alerts_decide_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LabelDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabelAlert"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recounted_in_place_api_campaigns__campaign_id__early_counts_recounted_in_place_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecountedInPlace"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    to_rescan_api_campaigns__campaign_id__early_counts_to_rescan_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RescanLocation"][];
                 };
             };
             /** @description Validation Error */
@@ -7479,6 +7692,46 @@ export interface operations {
             };
         };
     };
+    decide_arbitrations_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_decide_all_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                zone_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkArbitrationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkArbitrationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     prefill_with_pass_2_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_prefill_pass_2_post: {
         parameters: {
             query?: never;
@@ -7580,6 +7833,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_section_labels_api_campaigns__campaign_id__generic_zones__zone_id__section_labels_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                zone_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneSectionLabelsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SectionLabelsResponse"];
                 };
             };
             /** @description Validation Error */

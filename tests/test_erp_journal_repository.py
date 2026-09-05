@@ -229,6 +229,12 @@ class TestTheLabelControl:
             _line(erp_line_number=1, location_id="SOL",
                   label_id="001609231", qty_on_hand=1, qty_counted=1),
         ])
+        # L'emplacement scellé appartient à ce journal : c'est ce qui fait de
+        # sa ligne une preuve plutôt qu'un passage.
+        repo.set_scope(
+            campaign, sealed,
+            [LocationKey(warehouse_id="ATP", location_id="SOL")], actor="test",
+        )
         elsewhere = repo.upsert_journal(
             campaign, journal_number="NPEM-JOURJ", kind=JournalKind.INVE
         )
@@ -259,6 +265,10 @@ class TestTheLabelControl:
             _line(erp_line_number=2, warehouse_id="QUAL", location_id="APQP C0",
                   label_id="001609231", qty_on_hand=0, qty_counted=1),
         ])
+        repo.set_scope(
+            campaign, journal,
+            [LocationKey(warehouse_id="ATP", location_id="SOL")], actor="test",
+        )
         found = repo.labels_counted_elsewhere(
             campaign, [LocationKey(warehouse_id="ATP", location_id="SOL")]
         )
@@ -280,6 +290,10 @@ class TestTheLabelControl:
             _line(erp_line_number=1, location_id="SOL",
                   label_id="001609231", qty_on_hand=1, qty_counted=0),
         ])
+        repo.set_scope(
+            campaign, sealed,
+            [LocationKey(warehouse_id="ATP", location_id="SOL")], actor="test",
+        )
         other = repo.upsert_journal(
             campaign, journal_number="NPEM-32", kind=JournalKind.INVE
         )

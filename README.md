@@ -32,20 +32,30 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   journaux et analyses sont versionnés ensemble et restent recalculables à
   l'identique des mois plus tard.
 - **Rien ne disparaît en silence.** Un assemblage sans nomenclature, une ligne
-  d'export corrompue, une case vide : chacun produit un message explicite et une
-  résolution, jamais une quantité perdue.
+  d'export corrompue : chacun produit un message explicite et une résolution,
+  jamais une quantité perdue. Et une ligne de feuille laissée vide compte
+  **zéro** : elle figure sur le papier parce qu'on s'attend à trouver la
+  référence dans la zone, et n'y avoir rien trouvé est un écart à expliquer.
 - **Les feuilles se préparent, elles ne s'improvisent pas.** Un fichier
   `[feuille, article, section]` crée les zones et pré-imprime leur liste, sur les
   deux passages. Un article absent du référentiel est une erreur de ligne, jamais
   un article créé par effet de bord — et la règle vaut pour le stock ERP comme
   pour les feuilles, dans les trois modes d'import.
+- **La feuille est un document, pas une liste.** Intertitres — « Stock physique
+  B6EST », « Stock physique B15 » — et lignes vides se posent en préparation, se
+  voient dans l'aperçu avant impression, et se retrouvent à l'identique sur le
+  papier et dans le formulaire de saisie. Un même article sous deux intertitres
+  est deux comptages, à deux endroits : ce n'est plus refusé comme un doublon.
 - **La photo du stock se désigne.** Le snapshot ERP est publié chaque jour ;
   c'est celui de la journée de comptage qui fait foi, pas celui du jour où on le
   charge. La campagne dit lequel elle a chargé, et l'historique le garde.
-- **Deux comptages, un arbitrage outillé.** Valorisé en euros, couvrant aussi les
-  articles comptés par une seule équipe. Le nombre de comptages appartient à la
-  zone : le double comptage est la règle, le comptage unique l'exception qu'on
-  assume, zone par zone.
+- **Deux comptages, un arbitrage outillé.** Les deux passages portent le **même
+  document** : une référence retirée, un intertitre renommé, deux lignes
+  échangées descendent sur la seconde feuille — sans toucher aux quantités
+  qu'elle porte déjà. L'arbitrage est valorisé en euros, couvre les articles
+  comptés par une seule équipe, se tranche en lot quand on sait laquelle des
+  deux fait foi, et **se refait dès qu'un des deux comptages change** : une
+  décision porte sur deux chiffres, et meurt avec eux.
 - **Lecture pour tous, écriture pour ceux qui la portent.** Une campagne se
   consulte et s'exporte par tout le monde ; elle ne se modifie que par son
   créateur et les neuf gestionnaires qu'il a déclarés. Le contrôle est posé au
@@ -140,7 +150,8 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      2557 contrôles ; 138 exigent un PostgreSQL, ignorés sinon
+fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
+tests/                      2808 contrôles ; 273 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -160,6 +171,8 @@ Makefile                    Points d'entrée développeur
 | [`06-top20-ameliorations.md`](docs/06-top20-ameliorations.md) | Revue critique : 20 améliorations priorisées, séquencées |
 | [`07-comptages-avances.md`](docs/07-comptages-avances.md) | Comptages avancés : la logique, le modèle et le processus |
 | [`08-algorigrammes.md`](docs/08-algorigrammes.md) | Algorigrammes du processus actuel et du processus avec comptages avancés |
+| [`09-jeu-de-donnees-de-controle.md`](docs/09-jeu-de-donnees-de-controle.md) | Le jeu de données de contrôle, son arithmétique posée, et comment confronter l'application |
+| [`10-cahier-des-charges.md`](docs/10-cahier-des-charges.md) | Le besoin, indépendamment de cette implémentation : exigences, règles métier, recette, et ce qui reste à décider |
 
 ---
 
@@ -167,13 +180,13 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 2400 contrôles, ~45 s ; 69 ignorés sans PostgreSQL
+make test            # 2808 contrôles ; 273 ignorés sans PostgreSQL
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000
 make dev-ui          # Vite avec proxy vers l'API, port 5173
 
-npm --prefix frontend run test   # 383 contrôles navigateur (vitest + jsdom)
+npm --prefix frontend run test   # 482 contrôles navigateur (vitest + jsdom)
 npm --prefix frontend run e2e    # le parcours complet, Playwright, app démarrée
 ```
 

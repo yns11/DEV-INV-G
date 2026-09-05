@@ -16,11 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..domain.enums import (
     CampaignStatus,
+    CountLineKind,
     CountSection,
     DriftResolution,
     ExclusionScope,
     ItemType,
     JournalStatus,
+    LabelResolution,
     LocationStatus,
 )
 
@@ -46,12 +48,13 @@ __all__ = [
     "JournalStatusRequest",
     "JournalLineRequest",
     "JournalScopeRequest",
-    "EarlyBatchRequest",
+    "LabelDecisionRequest",
     "UnsealRequest",
     "DriftResolutionRequest",
     "ZoneRequest",
     "ZonePassesRequest",
     "ZoneNegativeRequest",
+    "ZoneSectionLabelsRequest",
     "ZoneAssignmentRequest",
     "ManagerRow",
     "ManagerRowsRequest",
@@ -62,6 +65,7 @@ __all__ = [
     "ZoneDeleteRequest",
     "SheetLineDeleteRequest",
     "ArbitrationDecisionRequest",
+    "BulkArbitrationRequest",
     "ReclassifyRequest",
     "AnalysisRequest",
     "AdjustmentRowRequest",
@@ -313,11 +317,17 @@ class JournalScopeRequest(ApiModel):
     locations: list[LocationKeyPayload] = Field(min_length=1)
 
 
-class EarlyBatchRequest(ApiModel):
-    code: str = Field(min_length=3, max_length=50)
-    label: str = ""
-    counted_on: dt.date | None = Field(default=None, alias="countedOn")
-    erp_journal_ids: list[str] = Field(min_length=1, alias="erpJournalIds")
+class LabelDecisionRequest(ApiModel):
+    """Où est la pièce : les deux emplacements, et ce qu'on a constaté."""
+
+    label_id: str = Field(min_length=1, alias="labelId")
+    item_number: str = Field(min_length=1, alias="itemNumber")
+    decision: LabelResolution
+    sealed_warehouse_id: str = Field(alias="sealedWarehouseId")
+    sealed_location_id: str = Field(alias="sealedLocationId")
+    other_warehouse_id: str = Field(alias="otherWarehouseId")
+    other_location_id: str = Field(alias="otherLocationId")
+    comment: str = ""
 
 
 class UnsealRequest(ApiModel):
@@ -369,6 +379,17 @@ class ZonePassesRequest(ApiModel):
     passes: int = Field(ge=1, le=2)
 
 
+class ZoneSectionLabelsRequest(ApiModel):
+    """Les en-têtes de section imprimés en tête de feuille, pour une zone.
+
+    Un code absent — ou dont le texte est vide — reprend le texte par défaut.
+    C'est ce qui permet d'en personnaliser un sans recopier les deux autres, et
+    d'annuler une personnalisation en vidant le champ.
+    """
+
+    labels: dict[CountSection, str] = Field(default_factory=dict)
+
+
 class ZoneNegativeRequest(ApiModel):
     """Allow — or forbid again — negative counted quantities on a selection."""
 
@@ -417,6 +438,15 @@ class SheetLineRow(ApiModel):
     id: str | None = None
     item_number: str = Field(alias="itemNumber")
     section: CountSection = CountSection.LINE_SIDE
+    #: Article, intertitre ou ligne vide.
+    #:
+    #: Le défaut est l'article : tout ce qui écrivait des lignes avant que la
+    #: mise en page existe continue de le faire sans rien dire de plus.
+    line_kind: CountLineKind = Field(
+        default=CountLineKind.ARTICLE, alias="lineKind"
+    )
+    #: Le texte d'un intertitre. Ignoré sur toute autre ligne.
+    label: str = ""
     #: Un nombre, ou l'opération que le compteur a écrite (« 3*48+7 »).
     #:
     #: Le type accepte le texte pour que l'expression **arrive jusqu'au
@@ -456,6 +486,18 @@ class ZoneDeleteRequest(ApiModel):
     """Les zones à retirer, avec leurs feuilles — une ou tout un lot."""
 
     zone_ids: list[str] = Field(min_length=1, max_length=5_000, alias="zoneIds")
+
+
+class BulkArbitrationRequest(ApiModel):
+    """Trancher d'un geste tout ce qui reste ouvert dans une zone.
+
+    ``choice`` dit *par quelle règle*, jamais une quantité : sur quarante
+    écarts, c'est la règle qui se décide une fois — « le second comptage fait
+    foi, la première équipe comptait sous la pluie » — et les quarante
+    quantités qui en découlent.
+    """
+
+    choice: Literal["PASS_1", "PASS_2", "PROPOSED"]
 
 
 class ArbitrationDecisionRequest(ApiModel):

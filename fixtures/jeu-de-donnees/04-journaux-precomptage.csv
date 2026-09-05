@@ -1,0 +1,7 @@
+Journal ERP;Numéro de ligne;Date de comptage;Site;Entrepôt;Emplacement;Etiquette;Numéro de série;Numéro d'article;Stock ERP;Quantité comptée;Unité;Statut qualité;Est posté ERP;Type de journal
+NPEM-A;1;2026-06-10;E01;ATP;SOL;ET-001;;P-100;100;100;PCE;OK;Oui;INVE
+NPEM-A;2;2026-06-10;E01;ATP;SOL;ET-002;;P-200;50;45;PCE;OK;Oui;INVE
+NPEM-A;3;2026-06-10;E01;ATP;SE2;ET-003;;P-300;200;210;KG;OK;Oui;INVE
+NPEM-A;4;2026-06-10;E01;B06;PAL02;ET-009;;P-400;3;3;PCE;OK;Oui;INVE
+NPEM-B;1;2026-06-11;E01;B06;PAL01;VRAC;;P-400;40;38;PCE;OK;Oui;INVV
+NPEM-B;2;2026-06-11;E01;B06;PAL01;VRAC;;P-600;500;500;PCE;OK;Oui;INVV

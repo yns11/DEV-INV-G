@@ -28,10 +28,12 @@ __all__ = [
     "SheetPass",
     "ZoneStatus",
     "CountSection",
+    "CountLineKind",
     "DataSource",
     "AdjustmentKind",
     "CountingStage",
     "DriftResolution",
+    "LabelResolution",
     "FlowKind",
     "FlowSource",
     "StockBasis",
@@ -195,6 +197,29 @@ class CountSection(StrEnum):
     WIP_OK = "WIP_OK"
 
 
+class CountLineKind(StrEnum):
+    """Ce qu'une ligne de feuille **est**, au-delà de ce qu'elle porte.
+
+    Une feuille de comptage n'est pas une liste, c'est un document : les
+    feuilles Excel qu'elle remplace alternent des intertitres — « Stock physique
+    B6EST », « Stock physique B15 », « Stock physique chez Maldaner » — et des
+    lignes vides qui aèrent la page. Ce découpage n'est pas décoratif : il dit
+    au compteur *où aller*, et c'est lui qui fait qu'un même article revient
+    trois fois sur la même feuille sans être un doublon.
+
+    * ``ARTICLE``    — une référence à compter, la seule qui porte une quantité.
+    * ``SUBSECTION`` — un intertitre, son texte dans ``label``. Les articles qui
+      le suivent lui appartiennent, et leur clé d'unicité le porte.
+    * ``SPACER``     — une ligne vide. **Pas** une sous-section : elle ne
+      regroupe rien, elle sépare. Deux articles identiques séparés par une
+      simple ligne vide restent un doublon.
+    """
+
+    ARTICLE = "ARTICLE"
+    SUBSECTION = "SUBSECTION"
+    SPACER = "SPACER"
+
+
 class DataSource(StrEnum):
     """Provenance of a quantity — always kept next to the value it produced."""
 
@@ -241,10 +266,10 @@ class DriftResolution(StrEnum):
     ne l'est pas, **une seule question se pose** : quelle quantité fait foi au
     jour J ?
 
-    Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une :
-    on ne scelle qu'un journal déjà posté dans l'ERP, si bien que le
-    réalignement est acquis par construction plutôt que diagnostiqué après coup.
-    « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
+    Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une : un
+    journal de précomptage se charge une fois posté et validé dans l'ERP, si
+    bien que le réalignement est acquis en pratique plutôt que diagnostiqué
+    après coup. « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
     d'ajustement, qui a déjà son sens, sa table et sa place dans le calcul —
     en faire une issue de la dérive aurait dupliqué une fonction et forcé à
     choisir entre deux gestes qui ne s'excluent pas.
@@ -256,6 +281,29 @@ class DriftResolution(StrEnum):
     KEEP_EARLY = "KEEP_EARLY"
     #: L'emplacement est descellé et rejoint le comptage général ; sa référence
     #: redevient le stock ERP du jour J.
+    RECOUNT = "RECOUNT"
+
+
+class LabelResolution(StrEnum):
+    """Où est la pièce, quand une étiquette scellée reparaît ailleurs.
+
+    Le contrôle par étiquette est le seul du dispositif qui descende sous le
+    grain « emplacement + article », et le seul qui rattrape une pièce sortie
+    d'un emplacement scellé **sans aucune transaction ERP** : la dérive, elle,
+    reste nulle dans ce cas, faute d'avoir quoi que ce soit à comparer.
+
+    La question n'a pas de réponse calculable. Deux journaux affirment chacun
+    détenir la même étiquette ; seul quelqu'un qui va voir peut trancher.
+    """
+
+    #: Elle est au nouvel emplacement : l'étiquette sort de l'agrégation de
+    #: l'emplacement scellé, qui perd la quantité correspondante.
+    KEEP_NEW = "KEEP_NEW"
+    #: Elle n'a pas bougé : c'est la ligne de l'autre journal qui est l'erreur,
+    #: et c'est elle qui sort.
+    KEEP_SEALED = "KEEP_SEALED"
+    #: On ne tranche pas sur pièce. Rien n'est exclu, et l'emplacement scellé
+    #: rejoint la liste de ceux à desceller et rescanner.
     RECOUNT = "RECOUNT"
 
 

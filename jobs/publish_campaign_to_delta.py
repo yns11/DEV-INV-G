@@ -136,7 +136,7 @@ QUERIES: dict[str, str] = {
     "book_stock_snapshot": """
         SELECT campaign_id::text, item_number, warehouse_id, location_id, qty, unit,
                unit_cost, (qty * unit_cost) AS value,
-               reference_date, early_batch_id::text
+               reference_date, erp_journal_id::text
         FROM inventory.book_stock
         WHERE campaign_id = %(campaign_id)s
     """,
@@ -149,22 +149,24 @@ QUERIES: dict[str, str] = {
                j.journal_number, l.qty_imported, l.qty_manual,
                COALESCE(l.qty_manual, l.qty_imported, 0) AS qty, l.unit, l.source,
                l.qty_on_hand, l.erp_journal_number, l.label_count,
-               j.sealed_at, j.early_batch_id::text
+               j.sealed_at, j.sealed_by
         FROM inventory.count_journal_line l
         JOIN inventory.count_journal j ON j.id = l.journal_id
         WHERE l.campaign_id = %(campaign_id)s AND l.deleted_at IS NULL
     """,
-    # Les lots avancés et leurs dérives. Sans la table des dérives, l'issue
-    # donnée à chacune n'existerait nulle part et le raisonnement ne serait plus
+    # Les dérives et les issues données aux étiquettes. Sans elles, ce qu'un
+    # humain a décidé n'existerait nulle part et le raisonnement ne serait plus
     # rejouable : c'est précisément ce qu'une archive doit permettre.
-    "early_count_batch": """
-        SELECT campaign_id::text, id::text AS batch_id, code, label, counted_on,
-               opened_at, opened_by, closed_at, closed_by, sealed_at, sealed_by
-        FROM inventory.early_count_batch
-        WHERE campaign_id = %(campaign_id)s AND deleted_at IS NULL
+    "early_count_label_decision": """
+        SELECT campaign_id::text, label_id, item_number, decision,
+               sealed_warehouse_id, sealed_location_id,
+               other_warehouse_id, other_location_id,
+               comment, decided_at, decided_by
+        FROM inventory.early_count_label_decision
+        WHERE campaign_id = %(campaign_id)s
     """,
     "early_count_drift": """
-        SELECT campaign_id::text, batch_id::text, warehouse_id, location_id,
+        SELECT campaign_id::text, erp_journal_id::text, warehouse_id, location_id,
                item_number, qty_erp_t0, qty_physical_t0, qty_erp_j, drift_qty,
                drift_value, is_material, resolution, cause_code, comment,
                resolved_at, resolved_by

@@ -35,7 +35,7 @@ class JournalRepository(_Base):
     _COLUMNS = (
         "id, campaign_id, warehouse_id, location_id, kind, status, journal_number, "
         "description, posted_at, auto_created, updated_at, row_version, "
-        "early_batch_id, sealed_at, sealed_by"
+        "sealed_at, sealed_by"
     )
 
     def list(
@@ -215,6 +215,71 @@ class JournalRepository(_Base):
             conn=conn,
         )
 
+    def delete_pass_through_journals(
+        self,
+        campaign_id: str,
+        erp_journal_number: str,
+        keep: Sequence[LocationKey],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> list[str]:
+        """Retirer les journaux nés des lignes de passage d'un journal ERP.
+
+        Un journal ERP porte des lignes sur des emplacements qu'il ne couvre
+        pas : elles matérialisent un déplacement — 1 932 sur 58 345 dans
+        l'export analysé. L'import créait un journal de comptage pour chacune,
+        avec ses quantités, sur des emplacements que personne n'avait
+        sélectionnés. Déclarer le périmètre est le moment où l'on sait
+        lesquels : ceux qui restent s'en vont.
+
+        Trois conditions, et elles sont là pour ne jamais emporter du travail :
+        toutes les lignes du journal viennent de **ce** journal ERP, aucune ne
+        porte de quantité manuelle, et l'emplacement n'est pas dans le périmètre
+        qu'on vient de déclarer. Un emplacement recompté à la main, ou touché par
+        un autre journal, reste.
+
+        Rend les emplacements retirés, pour que l'appelant puisse le dire.
+        """
+        rows = self._fetch_all(
+            """
+            SELECT j.id, j.warehouse_id, j.location_id
+            FROM count_journal j
+            WHERE j.campaign_id = %(cid)s
+              AND (j.warehouse_id, j.location_id) <> ALL (
+                    SELECT * FROM unnest(%(wh)s::text[], %(loc)s::text[]))
+              AND EXISTS (
+                    SELECT 1 FROM count_journal_line l
+                    WHERE l.journal_id = j.id AND l.deleted_at IS NULL)
+              AND NOT EXISTS (
+                    SELECT 1 FROM count_journal_line l
+                    WHERE l.journal_id = j.id
+                      AND l.deleted_at IS NULL
+                      AND (l.qty_manual IS NOT NULL
+                           OR l.erp_journal_number <> %(num)s))
+            """,
+            {
+                "cid": campaign_id,
+                "num": erp_journal_number,
+                "wh": [k.warehouse_id for k in keep] or [""],
+                "loc": [k.location_id for k in keep] or [""],
+            },
+            conn=conn,
+        )
+        if not rows:
+            return []
+        ids = [str(row["id"]) for row in rows]
+        self._execute(
+            "DELETE FROM count_journal_line WHERE journal_id = ANY(%s::uuid[])",
+            (ids,),
+            conn=conn,
+        )
+        self._execute(
+            "DELETE FROM count_journal WHERE id = ANY(%s::uuid[])",
+            (ids,),
+            conn=conn,
+        )
+        return [f"{row['warehouse_id']} / {row['location_id']}" for row in rows]
+
     # -- lines ---------------------------------------------------------------
 
     _LINE_COLUMNS = (
@@ -288,29 +353,6 @@ class JournalRepository(_Base):
 
     # -------------------------------------------------------------- scellement
 
-    def assign_batch(
-        self,
-        campaign_id: str,
-        keys: Sequence[tuple[str, str]],
-        *,
-        batch_id: str,
-        actor: str,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Rattacher des emplacements à un lot avancé, sans encore les sceller.
-
-        Le périmètre d'un lot n'a pas de table à lui : c'est l'ensemble des
-        journaux qui portent son identifiant. Il est donc posé à l'ouverture du
-        lot, et non au scellement — une première version l'écrivait au moment de
-        sceller, si bien que le scellement cherchait un périmètre que lui seul
-        pouvait créer, et ne scellait rien.
-        """
-        return self._mark(
-            campaign_id, keys, actor=actor,
-            assignments=("early_batch_id = %(batch)s",), batch_id=batch_id,
-            conn=conn,
-        )
-
     def seal(
         self,
         campaign_id: str,
@@ -319,7 +361,7 @@ class JournalRepository(_Base):
         actor: str,
         conn: psycopg.Connection | None = None,
     ) -> int:
-        """Sceller les journaux d'un lot avancé.
+        """Sceller les emplacements d'un journal de précomptage.
 
         Le scellement ne fait que **restreindre** : il s'ajoute à la matrice de
         mutabilité, qui reste consultée en premier et garde le dernier mot pour
@@ -348,7 +390,7 @@ class JournalRepository(_Base):
         return self._mark(
             campaign_id, keys, actor=actor,
             assignments=(
-                "sealed_at = NULL", "sealed_by = NULL", "early_batch_id = NULL",
+                "sealed_at = NULL", "sealed_by = NULL",
             ),
             conn=conn,
         )
@@ -541,9 +583,6 @@ class JournalRepository(_Base):
             posted_at=row["posted_at"],
             auto_created=row["auto_created"],
             updated_at=row["updated_at"],
-            early_batch_id=(
-                str(row["early_batch_id"]) if row.get("early_batch_id") else None
-            ),
             sealed_at=row.get("sealed_at"),
             sealed_by=row.get("sealed_by") or "",
         )

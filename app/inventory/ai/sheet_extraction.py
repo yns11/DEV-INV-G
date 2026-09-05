@@ -27,7 +27,12 @@ from decimal import Decimal
 from threading import Lock
 from typing import Any, TypeVar
 
-from ..domain.enums import CountSection, DataSource, legacy_section_alias
+from ..domain.enums import (
+    CountLineKind,
+    CountSection,
+    DataSource,
+    legacy_section_alias,
+)
 from ..domain.formula import FormulaError, evaluate, looks_like_formula
 from ..domain.models import CountSheetLine, Item, normalise_key
 from ..domain.quantities import to_decimal
@@ -67,11 +72,12 @@ Règles absolues :
 1. Tu transcris UNIQUEMENT ce qui est écrit. Tu ne calcules rien, tu ne \
 complètes rien, tu ne corriges rien.
 2. Si la case « Comptage » d'une ligne est VIDE, tu renvoies null — jamais 0. \
-Une case vide signifie « non compté », ce qui n'est pas la même chose que \
-« compté à zéro ».
-3. Tu ne renvoies que des références présentes dans la liste attendue fournie. \
-Si tu lis une référence absente de cette liste, tu la places dans \
-« unexpected » sans l'inventer ni la rapprocher d'une autre.
+Tu transcris ce qui est écrit : renvoyer 0 ferait passer « je n'ai rien lu » \
+pour « le compteur a écrit zéro », et l'encodeur ne saurait plus laquelle des \
+deux vérifier sur le papier.
+3. Tu ne rapproches jamais une référence lue d'une autre qui lui ressemble. \
+Tu la transcris telle qu'écrite : une référence ajoutée à la main sur la \
+feuille est légitime, c'est le compteur qui l'a trouvée sur place.
 4. Si un chiffre est ambigu (rature, surcharge, chiffre coupé), tu renvoies ta \
 meilleure lecture avec une confiance basse et tu décris le doute.
 5. Les quantités sont des nombres. Les séparateurs de milliers (espace, point) \
@@ -94,6 +100,8 @@ Transcris la feuille scannée et renvoie ce JSON :
   "lines": [
     {{
       "item_number": "<référence, exactement telle qu'écrite dans la liste attendue>",
+      "subsection": "<intertitre au-dessus de la ligne, tel qu'il figure entre \
+crochets dans la liste attendue après « | », ou chaîne vide>",
       "section": "<la section du tableau où figure cette ligne : {sections}>",
       "qty": <nombre, ou l'opération écrite entre guillemets si la case en \
 contient une (ex. "3*48+7"), ou null>,
@@ -107,9 +115,14 @@ contient une (ex. "3*48+7"), ou null>,
 }}
 
 Renvoie une entrée dans "lines" pour CHAQUE ligne de la liste attendue, même non \
-comptée (qty = null). Une même référence peut figurer sur DEUX lignes, dans deux \
-sections différentes : ce sont deux comptages distincts, et « section » est ce \
-qui les sépare."""
+comptée (qty = null). Une même référence peut figurer sur PLUSIEURS lignes : dans \
+deux sections différentes, ou dans la même section sous deux intertitres \
+différents. Ce sont autant de comptages distincts, faits à autant d'endroits de \
+l'atelier, et « section » et « subsection » sont ce qui les sépare.
+
+Une référence écrite à la main et absente de la liste attendue se renvoie dans \
+"lines" comme les autres, à sa place dans l'ordre de lecture : c'est une pièce \
+que le compteur a trouvée et que la feuille n'annonçait pas."""
 
 
 _FREE_ENTRY_SYSTEM_PROMPT = """\
@@ -237,12 +250,24 @@ class PageRouting:
 
 @dataclass(frozen=True, slots=True)
 class ExpectedLine:
-    """One article pre-printed on the sheet."""
+    """One article pre-printed on the sheet, **and where it sits on it**.
+
+    La place et l'intertitre voyagent avec la ligne parce que la lecture les
+    perdait : le modèle rend les quantités dans l'ordre où il les a vues, ce qui
+    n'est pas toujours l'ordre du papier, et la feuille réécrite sortait
+    mélangée — les intertitres restant, eux, à leur rang d'origine.
+    """
 
     item_number: str
     name: str
     section: CountSection
     unit: str = "PCE"
+    #: Le rang de la ligne dans le document. Rendu tel quel, jamais recalculé.
+    display_order: int = 0
+    #: L'intertitre sous lequel elle se trouve. Recopié pour la même raison :
+    #: la clé d'unicité le porte, et une feuille relue sans lui verrait ses
+    #: lignes se dédoublonner entre deux emplacements.
+    subsection: str = ""
 
 
 @dataclass(slots=True)
@@ -256,6 +281,12 @@ class ExtractionResult:
     unexpected: list[dict[str, Any]] = field(default_factory=list)
     #: Expected articles the model returned no reading for.
     missing_items: list[str] = field(default_factory=list)
+    #: Références écrites à la main sur le papier et devenues des lignes.
+    #:
+    #: Nommées à part des lignes attendues : elles n'étaient pas sur la feuille
+    #: préparée, quelqu'un les y a ajoutées, et c'est la première chose qu'un
+    #: encodeur doit relire.
+    added_items: list[str] = field(default_factory=list)
     counter_name: str = ""
     started_at: str | None = None
     ended_at: str | None = None
@@ -266,7 +297,7 @@ class ExtractionResult:
     def as_report(self) -> dict[str, Any]:
         return {
             "linesExtracted": len(self.lines),
-            "counted": sum(1 for l in self.lines if l.is_counted),
+            "counted": sum(1 for l in self.lines if l.has_entry),
             "lowConfidence": self.low_confidence_items,
             "unexpected": self.unexpected,
             "missing": self.missing_items,
@@ -300,14 +331,22 @@ class SheetExtractor:
         images: Sequence[bytes],
         image_mime: str = "image/png",
         allow_formulas: bool = False,
+        known_items: Mapping[str, Item] | None = None,
         id_factory,
     ) -> ExtractionResult:
         """Read *images* against the *expected* article list.
 
         :param images: page renders of the scan, in reading order.
+        :param known_items: le référentiel de la campagne. Une référence écrite
+            à la main sur le papier, absente de la liste pré-imprimée mais
+            connue de la campagne, devient une ligne — c'est le cas normal du
+            compteur qui trouve une pièce que la feuille n'annonçait pas. Une
+            référence que le référentiel ignore reste refusée : on ne fabrique
+            pas un comptage à partir d'une lecture invérifiable.
         :raises ValidationError: when there is nothing to read against — the
             model must never be asked to invent an article list.
         """
+        known_items = known_items or {}
         if not images:
             raise ValidationError("Aucune page à analyser.")
         if not expected:
@@ -324,15 +363,31 @@ class SheetExtractor:
         # seule, le dictionnaire n'en gardait qu'une : la seconde ligne était
         # perdue à l'écriture, et la quantité relevée sur l'une atterrissait sur
         # la section de l'autre. Rien ne le signalait.
-        expected_by_key = {(e.item_number, e.section): e for e in expected}
-        sections_by_number: dict[str, list[CountSection]] = {}
+        # La clé porte aussi l'**intertitre**. Sans lui, deux lignes du même
+        # article dans la même section — sous « Stock physique B6EST » et sous
+        # « Stock physique B15 » — se réduisaient à une seule entrée : la
+        # seconde était perdue à l'écriture, et la quantité relevée sur l'une
+        # atterrissait sous l'intertitre de l'autre.
+        expected_by_key = {
+            (e.item_number, e.section, e.subsection): e for e in expected
+        }
+        places_by_number: dict[str, list[tuple[CountSection, str]]] = {}
         for line in expected:
-            known = sections_by_number.setdefault(line.item_number, [])
-            if line.section not in known:
-                known.append(line.section)
+            known = places_by_number.setdefault(line.item_number, [])
+            place = (line.section, line.subsection)
+            if place not in known:
+                known.append(place)
 
+        # L'intertitre est nommé dans la liste quand il y en a un : c'est la
+        # seule chose qui départage deux lignes portant la même référence dans
+        # la même section — « Stock physique B6EST » et « Stock physique B15 »
+        # sont deux comptages, à deux endroits de l'atelier.
         listing = "\n".join(
-            f"- {e.item_number} [{_section_label(e.section)}] {e.name}"[:160]
+            (
+                f"- {e.item_number} [{_section_label(e.section)}"
+                + (f" | {e.subsection}" if e.subsection else "")
+                + f"] {e.name}"
+            )[:200]
             for e in expected
         )
         prompt = _USER_TEMPLATE.format(
@@ -359,54 +414,83 @@ class SheetExtractor:
         )
 
         confidences: list[float] = []
-        seen: set[tuple[str, CountSection]] = set()
+        seen: set[tuple[str, CountSection, str]] = set()
+        # Le rang des lignes ajoutées à la main. Après la dernière ligne
+        # pré-imprimée, dans l'ordre où le modèle les a lues : c'est en bas d'un
+        # tableau, dans les lignes libres prévues pour ça, que le compteur écrit
+        # une référence qui manquait.
+        next_added = max((e.display_order for e in expected), default=-1) + 1
 
-        for order, raw in enumerate(payload.get("lines") or []):
+        for raw in payload.get("lines") or []:
             if not isinstance(raw, dict):
                 continue
             number = normalise_key(str(raw.get("item_number") or ""))
-            sections = sections_by_number.get(number)
-            if not sections:
-                # A reading that matches nothing on the printed sheet is a
-                # hallucination: surface it, never accept it as a count.
-                result.unexpected.append({
-                    "text": str(raw.get("item_number") or ""),
-                    "qty": raw.get("qty"),
-                    "note": "Référence absente de la liste attendue.",
-                })
-                continue
-
-            # La section lue ne sert qu'à départager. Une référence qui ne figure
-            # qu'une fois sur la feuille n'a rien à départager : exiger d'elle
-            # une section correcte ajouterait un mode d'échec au cas courant,
-            # pour rien.
+            places = places_by_number.get(number)
             read = legacy_section_alias(str(raw.get("section") or ""))
-            if read in sections:
-                section = read
-            elif len(sections) == 1:
-                section = sections[0]
+            if not places:
+                # La référence n'est pas sur la feuille. Si la campagne la
+                # connaît, c'est une ligne écrite à la main : elle devient une
+                # ligne, à confirmer. Sinon c'est une lecture en l'air, et on ne
+                # fabrique pas un comptage à partir d'une référence que personne
+                # n'a jamais déclarée.
+                if number not in known_items:
+                    result.unexpected.append({
+                        "text": str(raw.get("item_number") or ""),
+                        "qty": raw.get("qty"),
+                        "note": "Référence inconnue du référentiel de la campagne.",
+                    })
+                    continue
+                section = read or CountSection.LINE_SIDE
+                key = (number, section, "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                expected_line = ExpectedLine(
+                    item_number=number,
+                    name=getattr(known_items[number], "name", ""),
+                    section=section,
+                    unit=getattr(known_items[number], "unit", "PCE"),
+                    display_order=next_added,
+                )
+                next_added += 1
+                result.added_items.append(_line_label(number, section, ambiguous=False))
+                label = _line_label(number, section, ambiguous=False)
             else:
-                # Ambiguë, et sans section exploitable : on ne devine pas. Poser
-                # un comptage d'en-cours sur la ligne de bord de ligne fausse
-                # deux quantités d'un coup, et rien en aval ne peut le rattraper.
-                result.unexpected.append({
-                    "text": str(raw.get("item_number") or ""),
-                    "qty": raw.get("qty"),
-                    "note": (
-                        f"{number} figure deux fois sur cette feuille "
-                        f"({' et '.join(_section_label(s) for s in sections)}) "
-                        "et la section lue est inexploitable. Saisissez la "
-                        "quantité à la main sur la bonne ligne."
-                    ),
-                })
-                continue
-
-            key = (number, section)
-            if key in seen:
-                continue
-            seen.add(key)
-            expected_line = expected_by_key[key]
-            label = _line_label(number, section, ambiguous=len(sections) > 1)
+                # La section lue ne sert qu'à départager. Une référence qui ne
+                # figure qu'une fois sur la feuille n'a rien à départager :
+                # exiger d'elle une section correcte ajouterait un mode d'échec
+                # au cas courant, pour rien. L'intertitre départage de même,
+                # d'un cran plus fin.
+                candidates = [p for p in places if p[0] == read] if read else []
+                if len(candidates) != 1 and len(places) == 1:
+                    candidates = places
+                if len(candidates) != 1:
+                    wanted = str(raw.get("subsection") or "").strip()
+                    narrowed = [p for p in (candidates or places) if p[1] == wanted]
+                    candidates = narrowed or candidates
+                if len(candidates) != 1:
+                    # Ambiguë, et sans quoi trancher : on ne devine pas. Poser
+                    # un comptage d'en-cours sur la ligne de bord de ligne
+                    # fausse deux quantités d'un coup, et rien en aval ne peut
+                    # le rattraper.
+                    result.unexpected.append({
+                        "text": str(raw.get("item_number") or ""),
+                        "qty": raw.get("qty"),
+                        "note": (
+                            f"{number} figure plusieurs fois sur cette feuille "
+                            f"({' et '.join(_place_label(p) for p in places)}) "
+                            "et la lecture ne dit pas laquelle. Saisissez la "
+                            "quantité à la main sur la bonne ligne."
+                        ),
+                    })
+                    continue
+                section, subsection = candidates[0]
+                key = (number, section, subsection)
+                if key in seen:
+                    continue
+                seen.add(key)
+                expected_line = expected_by_key[key]
+                label = _line_label(number, section, ambiguous=len(places) > 1)
 
             qty, formula = _clean_qty(
                 raw.get("qty"), allow_formulas=allow_formulas
@@ -431,7 +515,12 @@ class SheetExtractor:
                     confidence=confidence,
                     qty_formula=formula,
                     comment=str(raw.get("note") or "").strip(),
-                    display_order=order,
+                    # La place de la ligne **sur le papier**, et non le rang de
+                    # la lecture. Le modèle rend ce qu'il voit dans l'ordre où
+                    # il le voit ; reprendre cet ordre-là réécrivait la feuille
+                    # mélangée, sous des intertitres restés à leur place.
+                    display_order=expected_line.display_order,
+                    subsection=expected_line.subsection,
                 )
             )
 
@@ -446,16 +535,18 @@ class SheetExtractor:
         # Manquantes au sens du *couple* : une feuille portant l'article en bord
         # de ligne et en WIP, lue sur une seule des deux, doit voir l'autre.
         unread = sorted(
-            set(expected_by_key) - seen, key=lambda k: (k[0], str(k[1]))
+            set(expected_by_key) - seen, key=lambda k: (k[0], str(k[1]), k[2])
         )
         result.missing_items = [
             _line_label(number, section,
-                        ambiguous=len(sections_by_number[number]) > 1)
-            for number, section in unread
+                        ambiguous=len(places_by_number[number]) > 1)
+            for number, section, _subsection in unread
         ]
         # A missing expected line still gets a row, blank, so the encoder sees
         # it and can type the value instead of discovering the gap at posting.
-        for order, key in enumerate(unread, start=len(result.lines)):
+        # Elle aussi garde sa place : c'est précisément la ligne qu'on va
+        # chercher des yeux sur le papier pour la saisir à la main.
+        for key in unread:
             expected_line = expected_by_key[key]
             result.lines.append(
                 CountSheetLine(
@@ -468,7 +559,8 @@ class SheetExtractor:
                     source=DataSource.SCAN_AI,
                     confidence=0.0,
                     comment="Non lue sur le scan — à saisir manuellement.",
-                    display_order=order,
+                    display_order=expected_line.display_order,
+                    subsection=expected_line.subsection,
                     qty_imported=None,
                     qty_manual=None,
                 )
@@ -749,15 +841,24 @@ class SheetExtractor:
     def expected_from_items(
         self, lines: Sequence[CountSheetLine], items: dict[str, Item]
     ) -> list[ExpectedLine]:
-        """Build the expected list from a sheet's existing (pre-printed) lines."""
+        """Build the expected list from a sheet's existing (pre-printed) lines.
+
+        Les intertitres et les lignes vides en sont écartés : ils ne portent pas
+        d'article, et les annoncer au modèle comme des lignes attendues le
+        lancerait à la recherche d'une quantité là où il n'y en a pas — puis
+        les compterait parmi les lignes « non lues ».
+        """
         return [
             ExpectedLine(
                 item_number=line.item_number,
                 name=(items[line.item_number].name if line.item_number in items else ""),
                 section=line.section,
                 unit=line.unit,
+                display_order=line.display_order,
+                subsection=line.subsection,
             )
             for line in lines
+            if line.line_kind is CountLineKind.ARTICLE and line.item_number
         ]
 
 
@@ -871,6 +972,12 @@ _SECTION_LABELS = {
 
 def _section_label(section: CountSection) -> str:
     return _SECTION_LABELS.get(section, str(section))
+
+
+def _place_label(place: tuple[CountSection, str]) -> str:
+    """« Bord de ligne » ou « Bord de ligne / Stock physique B15 »."""
+    section, subsection = place
+    return f"{_section_label(section)} / {subsection}" if subsection else _section_label(section)
 
 
 def _line_label(number: str, section: CountSection, *, ambiguous: bool) -> str:

@@ -47,7 +47,7 @@ describe("l'écran est atteignable", () => {
   })
 
   it('déclare ses quatre sous-sections', () => {
-    for (const sub of ['journaux', 'lots', 'derives', 'etiquettes']) {
+    for (const sub of ['journaux', 'derives', 'etiquettes', 'rescanner']) {
       expect(NAVIGATION).toContain(`id: '${sub}'`)
       expect(SCREEN).toContain(`'${sub}'`)
     }
@@ -60,22 +60,24 @@ describe('le client vise des adresses que le serveur sert', () => {
     ...ROUTER.matchAll(/@router\.(get|post|put)\(\s*\n?\s*"([^"]+)"/g),
   ].map((match) => match[2] ?? '')
 
-  it('le routeur en déclare onze', () => {
-    expect(served).toHaveLength(11)
+  it('le routeur en déclare dix', () => {
+    // Onze avant : le lot avancé en portait cinq — ouvrir, lister, clore,
+    // sceller, desceller. Le journal ERP *est* le précomptage, et déclarer son
+    // périmètre scelle ; il reste le descellement, plus les deux routes que le
+    // traitement des étiquettes a demandées.
+    expect(served).toHaveLength(10)
   })
 
   it.each([
     ['erpJournals', '/journals'],
     ['scopeProposal', '/scope-proposal'],
     ['declareScope', '/scope'],
-    ['earlyBatches', '/batches'],
-    ['createEarlyBatch', '/batches'],
-    ['closeEarlyBatch', '/close'],
-    ['sealEarlyBatch', '/seal'],
-    ['unsealEarlyBatch', '/unseal'],
+    ['unsealJournal', '/unseal'],
     ['drifts', '/drifts'],
     ['resolveDrifts', '/drifts/resolve'],
     ['labelAlerts', '/label-alerts'],
+    ['decideLabel', '/label-alerts/decide'],
+    ['toRescan', '/to-rescan'],
   ])('%s appelle une route servie', (method, fragment) => {
     expect(API).toContain(`${method}:`)
     const call = API.slice(API.indexOf(`${method}:`), API.indexOf(`${method}:`) + 500)
@@ -85,26 +87,43 @@ describe('le client vise des adresses que le serveur sert', () => {
 })
 
 describe("l'écran appelle réellement le client", () => {
-  it.each([
-    'api.erpJournals',
-    'api.scopeProposal',
-    'api.declareScope',
-    'api.earlyBatches',
-    'api.closeEarlyBatch',
-    'api.sealEarlyBatch',
-    'api.unsealEarlyBatch',
-    'api.drifts',
-    'api.resolveDrifts',
-    'api.labelAlerts',
-  ])('%s', (call) => {
-    expect(SCREEN).toContain(call)
+  /**
+   * Les méthodes lues dans le client, jamais recopiées ici.
+   *
+   * Cette liste a d'abord été écrite à la main, et il y en avait dix pour onze
+   * routes : `createEarlyBatch` manquait — la seule méthode qu'aucun composant
+   * n'appelait était aussi la seule que personne n'avait pensé à inscrire.
+   * L'écran listait les lots, savait les clore, les sceller, les desceller, et
+   * n'avait aucun moyen d'en ouvrir un ; son état vide demandait pourtant
+   * « ouvrez un lot dessus ». Une liste recopiée ne tient que ce qu'on a pensé
+   * à y mettre, c'est-à-dire jamais le cas qu'on a oublié.
+   */
+  const methods = [...API.matchAll(/^ {2}(\w+): \(/gm)]
+    .map((match) => match[1] ?? '')
+    .filter((name) => {
+      const start = API.indexOf(`\n  ${name}: (`)
+      return API.slice(start, start + 600).includes('/early-counts')
+    })
+
+  it('le client en expose dix, une par route', () => {
+    expect(methods).toHaveLength(10)
+  })
+
+  it.each(methods.map((name) => [name]))('api.%s', (name) => {
+    expect(SCREEN).toContain(`api.${name}`)
   })
 })
 
 describe('les décisions que porte l’écran', () => {
+  /** Les deux tables d'issues partagent `RECOUNT` : on lit chacune chez elle. */
+  const block = (name: string) => {
+    const start = SCREEN.indexOf(`const ${name}`)
+    return SCREEN.slice(start, SCREEN.indexOf('\n]', start))
+  }
+
   it('nomme les deux issues d’une dérive, et pas une troisième', () => {
-    const resolutions = [...SCREEN.matchAll(/id: '(KEEP_EARLY|RECOUNT)'/g)]
-    expect(resolutions).toHaveLength(2)
+    const resolutions = [...block('RESOLUTIONS').matchAll(/id: '(\w+)'/g)]
+    expect(resolutions.map((m) => m[1])).toEqual(['KEEP_EARLY', 'RECOUNT'])
   })
 
   it('dit que conserver le comptage avancé demande une cause', () => {
@@ -115,10 +134,31 @@ describe('les décisions que porte l’écran', () => {
     expect(SCREEN).toContain('Desceller annule une preuve datée')
   })
 
+  it('nomme les trois issues d’une étiquette, et pas une quatrième', () => {
+    // Où est la pièce : au nouvel emplacement, à l'ancien, ou on ne tranche
+    // pas. Aucun calcul ne répond ; seul quelqu'un qui va voir le peut.
+    const actions = [...block('LABEL_ACTIONS').matchAll(/id: '(\w+)'/g)]
+    expect(actions.map((m) => m[1])).toEqual([
+      'KEEP_NEW', 'KEEP_SEALED', 'RECOUNT',
+    ])
+  })
+
+  it('n’a plus de lot : le journal ERP est le précomptage', () => {
+    expect(SCREEN).not.toContain('earlyBatches')
+    expect(SCREEN).not.toContain('createEarlyBatch')
+  })
+
   it('affiche l’heure du dernier import', () => {
     // Le notebook est rejoué toutes les quelques minutes le jour J : de quand
     // datent les chiffres qu'on regarde n'est pas un détail d'affichage.
-    expect(SCREEN).toContain('journalsImportedAt')
+    //
+    // Le nom du champ est celui du modèle. Cette ligne a d'abord épinglé
+    // `journalsImportedAt`, qui n'existe nulle part : la campagne est le seul
+    // objet de l'aperçu qui voyage tel quel, en `snake_case`. Le contrôle
+    // passait, la bannière affichait « aucun import » pour toujours — un
+    // contrôle par chaînes ne vaut que ce que vaut la chaîne qu'il épingle,
+    // d'où le contrôle de rendu à côté, qui monte l'écran pour de bon.
+    expect(SCREEN).toContain('journals_imported_at')
     expect(SCREEN).toContain('relativeTime')
   })
 

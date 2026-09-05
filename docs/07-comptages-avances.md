@@ -5,11 +5,30 @@
 > [`08-algorigrammes.md`](08-algorigrammes.md), le mode d'emploi au § 2.0 et au
 > § 2.7 du [guide utilisateur](04-guide-utilisateur.md).
 >
-> Deux écarts entre l'étude et la réalisation, tous deux assumés et expliqués
-> plus bas : le journal ERP est un objet **à côté** de `count_journal`, qui
-> reste un par emplacement (§ 3) ; et le périmètre déclaré est exigé pour
-> **ouvrir un lot avancé**, pas pour importer — un import qui refuserait tout
-> tant qu'on n'a pas trié 73 journaux serait inutilisable le jour J.
+> **Révision : le lot a disparu.** L'étude interposait un objet « lot » entre le
+> journal ERP et le scellement. Le métier a tranché : **un précomptage couvre
+> exactement un journal ERP**, qui couvre un ou plusieurs emplacements. Quatre
+> conséquences, qui remplacent partout ce que les sections ci-dessous disent des
+> lots :
+>
+> 1. **Déclarer le périmètre d'un journal *scelle* ses emplacements.** Un seul
+>    geste : dire ce que le journal couvre, c'est dire ce qui est compté et ne
+>    bougera plus. Ouvrir, clore et sceller n'existent plus.
+> 2. **La date de comptage vient des lignes du journal**, colonne « Date de
+>    comptage », et n'est plus retapée. C'est elle qui date la référence.
+> 3. **Le postage n'est plus exigé pour sceller.** Un journal de précomptage se
+>    charge une fois posté et validé dans l'ERP ; le cas ne se rencontre pas, et
+>    une garde qui ne se déclenche jamais est une garde qu'on ne sait pas
+>    maintenir.
+> 4. **Un réimport remplace et met à jour.** Recharger le journal, ou en charger
+>    un autre qui touche un emplacement déjà scellé, recalcule la référence et
+>    rescelle. Le chargement du **stock ERP général**, lui, continue de préserver
+>    les emplacements scellés — deux imports, deux règles, et elles ne se
+>    contredisent pas.
+>
+> Reste un écart entre l'étude et la réalisation, assumé et expliqué plus bas :
+> le journal ERP est un objet **à côté** de `count_journal`, qui reste un par
+> emplacement (§ 3).
 >
 > Les constats chiffrés viennent de l'export post-campagne du 13 juin 2026
 > (58 345 lignes, 73 journaux). Ce sont des ordres de grandeur, pas des règles.
@@ -104,7 +123,7 @@ emplacements, plus des lignes de passage.
 > l'emplacement.
 >
 > Le périmètre non déclaré est signalé en tête du rapport d'import
-> (`scopeUndeclared`) et **bloque l'ouverture d'un lot avancé**, pas l'import
+> (`scopeUndeclared`) et **bloque la déclaration du périmètre**, pas l'import
 > lui-même.
 
 À chaque nouveau journal importé, l'application **propose** les entrepôts et
@@ -125,6 +144,90 @@ Le périmètre décide de deux choses :
 | Sa quantité comptée | Compte pour l'emplacement | Ne compte pas ici : elle appartient à l'histoire d'un autre emplacement |
 | Son `Stock ERP` | Fait la référence de l'emplacement | N'en fait pas |
 | Devenir | — | Conservée, signalée, jamais supprimée |
+
+### Un emplacement n'appartient qu'à un journal
+
+Deux comptages avancés à deux jours d'écart peuvent passer par le même
+emplacement, et le second n'y fait souvent que déplacer une palette. La question
+« lequel des deux le compte ? » a une seule réponse : **celui dont le périmètre
+le contient**.
+
+Trois chemins mènent au cas, et chacun a son traitement.
+
+| Situation | Ce qui se passe |
+|---|---|
+| **Déclarer un emplacement déjà déclaré ailleurs** | Refusé, en nommant le journal propriétaire : « ATP / SOL appartient déjà au périmètre du journal NPEM-A. Descellez-le pour le lui reprendre. » La liste proposée ne l'offrait déjà pas ; le refus est le filet pour l'appel direct |
+| **Un autre journal, non déclaré, dont les lignes touchent l'emplacement** | Ses lignes entrent dans `erp_journal_line` — c'est la trace du déplacement, et le contrôle par étiquette la relit — mais **elles ne comptent pas**. Seul le propriétaire compte son emplacement |
+| **Transférer l'emplacement d'un journal à un autre** | Descellez le premier (motif obligatoire), déclarez le second. Référence **et** comptage basculent ensemble sur le nouveau journal |
+
+Le tri se fait **ligne par ligne**, pas emplacement par emplacement : un même
+fichier apporte les lignes du propriétaire et celles des journaux de passage, et
+écarter la clé entière priverait l'emplacement scellé de sa quantité comptée.
+
+### La fenêtre du précomptage se ferme au gel
+
+`declare_scope` refuse une fois `campaign.book_stock_frozen_at` posé, et le
+refus se lit. La raison n'est pas prudentielle, elle est définitionnelle :
+précompter veut dire *avant* la référence générale. Après le gel, l'emplacement
+a déjà la sienne, le journal du jour apporte son comptage par l'import, et il
+n'y a rien à sceller.
+
+Le geste était pourtant offert sur tous les journaux, y compris ceux du jour J,
+et il écrivait alors une seconde référence sur des clés déjà servies par le
+chargement général : `book_stock_uq`, donc un **500** sur une action que
+l'application proposait elle-même.
+
+Deux corrections, et elles ne se remplacent pas :
+
+* **le geste disparaît quand il n'a plus de sens** — l'écran affiche « Comptage
+  du jour J » au lieu de « À déclarer », et un bandeau dit pourquoi ;
+* **l'écriture, elle, remplace au lieu de heurter** — `replace_for_journal`
+  supprimait ses seules lignes, il supprime maintenant aussi celles qui portent
+  les mêmes clés. C'est ce que le domaine dit depuis le début : « la référence
+  d'un emplacement scellé est celle de son précomptage ». Sceller après un
+  chargement partiel est un ordre inhabituel, pas une faute, et il ne doit pas
+  produire une erreur technique.
+
+**Ce que le gel ne ferme pas** : le descellement, et le rafraîchissement d'un
+journal déjà scellé. L'import rescelle au passage — le fermer couperait le
+réimport de tous les journaux du jour.
+
+### Pourquoi un journal ERP ne se supprime pas
+
+Le geste inverse de « déclarer et sceller » est **desceller**, pas supprimer, et
+c'est le seul offert. Un journal ERP n'est pas une saisie : c'est le reflet d'un
+document de l'ERP. Le supprimer ne le retirerait pas de l'ERP, et le prochain
+import le ramènerait.
+
+Ce qu'une suppression laisserait derrière elle est pire que le journal qu'elle
+retire. `erp_journal.deleted_at` existe — hérité du gabarit de toutes les tables
+— mais aucun dépôt, aucune route et aucun écran ne l'écrit, et le poser à la main
+en base produirait :
+
+| Ce qui reste | Effet |
+|---|---|
+| `count_journal.sealed_at` | L'emplacement reste **scellé**, sans journal sur l'écran pour le desceller |
+| `erp_journal_scope` | Le périmètre n'est pas en cascade sur un effacement logique : l'emplacement reste **pris**, et `candidate_locations` continue de l'écarter pour tout autre journal |
+| `book_stock.erp_journal_id` | La **référence survit** au journal qui la justifiait, sans lien pour la relire |
+| `scope_owners` | Ne voit plus le propriétaire : les lignes d'un autre journal **recommencent à compter** l'emplacement |
+
+Un emplacement scellé, sans propriétaire, indéclarable et indescellable : la
+suppression fabriquerait exactement l'incohérence que le scellement existe pour
+empêcher. Les trois besoins réels ont chacun leur geste — desceller pour un
+périmètre coché de travers, réimporter pour des lignes fausses, et ne rien faire
+pour un journal chargé par erreur, qui sans périmètre déclaré ne produit ni
+référence, ni comptage, ni écart.
+
+L'ordre des gestes est indifférent. Si les deux journaux entrent avant qu'aucun
+ne soit déclaré, l'import ne sait pas encore trier et l'emplacement porte leur
+somme ; **déclarer le périmètre recalcule le comptage** sur le seul
+propriétaire, exactement comme il en pose la référence. Les deux nombres d'un
+même écart sortent de la même agrégation.
+
+> Sans cette règle, l'emplacement affichait le stock ERP d'un journal contre le
+> comptage d'un autre — un écart entre deux journaux, et rien pour le dire. Et
+> déclarer deux fois le même emplacement remontait une violation d'unicité
+> brute, c'est-à-dire un 500 devant lequel il n'y a rien à faire.
 
 ---
 
@@ -202,18 +305,58 @@ fines servent à deux choses, et à deux choses seulement :
 
 1. la traçabilité ;
 2. **signaler qu'une étiquette enregistrée sur un emplacement précompté et scellé
-   se retrouve comptée dans un autre journal.**
+   se retrouve comptée à un *autre emplacement*.**
 
 C'est le seul contrôle du dispositif qui descende au grain de l'étiquette, et il
 est proportionné : sur l'export du 13 juin, 433 étiquettes sur 39 558 apparaissent
 dans plus d'un journal — environ 1 %, une liste qu'on peut réellement traiter.
+
+### Un journal vrac ne compte pas des lots
+
+Les lignes d'un journal `INVV` portent toutes la même étiquette générique —
+littéralement « VRAC » dans l'export. Ce n'est pas l'identité d'une palette,
+c'est un remplissage de colonne : un emplacement vrac se gère **en quantité**.
+
+Le contrôle la lisait pourtant comme une identité, et deux emplacements vrac
+quelconques devenaient donc « la même étiquette comptée aux deux endroits » —
+quatre cents lignes de faux doublons sur une campagne réelle, à trancher une par
+une, devant lesquelles il n'y a rien à faire.
+
+La règle porte sur le **type de journal**, pas sur la valeur de l'étiquette :
+c'est ce que le métier dit, et non une chaîne de caractères qui pourrait changer
+au prochain export. Elle est écrite une seule fois, dans la définition des
+lignes qui portent une étiquette identifiante, et les deux contrôles — les deux
+côtés de chacun — la lisent de là. Écrite quatre fois, il aurait suffi de
+l'oublier d'un côté pour que le contrôle continue de lire les journaux vrac de
+l'autre.
+
+### Deux journaux ne font pas un déplacement
+
+La condition portait sur le journal seul : *une autre ligne, dans un autre
+journal*. Deux journaux passant sur le même emplacement scellé remplissaient
+donc l'écran de lignes dont les deux colonnes d'emplacement portaient la même
+valeur — « ATP / SF1 comptée aussi en ATP / SF1 » — et l'application proposait de
+mettre la pièce « au nouvel emplacement ». Il n'y en a pas.
+
+Le contrôle exige maintenant **un autre emplacement**, et part du **journal
+propriétaire** : celui dont le périmètre contient l'emplacement scellé. Sans
+cela, la ligne de passage d'un troisième journal servait à son tour de point de
+départ, et la même paire ressortait autant de fois que de journaux ayant touché
+l'emplacement.
+
+Ce qui en sort n'est pas perdu. Un second journal qui recompte un emplacement
+scellé **au même endroit** est un fait réel — les quantités peuvent différer,
+104 contre 93 sur l'export observé — et il est résumé à part, par emplacement et
+par journal, avec celui qui est retenu et celui qui ne l'est pas. C'est le seul
+renseignement utile : il n'y a rien à trancher, puisque la pièce est là où elle
+doit être.
 
 ---
 
 ## 7. Le comptage avancé : le journal porte sa propre référence
 
 C'est la simplification majeure par rapport aux versions précédentes de cette
-étude. **Pour un lot avancé, il n'y a pas de chargement de stock ERP séparé.** La
+étude. **Pour un précomptage, il n'y a pas de chargement de stock ERP séparé.** La
 référence se lit dans le journal lui-même :
 
 ```
@@ -223,8 +366,8 @@ compté@T0  = Σ Qté Comptée  des mêmes lignes
 physique@T0 = compté@T0 + ajusté@T0
 ```
 
-Un lot avancé, c'est donc : importer un ou plusieurs journaux, déclarer leur
-périmètre, et c'est tout. Pas de snapshot à charger, pas de séquencement fragile
+Un précomptage, c'est donc : importer le journal et déclarer son périmètre — ce
+qui le scelle. Et c'est tout. Pas de snapshot à charger, pas de séquencement fragile
 « charger avant de compter », pas de baseline à ne pas oublier — le fichier qui
 apporte le comptage apporte aussi ce contre quoi il se compare.
 
@@ -232,7 +375,7 @@ Trois quantités suffisent :
 
 | Symbole | Quantité | Origine |
 |---|---|---|
-| `ERP@T0` | Stock ERP avant comptage du lot | Colonne `Stock ERP` du journal avancé |
+| `ERP@T0` | Stock ERP avant le précomptage | Colonne `Stock ERP` du journal |
 | `physique@T0` | Compté + ajusté à T0 | Colonne `Qté Comptée`, plus l'ajustement éventuel |
 | `ERP@J` | Stock ERP du snapshot général gelé le jour J | Chargement général, inchangé |
 
@@ -281,9 +424,90 @@ journal. Même règle, deux dates.
 **Une conséquence à afficher.** Le total « ERP » de la campagne devient
 composite : la plupart des lignes à la date du jour J, les lignes scellées à leur
 date de précomptage. Un rapprochement avec un état ERP tiré à une date unique
-trouvera une différence, égale à la somme des écarts des lots avancés. L'écran et
+trouvera une différence, égale à la somme des écarts des précomptages. L'écran et
 l'export doivent porter la date de référence de chaque ligne, faute de quoi la
 première question posée sur ce total n'aura pas de réponse.
+
+### Comment le total « Stock ERP » se calcule
+
+Une seule table, `book_stock`, une seule ligne par (article, entrepôt,
+emplacement) — l'index `book_stock_uq` l'impose — et **deux origines** :
+
+| Origine | Écrite par | `erp_journal_id` | Date de référence |
+|---|---|---|---|
+| Snapshot général | Le chargement du stock ERP | `NULL` | Celle du snapshot (jour J) |
+| Précomptage scellé | La déclaration du périmètre | Le journal | `counted_on` du journal |
+
+Les deux ne se marchent jamais dessus, et c'est écrit des deux côtés :
+
+* le chargement général ne supprime que les lignes `erp_journal_id IS NULL`,
+  puis **saute** les emplacements qu'un précomptage réserve déjà ;
+* le scellement supprime ses propres lignes **et** celles qui portent les mêmes
+  clés : il reprend l'emplacement, quel que soit l'ordre des deux gestes.
+
+#### Les quantités
+
+```
+Stock ERP        = Σ book_stock.qty                    (une ligne par clé)
+Stock compté     = Σ quantités des journaux de comptage
+                   + consolidation GENERIQUE en direct
+Stock physique   = Stock compté + ajustements postés
+Écart net        = Stock physique − Stock ERP
+```
+
+Deux exclusions, qui portent sur **les deux côtés à la fois** — quantités *et*
+valeurs : les emplacements **désactivés** (`INV / 01`, le tampon) et les
+articles **exclus du périmètre**.
+
+Du côté compté, deux règles décident ce qui entre :
+
+* seuls les journaux **`IN_PROGRESS` et `POSTED`** comptent. Un journal
+  `PENDING` est un emplacement qu'on n'a pas encore touché, et le compter à
+  zéro inventerait un manquant ;
+* un journal **`BOOK_ENFORCED`** contribue la quantité du stock ERP elle-même —
+  écart nul par construction, ce qui est exactement ce que ce statut promet.
+
+> C'est pour cela que **sceller met le journal de comptage en `IN_PROGRESS` ou
+> `POSTED`**, selon que le journal ERP est posté. Un emplacement scellé resté
+> `PENDING` apportait sa référence au stock ERP et rien au stock physique : un
+> manquant fantôme de la totalité de sa quantité, sur un emplacement dont le
+> scellement affirme précisément qu'il est compté.
+
+Un emplacement précompté et scellé est donc présent **des deux côtés** : sa
+ligne `book_stock` (`ERP@T0`) et les lignes de son journal de comptage, posées
+par l'import ou recalculées par la déclaration.
+
+#### Les valeurs
+
+**Une seule base de valorisation dans toute la campagne :**
+
+```
+valeur = prix standard du référentiel × quantité
+```
+
+pour le stock ERP **comme** pour le stock compté. C'est ce qui rend les deux
+comparables : un écart en euros mesure alors une différence de *quantité*, et
+rien d'autre.
+
+Les lignes de stock portent bien un coût — celui que l'ERP tenait au gel pour le
+snapshot, le prix standard pour un précomptage — mais il ne valorise plus rien.
+Le laisser décider avait deux effets, et aucun n'était voulu : la valeur d'un
+article dépendait de l'ordre de ses lignes, et le stock ERP se valorisait
+autrement que le comptage auquel on le compare. Ce coût ne sert plus que de
+**secours** : article inconnu du référentiel, ou prix standard nul — mieux vaut
+la valeur que l'ERP portait que zéro.
+
+La règle vaut partout, et c'est le point : les écarts, les KPI du carrousel, la
+grille Stock ERP et son total, l'export Excel et la liste des articles non
+comptés lisent tous la même valorisation. Trois de ces écrans lisaient le coût
+de la ligne, et le total de la grille ne tombait donc pas sur celui du
+carrousel, sur les mêmes lignes.
+
+**Une conséquence à connaître.** Le total ERP reste composite **en dates** : la
+plupart des lignes au jour J, les lignes scellées à leur date de précomptage. Un
+rapprochement avec un état ERP tiré à une date unique trouvera une différence,
+égale à la somme des écarts des précomptages. La date de référence de chaque
+ligne est portée à l'écran et dans l'export.
 
 ---
 
@@ -346,7 +570,7 @@ immobilisés.
 
 ## 10. L'import des journaux : photographies successives
 
-Le notebook est exécuté ponctuellement pour charger les journaux des lots
+Le notebook est exécuté ponctuellement pour charger les journaux des précomptages
 avancés, puis **très régulièrement le jour J**. Chaque exécution fournit une
 nouvelle photographie.
 
@@ -390,11 +614,9 @@ mais il vaut mieux l'écrire ici que le découvrir.
 
 | Code | Sévérité | Règle |
 |---|---|---|
-| `EARLY_BATCH_NOT_POSTED` | **Bloquant** | Sceller un lot dont un journal n'est pas posté dans l'ERP |
-| `EARLY_BATCH_BUFFER_LOCATION` | **Bloquant** | `INV / 01` dans le périmètre d'un lot avancé |
+| `EARLY_BATCH_BUFFER_LOCATION` | **Bloquant** | `INV / 01` dans le périmètre d'un journal de précomptage |
 | `EARLY_LABEL_COUNTED_ELSEWHERE` | À regarder | **Une étiquette d'un emplacement scellé comptée dans un autre journal** |
 | `EARLY_COUNT_DRIFT_UNRESOLVED` | **Bloquant** au passage en `ANALYSE` | Une dérive matérielle sans issue |
-| `EARLY_BATCH_NOT_SEALED` | Avertissement à l'ouverture du comptage général | Un lot avancé ni clos ni scellé |
 | — | Informatif | Taux d'emplacements précomptés sans dérive : la mesure de l'efficacité du balisage |
 
 Le blocage à l'entrée en `ANALYSE` s'ajoute aux trois existants
@@ -422,7 +644,7 @@ count_journal_line         + erp_line_number, label_id TEXT, serial_number TEXT,
                              inventory_status_id TEXT, qty_on_hand
                              -- qty_on_hand = « Stock ERP », la référence de la ligne
 
--- Les lots avancés
+-- Les précomptages
 early_count_batch            id, campaign_id, code, label, counted_on,
                              opened_at, closed_at, sealed_at, sealed_by, deleted_at
 early_count_drift            campaign_id, batch_id, warehouse_id, location_id,
@@ -435,7 +657,7 @@ book_stock                 + reference_date, early_batch_id
 campaign                   + general_count_opened_at, journals_imported_at
 ```
 
-`qty_on_hand` sur la ligne est ce qui rend le lot avancé autonome : la référence
+`qty_on_hand` sur la ligne est ce qui rend le précomptage autonome : la référence
 n'est plus une table à part, c'est une colonne du comptage lui-même, agrégée par
 `(entrepôt, emplacement, article)` sur le périmètre déclaré.
 
@@ -472,7 +694,7 @@ Et une précondition : **on ne scelle qu'un journal posté dans l'ERP**.
 à T0, donc pendant la phase de comptage. Or la matrice ne l'ouvre qu'en
 `ANALYSIS`. Ouvrir `adjustments` en `COUNTING` globalement serait excessif : il
 faut une règle portée par l'objet — **les ajustements sont permis en `COUNTING`
-sur les seuls emplacements d'un lot avancé clos**.
+sur les seuls emplacements d'un journal de précomptage scellé**.
 
 Deux besoins indépendants qui réclament la même chose : c'est un manque du
 modèle, pas un cas particulier.
@@ -486,7 +708,7 @@ modèle, pas un cas particulier.
 `COUNTING` porte déjà les bons droits — référentiels gelés, `book_stock`,
 `count_journals`, `count_entries`, `locations`, `zones` ouverts. `PREPARATION`
 serait un mauvais choix : elle laisse `items`, `boms` et `thresholds` ouverts, et
-un prix modifié entre J-2 et J casserait la valorisation du lot.
+un prix modifié entre J-2 et J casserait la valorisation du précomptage.
 
 Un statut supplémentaire traverserait `CAMPAIGN_TRANSITIONS`, `_EDITABILITY`,
 `campaign_transition_blockers`, le contrat `Editable` côté serveur *et*
@@ -494,35 +716,59 @@ navigateur, la barre latérale à trois phases, tous les tests de workflow et la
 table Delta `campaign` — pour aboutir à une ligne recopiée de `COUNTING`.
 
 Le jalon `campaign.general_count_opened_at` suffit : avant, comptage avancé ;
-après, comptage général. L'interface affiche « Comptage — lots avancés » puis
+après, comptage général. L'interface affiche « Comptage — précomptages » puis
 « Comptage — général » : c'est un libellé, pas une machine à états.
+
+**En revanche, un aspect à part : `early_counts`.** Pas un statut, un aspect de
+`Editable` — même fenêtre que `count_journals` (ouvert en `COUNTING`, fermé
+ailleurs), prérequis différent.
+
+C'est le point où la première réalisation s'est trompée, et la faute mérite
+d'être écrite. Tout le chantier s'était branché sur `count_journals`, dont le
+prérequis de séquence est le **chargement du stock ERP**. Or ce chargement est
+l'étape 10 du déroulé ci-dessus, et le comptage avancé occupe les étapes 2 à 8.
+L'écran restait donc verrouillé, et son API refusait, jusqu'après le moment où
+la fonction sert — la barre latérale affichant en prime « chargez d'abord le
+stock ERP », prérequis que le comptage avancé n'a jamais eu.
+
+`early_counts` n'attend que le **référentiel articles** : ses lignes s'y
+rattachent, et le scellement les valorise au prix standard. Le partage
+d'aspect ne pouvait pas tenir, parce que les deux comptages ne se mesurent pas
+contre la même chose — le général contre le snapshot chargé, l'avancé contre la
+colonne « Stock ERP » de son propre journal.
+
+Un seul point ailleurs suit la même règle : **l'import des lignes de journaux**,
+qui est le point d'entrée des deux comptages, est gardé par `early_counts`. Ce
+qu'il fait est refléter l'ERP. Ce qui s'écrit dans l'application — corriger une
+ligne à la main, changer un statut, forcer au stock ERP — reste gardé par
+`count_journals`, et le postage exige toujours un stock chargé **et** gelé.
 
 ---
 
 ## 15. Le nouveau processus, étape par étape
 
-### Avant le jour J, pour chaque lot
+### Avant le jour J, pour chaque journal de précomptage
 
 1. **Préparation** inchangée. Passage en **Comptage**.
-2. **Compter dans l'ERP** les emplacements du lot, journal `INVE` ou `INVV`, puis
-   le poster.
-3. **Exécuter le notebook** sur la fenêtre de dates du lot.
+2. **Compter dans l'ERP** les emplacements concernés, journal `INVE` ou `INVV`,
+   puis le poster et le valider.
+3. **Exécuter le notebook** sur la fenêtre de dates du comptage.
 4. **Importer** : l'application découvre les journaux et, pour chacun, **propose
    les entrepôts et emplacements** candidats — ceux de ses lignes, hors
    `INV / 01`, hors emplacements déjà alloués. L'utilisateur **sélectionne le
    périmètre**.
-5. `ERP@T0` et `compté@T0` sont agrégés depuis le journal, par emplacement et
-   article. Les lignes hors périmètre sont conservées et signalées.
-6. **Saisir et poster l'ajustement du lot** s'il y a lieu.
-7. **Créer le lot avancé** sur ce périmètre, le clore et le **sceller** — refusé
-   si un journal n'est pas posté dans l'ERP.
-8. **Baliser physiquement** les emplacements. Hors application, mais c'est ce qui
+5. **Déclarer le périmètre scelle.** `ERP@T0` est agrégé depuis le journal, par
+   emplacement et article, valorisé au prix standard et daté par la colonne
+   « Date de comptage » de ses lignes. Les lignes hors périmètre sont conservées
+   et signalées.
+6. **Saisir et poster l'ajustement** s'il y a lieu.
+7. **Baliser physiquement** les emplacements. Hors application, mais c'est ce qui
    rend le reste valable ; la date et l'auteur du scellement le documentent.
 
 ### Le jour J
 
-9. **Ouvrir le comptage général.** Les lots non scellés sont signalés.
-10. **Charger le stock ERP général.** La référence est remplacée partout **sauf**
+8. **Ouvrir le comptage général.**
+9. **Charger le stock ERP général.** La référence est remplacée partout **sauf**
     sur les emplacements scellés. `INV / 01` reçoit son journal, que l'exploitant
     **désactive**.
 11. **Geler la référence.**
@@ -531,8 +777,12 @@ après, comptage général. L'interface affiche « Comptage — lots avancés »
     l'heure du dernier import.
 13. **Traiter les dérives** : pour chaque ligne matérielle, conserver ou
     recompter.
-14. **Regarder les étiquettes signalées** : celles d'un emplacement scellé
-    comptées ailleurs.
+14. **Trancher les étiquettes signalées** — celles d'un emplacement scellé
+    comptées ailleurs. Trois issues, et chacune agit : la mettre au nouvel
+    emplacement (elle sort de l'emplacement scellé), l'en enlever (c'est l'autre
+    ligne qui sort), ou la signaler. Cette dernière ne retire rien et met
+    l'emplacement scellé dans la sous-vue **« À rescanner »**, d'où on le
+    descelle pour que le jour J le reprenne.
 15. **Clore les zones**, vérifier que tous les journaux sont postés.
 16. **Passer en Analyse** — bloqué tant qu'une dérive matérielle n'a pas d'issue.
 

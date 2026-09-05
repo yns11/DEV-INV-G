@@ -17,6 +17,7 @@ from typing import Any
 
 from ..domain.enums import (
     AdjustmentKind,
+    CountLineKind,
     CountSection,
     DataSource,
     ExclusionScope,
@@ -34,6 +35,7 @@ from ..domain.models import (
     BackflushLine,
     BomLink,
     BookStockLine,
+    CountSheetLine,
     Item,
     Location,
     StockFlowInput,
@@ -47,6 +49,7 @@ from .parser import RowError
 __all__ = [
     "ImportedJournalLine",
     "PreparedSheetRow",
+    "sheet_lines_from_rows",
     "map_items",
     "map_bom_links",
     "map_book_stock",
@@ -599,10 +602,20 @@ class PreparedSheetRow:
     item_number: str
     section: CountSection
     unit: str = "PCE"
+    #: L'intertitre sous lequel la ligne se trouve — « Stock physique B15 ».
+    subsection: str = ""
 
     @property
-    def key(self) -> tuple[str, CountSection]:
-        return (self.item_number, self.section)
+    def key(self) -> tuple[str, CountSection, str]:
+        """Ce qui fait qu'une ligne est *la même* qu'une autre.
+
+        La sous-section en fait partie : la feuille Excel qu'on remplace pose
+        les mêmes trois articles sous « Stock physique B6EST », « Stock physique
+        B15 » et « Stock physique chez Maldaner », et ce sont trois comptages à
+        trois endroits, pas un article répété trois fois. Vide, elle laisse la
+        clé exactement telle qu'elle était.
+        """
+        return (self.item_number, self.section, self.subsection)
 
 
 def map_count_sheets(
@@ -667,9 +680,74 @@ def map_count_sheets(
                 item_number=item_number,
                 section=section,
                 unit=normalise_key(str(row.get("unit") or "PCE")) or "PCE",
+                # Pas de ``normalise_key`` ici : c'est du texte imprimé, pas un
+                # code. « Stock physique chez Maldaner » doit rester lisible sur
+                # la feuille, minuscules et accents compris.
+                subsection=str(row.get("subsection") or "").strip(),
             )
         )
     return out, errors
+
+
+def sheet_lines_from_rows(
+    rows: Sequence[PreparedSheetRow],
+    *,
+    sheet_id: str,
+    campaign_id: str,
+    source: DataSource,
+    known: set[tuple[str, CountSection, str]],
+    headings: set[tuple[CountSection, str]],
+    first_order: int,
+    id_factory,
+) -> list[CountSheetLine]:
+    """The lines an import adds to one sheet — separators included.
+
+    Two things happen here that the flat file cannot say on its own.
+
+    A **separator** is materialised wherever the sub-section column changes, so
+    the intertitle exists as an object with a place in the document: that is what
+    prints, what the preview screen moves and renames, and what the counting form
+    shows. Deriving it at render time instead would mean deriving it three times,
+    in three screens that would end up disagreeing.
+
+    A row already on the sheet is **skipped**, and its sub-section is part of
+    what "already" means. Reloading a corrected file must complete the sheet, not
+    duplicate it — and the same article under two intertitles is two counts, at
+    two places, not a duplicate.
+
+    ``known`` and ``headings`` carry what that sheet already holds, and are
+    updated as the lines are built — so a file that names the same intertitle in
+    two blocks gets one separator, not two.
+    """
+    lines: list[CountSheetLine] = []
+    order = first_order
+    current: tuple[CountSection, str] | None = None
+    for row in rows:
+        if row.key in known:
+            continue
+        known.add(row.key)
+        heading = (row.section, row.subsection)
+        if row.subsection and heading != current and heading not in headings:
+            headings.add(heading)
+            lines.append(CountSheetLine(
+                id=id_factory(), sheet_id=sheet_id, campaign_id=campaign_id,
+                item_number="", section=row.section,
+                line_kind=CountLineKind.SUBSECTION, label=row.subsection,
+                source=source, display_order=order,
+            ))
+            order += 1
+        current = heading
+        lines.append(CountSheetLine(
+            id=id_factory(), sheet_id=sheet_id, campaign_id=campaign_id,
+            item_number=row.item_number, section=row.section,
+            subsection=row.subsection,
+            # Both quantities left unset: a prepared line is a line nobody has
+            # written on yet. It already weighs zero in every stock computation;
+            # what stays open is whether somebody has been to look.
+            unit=row.unit, source=source, display_order=order,
+        ))
+        order += 1
+    return lines
 
 
 def _resolve_section(value: Any) -> CountSection | None:

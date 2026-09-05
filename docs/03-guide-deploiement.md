@@ -23,7 +23,7 @@ sont communes à toutes les variantes sauf la variante A.
 |---|---|---|
 | Python | 3.11 | `python3 --version` |
 | Node.js | 20 | `node --version` |
-| Databricks CLI | 0.294 (ou 1.x) | `databricks --version` |
+| Databricks CLI | 0.294, ou 1.15.0 en 1.x — **pas 1.14.1** | `databricks --version` |
 | Git | 2.30 | `git --version` |
 
 Installation du CLI Databricks :
@@ -45,6 +45,21 @@ winget install Databricks.DatabricksCLI
 > ressource `postgres` (Lakebase Autoscaling) sont également absents ; le
 > `bundle validate` signale alors `unknown field: postgres`. Vérifiez que
 > `databricks --version` renvoie `v0.29x.x` ou `v1.x.x`.
+
+> ⚠️ **La 1.14.1 ne sait pas déployer une App.** Elle envoie
+> `forward_user_access_token` dans le masque de mise à jour, champ que l'API
+> Apps n'accepte plus, et `databricks apps deploy` s'arrête sur :
+>
+> ```
+> Error: cannot update resources.apps.campagnes_inventaire: Invalid update mask.
+> Supplied update mask: …, forward_user_access_token, …  (400 INVALID_PARAMETER_VALUE)
+> ```
+>
+> Les fichiers sont téléversés avant l'échec — le workspace porte donc le
+> nouveau code, mais l'App n'a pas été redémarrée dessus et continue de servir
+> la version précédente. Rien à corriger dans le bundle : passez en 1.15.0
+> (`winget upgrade Databricks.DatabricksCLI`, `brew upgrade databricks`) et
+> relancez la même commande.
 
 ### 1.2 Droits requis dans le workspace
 
@@ -594,6 +609,37 @@ curl -s -w "\nready:%{http_code}\n"           "$URL/api/health/ready"
 >
 > Rien de tout cela n'est nécessaire pour une campagne qui ne précompte pas :
 > les colonnes restent vides et les trois tables vides.
+>
+> **Mise à jour : le journal ERP devient le précomptage.** Le lot disparaît, et
+> la déclaration du périmètre vaut scellement. Deux gestes, dans cet ordre.
+>
+> 1. **Redéployer l'App**, qui applique la migration `026` à son démarrage. Elle
+>    reporte d'abord ce que les lots portaient — scellement, date de comptage,
+>    rattachement des références et des dérives — vers le journal ERP qui couvre
+>    les mêmes emplacements, **puis** supprime `early_count_batch` et les
+>    colonnes `early_batch_id`. Le report précède la suppression ; l'inverse ne
+>    se rattraperait pas.
+> 2. **Rejouer `make uc`**, qui crée `early_count_label_decision`. Les colonnes
+>    renommées sur des tables Delta existantes demandent un geste explicite, pour
+>    la même raison qu'à la version précédente :
+>
+> ```sql
+> ALTER TABLE inventory.book_stock_snapshot RENAME COLUMN early_batch_id TO erp_journal_id;
+> ALTER TABLE inventory.count_result RENAME COLUMN early_batch_id TO sealed_by;
+> ALTER TABLE inventory.early_count_drift RENAME COLUMN batch_id TO erp_journal_id;
+> DROP TABLE IF EXISTS inventory.early_count_batch;
+> ```
+>
+> La table Delta `early_count_batch` peut être conservée telle quelle si l'on
+> tient à l'archive des campagnes déjà publiées : le job ne l'écrit plus, et une
+> table qu'on n'écrit plus ne ment pas — elle date.
+
+> **Correctif de séquencement.** Une version suivante ouvre l'écran des
+> comptages avancés dès le référentiel articles chargé, au lieu d'attendre le
+> stock ERP général — qui arrive le jour J, donc après. Le correctif est
+> entièrement applicatif : **aucune migration, aucun geste Unity Catalog**, un
+> redéploiement de l'App suffit. Une campagne en cours reprend son écran là où
+> elle l'avait laissé.
 
 > **La table `publication`.** Elle est écrite en dernier par le job, et par rien
 > d'autre. Une campagne y figure si et seulement si son archive est complète :
@@ -1349,6 +1395,7 @@ taille du fichier pour un export ERP, plafonnée par `INV_MAX_UPLOAD_BYTES`
 
 | Symptôme | Cause probable | Correction |
 |---|---|---|
+| `Invalid update mask ... forward_user_access_token` (400) au `apps deploy` | Régression du CLI **1.14.1** : il envoie un champ que l'API Apps n'accepte plus. Rien à corriger dans le bundle | Passez en **1.15.0** (`winget upgrade Databricks.DatabricksCLI`, `brew upgrade databricks`) et relancez la même commande. Les fichiers ayant été téléversés avant l'échec, le workspace porte déjà le nouveau code — mais l'App n'a pas redémarré dessus et sert encore la version précédente |
 | **502 Bad Gateway** | L'app n'écoute pas sur `DATABRICKS_APP_PORT`, ou sur `localhost` | La commande est `python main.py` ; `main.py` lit `DATABRICKS_APP_PORT` et se lie à `0.0.0.0`. Vérifiez la ligne `Uvicorn running on http://0.0.0.0:<port>` dans les logs |
 | `[UNSUPPORTED_DATA_SOURCE_WRITE] … allowed to run DML on serverless compute` au `bundle run` de la synchronisation | Le calcul serverless refuse l'écriture JDBC distribuée vers Lakebase | Corrigé : le job retombe de lui-même sur le chemin par le driver et l'écrit dans le journal. Pour éviter d'y venir après la lecture, passez `--driver-side` (§ *Sur calcul serverless…*) |
 | `duplicate key value violates unique constraint "erp_stock_snapshot_pkey"` à la substitution du stock | La source publie légitimement plusieurs lignes pour un même emplacement (lot, statut qualité) ; le miroir exigeait l'unicité | Corrigé par la **migration 024**, qui remplace la clé primaire par un index non unique. Redéployez l'App — c'est elle qui migre — **avant** de relancer la synchronisation. Ne dédupliquez pas au chargement : cela sous-évaluerait le stock |

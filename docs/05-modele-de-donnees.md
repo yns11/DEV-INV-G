@@ -49,12 +49,15 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           │
           ├─ book_stock                   (snapshot ERP figé)
           │
-          ├─ erp_journal ──┬─ erp_journal_scope   (le périmètre déclaré)
+          ├─ erp_journal ──┬─ erp_journal_scope   (le périmètre déclaré = scellé)
           │    le journal    └─ erp_journal_line    (la ligne brute, par étiquette)
-          │    tel que l'ERP le tient : un entrepôt, plusieurs emplacements
+          │    tel que l'ERP le tient : un entrepôt, plusieurs emplacements.
+          │    C'est *lui* le précomptage : il porte la date de comptage et le
+          │    scellement, et il n'y a pas d'objet « lot » entre les deux.
           │
-          ├─ early_count_batch            (lots de comptage avancé)
           ├─ early_count_drift            (ERP@J − physique@T0, et son issue)
+          ├─ early_count_label_decision   (où est la pièce : la seule question
+          │                                du dispositif qu'aucun calcul ne tranche)
           │
           ├─ count_journal ──── count_journal_line
           │    1 par emplacement actif      qty_imported / qty_manual séparées

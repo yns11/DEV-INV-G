@@ -22,6 +22,11 @@ The rules read as the process does:
 
     Préparation   articles → nomenclatures, feuilles → pilotage
     Comptage      stock ERP → journaux, GENERIQUE
+                  articles  → comptages avancés
+
+La seconde ligne du comptage n'est pas un oubli de la première : le comptage
+avancé se fait *avant* le chargement du stock ERP, et se mesure contre la
+référence que son propre journal transporte.
 
 Two facts decide everything — what has been loaded, and what has been frozen —
 so the whole thing stays a pure function of :class:`Progress`.
@@ -98,6 +103,16 @@ PREREQUISITES: dict[str, tuple[_Requirement, ...]] = {
     "book_stock": (_ITEMS,),
     "count_journals": (_BOOK_STOCK,),
     "count_entries": (_BOOK_STOCK,),
+    # Le comptage avancé, lui, n'attend pas le stock ERP — il le précède. Un lot
+    # avancé se compte des jours avant le jour J, et sa référence ne vient pas
+    # d'un snapshot : elle se lit dans la colonne « Stock ERP » des lignes du
+    # journal qui apporte le comptage. Lui imposer `_BOOK_STOCK` fermait l'écran
+    # jusqu'au chargement général, c'est-à-dire jusqu'après le moment où il sert.
+    #
+    # Il attend le référentiel articles, et pour deux raisons : ses lignes se
+    # rattachent à des articles, et le scellement valorise la référence au prix
+    # standard de chacun.
+    "early_counts": (_ITEMS,),
     # L'écart backflush est rattaché aux articles de la campagne : sans
     # référentiel, il n'y a rien à quoi le rattacher, et la lecture ramènerait
     # toute l'usine.

@@ -14,26 +14,75 @@ le reste de l'application est écrit : emplacement plus article.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Any
 
 import psycopg
 
-from ...domain.enums import DriftResolution, JournalKind
+from ...domain.enums import JournalKind
 from ...domain.models import (
-    EarlyCountBatch,
-    EarlyCountDrift,
     ErpJournal,
     ErpJournalLine,
     LocationKey,
 )
 from ._base import _Base, _NullContext, new_id
 
-__all__ = [
-    "EarlyCountBatchRepository",
-    "EarlyCountDriftRepository",
-    "ErpJournalRepository",
-]
+__all__ = ["ErpJournalRepository"]
+
+#: Un emplacement vrac se compte **en quantité**, pas en lots étiquetés.
+#:
+#: Les lignes d'un journal ``INVV`` portent toutes la même étiquette générique —
+#: littéralement « VRAC » dans l'export. Ce n'est pas l'identité d'une palette :
+#: c'est un remplissage de colonne. Le contrôle par étiquette la lisait pourtant
+#: comme une identité, et deux emplacements vrac quelconques se retrouvaient
+#: donc « la même étiquette comptée aux deux endroits » — quatre cents lignes de
+#: faux doublons, à trancher une par une, devant lesquelles il n'y a rien à
+#: faire.
+#:
+#: La règle porte sur le **type de journal**, pas sur la valeur de l'étiquette :
+#: c'est ce que le métier dit — un journal vrac ne compte pas des lots — et non
+#: une chaîne de caractères qui pourrait changer au prochain export.
+_NO_LABEL_KIND = "INVV"
+
+
+#: Une ligne qui porte une **étiquette identifiante**, et le journal qui la dit.
+#:
+#: Une seule définition pour les deux contrôles et pour les deux côtés de
+#: chacun — l'emplacement scellé comme l'autre. Écrite quatre fois, la règle
+#: aurait divergé au premier ajout : il a suffi d'oublier les journaux vrac d'un
+#: seul côté pour que le contrôle continue de les lire de l'autre.
+_LABELLED_LINES = f"""
+    SELECT l.label_id, l.warehouse_id, l.location_id, l.item_number,
+           l.erp_journal_id, l.qty_counted, j.journal_number
+    FROM erp_journal_line l
+    JOIN erp_journal j
+      ON j.id = l.erp_journal_id AND j.campaign_id = l.campaign_id
+     AND j.deleted_at IS NULL
+     AND j.kind <> '{_NO_LABEL_KIND}'
+    WHERE l.campaign_id = %(cid)s
+      AND l.label_id <> ''
+      AND l.qty_counted <> 0
+"""
+
+#: Les lignes qui *portent la preuve* d'un emplacement scellé.
+#:
+#: Celles de son journal propriétaire, et d'aucun autre : la jointure sur
+#: ``erp_journal_scope`` est ce qui distingue le comptage retenu d'une simple
+#: ligne de passage. Sans elle, la ligne de passage d'un troisième journal
+#: servait de point de départ, et la même paire ressortait autant de fois que de
+#: journaux ayant touché l'emplacement.
+_SEALED_EVIDENCE = """
+    SELECT e.*
+    FROM etiquetee e
+    JOIN erp_journal_scope sc
+      ON sc.campaign_id = %(cid)s
+     AND sc.erp_journal_id = e.erp_journal_id
+     AND sc.warehouse_id = e.warehouse_id
+     AND sc.location_id = e.location_id
+    WHERE (e.warehouse_id, e.location_id) IN (
+            SELECT * FROM unnest(%(wh)s::text[], %(loc)s::text[])
+    )
+"""
 
 
 class ErpJournalRepository(_Base):
@@ -42,7 +91,8 @@ class ErpJournalRepository(_Base):
     _COLUMNS = (
         "id, campaign_id, journal_number, kind, description, site_id, "
         "erp_posted, erp_posted_at, line_count, first_imported_at, "
-        "last_imported_at, scope_declared_at, scope_declared_by"
+        "last_imported_at, scope_declared_at, scope_declared_by, "
+        "counted_on, sealed_at, sealed_by"
     )
 
     _LINE_COLUMNS = (
@@ -125,29 +175,36 @@ class ErpJournalRepository(_Base):
         erp_posted: bool = False,
         erp_posted_at: dt.datetime | None = None,
         line_count: int = 0,
+        counted_on: dt.date | None = None,
         conn: psycopg.Connection | None = None,
     ) -> str:
         """Enregistrer ou rafraîchir l'en-tête d'un journal ERP, et rendre son id.
 
-        Le périmètre déclaré n'est **jamais** touché ici : un réimport rafraîchit
-        les faits que l'ERP annonce, pas la décision qu'un humain a prise.
+        Le périmètre déclaré et le scellement ne sont **jamais** touchés ici :
+        un réimport rafraîchit les faits que l'ERP annonce — postage, nombre de
+        lignes, date de comptage — pas la décision qu'un humain a prise.
         """
         owns = conn is None
         ctx = self.db.transaction() if owns else _NullContext(conn)
         with ctx as connection, connection.cursor() as cur:
             cur.execute(
                 "INSERT INTO erp_journal (id, campaign_id, journal_number, kind, "
-                "description, site_id, erp_posted, erp_posted_at, line_count) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "description, site_id, erp_posted, erp_posted_at, line_count, "
+                "counted_on) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "ON CONFLICT (campaign_id, journal_number) "
                 "WHERE deleted_at IS NULL DO UPDATE SET "
                 "kind = EXCLUDED.kind, description = EXCLUDED.description, "
                 "site_id = EXCLUDED.site_id, erp_posted = EXCLUDED.erp_posted, "
                 "erp_posted_at = EXCLUDED.erp_posted_at, "
-                "line_count = EXCLUDED.line_count, last_imported_at = now() "
+                "line_count = EXCLUDED.line_count, "
+                # `COALESCE` dans cet ordre : un export qui omet la colonne ne
+                # doit pas effacer la date qu'un export précédent portait.
+                "counted_on = COALESCE(EXCLUDED.counted_on, erp_journal.counted_on), "
+                "last_imported_at = now() "
                 "RETURNING id",
                 (new_id(), campaign_id, journal_number, str(kind), description,
-                 site_id, erp_posted, erp_posted_at, line_count),
+                 site_id, erp_posted, erp_posted_at, line_count, counted_on),
             )
             return str(cur.fetchone()["id"])
 
@@ -204,7 +261,11 @@ class ErpJournalRepository(_Base):
         actor: str,
         conn: psycopg.Connection | None = None,
     ) -> int:
-        """Déclarer les emplacements que ce journal couvre.
+        """Déclarer les emplacements que ce journal couvre, **et les sceller**.
+
+        Les deux gestes n'en font qu'un. Dire quels emplacements ce journal
+        couvre, c'est dire lesquels sont comptés et ne bougeront plus : il n'y
+        avait aucune décision entre les deux, seulement des clics.
 
         Un emplacement n'appartient au périmètre que d'un seul journal — c'est
         un index unique de la migration 025, pas une vérification faite ici :
@@ -231,10 +292,40 @@ class ErpJournalRepository(_Base):
                 )
             cur.execute(
                 "UPDATE erp_journal SET scope_declared_at = now(), "
-                "scope_declared_by = %s WHERE campaign_id = %s AND id = %s",
-                (actor, campaign_id, erp_journal_id),
+                "scope_declared_by = %s, sealed_at = now(), sealed_by = %s "
+                "WHERE campaign_id = %s AND id = %s",
+                (actor, actor, campaign_id, erp_journal_id),
             )
             return len(keys)
+
+    def unseal(
+        self,
+        campaign_id: str,
+        erp_journal_id: str,
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Retirer le périmètre et le scellement du journal.
+
+        Le périmètre part avec le scellement, et c'est voulu : sans périmètre,
+        le journal n'a plus d'emplacement à couvrir, donc plus rien à sceller.
+        Redéclarer est le geste qui rescelle.
+        """
+        owns = conn is None
+        ctx = self.db.transaction() if owns else _NullContext(conn)
+        with ctx as connection, connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM erp_journal_scope "
+                "WHERE campaign_id = %s AND erp_journal_id = %s",
+                (campaign_id, erp_journal_id),
+            )
+            cur.execute(
+                "UPDATE erp_journal SET scope_declared_at = NULL, "
+                "scope_declared_by = '', sealed_at = NULL, sealed_by = '' "
+                "WHERE campaign_id = %s AND id = %s",
+                (campaign_id, erp_journal_id),
+            )
+            return cur.rowcount
 
     def touch_import(
         self, campaign_id: str, *, conn: psycopg.Connection | None = None
@@ -301,7 +392,11 @@ class ErpJournalRepository(_Base):
     # ------------------------------------------------------------- agrégations
 
     def aggregate_in_scope(
-        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+        self,
+        campaign_id: str,
+        *,
+        excluded_labels: Collection[tuple[str, str]] = (),
+        conn: psycopg.Connection | None = None,
     ) -> list[dict[str, Any]]:
         """Référence et comptage par (entrepôt, emplacement, article), dans le périmètre.
 
@@ -312,6 +407,11 @@ class ErpJournalRepository(_Base):
         La jointure sur le périmètre déclaré n'est pas décorative : sans elle,
         une ligne de passage créerait une référence sur un emplacement que le
         journal ne couvre pas.
+
+        ``excluded_labels`` porte les étiquettes qu'une décision a fait sortir de
+        leur emplacement scellé — la pièce est ailleurs, quelqu'un est allé
+        voir. Les exclure ici plutôt qu'après coup est ce qui fait que la
+        référence, le comptage et l'écart racontent la même histoire.
         """
         return self._fetch_all(
             """
@@ -332,11 +432,18 @@ class ErpJournalRepository(_Base):
              AND s.campaign_id = l.campaign_id
              AND s.warehouse_id = l.warehouse_id
              AND s.location_id = l.location_id
-            WHERE l.campaign_id = %s AND j.deleted_at IS NULL
+            WHERE l.campaign_id = %(cid)s AND j.deleted_at IS NULL
+              AND (l.label_id, l.item_number) <> ALL (
+                    SELECT * FROM unnest(%(labels)s::text[], %(items)s::text[])
+              )
             GROUP BY l.warehouse_id, l.location_id, l.item_number
             ORDER BY l.warehouse_id, l.location_id, l.item_number
             """,
-            (campaign_id,),
+            {
+                "cid": campaign_id,
+                "labels": [label for label, _ in excluded_labels],
+                "items": [item for _, item in excluded_labels],
+            },
             conn=conn,
         )
 
@@ -347,7 +454,7 @@ class ErpJournalRepository(_Base):
         *,
         conn: psycopg.Connection | None = None,
     ) -> list[dict[str, Any]]:
-        """Les étiquettes d'un emplacement scellé retrouvées dans un autre journal.
+        """Les étiquettes d'un emplacement scellé retrouvées **ailleurs**.
 
         Le seul contrôle du dispositif qui descende au grain de l'étiquette, et
         celui qui rattrape ce que la dérive ne voit pas : une pièce sortie d'un
@@ -355,42 +462,89 @@ class ErpJournalRepository(_Base):
         mais si elle est re-scannée ailleurs, son étiquette apparaît dans un
         second journal.
 
-        Proportionné : sur l'export du 13 juin, 433 étiquettes sur 39 558
-        figurent dans plus d'un journal — de l'ordre du pour cent, une liste
-        qu'on peut réellement traiter.
+        Deux restrictions, et chacune corrige une liste qui ne voulait rien dire.
+
+        **Ailleurs veut dire un autre emplacement.** La condition ne portait que
+        sur le journal : deux journaux passant sur le même emplacement scellé
+        remplissaient l'écran de lignes « ATP / SF1 comptée aussi en ATP / SF1 ».
+        La pièce n'a pas bougé, et les trois issues proposées — la mettre au
+        nouvel emplacement, l'en enlever, la rescanner — n'ont aucun sens quand
+        il n'y a pas de nouvel emplacement. Ce cas-là est un second passage sur
+        le même emplacement : :meth:`labels_recounted_in_place` le dit.
+
+        **Le point de vue est celui du journal propriétaire.** Sans cela, la
+        ligne de l'autre journal servait à son tour de départ et la même paire
+        ressortait deux fois, une par sens. Un emplacement scellé appartient à un
+        seul journal ; c'est le sien qui porte la preuve.
         """
         if not sealed:
             return []
         return self._fetch_all(
-            """
-            WITH scelle AS (
-                SELECT l.label_id, l.warehouse_id, l.location_id,
-                       l.item_number, l.erp_journal_id
-                FROM erp_journal_line l
-                WHERE l.campaign_id = %(cid)s
-                  AND l.label_id <> ''
-                  AND l.qty_counted <> 0
-                  AND (l.warehouse_id, l.location_id) IN (
-                        SELECT * FROM unnest(%(wh)s::text[], %(loc)s::text[])
-                  )
-            )
+            f"""
+            WITH etiquetee AS ({_LABELLED_LINES}),
+                 scelle AS ({_SEALED_EVIDENCE})
             SELECT s.label_id,
                    s.item_number,
                    s.warehouse_id            AS sealed_warehouse_id,
                    s.location_id             AS sealed_location_id,
                    o.warehouse_id            AS other_warehouse_id,
                    o.location_id             AS other_location_id,
-                   j.journal_number          AS other_journal_number,
+                   o.journal_number          AS other_journal_number,
                    o.qty_counted             AS other_qty_counted
             FROM scelle s
-            JOIN erp_journal_line o
-              ON o.campaign_id = %(cid)s
-             AND o.label_id = s.label_id
+            JOIN etiquetee o
+              ON o.label_id = s.label_id
              AND o.erp_journal_id <> s.erp_journal_id
-             AND o.qty_counted <> 0
-            JOIN erp_journal j
-              ON j.id = o.erp_journal_id AND j.campaign_id = o.campaign_id
+             AND (o.warehouse_id, o.location_id)
+                 <> (s.warehouse_id, s.location_id)
             ORDER BY s.label_id, o.warehouse_id, o.location_id
+            """,
+            {
+                "cid": campaign_id,
+                "wh": [k.warehouse_id for k in sealed],
+                "loc": [k.location_id for k in sealed],
+            },
+            conn=conn,
+        )
+
+    def labels_recounted_in_place(
+        self,
+        campaign_id: str,
+        sealed: Sequence[LocationKey],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        """Les emplacements scellés qu'un second journal a recomptés **sur place**.
+
+        Ce n'est pas un déplacement — l'étiquette est là où elle doit être — et
+        ça n'a donc rien à faire dans la liste des étiquettes comptées ailleurs,
+        qu'elle noyait. C'est autre chose, et qui mérite d'être dit : deux
+        journaux ont compté le même emplacement, parfois avec des quantités
+        différentes, et seul celui qui le possède est retenu.
+
+        Résumé par (emplacement scellé, autre journal) : la liste ligne à ligne
+        n'apprendrait rien de plus, et un emplacement à cinq cents étiquettes en
+        produirait cinq cents.
+        """
+        if not sealed:
+            return []
+        return self._fetch_all(
+            f"""
+            WITH etiquetee AS ({_LABELLED_LINES}),
+                 scelle AS ({_SEALED_EVIDENCE})
+            SELECT s.warehouse_id              AS sealed_warehouse_id,
+                   s.location_id               AS sealed_location_id,
+                   max(s.journal_number)       AS owner_journal_number,
+                   o.journal_number            AS other_journal_number,
+                   count(DISTINCT o.label_id)  AS label_count
+            FROM scelle s
+            JOIN etiquetee o
+              ON o.label_id = s.label_id
+             AND o.erp_journal_id <> s.erp_journal_id
+             AND o.warehouse_id = s.warehouse_id
+             AND o.location_id = s.location_id
+            GROUP BY s.warehouse_id, s.location_id, o.journal_number
+            ORDER BY s.warehouse_id, s.location_id, o.journal_number
             """,
             {
                 "cid": campaign_id,
@@ -419,6 +573,9 @@ class ErpJournalRepository(_Base):
             scope=scope,
             scope_declared_at=row["scope_declared_at"],
             scope_declared_by=row["scope_declared_by"] or "",
+            counted_on=row["counted_on"],
+            sealed_at=row["sealed_at"],
+            sealed_by=row["sealed_by"] or "",
         )
 
     @staticmethod
@@ -438,250 +595,4 @@ class ErpJournalRepository(_Base):
             qty_counted=row["qty_counted"],
             unit=row["unit"],
             inventory_status_id=row["inventory_status_id"],
-        )
-
-
-class EarlyCountBatchRepository(_Base):
-    """Les lots de comptage avancé d'une campagne.
-
-    Le périmètre d'un lot n'a pas de table à lui : c'est l'ensemble des
-    emplacements dont le journal porte son identifiant. Une seule écriture, donc
-    une seule vérité — un périmètre stocké deux fois finirait par diverger du
-    scellement qu'il est censé décrire.
-    """
-
-    _COLUMNS = (
-        "id, campaign_id, code, label, counted_on, opened_at, opened_by, "
-        "closed_at, closed_by, sealed_at, sealed_by"
-    )
-
-    def list(
-        self, campaign_id: str, *, conn: psycopg.Connection | None = None
-    ) -> list[EarlyCountBatch]:
-        rows = self._fetch_all(
-            f"SELECT {self._COLUMNS} FROM early_count_batch "
-            "WHERE campaign_id = %s AND deleted_at IS NULL "
-            "ORDER BY counted_on NULLS LAST, code",
-            (campaign_id,),
-            conn=conn,
-        )
-        locations = self._locations(campaign_id, conn=conn)
-        return [self._batch(row, locations.get(str(row["id"]), [])) for row in rows]
-
-    def _locations(
-        self, campaign_id: str, *, conn: psycopg.Connection | None = None
-    ) -> dict[str, list[LocationKey]]:
-        rows = self._fetch_all(
-            "SELECT early_batch_id, warehouse_id, location_id FROM count_journal "
-            "WHERE campaign_id = %s AND early_batch_id IS NOT NULL "
-            "ORDER BY warehouse_id, location_id",
-            (campaign_id,),
-            conn=conn,
-        )
-        out: dict[str, list[LocationKey]] = {}
-        for row in rows:
-            out.setdefault(str(row["early_batch_id"]), []).append(
-                LocationKey(
-                    warehouse_id=row["warehouse_id"], location_id=row["location_id"]
-                )
-            )
-        return out
-
-    def create(
-        self, batch: EarlyCountBatch, *, conn: psycopg.Connection | None = None
-    ) -> str:
-        self._execute(
-            "INSERT INTO early_count_batch (id, campaign_id, code, label, "
-            "counted_on, opened_at, opened_by) VALUES (%s,%s,%s,%s,%s,now(),%s)",
-            (batch.id, batch.campaign_id, batch.code, batch.label,
-             batch.counted_on, batch.opened_by),
-            conn=conn,
-        )
-        return batch.id
-
-    def close(
-        self, campaign_id: str, batch_id: str, *, actor: str,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        return self._execute(
-            "UPDATE early_count_batch SET closed_at = now(), closed_by = %s "
-            "WHERE campaign_id = %s AND id = %s",
-            (actor, campaign_id, batch_id),
-            conn=conn,
-        )
-
-    def seal(
-        self, campaign_id: str, batch_id: str, *, actor: str,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        return self._execute(
-            "UPDATE early_count_batch SET sealed_at = now(), sealed_by = %s "
-            "WHERE campaign_id = %s AND id = %s",
-            (actor, campaign_id, batch_id),
-            conn=conn,
-        )
-
-    def unseal(
-        self, campaign_id: str, batch_id: str, *,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Rouvrir le lot : il redevient modifiable, et son périmètre repart.
-
-        Clore et sceller sont deux gestes, et desceller défait les deux : un lot
-        descellé mais toujours clos serait figé sans être scellé, c'est-à-dire
-        dans un état d'où l'on ne pourrait ni corriger ni resceller.
-        """
-        return self._execute(
-            "UPDATE early_count_batch SET sealed_at = NULL, sealed_by = NULL, "
-            "closed_at = NULL, closed_by = NULL "
-            "WHERE campaign_id = %(cid)s AND id = %(bid)s",
-            {"cid": campaign_id, "bid": batch_id},
-            conn=conn,
-        )
-
-    @staticmethod
-    def _batch(row: dict[str, Any], locations: list[LocationKey]) -> EarlyCountBatch:
-        return EarlyCountBatch(
-            id=str(row["id"]),
-            campaign_id=str(row["campaign_id"]),
-            code=row["code"],
-            label=row["label"],
-            counted_on=row["counted_on"],
-            opened_at=row["opened_at"],
-            opened_by=row["opened_by"] or "",
-            closed_at=row["closed_at"],
-            closed_by=row["closed_by"] or "",
-            sealed_at=row["sealed_at"],
-            sealed_by=row["sealed_by"] or "",
-            locations=locations,
-        )
-
-
-class EarlyCountDriftRepository(_Base):
-    """Les dérives d'une campagne, et l'issue qu'un humain leur donne."""
-
-    _COLUMNS = (
-        "id, campaign_id, batch_id, warehouse_id, location_id, item_number, "
-        "qty_erp_t0, qty_physical_t0, qty_erp_j, drift_value, is_material, "
-        "resolution, cause_code, comment, resolved_at, resolved_by"
-    )
-
-    def list(
-        self, campaign_id: str, *, conn: psycopg.Connection | None = None
-    ) -> list[EarlyCountDrift]:
-        rows = self._fetch_all(
-            f"SELECT {self._COLUMNS} FROM early_count_drift WHERE campaign_id = %s "
-            "ORDER BY warehouse_id, location_id, item_number",
-            (campaign_id,),
-            conn=conn,
-        )
-        return [self._drift(row) for row in rows]
-
-    def replace(
-        self,
-        campaign_id: str,
-        drifts: Sequence[EarlyCountDrift],
-        *,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Recalculer les dérives **en conservant les issues déjà données**.
-
-        Le notebook est rejoué très régulièrement le jour J, et chaque import
-        relance ce calcul. Repartir de zéro effacerait les décisions prises
-        entre deux imports — un exploitant tranche une dérive à neuf heures et
-        la retrouve vierge à neuf heures cinq, sans que rien ne le dise.
-        """
-        owns = conn is None
-        ctx = self.db.transaction() if owns else _NullContext(conn)
-        with ctx as connection, connection.cursor() as cur:
-            cur.execute(
-                "SELECT warehouse_id, location_id, item_number, resolution, "
-                "cause_code, comment, resolved_at, resolved_by "
-                "FROM early_count_drift "
-                "WHERE campaign_id = %s AND resolution IS NOT NULL",
-                (campaign_id,),
-            )
-            decided = {
-                (r["warehouse_id"], r["location_id"], r["item_number"]): r
-                for r in cur.fetchall()
-            }
-            cur.execute(
-                "DELETE FROM early_count_drift WHERE campaign_id = %s", (campaign_id,)
-            )
-            if not drifts:
-                return 0
-            cur.executemany(
-                "INSERT INTO early_count_drift (id, campaign_id, batch_id, "
-                "warehouse_id, location_id, item_number, qty_erp_t0, "
-                "qty_physical_t0, qty_erp_j, drift_qty, drift_value, is_material, "
-                "resolution, cause_code, comment, resolved_at, resolved_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                [
-                    (
-                        drift.id, campaign_id, drift.batch_id, drift.warehouse_id,
-                        drift.location_id, drift.item_number, drift.qty_erp_t0,
-                        drift.qty_physical_t0, drift.qty_erp_j, drift.drift_qty,
-                        drift.drift_value, drift.is_material,
-                        *self._carried(decided, drift),
-                    )
-                    for drift in drifts
-                ],
-            )
-            return len(drifts)
-
-    @staticmethod
-    def _carried(decided: dict, drift: EarlyCountDrift) -> tuple:
-        previous = decided.get(
-            (drift.warehouse_id, drift.location_id, drift.item_number)
-        )
-        if previous is None:
-            return (None, "", "", None, None)
-        return (
-            previous["resolution"], previous["cause_code"] or "",
-            previous["comment"] or "", previous["resolved_at"],
-            previous["resolved_by"],
-        )
-
-    def resolve(
-        self,
-        campaign_id: str,
-        drift_ids: Sequence[str],
-        resolution: DriftResolution,
-        *,
-        cause_code: str,
-        comment: str,
-        actor: str,
-        resolved_at: Any,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        return self._execute(
-            "UPDATE early_count_drift SET resolution = %s, cause_code = %s, "
-            "comment = %s, resolved_at = %s, resolved_by = %s "
-            "WHERE campaign_id = %s AND id = ANY(%s::uuid[])",
-            (str(resolution), cause_code, comment, resolved_at, actor,
-             campaign_id, list(drift_ids)),
-            conn=conn,
-        )
-
-    @staticmethod
-    def _drift(row: dict[str, Any]) -> EarlyCountDrift:
-        return EarlyCountDrift(
-            id=str(row["id"]),
-            campaign_id=str(row["campaign_id"]),
-            batch_id=str(row["batch_id"]) if row["batch_id"] else None,
-            warehouse_id=row["warehouse_id"],
-            location_id=row["location_id"],
-            item_number=row["item_number"],
-            qty_erp_t0=row["qty_erp_t0"],
-            qty_physical_t0=row["qty_physical_t0"],
-            qty_erp_j=row["qty_erp_j"],
-            drift_value=row["drift_value"],
-            is_material=row["is_material"],
-            resolution=(
-                DriftResolution(row["resolution"]) if row["resolution"] else None
-            ),
-            cause_code=row["cause_code"] or "",
-            comment=row["comment"] or "",
-            resolved_at=row["resolved_at"],
-            resolved_by=row["resolved_by"] or "",
         )

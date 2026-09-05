@@ -51,6 +51,8 @@ SHIPPED = {
     "023_count_sheet_line_formula": "e7cbaa4c82f9",
     "024_erp_stock_snapshot_not_unique": "94becc3a8b0d",
     "025_comptages_avances": "914deaeedee8",
+    "026_le_journal_est_le_precomptage": "b2d501a6d6b7",
+    "027_feuille_mise_en_page": "ad8ffe2f1340",
 }
 
 

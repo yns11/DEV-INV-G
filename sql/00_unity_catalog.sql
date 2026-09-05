@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS book_stock_snapshot (
     unit_cost    DECIMAL(20,2) NOT NULL COMMENT 'Coût figé au moment du snapshot',
     value        DECIMAL(20,2) NOT NULL COMMENT 'qty × unit_cost, matérialisé pour l''analyse',
     reference_date DATE COMMENT 'Date de la référence. Le jour J pour la plupart des lignes, la date du précomptage pour un emplacement scellé : une campagne qui précompte a une référence composite.',
-    early_batch_id STRING COMMENT 'Le lot de comptage avancé dont vient cette référence, s''il y en a un',
+    erp_journal_id STRING COMMENT 'Le journal ERP de précomptage dont vient cette référence, s''il y en a un',
     published_at TIMESTAMP     NOT NULL
 )
 USING DELTA
@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS count_result (
     erp_journal_number STRING COMMENT 'Le journal ERP d''où vient la ligne',
     label_count   INT COMMENT 'Nombre de lignes ERP — donc d''étiquettes — agrégées ici',
     sealed_at     TIMESTAMP COMMENT 'Renseigné pour un emplacement précompté et scellé',
-    early_batch_id STRING,
+    sealed_by     STRING,
     published_at  TIMESTAMP NOT NULL
 )
 USING DELTA
@@ -176,31 +176,35 @@ COMMENT 'Comptages retenus, avec la valeur importée et la correction humaine c�
 -- Compter certains emplacements avant le jour J, sans éclater le dossier entre
 -- plusieurs campagnes. Ces trois tables sont ce qui rend le raisonnement
 -- rejouable : sans elles, l'archive ne dirait ni contre quoi un emplacement
--- précompté a été compté, ni ce qu'on a décidé de l'écart constaté le jour J.
+-- précompté a été compté, ni ce qu'on a décidé de ce qui a été constaté le
+-- jour J.
+--
+-- Le précomptage n'a pas d'objet propre : le journal ERP *est* le précomptage,
+-- et c'est `erp_journal_scope` qui dit ce qu'il couvre.
 
-CREATE TABLE IF NOT EXISTS early_count_batch (
+CREATE TABLE IF NOT EXISTS early_count_label_decision (
     campaign_id   STRING NOT NULL,
     campaign_code STRING NOT NULL,
-    batch_id      STRING NOT NULL,
-    code          STRING NOT NULL,
-    label         STRING,
-    counted_on    DATE COMMENT 'La date du comptage physique du lot',
-    opened_at     TIMESTAMP,
-    opened_by     STRING,
-    closed_at     TIMESTAMP,
-    closed_by     STRING,
-    sealed_at     TIMESTAMP COMMENT 'Le scellement : à partir de là, le comptage ne bouge plus sans descellement tracé',
-    sealed_by     STRING,
+    label_id      STRING NOT NULL,
+    item_number   STRING NOT NULL,
+    decision      STRING NOT NULL COMMENT 'KEEP_NEW | KEEP_SEALED | RECOUNT',
+    sealed_warehouse_id STRING,
+    sealed_location_id  STRING,
+    other_warehouse_id  STRING,
+    other_location_id   STRING,
+    comment       STRING,
+    decided_at    TIMESTAMP,
+    decided_by    STRING,
     published_at  TIMESTAMP NOT NULL
 )
 USING DELTA
 PARTITIONED BY (campaign_id)
-COMMENT 'Les lots de comptage avancé d''une campagne.';
+COMMENT 'Où est la pièce, quand une étiquette scellée a été recomptée ailleurs. La seule question du dispositif qu''aucun calcul ne tranche.';
 
 CREATE TABLE IF NOT EXISTS early_count_drift (
     campaign_id     STRING NOT NULL,
     campaign_code   STRING NOT NULL,
-    batch_id        STRING,
+    erp_journal_id  STRING COMMENT 'Le journal de précomptage mis en cause : une dérive ne conteste pas un emplacement, elle conteste le comptage que ce journal-là porte',
     warehouse_id    STRING NOT NULL,
     location_id     STRING NOT NULL,
     item_number     STRING NOT NULL,

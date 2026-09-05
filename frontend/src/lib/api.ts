@@ -11,9 +11,11 @@
 import type {
   Drift,
   DriftResolution,
-  EarlyBatch,
   ErpJournal,
   LabelAlert,
+  RecountedInPlace,
+  LabelResolution,
+  RescanLocation,
   ScopeCandidate,
   ClosureChecklist,
   CampaignPage,
@@ -494,29 +496,30 @@ export const api = {
       `/campaigns/${id}/early-counts/journals/${journalId}/scope`,
       { method: 'PUT', body: JSON.stringify({ locations }) },
     ),
-  earlyBatches: (id: string) =>
-    request<EarlyBatch[]>(`/campaigns/${id}/early-counts/batches`),
-  createEarlyBatch: (
+  unsealJournal: (id: string, journalId: string, reason: string) =>
+    request<{ locations: number }>(
+      `/campaigns/${id}/early-counts/journals/${journalId}/unseal`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
+  decideLabel: (
     id: string,
-    body: { code: string; label?: string; countedOn?: string | null; erpJournalIds: string[] },
+    body: {
+      labelId: string
+      itemNumber: string
+      decision: LabelResolution
+      sealedWarehouseId: string
+      sealedLocationId: string
+      otherWarehouseId: string
+      otherLocationId: string
+      comment?: string
+    },
   ) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches`, {
+    request<LabelAlert>(`/campaigns/${id}/early-counts/label-alerts/decide`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  closeEarlyBatch: (id: string, batchId: string) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/close`, {
-      method: 'POST',
-    }),
-  sealEarlyBatch: (id: string, batchId: string) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/seal`, {
-      method: 'POST',
-    }),
-  unsealEarlyBatch: (id: string, batchId: string, reason: string) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/unseal`, {
-      method: 'POST',
-      body: JSON.stringify({ reason }),
-    }),
+  toRescan: (id: string) =>
+    request<RescanLocation[]>(`/campaigns/${id}/early-counts/to-rescan`),
   drifts: (id: string) =>
     request<Drift[]>(`/campaigns/${id}/early-counts/drifts`),
   resolveDrifts: (
@@ -534,6 +537,10 @@ export const api = {
     }),
   labelAlerts: (id: string) =>
     request<LabelAlert[]>(`/campaigns/${id}/early-counts/label-alerts`),
+  recountedInPlace: (id: string) =>
+    request<RecountedInPlace[]>(
+      `/campaigns/${id}/early-counts/recounted-in-place`,
+    ),
 
   // ---------------------------------------------------------------- counting
   // `focus` is a server-side filter: the browser asks for it, the server
@@ -643,6 +650,18 @@ export const api = {
     request<{ deleted: boolean }>(`/campaigns/${id}/generic/lines/${lineId}`, {
       method: 'DELETE',
     }),
+  /**
+   * Le texte imprimé en tête de chaque section d'une zone.
+   *
+   * Un texte vide n'est pas enregistré : il remet le défaut. La réponse rend ce
+   * qui est **retenu**, pas ce qui a été envoyé, pour que l'écran voie cette
+   * différence tout de suite plutôt qu'au prochain rechargement.
+   */
+  setSectionLabels: (id: string, zoneId: string, labels: Record<string, string>) =>
+    request<{ labels: Record<string, string> }>(
+      `/campaigns/${id}/generic/zones/${zoneId}/section-labels`,
+      { method: 'POST', body: JSON.stringify({ labels }) },
+    ),
   setZoneNegative: (id: string, zoneIds: string[], allowed: boolean) =>
     request<{ updated: number }>(`/campaigns/${id}/generic/zones/negative`, {
       method: 'POST',
@@ -701,6 +720,21 @@ export const api = {
     ),
   // Fills the fields; it does not decide. Each line still has to be validated
   // before the consolidation will use it.
+  /**
+   * Trancher d'un geste tout ce qui reste ouvert dans une zone.
+   *
+   * `choice` dit la **règle**, jamais une quantité : sur quarante écarts, c'est
+   * la règle qui se décide une fois — « le second comptage fait foi » — et les
+   * quarante quantités qui en découlent. Une ligne déjà tranchée à la main
+   * n'est pas retouchée.
+   */
+  decideArbitrations: (
+    id: string, zoneId: string, choice: 'PASS_1' | 'PASS_2' | 'PROPOSED',
+  ) =>
+    request<{ decided: number; skipped: number }>(
+      `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/decide-all`,
+      { method: 'POST', body: JSON.stringify({ choice }) },
+    ),
   prefillWithPass2: (id: string, zoneId: string) =>
     request<{ proposed: number }>(
       `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/prefill-pass-2`,

@@ -25,12 +25,12 @@ from ..db import (
     CampaignRepository,
     ConsolidationRepository,
     Database,
-    EarlyCountBatchRepository,
     EarlyCountDriftRepository,
     ErpJournalRepository,
     EvidenceBlobRepository,
     ImportBatchRepository,
     JournalRepository,
+    LabelDecisionRepository,
     ReferentialRepository,
     ScanJobRepository,
     SheetRepository,
@@ -94,8 +94,8 @@ class ServiceContext:
         return ErpJournalRepository(self.db)
 
     @functools.cached_property
-    def early_counts(self) -> EarlyCountBatchRepository:
-        return EarlyCountBatchRepository(self.db)
+    def label_decisions(self) -> LabelDecisionRepository:
+        return LabelDecisionRepository(self.db)
 
     @functools.cached_property
     def drifts(self) -> EarlyCountDriftRepository:
@@ -325,6 +325,7 @@ _ASPECT_LABELS = {
     "book_stock": "Le stock ERP",
     "zones": "Les zones GENERIQUE",
     "count_journals": "Les journaux de comptage",
+    "early_counts": "Les comptages avancés",
     "count_sheets": "Les feuilles de comptage",
     "count_entries": "La saisie des comptages",
     "post_journal": "Le postage des journaux",

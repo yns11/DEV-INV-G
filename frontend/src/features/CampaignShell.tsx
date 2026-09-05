@@ -219,7 +219,12 @@ function PerimeterNote({ overview }: { overview: Overview }) {
  */
 function KpiCarousel({ overview }: { overview: Overview }) {
   const { campaign, journalProgress, genericProgress, counts } = overview
-  const hasBookStock = campaign.book_stock_frozen_at !== null
+  // Une référence figée suffit — pas nécessairement *toute* la référence. Le
+  // scellement d'un précomptage fige la sienne emplacement par emplacement, et
+  // les chiffres de ces emplacements sont définitifs dès la déclaration.
+  const sealed = counts.sealedLocations ?? 0
+  const hasBookStock = campaign.book_stock_frozen_at !== null || sealed > 0
+  const partial = campaign.book_stock_frozen_at === null
 
   const kpis = useQuery({
     queryKey: ['kpis', campaign.id],
@@ -291,7 +296,7 @@ function KpiCarousel({ overview }: { overview: Overview }) {
   if (hasBookStock) {
     slides.push({
       id: 'stock',
-      label: 'Stock et écarts',
+      label: partial ? 'Stock et écarts (précomptages)' : 'Stock et écarts',
       content: (
         <AsyncBoundary
           query={kpis}
@@ -361,7 +366,9 @@ function KpiCarousel({ overview }: { overview: Overview }) {
     })
     slides.push({
       id: 'coverage',
-      label: 'Couverture du comptage',
+      label: partial
+        ? 'Couverture (précomptages)'
+        : 'Couverture du comptage',
       content: (
         <AsyncBoundary query={kpis} skeleton={<Skeleton height={120} />}>
           {(data) => (

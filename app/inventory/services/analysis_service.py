@@ -554,6 +554,15 @@ class AnalysisService:
 
         for row in rows:
             row.setdefault("value", row["qty"] * unit_cost)
+        # Les lignes nulles ne sont pas montrées. La décomposition répond à
+        # « d'où vient ce chiffre ? », et une ligne à zéro n'en vient pas : sur
+        # une référence listée dans quarante zones et trouvée dans deux, elle
+        # noie les deux qui expliquent le total sous trente-huit qui ne
+        # l'expliquent pas. Écartées **après** le calcul de la valeur et
+        # **avant** les totaux, pour que le total reste la somme de ce qui est
+        # affiché — une fenêtre dont le total contredit ses propres lignes est
+        # pire que pas de fenêtre.
+        rows = [r for r in rows if r["qty"] or r["value"]]
         return {
             "itemNumber": item_number,
             "name": item.name,
@@ -648,8 +657,6 @@ class AnalysisService:
             zone = zones.get(sheet.zone_id)
             for line in lines:
                 if line.item_number != item_number or str(line.section) != section:
-                    continue
-                if not line.is_counted:
                     continue
                 out.append({
                     "origin": zone.label or zone.code if zone else "",

@@ -348,7 +348,11 @@ export function ZonesAdminGrid({
             width: 90,
             sortable: false,
             render: (row: Zone) => (
-              <Button size="sm" onClick={() => onOpen(row)}>
+              <Button
+                size="sm"
+                onClick={() => onOpen(row)}
+                title="Voir la feuille telle qu’elle sera imprimée, et la modifier"
+              >
                 Ouvrir
               </Button>
             ),

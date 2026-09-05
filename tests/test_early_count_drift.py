@@ -127,13 +127,8 @@ def _sealed_location(ctx, campaign, *, counted: int, reference: int,
         campaign.id, [journal.id], JournalStatus.POSTED, actor="alice"
     )
 
-    service = EarlyCountService(ctx)
-    batch = service.create_batch(
-        campaign, code="LOT-J2", counted_on=dt.date(2026, 6, 11),
-        erp_journal_ids=[journal_id],
-    )
-    service.close_batch(campaign, batch.id)
-    service.seal_batch(campaign, batch.id)
+    # Déclarer le périmètre scelle : un seul geste, et il pose la référence.
+    EarlyCountService(ctx).declare_scope(campaign, journal_id, [SOL])
 
 
 def _day_j(campaign, qty: int, item="MASS-1") -> list[BookStockLine]:

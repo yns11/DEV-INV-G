@@ -23,10 +23,10 @@ from inventory.domain.models import (
     CampaignConfig,
     CountJournal,
     CountJournalLine,
-    EarlyCountBatch,
     EarlyCountDrift,
     ErpJournal,
     ErpJournalLine,
+    LabelDecision,
     LocationKey,
 )
 
@@ -216,15 +216,60 @@ class TestSealing:
         )
         assert journal.is_sealed is True
 
-    def test_a_batch_is_closed_and_sealed_separately(self):
-        """Clore et sceller sont deux gestes : on clôt pour arrêter d'ajouter,
-        on scelle pour arrêter de modifier."""
-        batch = EarlyCountBatch(
-            id="b1", campaign_id="c1", code="lot-j2",
-            closed_at=dt.datetime(2026, 6, 11, 16, tzinfo=dt.UTC),
+    def test_declaring_the_scope_is_what_seals(self):
+        """Un seul geste, et c'est tout l'intérêt de la révision.
+
+        Le journal ERP *est* le précomptage : dire quels emplacements il couvre,
+        c'est dire lesquels sont comptés et ne bougeront plus. Un objet « lot »
+        s'interposait ; il ne portait qu'un regroupement dont personne n'avait
+        besoin.
+        """
+        from inventory.domain.models import ErpJournal
+
+        fresh = ErpJournal(id="j1", campaign_id="c1", journal_number="NPEM-1")
+        assert fresh.scope_declared is False
+        assert fresh.is_sealed is False
+
+        declared = ErpJournal(
+            id="j1", campaign_id="c1", journal_number="NPEM-1",
+            scope_declared_at=dt.datetime(2026, 6, 10, 18, tzinfo=dt.UTC),
+            sealed_at=dt.datetime(2026, 6, 10, 18, tzinfo=dt.UTC),
         )
-        assert batch.is_closed is True
-        assert batch.is_sealed is False
+        assert declared.scope_declared is True
+        assert declared.is_sealed is True
+
+
+class TestTheLabelDecision:
+    """Trois issues, et chacune retire l'étiquette d'un côté ou d'aucun."""
+
+    def _decision(self, decision: str) -> LabelDecision:
+        from inventory.domain.enums import LabelResolution
+
+        return LabelDecision(
+            id="d1", campaign_id="c1", label_id="001609231",
+            item_number="MASS-1", decision=LabelResolution(decision),
+        )
+
+    def test_keeping_the_new_place_empties_the_sealed_one(self):
+        decision = self._decision("KEEP_NEW")
+        assert decision.excluded_from_sealed is True
+        assert decision.excluded_from_other is False
+
+    def test_keeping_the_sealed_place_drops_the_other_line(self):
+        decision = self._decision("KEEP_SEALED")
+        assert decision.excluded_from_sealed is False
+        assert decision.excluded_from_other is True
+
+    def test_signalling_removes_nothing(self):
+        """On n'a pas tranché : retirer une quantité serait trancher."""
+        decision = self._decision("RECOUNT")
+        assert decision.excluded_from_sealed is False
+        assert decision.excluded_from_other is False
+
+    def test_the_label_keeps_its_leading_zeros(self):
+        """« 001609231 » perd trois caractères au premier passage par un entier,
+        et une étiquette tronquée ne se rattache plus à rien."""
+        assert self._decision("RECOUNT").label_id == "001609231"
 
 
 class TestTheDrift:

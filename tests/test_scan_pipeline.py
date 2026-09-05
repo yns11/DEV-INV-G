@@ -382,7 +382,7 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
             list_zones=lambda cid: zones,
             list_sheets=lambda cid: sheets,
             lines_by_sheet=lambda cid: lines_by_sheet,
-            replace_sheet_lines=lambda sid, lines, *, actor, conn=None: (
+            replace_sheet_lines=lambda sid, lines, *, actor, conn=None, keep_layout=False: (
                 written.append(sid) or ctx.db.note(f"lignes:{sid}")
             ),
             update_sheet=lambda cid, sid, **k: (
@@ -672,7 +672,7 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
             get_sheet=lambda sid: sheet,
             list_zones=lambda cid: [zone],
             list_sheet_lines=lambda sid: expected,
-            replace_sheet_lines=lambda sid, lines, *, actor, conn=None: ctx.db.note(
+            replace_sheet_lines=lambda sid, lines, *, actor, conn=None, keep_layout=False: ctx.db.note(
                 f"lignes:{sid}"
             ),
             update_sheet=lambda cid, sid, **k: (

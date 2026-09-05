@@ -34,7 +34,13 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from .bom import BomCycleError, BomIndex, ExplosionResult
-from .enums import ControlSeverity, CountSection, ItemType, SheetPass
+from .enums import (
+    ControlSeverity,
+    CountLineKind,
+    CountSection,
+    ItemType,
+    SheetPass,
+)
 from .models import (
     ArbitrationLine,
     ConsolidatedLine,
@@ -145,12 +151,21 @@ def _index_lines(
     """Sum a sheet's lines per (item, section).
 
     A sheet may legitimately list the same article twice (two pallets, two
-    sub-areas), so quantities are summed rather than de-duplicated. Lines with
-    no value at all are skipped: a blank cell is *not* a counted zero.
+    sub-areas), so quantities are summed rather than de-duplicated.
+
+    Une case laissée vide compte **zéro**. La feuille énumère ce qu'on s'attend
+    à trouver dans la zone ; ne rien écrire en face d'une référence dit qu'il
+    n'y en avait pas, et c'est un écart à expliquer. L'écarter du total la
+    faisait disparaître du stock compté : l'article gardait son stock ERP en
+    face de rien, sans jamais apparaître nulle part comme manquant.
+
+    Les intertitres et les lignes vides, eux, ne sont pas des articles : ils ne
+    portent aucune quantité, et leur référence vide en agrégerait une sous la
+    clé ``("", …)``.
     """
     out: dict[tuple[str, CountSection], Decimal] = defaultdict(Decimal)
     for line in lines:
-        if not line.is_counted:
+        if line.line_kind is not CountLineKind.ARTICLE or not line.item_number:
             continue
         out[(line.item_number, line.section)] += line.qty
     return {k: quantize_qty(v) for k, v in out.items()}
@@ -191,6 +206,16 @@ def build_arbitration_lines(
     for key in sorted(set(p1) | set(p2), key=lambda k: (k[0], str(k[1]))):
         item_number, section = key
         prior = existing_decisions.get(key)
+        # **Une décision porte sur deux chiffres, et meurt avec eux.** Un
+        # arbitrage dit « entre 12 et 15, je retiens 12 » ; si le comptage n°2
+        # passe ensuite de 15 à 40, la phrase ne veut plus rien dire. Elle
+        # restait pourtant, et la consolidation postait 12 contre un comptage
+        # que plus personne n'avait regardé. La ligne redevient donc ouverte —
+        # avec sa proposition, pour ne pas faire retaper le chiffre, mais sans
+        # la signature qui la validait.
+        moved = prior is not None and (
+            prior.qty_pass_1 != p1.get(key) or prior.qty_pass_2 != p2.get(key)
+        )
         out.append(
             ArbitrationLine(
                 id=prior.id if prior else id_factory(),
@@ -201,9 +226,12 @@ def build_arbitration_lines(
                 qty_pass_1=p1.get(key),
                 qty_pass_2=p2.get(key),
                 qty_arbitrated=prior.qty_arbitrated if prior else None,
-                decided_by=prior.decided_by if prior else None,
-                decided_at=prior.decided_at if prior else None,
-                comment=prior.comment if prior else "",
+                decided_by=None if moved else (prior.decided_by if prior else None),
+                decided_at=None if moved else (prior.decided_at if prior else None),
+                comment=(
+                    "Un comptage a changé depuis l'arbitrage : à revoir."
+                    if moved else (prior.comment if prior else "")
+                ),
             )
         )
     return out
@@ -517,7 +545,7 @@ def _sheets_carrying(
     for sheet in zone_counts.sheets:
         lines = zone_counts.lines_by_sheet.get(sheet.id, ())
         if any(
-            l.item_number == item_number and l.section is section and l.is_counted
+            l.item_number == item_number and l.section is section
             for l in lines
         ):
             out.append(

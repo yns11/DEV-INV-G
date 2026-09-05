@@ -58,6 +58,19 @@ class TestFreezeMatrix:
         assert not editable.items and not editable.boms and not editable.thresholds
         assert editable.zones and editable.count_sheets and editable.count_journals
         assert editable.book_stock
+        assert editable.early_counts
+
+    def test_the_early_count_opens_and_closes_with_the_counting_phase(self):
+        """Même fenêtre que les journaux généraux, prérequis différent.
+
+        Le comptage avancé est une sous-phase de `COUNTING`, pas un statut de
+        plus : les droits de la phase sont déjà les bons. Ce qui le distingue
+        est l'ordre — voir :mod:`inventory.domain.sequence` —, pas la fenêtre.
+        """
+        assert not mutability_of(CampaignStatus.PREPARATION).early_counts
+        assert mutability_of(CampaignStatus.COUNTING).early_counts
+        assert not mutability_of(CampaignStatus.ANALYSIS).early_counts
+        assert not mutability_of(CampaignStatus.CLOSED).early_counts
 
     def test_analysis_freezes_counting_and_opens_adjustments(self):
         editable = mutability_of(CampaignStatus.ANALYSIS)

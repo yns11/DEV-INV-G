@@ -15,7 +15,13 @@ from ..domain.enums import (
     JournalStatus,
     LocationStatus,
 )
-from ..domain.models import Campaign, CountJournalLine, LocationKey
+from ..domain.models import (
+    Campaign,
+    CountJournalLine,
+    LocationKey,
+    erp_journal_numbers,
+)
+from ..domain.variance import at_standard_price
 from ..errors import ConflictError, NotFoundError, ValidationError
 from .context import ServiceContext, utcnow
 from .manager_service import Perimeter
@@ -70,6 +76,14 @@ class CountingService:
                 "lineCount": len(lines),
                 "countedQty": float(sum((l.qty for l in lines), Decimal(0))),
                 "overriddenLines": sum(1 for l in lines if l.is_overridden),
+                # De quel document ERP vient ce comptage. Le numéro était déjà
+                # sur chaque ligne et n'apparaissait nulle part : « quels
+                # emplacements ont été comptés, et par quel journal ERP ? » est
+                # pourtant la question du suivi d'avancement le jour J, et la
+                # seule réponse était d'ouvrir les journaux un par un. Plusieurs
+                # valeurs quand deux journaux ont alimenté l'emplacement — c'est
+                # un fait, pas une anomalie, et le taire le cacherait.
+                "erpJournalNumbers": erp_journal_numbers(lines),
                 "locationType": str(location.type) if location else "UNKNOWN",
                 "locationStatus": str(location.status) if location else "ACTIVE",
                 "zone": location.zone if location else "",
@@ -84,7 +98,11 @@ class CountingService:
         lines = ctx.journals.list_lines(journal_id)
         book = {
             (b.item_number): b
-            for b in ctx.book_stock.list(campaign_id)
+            # Même valorisation que partout ailleurs : prix standard × quantité.
+            for b in at_standard_price(
+                ctx.book_stock.list(campaign_id),
+                ctx.referentials.items_by_number(campaign_id),
+            )
             if b.warehouse_id == journal.warehouse_id
             and b.location_id == journal.location_id
         }

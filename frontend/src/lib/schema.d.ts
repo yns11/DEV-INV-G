@@ -1656,6 +1656,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/arbitrations/decide-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trancher en lot les écarts ouverts d'une zone
+         * @description Retenir le comptage n°1, le n°2, ou la proposition — partout à la fois.
+         *
+         *     Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
+         *     jugement pris une par une.
+         */
+        post: operations["decide_arbitrations_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_decide_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/arbitrations/prefill-pass-2": {
         parameters: {
             query?: never;
@@ -3055,6 +3078,39 @@ export interface components {
             qtyPer?: number | string | null;
             /** Unit */
             unit?: string | null;
+        };
+        /**
+         * BulkArbitrationRequest
+         * @description Trancher d'un geste tout ce qui reste ouvert dans une zone.
+         *
+         *     ``choice`` dit *par quelle règle*, jamais une quantité : sur quarante
+         *     écarts, c'est la règle qui se décide une fois — « le second comptage fait
+         *     foi, la première équipe comptait sous la pluie » — et les quarante
+         *     quantités qui en découlent.
+         */
+        BulkArbitrationRequest: {
+            /**
+             * Choice
+             * @enum {string}
+             */
+            choice: "PASS_1" | "PASS_2" | "PROPOSED";
+        };
+        /**
+         * BulkArbitrationResponse
+         * @description Ce qu'un arbitrage en lot a tranché, et ce qu'il a laissé ouvert.
+         *
+         *     Les deux comptes, parce qu'ils ne disent pas la même chose : une ligne
+         *     laissée de côté — aucune des deux équipes n'a rien trouvé à retenir — reste
+         *     à traiter, et un écran qui n'annoncerait que les tranchées ferait croire la
+         *     zone finie.
+         */
+        BulkArbitrationResponse: {
+            /** Decided */
+            decided: number;
+            /** Skipped */
+            skipped: number;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * Campaign
@@ -7623,6 +7679,46 @@ export interface operations {
                     "application/json": {
                         [key: string]: number;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_arbitrations_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_decide_all_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                zone_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkArbitrationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkArbitrationResponse"];
                 };
             };
             /** @description Validation Error */

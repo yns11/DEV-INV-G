@@ -53,15 +53,18 @@ export interface Column<T extends Row = Record<string, unknown>> {
   sortable?: boolean
   editable?: boolean
   /**
-   * Rendre la cellule non modifiable **sur certaines lignes**.
+   * La colonne a-t-elle un sens **sur cette ligne** ?
    *
-   * Une cellule peut être verrouillée par sa ligne et non par sa colonne : sur
-   * une feuille de comptage, un intertitre et une ligne vide ne portent ni
-   * référence ni quantité, et leur offrir un champ de saisie invite à
-   * transformer un séparateur en article — ce qui casse la feuille sans rien
-   * dire.
+   * Une cellule sans objet ne montre rien : ni valeur, ni champ de saisie, ni
+   * tiret. Sur une feuille de comptage, un intertitre et une ligne vide ne
+   * portent ni référence, ni quantité, ni unité, ni provenance — les afficher
+   * mettait « Bord de ligne · 0 · PCE · Saisie manuelle » en face d'un titre,
+   * et offrir un champ de saisie invitait à en faire un article.
+   *
+   * Rendue vide plutôt qu'absente : la ligne garde ses colonnes, donc son
+   * alignement avec les lignes d'articles au-dessus et au-dessous.
    */
-  editableRow?: (row: T) => boolean
+  appliesTo?: (row: T) => boolean
   /** Values offered when the cell is edited. */
   choices?: string[]
   render?: (row: T, index: number) => ReactNode
@@ -1071,6 +1074,13 @@ export function DataGrid<T extends Row>({
                     )}
                     {visible.map((column) => {
                       const sticky = column.sticky === 'right' ? ' sticky-right' : ''
+                      // Une colonne sans objet sur cette ligne ne montre rien.
+                      // Avant `render`, parce que c'est vrai des deux modes :
+                      // une valeur affichée en lecture et un champ de saisie en
+                      // modification sont deux façons de la même erreur.
+                      if (column.appliesTo?.(row) === false) {
+                        return <td key={column.key} className={sticky || undefined} />
+                      }
                       if (column.render) {
                         return (
                           <td
@@ -1091,11 +1101,7 @@ export function DataGrid<T extends Row>({
                         ? cellOf(row, column.key)
                         : defaultValue(row, column)
                       const text = raw === null || raw === undefined || raw === '' ? '' : String(raw)
-                      if (
-                        editable
-                        && column.editable !== false
-                        && (column.editableRow?.(row) ?? true)
-                      ) {
+                      if (editable && column.editable !== false) {
                         return (
                           <td key={column.key} className="editable">
                             {column.choices ? (

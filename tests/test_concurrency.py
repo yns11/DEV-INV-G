@@ -315,8 +315,13 @@ class TestTheServicePassesItOn:
 
         calls: list[dict[str, Any]] = []
         campaign = cast(Any, SimpleNamespace(id="camp-1"))
+        from inventory.domain.enums import SheetPass
+
         sheet = SimpleNamespace(
-            id="sheet-1", campaign_id="camp-1", zone_id="zone-1", row_version=7
+            id="sheet-1", campaign_id="camp-1", zone_id="zone-1", row_version=7,
+            # Le passage, comme sur le vrai modèle : c'est lui qui décide si le
+            # document doit être recopié sur le second passage.
+            pass_no=SheetPass.PASS_1,
         )
         ctx = cast(Any, SimpleNamespace(
             actor="testeur",
@@ -324,6 +329,12 @@ class TestTheServicePassesItOn:
             record=lambda **kw: None,
             sheets=SimpleNamespace(
                 get_sheet=lambda sid: sheet,
+                # Le service relit les feuilles de la zone pour recopier le
+                # document sur le second passage. Une zone à comptage unique n'a
+                # pas de second passage : la recopie ne fait rien, mais elle
+                # regarde — et une doublure muette ferait lever le service sur
+                # un attribut absent, ce qui serait un défaut de la doublure.
+                list_sheets=lambda cid, **kw: [sheet],
                 list_zones=lambda cid: [
                     # `passes` comme sur le vrai modèle : un comptage unique,
                     # donc rien à comparer entre deux passages. La doublure qui

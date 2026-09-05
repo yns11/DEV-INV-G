@@ -315,7 +315,7 @@ class GenericService:
                         campaign.id, zone_id, passes_for(2),
                         actor=ctx.actor, conn=conn,
                     )
-                    self._mirror_pass_1_lines(campaign, zone_id, conn=conn)
+                    self._mirror_document(campaign, zone_id, conn=conn)
             ctx.record(
                 campaign_id=campaign.id,
                 action=AuditAction.UPDATE,
@@ -627,6 +627,20 @@ class GenericService:
                     qty=str(qty),
                     zoneId=sheet.zone_id,
                 )
+            # **La provenance appartient à la ligne, pas à la feuille.**
+            # L'écran renvoie les cent lignes qu'il affiche, y compris les
+            # quatre-vingt-dix-neuf que personne n'a touchées ; les marquer
+            # toutes « saisie manuelle » effaçait la trace de la lecture IA sur
+            # toute la feuille dès qu'une seule cellule était corrigée. On ne
+            # peut plus alors dire quelle valeur a été relue par un humain — ce
+            # qui est justement ce que la colonne existe pour dire.
+            comment = str(row.get("comment") or "")
+            untouched = (
+                previous is not None
+                and previous.qty_manual is None
+                and qty == (previous.qty if previous.has_entry else None)
+                and comment == previous.comment
+            )
             lines.append(
                 CountSheetLine(
                     id=line_id,
@@ -637,12 +651,15 @@ class GenericService:
                     # A value typed by a human always lands in qty_manual so the
                     # AI reading it replaced stays visible next to it.
                     qty_imported=previous.qty_imported if previous else None,
-                    qty_manual=qty,
+                    qty_manual=None if untouched else qty,
                     unit=str(row.get("unit") or "PCE"),
-                    source=DataSource.MANUAL,
+                    source=(
+                        previous.source if untouched and previous
+                        else DataSource.MANUAL
+                    ),
                     confidence=previous.confidence if previous else None,
-                    qty_formula=formula,
-                    comment=str(row.get("comment") or ""),
+                    qty_formula=previous.qty_formula if untouched and previous else formula,
+                    comment=comment,
                     display_order=int(row.get("display_order") or order),
                     subsection=(
                         derived[order] if replace
@@ -671,6 +688,13 @@ class GenericService:
                 written = ctx.sheets.replace_sheet_lines(
                     sheet_id, lines, actor=ctx.actor, conn=conn
                 )
+                # Le document se décide sur le passage 1 et vaut pour les deux.
+                # Une référence retirée, un intertitre renommé, deux lignes
+                # échangées : sans cette ligne, le second compteur tenait une
+                # feuille différente, et l'arbitrage comparait deux réponses à
+                # deux questions.
+                if sheet.pass_no is SheetPass.PASS_1:
+                    self._mirror_document(campaign, sheet.zone_id, conn=conn)
             else:
                 written = ctx.sheets.upsert_sheet_lines(
                     lines, actor=ctx.actor, conn=conn
@@ -715,16 +739,24 @@ class GenericService:
     ) -> list[dict[str, Any]]:
         """Every counting-sheet line of the campaign, flat.
 
-        Carries the zone and the pass on each line: without them the list is a
-        pile of references with no way back to the paper, and correcting one
-        means guessing which sheet it came from.
+        Carries the zone on each line: without it the list is a pile of
+        references with no way back to the paper, and correcting one means
+        guessing which sheet it came from.
+
+        **Le passage 1 seulement.** Les deux passages portent le même document —
+        c'est ce que garantit :meth:`mirror_document` — et les afficher tous les
+        deux doublait la liste sans rien y ajouter : quarante mille lignes au
+        lieu de vingt mille, chaque référence deux fois, et le doute à chaque
+        correction sur laquelle des deux on est en train de modifier. Une
+        correction faite ici descend sur les deux feuilles.
         """
         ctx = self.ctx
         zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
         sheets = {
             s.id: s
             for s in ctx.sheets.list_sheets(campaign.id)
-            if zone_id is None or s.zone_id == zone_id
+            if s.pass_no is SheetPass.PASS_1
+            and (zone_id is None or s.zone_id == zone_id)
         }
         items = ctx.referentials.items_by_number(campaign.id)
         out: list[dict[str, Any]] = []
@@ -744,12 +776,11 @@ class GenericService:
                     "zoneId": sheet.zone_id,
                     "zoneCode": zone.code if zone else "",
                     "zoneLabel": zone.label if zone else "",
-                    "passNo": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
                     "name": items[line.item_number].name
                     if line.item_number in items else "",
                     "known": line.item_number in items,
                 })
-        out.sort(key=lambda r: (r["zoneCode"], r["passNo"], r["display_order"]))
+        out.sort(key=lambda r: (r["zoneCode"], r["display_order"]))
         return out
 
     def delete_sheet_lines(
@@ -774,11 +805,8 @@ class GenericService:
         if not unique:
             raise ValidationError("Aucune ligne transmise.")
 
-        known = {
-            line.id
-            for lines in ctx.sheets.lines_by_sheet(campaign.id).values()
-            for line in lines
-        }
+        by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
+        known = {line.id for lines in by_sheet.values() for line in lines}
         missing = [i for i in unique if i not in known]
         if missing:
             raise ValidationError(
@@ -790,11 +818,22 @@ class GenericService:
         # La trace annonce « suppression de N lignes » : elle ne doit pas
         # survivre à un lot interrompu au milieu, sans quoi elle décrit un état
         # que la base n'a jamais eu.
+        zones = {
+            sheet.zone_id
+            for sheet in ctx.sheets.list_sheets(campaign.id)
+            if sheet.pass_no is SheetPass.PASS_1
+            and any(l.id in set(unique) for l in by_sheet.get(sheet.id, ()))
+        }
         with ctx.db.transaction() as conn:
             for line_id in unique:
                 ctx.sheets.delete_sheet_line(
                     campaign.id, line_id, actor=ctx.actor, conn=conn
                 )
+            # Une ligne retirée du passage 1 l'est du document, donc des deux
+            # feuilles. La laisser au passage 2 y ferait compter une référence
+            # que le passage 1 ne demande plus — et remonter un désaccord.
+            for zone_id in zones:
+                self._mirror_document(campaign, zone_id, conn=conn)
             ctx.record(
                 campaign_id=campaign.id,
                 action=AuditAction.DELETE,
@@ -895,6 +934,76 @@ class GenericService:
             after={"qty": str(qty), "comment": comment},
         )
 
+    #: Ce qu'un arbitrage en lot peut retenir, et où il va le chercher.
+    #:
+    #: Les trois répondent à une question réelle. « Le n°1 fait foi » et « le
+    #: n°2 fait foi » sont la décision qu'on prend quand une équipe a compté
+    #: dans de mauvaises conditions et que l'autre a recompté proprement — et la
+    #: prendre quarante fois de suite à la main n'y ajoute aucun jugement.
+    #: « Valider les propositions » entérine ce qui a déjà été pré-rempli et
+    #: relu.
+    BULK_CHOICES = ("PASS_1", "PASS_2", "PROPOSED")
+
+    def decide_arbitrations(
+        self, campaign: Campaign, zone_id: str, *, choice: str
+    ) -> dict[str, int]:
+        """Trancher d'un geste tout ce qui reste ouvert dans une zone.
+
+        Ligne par ligne était la seule voie, et sur une zone de quarante écarts
+        dont on sait déjà lequel des deux comptages fait foi, c'est quarante
+        gestes qui n'ajoutent aucun jugement — donc quarante occasions de se
+        tromper de champ, et une raison de ne pas arbitrer du tout.
+
+        Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
+        jugement pris une par une. Et une ligne comptée par une seule équipe
+        retient ce qui existe, quel que soit le choix — « le n°2 fait foi » ne
+        veut pas dire « oublie ce que le n°1 a trouvé quand le n°2 n'est pas
+        passé ».
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "count_entries")
+        if choice not in self.BULK_CHOICES:
+            raise ValidationError(
+                f"Choix d'arbitrage inconnu : {choice!r}.",
+                allowed=list(self.BULK_CHOICES),
+            )
+
+        decided = 0
+        skipped = 0
+        for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id):
+            if line.is_resolved:
+                continue
+            if choice == "PROPOSED":
+                qty = line.qty_arbitrated
+            else:
+                first = choice == "PASS_1"
+                qty = line.qty_pass_1 if first else line.qty_pass_2
+                if qty is None:
+                    qty = line.qty_pass_2 if first else line.qty_pass_1
+            if qty is None or qty < 0:
+                # Rien à retenir, ou une quantité qu'on refuserait une par une :
+                # la ligne reste ouverte et le compte le dit, plutôt que de
+                # laisser croire que la zone est arbitrée.
+                skipped += 1
+                continue
+            ctx.sheets.decide_arbitration(
+                line.id, qty, actor=ctx.actor, comment=_BULK_COMMENTS[choice]
+            )
+            decided += 1
+
+        ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.ARBITRATE,
+            entity_type="zone",
+            entity_id=zone_id,
+            summary=(
+                f"{decided} arbitrage(s) tranché(s) en lot — "
+                f"{_BULK_COMMENTS[choice]}"
+            ),
+            after={"choice": choice, "decided": decided, "skipped": skipped},
+        )
+        return {"decided": decided, "skipped": skipped}
+
     def prefill_with_pass_2(self, campaign: Campaign, zone_id: str) -> int:
         """Copy the pass-2 quantity into every open arbitration of a zone.
 
@@ -939,20 +1048,27 @@ class GenericService:
 
     # --------------------------------------------------------------- helpers
 
-    def _mirror_pass_1_lines(
+    def _mirror_document(
         self, campaign: Campaign, zone_id: str, *, conn: Any = None
     ) -> int:
-        """Give a freshly recreated pass-2 sheet pass 1's article list, blank.
+        """Le passage 2 porte le **même document** que le passage 1.
 
-        Recreating the sheet alone would hand the second counter a blank page:
-        the two counters must be asked about the same articles, or the
-        arbitration compares a count against nothing. Quantities are of course
-        not copied — that would not be a second count.
+        Mêmes références, mêmes intertitres, mêmes lignes vides, même ordre.
+        C'est la définition du double comptage : deux équipes à qui l'on pose la
+        même question, et dont on compare les réponses. Deux documents
+        différents rendent la comparaison sans objet — un article présent d'un
+        côté et absent de l'autre remonte en arbitrage comme un désaccord alors
+        que personne n'a jamais été invité à le compter.
 
-        Intertitres et lignes vides suivent : les deux passages sont le **même
-        document** compté deux fois, et un article rangé sous « Stock physique
-        B15 » au premier passage et nulle part au second n'envoie pas les deux
-        compteurs au même endroit.
+        La copie ne descendait qu'à la création de la feuille, et seulement pour
+        y **ajouter** ce qui manquait. Une référence retirée, un intertitre
+        renommé, deux lignes échangées : rien de tout cela ne passait, et les
+        deux feuilles divergeaient dès la première correction.
+
+        **Les quantités du passage 2 lui appartiennent.** Elles sont conservées
+        ligne par ligne, appariées sur la clé — référence, section,
+        sous-section. Les recopier serait cesser de compter deux fois ; les
+        perdre à chaque correction de la feuille serait pire.
         """
         ctx = self.ctx
         sheets = {
@@ -962,16 +1078,24 @@ class GenericService:
         first, second = sheets.get(SheetPass.PASS_1), sheets.get(SheetPass.PASS_2)
         if first is None or second is None:
             return 0
+
         def key(line: CountSheetLine) -> tuple[Any, ...]:
             return (line.line_kind, line.item_number, line.section,
-                    line.subsection, line.label, line.display_order)
+                    line.subsection, line.label)
 
-        existing = {
-            key(l) for l in ctx.sheets.list_sheet_lines(second.id, conn=conn)
-        }
-        blanks = [
-            CountSheetLine(
-                id=new_id(),
+        # Appariement par clé, dans l'ordre : deux lignes de mise en page
+        # identiques — deux lignes vides — se distinguent par leur rang d'arrivée
+        # et non par leur contenu, qui est vide des deux côtés.
+        twins: dict[tuple[Any, ...], list[CountSheetLine]] = {}
+        for line in ctx.sheets.list_sheet_lines(second.id, conn=conn):
+            twins.setdefault(key(line), []).append(line)
+
+        mirrored: list[CountSheetLine] = []
+        for line in ctx.sheets.list_sheet_lines(first.id, conn=conn):
+            same = twins.get(key(line))
+            twin = same.pop(0) if same else None
+            mirrored.append(CountSheetLine(
+                id=twin.id if twin else new_id(),
                 sheet_id=second.id,
                 campaign_id=campaign.id,
                 item_number=line.item_number,
@@ -980,15 +1104,18 @@ class GenericService:
                 label=line.label,
                 subsection=line.subsection,
                 unit=line.unit,
-                source=DataSource.SYSTEM,
                 display_order=line.display_order,
-            )
-            for line in ctx.sheets.list_sheet_lines(first.id, conn=conn)
-            if key(line) not in existing
-        ]
-        if not blanks:
-            return 0
-        return ctx.sheets.upsert_sheet_lines(blanks, actor=ctx.actor, conn=conn)
+                # Ce que le second passage a relevé, et rien d'autre.
+                qty_imported=twin.qty_imported if twin else None,
+                qty_manual=twin.qty_manual if twin else None,
+                qty_formula=twin.qty_formula if twin else "",
+                comment=twin.comment if twin else "",
+                confidence=twin.confidence if twin else None,
+                source=twin.source if twin else DataSource.SYSTEM,
+            ))
+        return ctx.sheets.replace_sheet_lines(
+            second.id, mirrored, actor=ctx.actor, conn=conn
+        )
 
     def _zone_counts(self, campaign: Campaign, zone_id: str) -> ZoneCounts:
         ctx = self.ctx
@@ -1003,6 +1130,16 @@ class GenericService:
             lines_by_sheet=ctx.sheets.lines_by_sheet(campaign.id),
             arbitrations=ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id),
         )
+
+
+#: Ce qu'un arbitrage tranché en lot écrit dans son commentaire. La trace dit
+#: *par quelle règle* la quantité a été retenue : « 12 » sans rien d'autre ne
+#: se relit pas six mois plus tard.
+_BULK_COMMENTS = {
+    "PASS_1": "Comptage n°1 retenu (arbitrage en lot).",
+    "PASS_2": "Comptage n°2 retenu (arbitrage en lot).",
+    "PROPOSED": "Proposition validée (arbitrage en lot).",
+}
 
 
 def _line_kind(value: Any) -> CountLineKind:

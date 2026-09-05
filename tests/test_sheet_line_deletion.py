@@ -41,6 +41,10 @@ def service(*lines: CountSheetLine) -> tuple[GenericService, list[str]]:
 
     sheets = SimpleNamespace(
         lines_by_sheet=lambda cid: by_sheet,
+        # Le service relit les feuilles pour savoir de quelles zones les lignes
+        # supprimées viennent : le document se décide sur le passage 1 et vaut
+        # pour les deux, donc une ligne retirée l'est des deux feuilles.
+        list_sheets=lambda cid, **kw: [],
         delete_sheet_line=(
             lambda campaign_id, line_id, *, actor, conn=None: deleted.append(line_id)
         ),

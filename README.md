@@ -49,10 +49,13 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
 - **La photo du stock se désigne.** Le snapshot ERP est publié chaque jour ;
   c'est celui de la journée de comptage qui fait foi, pas celui du jour où on le
   charge. La campagne dit lequel elle a chargé, et l'historique le garde.
-- **Deux comptages, un arbitrage outillé.** Valorisé en euros, couvrant aussi les
-  articles comptés par une seule équipe. Le nombre de comptages appartient à la
-  zone : le double comptage est la règle, le comptage unique l'exception qu'on
-  assume, zone par zone.
+- **Deux comptages, un arbitrage outillé.** Les deux passages portent le **même
+  document** : une référence retirée, un intertitre renommé, deux lignes
+  échangées descendent sur la seconde feuille — sans toucher aux quantités
+  qu'elle porte déjà. L'arbitrage est valorisé en euros, couvre les articles
+  comptés par une seule équipe, se tranche en lot quand on sait laquelle des
+  deux fait foi, et **se refait dès qu'un des deux comptages change** : une
+  décision porte sur deux chiffres, et meurt avec eux.
 - **Lecture pour tous, écriture pour ceux qui la portent.** Une campagne se
   consulte et s'exporte par tout le monde ; elle ne se modifie que par son
   créateur et les neuf gestionnaires qu'il a déclarés. Le contrôle est posé au
@@ -148,7 +151,7 @@ frontend/                   React + TypeScript + Vite
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
 fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
-tests/                      2759 contrôles ; 252 exigent un PostgreSQL, ignorés sinon
+tests/                      2800 contrôles ; 273 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur

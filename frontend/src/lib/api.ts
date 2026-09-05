@@ -720,6 +720,21 @@ export const api = {
     ),
   // Fills the fields; it does not decide. Each line still has to be validated
   // before the consolidation will use it.
+  /**
+   * Trancher d'un geste tout ce qui reste ouvert dans une zone.
+   *
+   * `choice` dit la **règle**, jamais une quantité : sur quarante écarts, c'est
+   * la règle qui se décide une fois — « le second comptage fait foi » — et les
+   * quarante quantités qui en découlent. Une ligne déjà tranchée à la main
+   * n'est pas retouchée.
+   */
+  decideArbitrations: (
+    id: string, zoneId: string, choice: 'PASS_1' | 'PASS_2' | 'PROPOSED',
+  ) =>
+    request<{ decided: number; skipped: number }>(
+      `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/decide-all`,
+      { method: 'POST', body: JSON.stringify({ choice }) },
+    ),
   prefillWithPass2: (id: string, zoneId: string) =>
     request<{ proposed: number }>(
       `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/prefill-pass-2`,

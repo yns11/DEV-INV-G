@@ -328,7 +328,6 @@ function SheetLinesView({
   const hidden = Math.max(0, (query.data?.total ?? loaded) - loaded)
   const columns: Column[] = [
     { key: 'zoneCode', label: 'Zone', width: 160, editable: false },
-    { key: 'passNo', label: 'Comptage', numeric: true, width: 100, editable: false },
     { key: 'item_number', label: 'Article', width: 170 },
     { key: 'name', label: 'Désignation', width: 240, editable: false },
     sectionColumn({ width: 150 }),

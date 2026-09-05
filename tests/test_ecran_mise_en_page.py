@@ -43,9 +43,14 @@ class TestLEcranDeSaisieRendCompteDeLaMiseEnPage:
     def test_l_intertitre_s_affiche_en_toutes_lettres(self):
         assert "SUBSECTION" in self.source()
 
-    def test_ses_cellules_ne_s_editent_pas(self):
-        """Un champ de saisie sur un séparateur invite à en faire un article."""
-        assert "editableRow" in self.source()
+    def test_ses_cellules_n_affichent_rien(self):
+        """Ni valeur en lecture, ni champ de saisie en modification.
+
+        « Bord de ligne · 0 · PCE · Saisie manuelle » en face d'un intertitre se
+        lit comme une ligne d'article, et le champ de saisie invitait à en faire
+        une.
+        """
+        assert "appliesTo" in self.source()
 
 
 class TestLApercuEstBrancheSurCeQuiExiste:

@@ -17,9 +17,10 @@ from ..deps import (
     scan_job_service,
 )
 from ..paging import MAX_PAGE, page
-from ..responses import SectionLabelsResponse
+from ..responses import BulkArbitrationResponse, SectionLabelsResponse
 from ..schemas import (
     ArbitrationDecisionRequest,
+    BulkArbitrationRequest,
     ReclassifyRequest,
     SheetLineDeleteRequest,
     SheetLinesRequest,
@@ -418,6 +419,25 @@ def decide_arbitration(
         campaign, arbitration_id, payload.qty, comment=payload.comment
     )
     return {"decided": True}
+
+
+@router.post(
+    "/zones/{zone_id}/arbitrations/decide-all",
+    summary="Trancher en lot les écarts ouverts d'une zone",
+    responses={200: {"model": BulkArbitrationResponse}},
+)
+def decide_arbitrations(
+    campaign: CampaignDep,
+    zone_id: str,
+    payload: BulkArbitrationRequest,
+    service: Service,
+) -> dict[str, int]:
+    """Retenir le comptage n°1, le n°2, ou la proposition — partout à la fois.
+
+    Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
+    jugement pris une par une.
+    """
+    return service.decide_arbitrations(campaign, zone_id, choice=payload.choice)
 
 
 @router.post(

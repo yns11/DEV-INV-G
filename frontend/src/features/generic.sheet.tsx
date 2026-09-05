@@ -1,6 +1,6 @@
 /** Une feuille de comptage ouverte : ses lignes, sa saisie, son scan. */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { SheetScanReport, Sheet, Zone } from '../lib/types'
@@ -10,9 +10,10 @@ import { DataGrid, SourceBadge, type Column } from '../components/DataGrid'
 import { PasteArea } from '../components/PasteArea'
 import { PrintModal } from '../components/PrintModal'
 import { parseSheetLines } from '../lib/pasteSheetLines'
-import { Alert, AsyncBoundary, Badge, Button, Card, Icons, Modal, Skeleton, useErrorToast, useToast } from '../components/ui'
+import { AsyncBoundary, Badge, Button, Card, Icons, Modal, Skeleton, useErrorToast, useToast } from '../components/ui'
 import { ZONE_TONE } from './generic.zones'
 import { ScanProgress } from './generic.scan'
+import { PRINTED_SECTIONS } from './generic.layout'
 
 /**
  * Une ligne qui porte un article — par opposition à un intertitre ou à une
@@ -243,13 +244,34 @@ export function SheetModal({
 
   const isPass2 = sheet.pass_no === 'PASS_2'
 
+  // Les lignes rangées par section, dans l'ordre du papier. Le document *est*
+  // groupé par section — l'impression le fait, l'aperçu de préparation aussi —
+  // et l'écran de saisie le montre donc pareil.
+  const bySection = useMemo(() => {
+    const groups: Record<string, Array<Record<string, unknown>>> = {}
+    for (const section of PRINTED_SECTIONS) groups[section] = []
+    for (const row of rows) {
+      const key = String(row.section ?? 'LINE_SIDE')
+      ;(groups[key] ??= []).push(row)
+    }
+    return groups
+  }, [rows])
+
+  /** Une section modifiée, les deux autres inchangées, l'ordre conservé. */
+  const replaceSection = (
+    section: string, next: Array<Record<string, unknown>>,
+  ) =>
+    setDraft(
+      PRINTED_SECTIONS.flatMap((s) => (s === section ? next : bySection[s] ?? [])),
+    )
+
   const columns: Column[] = [
     {
       key: 'item_number',
       label: 'Référence',
       width: 170,
       editable: true,
-      editableRow: isArticle,
+      appliesTo: isArticle,
     },
     {
       key: 'name',
@@ -274,6 +296,7 @@ export function SheetModal({
     },
     sectionColumn({
       editable: true,
+      appliesTo: isArticle,
       render: draft
         ? undefined
         : (row) => (
@@ -291,7 +314,7 @@ export function SheetModal({
       numeric: true,
       width: 130,
       editable: true,
-      editableRow: isArticle,
+      appliesTo: isArticle,
       render: draft
         ? undefined
         : (row) =>
@@ -327,6 +350,7 @@ export function SheetModal({
             numeric: true,
             width: 140,
             editable: false,
+            appliesTo: isArticle,
             render: (row: Record<string, unknown>) => {
               if (!isArticle(row)) return null
               const first = Number((row.qtyPass1 as number | null) ?? 0)
@@ -347,12 +371,13 @@ export function SheetModal({
           } satisfies Column,
         ]
       : []),
-    { key: 'unit', label: 'Unité', width: 90, editable: true, editableRow: isArticle },
+    { key: 'unit', label: 'Unité', width: 90, editable: true, appliesTo: isArticle },
     {
       key: 'source',
       label: 'Source',
       width: 190,
       editable: false,
+      appliesTo: isArticle,
       choiceLabel: (value) => toLabel(SOURCE_LABELS, value),
       render: (row) => (
         <SourceBadge
@@ -367,7 +392,7 @@ export function SheetModal({
       label: 'Commentaire',
       width: 220,
       editable: true,
-      editableRow: isArticle,
+      appliesTo: isArticle,
     },
   ]
 
@@ -384,7 +409,7 @@ export function SheetModal({
         </span>
       }
       onClose={onClose}
-      width={1180}
+      width={1392}
       footer={
         <>
           <Button icon={<Icons.printer size={14} />} onClick={() => setPrinting(true)}>
@@ -444,13 +469,6 @@ export function SheetModal({
               </Card>
             )}
 
-            <Alert tone="info" title="Case vide = zéro">
-              Une ligne laissée vide compte pour zéro : elle est sur la feuille
-              parce qu’on s’attend à trouver la référence dans la zone, et n’y
-              avoir rien trouvé est un écart à expliquer.
-              {isPass2 && ' La colonne « Comptage n°1 » n’est affichée qu’à l’écran.'}
-            </Alert>
-
             {editable && (
               <details open={rows.length === 0}>
                 <summary
@@ -497,30 +515,46 @@ export function SheetModal({
               </details>
             )}
 
-            <DataGrid
-              columns={columns}
-              rows={rows}
-              exportTitle="Arbitrages"
-              campaignId={campaignId}
-              getRowId={(row, index) => String(row.id ?? index)}
-              rowClassName={(row) =>
-                String(row.line_kind ?? 'ARTICLE') === 'ARTICLE'
-                  ? undefined
-                  : 'row--layout'
-              }
-              editable={editable && Boolean(draft)}
-              onRowsChange={setDraft}
-              onPaste={editable ? appendPasted : undefined}
-              searchPlaceholder="Filtrer les lignes…"
-              maxHeight={420}
-              toolbar={
-                !draft && editable ? (
-                  <Button size="sm" onClick={() => setDraft(rows)}>
-                    Modifier les lignes
-                  </Button>
-                ) : null
-              }
-            />
+            {/* Une grille par section, et non une grille filtrable par
+                colonne. Les trois tableaux du papier sont trois tableaux, avec
+                trois en-têtes et trois règles de comptage : les mettre bout à
+                bout ne les distinguait que par une colonne, au milieu de dix
+                autres, sur une feuille de cent lignes. C'est exactement la
+                confusion — compter un en-cours comme une pièce de bord de
+                ligne — que les sections existent pour empêcher. */}
+            {PRINTED_SECTIONS.map((section) => (
+              <Card
+                key={section}
+                title={sectionLabel(section)}
+                message={SECTION_HINTS[section]}
+                flush
+              >
+                <DataGrid
+                  columns={columns}
+                  rows={bySection[section] ?? []}
+                  exportTitle={`Feuille — ${sectionLabel(section)}`}
+                  campaignId={campaignId}
+                  getRowId={(row, index) => String(row.id ?? `${section}-${index}`)}
+                  rowClassName={(row) =>
+                    String(row.line_kind ?? 'ARTICLE') === 'ARTICLE'
+                      ? undefined
+                      : 'row--layout'
+                  }
+                  editable={editable && Boolean(draft)}
+                  onRowsChange={(next) => replaceSection(section, next)}
+                  onPaste={editable ? appendPasted : undefined}
+                  searchPlaceholder="Filtrer les lignes…"
+                  maxHeight={454}
+                  toolbar={
+                    !draft && editable && section === PRINTED_SECTIONS[0] ? (
+                      <Button size="sm" onClick={() => setDraft(rows)}>
+                        Modifier les lignes
+                      </Button>
+                    ) : null
+                  }
+                />
+              </Card>
+            ))}
 
             {printing && (
               <PrintModal

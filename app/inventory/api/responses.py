@@ -61,6 +61,7 @@ __all__ = [
     "CampaignPage",
     "ClosureChecklistResponse",
     "DeletedResponse",
+    "BulkArbitrationResponse",
     "SectionLabelsResponse",
     "GridContractResponse",
     "HealthResponse",
@@ -232,6 +233,19 @@ class CampaignPage(Payload):
 
 class DeletedResponse(Payload):
     deleted: bool
+
+
+class BulkArbitrationResponse(Payload):
+    """Ce qu'un arbitrage en lot a tranché, et ce qu'il a laissé ouvert.
+
+    Les deux comptes, parce qu'ils ne disent pas la même chose : une ligne
+    laissée de côté — aucune des deux équipes n'a rien trouvé à retenir — reste
+    à traiter, et un écran qui n'annoncerait que les tranchées ferait croire la
+    zone finie.
+    """
+
+    decided: int
+    skipped: int
 
 
 class SectionLabelsResponse(Payload):

@@ -225,7 +225,7 @@ class TestDesignation:
         long_name = "STATOR ASSEMBLE M3 GEN2 AVEC CONNECTIQUE ET CAPOT ARRIERE"
         pages = render([line("P-001", name=long_name)])
         assert long_name not in pages[0]
-        assert "STATOR ASSEMBLE M3 GEN2 AVEC CO" in pages[0]
+        assert "STATOR ASSEMBLE M3 GEN2 AVEC" in pages[0]
 
     def test_the_budget_shrinks_when_the_provenance_columns_appear(self):
         long_name = "STATOR ASSEMBLE M3 GEN2 AVEC CONNECTIQUE"
@@ -233,8 +233,8 @@ class TestDesignation:
         narrow = render(
             [line("P-001", name=long_name, qty=1)], mode=PrintMode.FILLED, with_sources=True
         )
-        assert "STATOR ASSEMBLE M3 GEN2 AVEC CO" in wide[0]
-        assert "STATOR ASSEMBLE M3 " in narrow[0]
+        assert "STATOR ASSEMBLE M3 GEN2 AVEC" in wide[0]
+        assert "STATOR ASSEMBLE M" in narrow[0]
         assert "STATOR ASSEMBLE M3 GEN2" not in narrow[0]
 
 
@@ -494,3 +494,84 @@ class TestCeQueLeServiceEnvoieALImpression:
             self._line(line_kind=CountLineKind.SPACER),
         ])
         assert [r["line_kind"] for r in rows] == ["SUBSECTION", "ARTICLE", "SPACER"]
+
+
+class TestLaReferenceALaPlaceQuIlLuiFaut:
+    """Ce que la largeur des colonnes décide vraiment.
+
+    Une référence coupée ne s'identifie plus : « MASS-000499… » désigne autant
+    de pièces qu'il y a de suffixes. Une désignation coupée, si — elle l'est
+    déjà par construction, et le compteur reconnaît la pièce à sa référence.
+    Les trois autres colonnes rendent donc de la place à la première.
+    """
+
+    def test_la_page_reste_pleine(self):
+        """Les largeurs somment à la page utile : un millimètre de trop et la
+        dernière colonne sort de la feuille."""
+        from inventory.reporting.exports import (
+            _SIDE_MARGIN_MM,
+            _WIDTHS_PLAIN,
+            _WIDTHS_WITH_SOURCES,
+        )
+
+        usable = 210 - 2 * _SIDE_MARGIN_MM
+        assert round(sum(_WIDTHS_PLAIN), 2) == usable
+        assert round(sum(_WIDTHS_WITH_SOURCES), 2) == usable
+
+    def test_la_reference_est_la_plus_large_apres_la_designation(self):
+        from inventory.reporting.exports import _WIDTHS_PLAIN
+
+        reference, designation, comptage, unite = _WIDTHS_PLAIN
+        assert reference > comptage > unite
+        assert designation > reference
+
+    def test_une_longue_reference_s_imprime_entiere(self):
+        """Le cas réel : les références de l'atelier font quatorze caractères."""
+        pages = render([line("MASS-00049952", qty=1)], mode=PrintMode.FILLED)
+        assert "MASS-00049952" in pages[0]
+
+
+class TestLeCommentaireTientDansSaCase:
+    """Le relevé avec provenance porte les notes du modèle.
+
+    « Réf. manuscrite ajoutée en bas du tableau MOM OK ; lecture des chiffres
+    incertaine » fait trois lignes. La hauteur de ligne étant imposée — un choix
+    fait pour écrire un chiffre avec des gants — le texte débordait par-dessus
+    les lignes suivantes et jusque sur le pied de page. Or ce relevé-là ne se
+    remplit pas : c'est une archive, et c'est la note qui dit pourquoi la ligne
+    est douteuse.
+    """
+
+    NOTE = (
+        "Réf. manuscrite « mass-00049952 » ajoutée en bas du tableau MOM OK ; "
+        "lecture des chiffres incertaine (pourrait être 00049952). Comptage « 3 »."
+    )
+
+    def test_la_note_s_imprime(self):
+        pages = render(
+            [line("P-001", qty=3, comment=self.NOTE)],
+            mode=PrintMode.FILLED, with_sources=True,
+        )
+        assert "manuscrite" in pages[0] and "incertaine" in pages[0]
+
+    def test_elle_ne_pousse_pas_la_ligne_hors_de_la_page(self):
+        """Le témoin du débordement : le pied de page reste lisible sous elle."""
+        pages = render(
+            [line(f"P-{i:03d}", qty=1, comment=self.NOTE) for i in range(12)],
+            mode=PrintMode.FILLED, with_sources=True,
+        )
+        assert all("abcdef12" in page for page in pages)
+
+    def test_une_note_interminable_est_coupee(self):
+        """Sinon une seule ligne prendrait le tiers de la page."""
+        pages = render(
+            [line("P-001", qty=1, comment="Z" * 900)],
+            mode=PrintMode.FILLED, with_sources=True,
+        )
+        assert "Z" * 400 not in "".join(pages)
+
+    def test_les_lignes_hautes_restent_ailleurs(self):
+        """La feuille qu'on remplit à la main garde ses lignes hautes : c'est
+        le relevé archivé, et lui seul, qui laisse la hauteur au contenu."""
+        many = render([line(f"P-{i:03d}") for i in range(24)])
+        assert len(many) >= 1

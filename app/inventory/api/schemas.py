@@ -65,6 +65,7 @@ __all__ = [
     "ZoneDeleteRequest",
     "SheetLineDeleteRequest",
     "ArbitrationDecisionRequest",
+    "BulkArbitrationRequest",
     "ReclassifyRequest",
     "AnalysisRequest",
     "AdjustmentRowRequest",
@@ -485,6 +486,18 @@ class ZoneDeleteRequest(ApiModel):
     """Les zones à retirer, avec leurs feuilles — une ou tout un lot."""
 
     zone_ids: list[str] = Field(min_length=1, max_length=5_000, alias="zoneIds")
+
+
+class BulkArbitrationRequest(ApiModel):
+    """Trancher d'un geste tout ce qui reste ouvert dans une zone.
+
+    ``choice`` dit *par quelle règle*, jamais une quantité : sur quarante
+    écarts, c'est la règle qui se décide une fois — « le second comptage fait
+    foi, la première équipe comptait sous la pluie » — et les quarante
+    quantités qui en découlent.
+    """
+
+    choice: Literal["PASS_1", "PASS_2", "PROPOSED"]
 
 
 class ArbitrationDecisionRequest(ApiModel):

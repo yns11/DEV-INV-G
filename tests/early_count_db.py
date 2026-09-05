@@ -65,11 +65,32 @@ def disposable_database(name: str) -> Iterator[Any]:
         apply_all(database)
         yield database
         database.close()
+        # Le point d'ancrage ambiant, celui que `get_database()` garde en
+        # mémoire, a pu être créé pendant que PGDATABASE désignait cette base.
+        # Sans cette remise à zéro il lui survit, et les contrôles suivants —
+        # ceux qui parlent au vrai schéma partagé — échouent tous sur « database
+        # "inventaire_…" does not exist », pour une raison qui n'est pas la
+        # leur. C'est arrivé, et c'est long à retrouver : le fichier fautif
+        # passe seul.
+        from inventory.config import get_settings
+        from inventory.db.engine import reset_database
+
+        reset_database()
+        get_settings.cache_clear()
     finally:
         if previous is None:
             os.environ.pop("PGDATABASE", None)
         else:
             os.environ["PGDATABASE"] = previous
+        # Le réglage est mis en cache : construit pendant que PGDATABASE
+        # désignait la base jetable, il la désigne encore une fois la variable
+        # remise. Vider les deux — le point d'ancrage et le réglage — est ce qui
+        # rend la base jetable réellement jetable.
+        from inventory.config import get_settings as _settings
+        from inventory.db.engine import reset_database as _reset
+
+        _reset()
+        _settings.cache_clear()
 
     with psycopg.connect(admin_dsn(), autocommit=True) as admin:
         admin.execute(f'DROP DATABASE IF EXISTS "{name}"')

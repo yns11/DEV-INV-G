@@ -20,7 +20,8 @@ lui rend.
 
 from __future__ import annotations
 
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, ClassVar
 
 from inventory.ai.client import LlmResponse
 from inventory.ai.sheet_extraction import ExpectedLine, SheetExtractor
@@ -35,8 +36,10 @@ class _FakeClient:
 
     def __init__(self, lines: list[dict[str, Any]]) -> None:
         self.payload = {"lines": lines, "counter_name": "", "unexpected": []}
+        self.prompt = ""
 
-    def complete_json(self, **kwargs: Any):
+    def complete_json(self, *, user: str = "", **kwargs: Any):
+        self.prompt = user
         return self.payload, LlmResponse(text="", prompt_tokens=1, completion_tokens=1)
 
 
@@ -47,7 +50,7 @@ def sheet_line(order: int, number: str, **kwargs) -> CountSheetLine:
     )
 
 
-def read(expected: list[ExpectedLine], lines: list[dict[str, Any]]):
+def read(expected: list[ExpectedLine], lines: list[dict[str, Any]], **kwargs):
     counter = [0]
 
     def next_id() -> str:
@@ -56,7 +59,7 @@ def read(expected: list[ExpectedLine], lines: list[dict[str, Any]]):
 
     return SheetExtractor(client=_FakeClient(lines)).extract(
         campaign_id=CAMPAIGN, sheet_id=SHEET, zone_label="FI ASSY", pass_no=1,
-        expected=expected, images=[b"page"], id_factory=next_id,
+        expected=expected, images=[b"page"], id_factory=next_id, **kwargs,
     )
 
 
@@ -149,3 +152,102 @@ class TestLaLectureRendLaFeuilleDansSonOrdre:
         ])
         orders = [l.display_order for l in result.lines]
         assert len(orders) == len(set(orders))
+
+
+class TestUneReferenceEcriteALaMain:
+    """Le compteur trouve une pièce que la feuille n'annonçait pas.
+
+    Il l'écrit dans les lignes libres, en bas du tableau. C'est le cas normal —
+    une feuille préparée depuis le stock ERP ne peut pas annoncer ce que l'ERP
+    ignore — et la lecture la refusait comme une hallucination du modèle : la
+    quantité partait dans le rapport, et quelqu'un devait la ressaisir.
+
+    La garde reste entière là où elle sert : une référence que le référentiel de
+    la campagne ne connaît pas n'est toujours pas acceptée. Fabriquer un
+    comptage à partir d'une lecture invérifiable serait pire que de la signaler.
+    """
+
+    KNOWN: ClassVar[dict[str, Any]] = {
+        "P-9": SimpleNamespace(name="ONDULEUR M2 BEV", unit="PCE"),
+    }
+
+    def test_elle_devient_une_ligne(self):
+        result = read(EXPECTED, [{"item_number": "P-9", "qty": 300}],
+                      known_items=self.KNOWN)
+        assert "P-9" in {l.item_number for l in result.lines}
+
+    def test_elle_se_pose_apres_les_lignes_pre_imprimees(self):
+        """En bas du tableau, là où elle a été écrite — pas au milieu."""
+        result = read(EXPECTED, [{"item_number": "P-9", "qty": 300}],
+                      known_items=self.KNOWN)
+        added = next(l for l in result.lines if l.item_number == "P-9")
+        assert added.display_order > max(e.display_order for e in EXPECTED)
+
+    def test_le_rapport_la_nomme_a_part(self):
+        """C'est la première ligne qu'un encodeur doit relire."""
+        result = read(EXPECTED, [{"item_number": "P-9", "qty": 300}],
+                      known_items=self.KNOWN)
+        assert result.added_items and "P-9" in result.added_items[0]
+
+    def test_deux_references_manuscrites_gardent_leur_ordre_de_lecture(self):
+        known = {**self.KNOWN, "P-8": SimpleNamespace(name="MEL", unit="PCE")}
+        result = read(EXPECTED, [
+            {"item_number": "P-9", "qty": 300}, {"item_number": "P-8", "qty": 3},
+        ], known_items=known)
+        added = {l.item_number: l.display_order for l in result.lines}
+        assert added["P-9"] < added["P-8"]
+
+    def test_une_reference_inconnue_du_referentiel_reste_refusee(self):
+        """La garde anti-hallucination, là où elle a encore un sens."""
+        result = read(EXPECTED, [{"item_number": "P-INVENTEE", "qty": 42}],
+                      known_items=self.KNOWN)
+        assert not any(l.item_number == "P-INVENTEE" for l in result.lines)
+        assert result.unexpected and "P-INVENTEE" in result.unexpected[0]["text"]
+
+
+class TestLIntertitreDepartageDeuxLignesDuMemeArticle:
+    """La contrainte d'unicité est référence + section + sous-section.
+
+    La lecture n'en gardait que les deux premiers termes : le même article sous
+    « Stock physique B6EST » et sous « Stock physique B15 » se réduisait à une
+    seule entrée. La seconde ligne était perdue à l'écriture, et la quantité
+    relevée sur l'une atterrissait sous l'intertitre de l'autre.
+    """
+
+    DOUBLED: ClassVar[list[ExpectedLine]] = [
+        ExpectedLine("P-1", "VIS", CountSection.LINE_SIDE, "PCE",
+                     display_order=1, subsection="Stock physique B6EST"),
+        ExpectedLine("P-1", "VIS", CountSection.LINE_SIDE, "PCE",
+                     display_order=3, subsection="Stock physique B15"),
+    ]
+
+    def test_les_deux_lignes_survivent(self):
+        result = read(self.DOUBLED, [
+            {"item_number": "P-1", "qty": 4, "subsection": "Stock physique B6EST"},
+            {"item_number": "P-1", "qty": 7, "subsection": "Stock physique B15"},
+        ])
+        assert len(result.lines) == 2
+
+    def test_chaque_quantite_va_sous_son_intertitre(self):
+        result = read(self.DOUBLED, [
+            {"item_number": "P-1", "qty": 4, "subsection": "Stock physique B6EST"},
+            {"item_number": "P-1", "qty": 7, "subsection": "Stock physique B15"},
+        ])
+        by_subsection = {l.subsection: l.qty for l in result.lines}
+        assert by_subsection["Stock physique B6EST"] == 4
+        assert by_subsection["Stock physique B15"] == 7
+
+    def test_sans_intertitre_lisible_on_ne_devine_pas(self):
+        """Poser la quantité sur la mauvaise des deux fausse les deux."""
+        result = read(self.DOUBLED, [{"item_number": "P-1", "qty": 4}])
+        assert result.unexpected
+        assert "figure plusieurs fois" in result.unexpected[0]["note"]
+
+    def test_l_intertitre_est_annonce_au_modele(self):
+        """Il ne peut pas départager ce qu'on ne lui a pas nommé."""
+        client = _FakeClient([])
+        SheetExtractor(client=client).extract(
+            campaign_id=CAMPAIGN, sheet_id=SHEET, zone_label="Z", pass_no=1,
+            expected=self.DOUBLED, images=[b"page"], id_factory=lambda: "x",
+        )
+        assert "Stock physique B15" in client.prompt

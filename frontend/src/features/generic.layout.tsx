@@ -296,24 +296,23 @@ export function SheetLayoutModal({
                                 >
                                   Ligne vide
                                 </Button>
-                                {/* Seules les lignes de mise en page se
-                                    suppriment ici. Retirer un article est une
-                                    décision sur *ce qu'on compte*, pas sur la
-                                    présentation, et elle se prend dans « Toutes
-                                    les lignes » — où elle est tracée comme
-                                    telle. */}
-                                {kind !== 'ARTICLE' && (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    icon={<Icons.trash size={13} />}
-                                    aria-label="Supprimer cette ligne"
-                                    title="Supprimer cette ligne"
-                                    onClick={() =>
-                                      edit(lines.filter((_, i) => i !== index))
-                                    }
-                                  />
-                                )}
+                                {/* N'importe quelle ligne, article compris.
+                                    Renvoyer vers « Toutes les lignes » pour
+                                    retirer une référence obligeait à quitter
+                                    l'aperçu, à retrouver la ligne dans une
+                                    liste plate, et à revenir vérifier le
+                                    résultat — pour un geste qui est de la
+                                    préparation de feuille comme les autres. */}
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  icon={<Icons.trash size={13} />}
+                                  aria-label="Supprimer cette ligne"
+                                  title="Supprimer cette ligne"
+                                  onClick={() =>
+                                    edit(lines.filter((_, i) => i !== index))
+                                  }
+                                />
                               </span>
                             </td>
                           </tr>

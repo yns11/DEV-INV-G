@@ -370,13 +370,21 @@ def build_counting_sheet_pdf(
         data.extend([[""] * len(columns) for _ in range(extras)])
 
         body_rows = len(data) - 2
+        # Les hauteurs sont imposées **sauf** sur le relevé qui porte source et
+        # commentaire. Ailleurs, une ligne haute est un choix : on y écrit un
+        # chiffre à la main, avec des gants. Là, plus personne n'écrit — c'est
+        # une archive — et le commentaire du modèle (« Réf. manuscrite ajoutée
+        # en bas du tableau MOM OK ; lecture des chiffres incertaine ») fait
+        # trois lignes. Imposée, la hauteur le laissait déborder par-dessus les
+        # lignes suivantes, jusque sur le pied de page.
         table = Table(
             data,
             colWidths=widths,
-            # Tall rows: a figure written with gloves on, in a workshop, needs
-            # room. The two heading rows keep their natural height.
-            rowHeights=[_BANNER_ROW_HEIGHT, _BASE_ROW_HEIGHT]
-            + [_ROW_HEIGHT] * body_rows,
+            rowHeights=(
+                None if with_sources
+                else [_BANNER_ROW_HEIGHT, _BASE_ROW_HEIGHT]
+                + [_ROW_HEIGHT] * body_rows
+            ),
             repeatRows=2,
         )
         table.setStyle(TableStyle([
@@ -455,7 +463,13 @@ def _body_row(
             _SOURCE_LABELS.get(str(line.get("source", "")), str(line.get("source", ""))),
             cell,
         ))
-        row.append(paragraph(str(line.get("comment", "") or ""), cell))
+        # Borné : une note du modèle peut faire dix lignes, et une seule ligne
+        # de tableau prendrait alors le tiers de la page. Ce qui compte est le
+        # début — « lecture incertaine », « référence manuscrite » — et le
+        # détail se relit à l'écran.
+        row.append(paragraph(
+            _shorten(str(line.get("comment", "") or ""), _COMMENT_MAX_CHARS), cell
+        ))
     return row
 
 
@@ -472,16 +486,19 @@ _ROW_HEIGHT = _BASE_ROW_HEIGHT * 1.62 * 0.94
 #: The repeated section banner needs one line of text, no more.
 _BANNER_ROW_HEIGHT = 14.0
 
-#: Column widths in millimetres, summing to the 186 mm of usable page. The
-#: reference, quantity and unit columns were each trimmed — 10 %, 5 % and 15 %
-#: — and every millimetre went to the designation, which is the only column
-#: whose content was being cut.
+#: Column widths in millimetres, summing to the 186 mm of usable page.
+#:
+#: La désignation, le comptage et l'unité rendent 10 %, 5 % et 20 % de leur
+#: largeur, et tout va à la référence. C'est elle qu'on lit pour identifier la
+#: pièce — « MASS-00049952 » tenait tout juste, et un préfixe d'atelier de plus
+#: la coupait. La désignation, elle, est déjà tronquée par construction : elle
+#: perd trois caractères, pas une information.
 _PLAIN_COLUMNS = ("Référence", "Désignation", "Comptage", "Unité")
-_WIDTHS_PLAIN = (32.4, 93.7, 36.1, 23.8)
+_WIDTHS_PLAIN = (48.34, 84.33, 34.29, 19.04)
 
 #: With provenance, the designation gives back what the two extra columns need.
 _SOURCE_COLUMNS = (*_PLAIN_COLUMNS, "Source", "Commentaire")
-_WIDTHS_WITH_SOURCES = (32.4, 56.0, 30.0, 18.0, 22.0, 27.6)
+_WIDTHS_WITH_SOURCES = (43.1, 50.4, 28.5, 14.4, 22.0, 27.6)
 
 _SOURCE_LABELS = {
     "MANUAL": "saisie",
@@ -496,8 +513,12 @@ _SOURCE_LABELS = {
 #: Designations are truncated, not wrapped: a counter identifies a part by its
 #: reference, and letting a long label wrap onto a second line would halve the
 #: number of rows a page can hold. The narrower layout gets a tighter budget.
-_NAME_MAX_CHARS = 32
-_NAME_MAX_CHARS_WITH_SOURCES = 20
+#: Le commentaire est coupé bien plus tard que la désignation : c'est de la
+#: prose, elle s'enroule sur plusieurs lignes, et la hauteur de la ligne suit.
+_COMMENT_MAX_CHARS = 180
+
+_NAME_MAX_CHARS = 29
+_NAME_MAX_CHARS_WITH_SOURCES = 18
 
 
 def _blank_rows_for(section: str, *, mode: PrintMode, requested: int) -> int:

@@ -272,11 +272,17 @@ class TestTheSheetLinesEndpointSurvivesARealSheet:
         assert row["zoneCode"] == "Z01"
 
     def test_the_line_carries_what_leads_back_to_the_paper(self):
-        """Sans la zone et le comptage, la liste est un tas de références et
-        corriger l'une d'elles demande de deviner d'où elle vient."""
+        """Sans la zone, la liste est un tas de références et corriger l'une
+        d'elles demande de deviner d'où elle vient.
+
+        Le comptage, lui, n'y figure plus : les deux passages portent le même
+        document, et la liste ne montre que le premier. Le nommer laissait
+        croire qu'on modifiait l'un des deux.
+        """
         service, campaign = self.service()
         (row,) = service.list_all_lines(campaign)
-        assert (row["zoneCode"], row["passNo"]) == ("Z01", 1)
+        assert row["zoneCode"] == "Z01"
+        assert "passNo" not in row
 
     def test_it_carries_no_key_the_model_cannot_produce(self):
         """`sheetStatus` était lu par personne et levait pour tout le monde."""

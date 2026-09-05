@@ -172,6 +172,7 @@ Makefile                    Points d'entrée développeur
 | [`07-comptages-avances.md`](docs/07-comptages-avances.md) | Comptages avancés : la logique, le modèle et le processus |
 | [`08-algorigrammes.md`](docs/08-algorigrammes.md) | Algorigrammes du processus actuel et du processus avec comptages avancés |
 | [`09-jeu-de-donnees-de-controle.md`](docs/09-jeu-de-donnees-de-controle.md) | Le jeu de données de contrôle, son arithmétique posée, et comment confronter l'application |
+| [`10-cahier-des-charges.md`](docs/10-cahier-des-charges.md) | Le besoin, indépendamment de cette implémentation : exigences, règles métier, recette, et ce qui reste à décider |
 
 ---
 

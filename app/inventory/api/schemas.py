@@ -65,6 +65,7 @@ __all__ = [
     "ZoneDeleteRequest",
     "SheetLineDeleteRequest",
     "ArbitrationDecisionRequest",
+    "BulkArbitrationDecision",
     "BulkArbitrationRequest",
     "ReclassifyRequest",
     "AnalysisRequest",
@@ -488,16 +489,29 @@ class ZoneDeleteRequest(ApiModel):
     zone_ids: list[str] = Field(min_length=1, max_length=5_000, alias="zoneIds")
 
 
-class BulkArbitrationRequest(ApiModel):
-    """Trancher d'un geste tout ce qui reste ouvert dans une zone.
+class BulkArbitrationDecision(ApiModel):
+    """Une ligne d'arbitrage et la quantité que l'écran affiche pour elle."""
 
-    ``choice`` dit *par quelle règle*, jamais une quantité : sur quarante
-    écarts, c'est la règle qui se décide une fois — « le second comptage fait
-    foi, la première équipe comptait sous la pluie » — et les quarante
-    quantités qui en découlent.
+    id: str
+    qty: Decimal
+
+
+class BulkArbitrationRequest(ApiModel):
+    """Valider d'un geste les quantités visibles à l'écran.
+
+    Le corps portait auparavant une *règle* — « le n°1 partout », « le n°2
+    partout », « les propositions » — et le serveur allait rechercher la
+    quantité lui-même. C'est ce qui cassait : une quantité tapée dans le champ,
+    ou posée là par un bouton de pré-remplissage local, n'existait pas côté
+    serveur, si bien que « Valider tout » comptait comme non tranchées des
+    lignes qui portaient un chiffre sous les yeux de l'utilisateur.
+
+    Le choix de la règle reste ce qu'il a toujours été — un geste de
+    remplissage — mais il se fait maintenant là où il se voit, dans les champs,
+    et c'est leur contenu qui remonte.
     """
 
-    choice: Literal["PASS_1", "PASS_2", "PROPOSED"]
+    decisions: list[BulkArbitrationDecision] = Field(default_factory=list)
 
 
 class ArbitrationDecisionRequest(ApiModel):

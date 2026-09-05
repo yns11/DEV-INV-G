@@ -706,8 +706,10 @@ export const api = {
   /** Le dernier scan de cette feuille, pour reprendre un suivi interrompu. */
   sheetScanJob: (id: string, sheetId: string) =>
     request<ScanJob | null>(`/campaigns/${id}/generic/sheets/${sheetId}/scan/job`),
-  arbitrations: (id: string, zoneId?: string) =>
-    request<Arbitration[]>(`/campaigns/${id}/generic/arbitrations${qs({ zoneId })}`),
+  arbitrations: (id: string, zoneId?: string, divergentOnly?: boolean) =>
+    request<Arbitration[]>(
+      `/campaigns/${id}/generic/arbitrations${qs({ zoneId, divergentOnly })}`,
+    ),
   refreshArbitrations: (id: string, zoneId: string) =>
     request<Arbitration[]>(
       `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/refresh`,
@@ -718,27 +720,22 @@ export const api = {
       `/campaigns/${id}/generic/arbitrations/${arbitrationId}`,
       { method: 'POST', body: JSON.stringify({ qty, comment }) },
     ),
-  // Fills the fields; it does not decide. Each line still has to be validated
-  // before the consolidation will use it.
   /**
-   * Trancher d'un geste tout ce qui reste ouvert dans une zone.
+   * Valider d'un geste les quantités **affichées**.
    *
-   * `choice` dit la **règle**, jamais une quantité : sur quarante écarts, c'est
-   * la règle qui se décide une fois — « le second comptage fait foi » — et les
-   * quarante quantités qui en découlent. Une ligne déjà tranchée à la main
-   * n'est pas retouchée.
+   * Le corps portait auparavant une règle — « le n°1 partout », « le n°2
+   * partout », « les propositions » — et le serveur allait rechercher la
+   * quantité lui-même. Une quantité tapée dans le champ, ou posée là par un
+   * bouton de remplissage, n'existait pas de son côté : « Valider tout »
+   * comptait comme non tranchées des lignes qui portaient un chiffre sous les
+   * yeux de l'utilisateur. Ce sont maintenant ces quantités-là qui remontent.
    */
   decideArbitrations: (
-    id: string, zoneId: string, choice: 'PASS_1' | 'PASS_2' | 'PROPOSED',
+    id: string, zoneId: string, decisions: { id: string; qty: number }[],
   ) =>
     request<{ decided: number; skipped: number }>(
       `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/decide-all`,
-      { method: 'POST', body: JSON.stringify({ choice }) },
-    ),
-  prefillWithPass2: (id: string, zoneId: string) =>
-    request<{ proposed: number }>(
-      `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/prefill-pass-2`,
-      { method: 'POST' },
+      { method: 'POST', body: JSON.stringify({ decisions }) },
     ),
   wipWithoutBom: (id: string) =>
     request<WipWithoutBom[]>(`/campaigns/${id}/generic/wip-without-bom`),

@@ -189,7 +189,20 @@ class DriftService:
     # ------------------------------------------------------------------ lecture
 
     def list_drifts(self, campaign_id: str) -> list[EarlyCountDrift]:
-        return self.ctx.drifts.list(campaign_id)
+        """Les dérives à regarder — celles qui ne sont pas nulles.
+
+        Une dérive nulle est le cas **normal** : l'emplacement était balisé, et
+        poster son journal a réaligné l'ERP sur le physique compté. La ligne
+        n'est donc pas une information, c'est l'absence d'information — et sur
+        un précomptage de cinquante emplacements à trois cents références, les
+        quelques lignes qui demandent une décision se perdaient au milieu de
+        milliers de zéros.
+
+        Le calcul, lui, les produit et les conserve toutes : c'est la trace que
+        la confrontation a bien eu lieu sur chaque ligne, et
+        :meth:`unresolved_material` les relit sans passer par ici.
+        """
+        return [d for d in self.ctx.drifts.list(campaign_id) if d.drift_qty != 0]
 
     def unresolved_material(self, campaign_id: str) -> int:
         return sum(

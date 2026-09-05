@@ -42,6 +42,7 @@ from ..errors import (
     NotFoundError,
     ValidationError,
 )
+from .arbitration_service import refresh_after_sheet_writes
 from .context import ServiceContext
 
 log = logging.getLogger(__name__)
@@ -247,6 +248,12 @@ class ScanService:
                 after=result.as_report(),
                 conn=conn,
             )
+        # Une lecture change les quantités d'une feuille, donc le désaccord
+        # entre les deux passages : le recalculer ici, comme le fait la saisie
+        # à l'écran. Sans cela l'onglet Arbitrages décrivait la feuille d'avant
+        # le scan, et un arbitrage déjà tranché gardait sa signature sur des
+        # chiffres que le modèle venait de remplacer.
+        refresh_after_sheet_writes(ctx, campaign, [sheet_id])
         say(step="Terminé", sheets_total=1, sheets_done=1)
         return {
             "report": result.as_report(),
@@ -516,6 +523,10 @@ class ScanService:
                     "overwroteCorrections": len(corrected),
                 })
 
+        # Même règle pour la pile, en une fois : chaque feuille lue a bougé.
+        refresh_after_sheet_writes(
+            ctx, campaign, [str(row["sheetId"]) for row in processed]
+        )
         report = {
             "pages": len(images),
             "sheetsProcessed": processed,

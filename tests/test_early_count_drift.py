@@ -143,16 +143,33 @@ def _day_j(campaign, qty: int, item="MASS-1") -> list[BookStockLine]:
 
 
 class TestTheNominalCase:
+    """La dérive nulle est calculée, conservée — et **pas affichée**.
+
+    Ces deux contrôles lisaient le dépôt à travers la vue, et la vue ne montre
+    plus que ce qui a dérivé : une ligne à zéro est le cas normal, donc
+    l'absence d'information, et sur un précomptage de cinquante emplacements à
+    trois cents références elle enterrait les quelques lignes à trancher.
+
+    Ce qu'ils vérifient reste entier — la confrontation a bien eu lieu sur cette
+    ligne et n'a rien trouvé — mais là où la trace vit.
+    """
+
     def test_the_barrier_held_and_the_drift_is_null(self, drift, ctx, campaign):
         """`ERP@J` vaut le physique posté : c'est ce qu'on attend."""
         _sealed_location(ctx, campaign, counted=12, reference=10)
         drift.record_general_load(campaign, _day_j(campaign, 12))
 
-        lines = drift.list_drifts(campaign.id)
-        assert len(lines) == 1
-        assert lines[0].drift_qty == 0
-        assert lines[0].is_material is False
-        assert lines[0].blocks_analysis is False
+        stored = ctx.drifts.list(campaign.id)
+        assert len(stored) == 1
+        assert stored[0].drift_qty == 0
+        assert stored[0].is_material is False
+        assert stored[0].blocks_analysis is False
+
+    def test_it_is_not_shown(self, drift, ctx, campaign):
+        """« N'affiche que les lignes où la dérive n'est pas nulle. »"""
+        _sealed_location(ctx, campaign, counted=12, reference=10)
+        drift.record_general_load(campaign, _day_j(campaign, 12))
+        assert drift.list_drifts(campaign.id) == []
 
     def test_the_inventory_variance_is_not_a_drift(self, drift, ctx, campaign):
         """Contre `ERP@T0`, cette dérive vaudrait 2 — l'écart d'inventaire.
@@ -164,7 +181,7 @@ class TestTheNominalCase:
         _sealed_location(ctx, campaign, counted=12, reference=10)
         drift.record_general_load(campaign, _day_j(campaign, 12))
 
-        line = drift.list_drifts(campaign.id)[0]
+        line = ctx.drifts.list(campaign.id)[0]
         assert line.qty_erp_t0 == 10
         assert line.qty_physical_t0 == 12
         assert line.qty_erp_j == 12

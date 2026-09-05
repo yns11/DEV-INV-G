@@ -183,6 +183,8 @@ def charge(db):
 
 def _saisir_generique(ctx, campaign, generic) -> None:
     """Reporter les quantités des deux passages, puis l'arbitrage décidé."""
+    from inventory.services.arbitration_service import ArbitrationService
+
     zones = {z.code: z for z in ctx.sheets.list_zones(campaign.id)}
     sheets = ctx.sheets.list_sheets(campaign.id)
     lines = ctx.sheets.lines_by_sheet(campaign.id)
@@ -216,8 +218,9 @@ def _saisir_generique(ctx, campaign, generic) -> None:
                 })
         if rows:
             generic.upsert_sheet_lines(campaign, sheet.id, rows)
+    arbitration = ArbitrationService(ctx)
     for zone in zones.values():
-        generic.refresh_arbitrations(campaign, zone.id)
+        arbitration.refresh(campaign, zone.id)
 
     for r in _rows("09b-arbitrages-generique.csv"):
         if not r["Décidée"].strip().lower().startswith("o"):
@@ -229,7 +232,7 @@ def _saisir_generique(ctx, campaign, generic) -> None:
             if a.zone_id == zone.id and a.item_number == article
         ]
         assert pending, f"aucun arbitrage ouvert pour {article}"
-        generic.decide_arbitration(
+        arbitration.decide(
             campaign, pending[0].id,
             Decimal(r["Quantité arbitrée"].replace(",", ".")),
             comment="jeu de données de contrôle",

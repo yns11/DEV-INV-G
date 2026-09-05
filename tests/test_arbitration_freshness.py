@@ -69,14 +69,27 @@ def body_of(name: str) -> str:
 # Le recalcul a lieu là où les quantités changent
 # --------------------------------------------------------------------------- #
 
-def service(*, passes: int, refreshed: list[str]):
+def service(*, passes: int, refreshed: list[str], monkeypatch):
     """Le service réel, avec le strict nécessaire autour.
 
-    ``refresh_arbitrations`` est remplacée par un témoin : ce qui est en
-    question ici est **quand** elle est appelée, pas ce qu'elle calcule — cela,
-    ses propres contrôles s'en chargent.
+    Le recalcul est remplacé par un témoin : ce qui est en question ici est
+    **quand** il est appelé, pas ce qu'il calcule — cela, ses propres contrôles
+    s'en chargent.
+
+    Il est remplacé **dans le module qui l'appelle**, et pas sur l'instance :
+    depuis qu'il a quitté ``GenericService`` pour devenir une fonction partagée
+    par les cinq écritures de lignes, poser un attribut sur l'objet ne
+    remplaçait plus rien — le service continuait d'appeler la vraie fonction,
+    et le témoin restait vide sans que le contrôle sache dire pourquoi.
     """
+    from inventory.services import generic_service as module
     from inventory.services.generic_service import GenericService
+
+    monkeypatch.setattr(
+        module,
+        "refresh_zone_arbitrations",
+        lambda ctx, campaign, zone_id: refreshed.append(zone_id),
+    )
 
     sheet = SimpleNamespace(
         id="sheet-1", campaign_id="camp-1", zone_id="zone-1", version=1,
@@ -94,7 +107,8 @@ def service(*, passes: int, refreshed: list[str]):
         record=lambda **kw: None,
         sheets=SimpleNamespace(
             get_sheet=lambda sid: sheet,
-            list_zones=lambda cid: [zone],
+            list_zones=lambda cid, **kw: [zone],
+            list_sheets=lambda cid, **kw: [sheet],
             list_sheet_lines=lambda sid: [],
             upsert_sheet_lines=lambda lines, actor, conn=None: len(lines),
             replace_sheet_lines=lambda sid, lines, actor, conn=None: len(lines),
@@ -102,9 +116,6 @@ def service(*, passes: int, refreshed: list[str]):
     ))
     with_transactions(ctx)
     instance = GenericService(ctx)
-    instance.refresh_arbitrations = (  # type: ignore[method-assign]
-        lambda campaign, zone_id: refreshed.append(zone_id)
-    )
     # Une vraie campagne, pas une doublure : la barrière d'identité et la
     # matrice de gel en lisent une demi-douzaine de champs, et les ajouter un
     # par un à un `SimpleNamespace` revient à réécrire le modèle dans le
@@ -122,50 +133,61 @@ ROWS = [{"item_number": "P-00001", "section": "LINE_SIDE", "qty": "95", "unit": 
 
 
 class TestTheComparisonIsRecomputedWhereQuantitiesChange:
-    def test_saving_a_sheet_refreshes_the_zone(self):
+    def test_saving_a_sheet_refreshes_the_zone(self, monkeypatch):
         """C'est le correctif : la contradiction n'attend plus la fermeture."""
         refreshed: list[str] = []
-        instance, campaign = service(passes=2, refreshed=refreshed)
+        instance, campaign = service(
+            passes=2, refreshed=refreshed, monkeypatch=monkeypatch
+        )
         instance.upsert_sheet_lines(campaign, "sheet-1", ROWS)
         assert refreshed == ["zone-1"]
 
-    def test_a_single_pass_zone_has_nothing_to_compare(self):
+    def test_a_single_pass_zone_has_nothing_to_compare(self, monkeypatch):
         """Un seul comptage : il n'y a pas de second passage à contredire.
 
         Recalculer y coûterait une lecture par enregistrement, sur les zones
         les plus nombreuses.
         """
         refreshed: list[str] = []
-        instance, campaign = service(passes=1, refreshed=refreshed)
+        instance, campaign = service(
+            passes=1, refreshed=refreshed, monkeypatch=monkeypatch
+        )
         instance.upsert_sheet_lines(campaign, "sheet-1", ROWS)
         assert refreshed == []
 
-    def test_a_failed_refresh_does_not_lose_the_entry(self):
+    def test_a_failed_refresh_does_not_lose_the_entry(self, monkeypatch):
         """La saisie est déjà enregistrée quand le recalcul s'exécute.
 
         Remonter l'échec ferait ressaisir des quantités qui sont en base — et
         elles ont été relevées à la main, sur le terrain.
         """
+        from inventory.services import generic_service as module
         from inventory.services.generic_service import GenericService
 
-        instance, campaign = service(passes=2, refreshed=[])
+        instance, campaign = service(
+            passes=2, refreshed=[], monkeypatch=monkeypatch
+        )
 
-        def boom(campaign, zone_id):
+        def boom(ctx, campaign, zone_id):
             raise RuntimeError("base indisponible")
 
-        instance.refresh_arbitrations = boom  # type: ignore[method-assign]
+        monkeypatch.setattr(module, "refresh_zone_arbitrations", boom)
         assert isinstance(instance, GenericService)
         assert instance.upsert_sheet_lines(campaign, "sheet-1", ROWS) == 1
 
-    def test_a_failed_refresh_is_logged(self, caplog):
+    def test_a_failed_refresh_is_logged(self, caplog, monkeypatch):
         """Journalisé, jamais tu : un recalcul qui échoue en silence
         reproduirait exactement le défaut qu'on corrige."""
-        instance, campaign = service(passes=2, refreshed=[])
+        from inventory.services import generic_service as module
 
-        def boom(campaign, zone_id):
+        instance, campaign = service(
+            passes=2, refreshed=[], monkeypatch=monkeypatch
+        )
+
+        def boom(ctx, campaign, zone_id):
             raise RuntimeError("base indisponible")
 
-        instance.refresh_arbitrations = boom  # type: ignore[method-assign]
+        monkeypatch.setattr(module, "refresh_zone_arbitrations", boom)
         with caplog.at_level("ERROR"):
             instance.upsert_sheet_lines(campaign, "sheet-1", ROWS)
         assert any("arbitrages" in record.message.lower() for record in caplog.records)
@@ -183,7 +205,7 @@ class TestTheOtherRecomputationsSurvive:
     def test_closing_a_zone_still_recomputes(self):
         """Elle recalculait déjà, et pour une bonne raison : refuser une
         clôture sur un écart créé entre-temps."""
-        assert "refresh_arbitrations" in body_of("set_zone_closed")
+        assert "refresh_zone_arbitrations" in body_of("set_zone_closed")
 
     def test_the_endpoint_stays_available(self):
         """Le recalcul explicite reste joignable pour un rattrapage."""

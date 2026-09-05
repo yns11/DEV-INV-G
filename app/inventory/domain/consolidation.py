@@ -206,6 +206,15 @@ def build_arbitration_lines(
     for key in sorted(set(p1) | set(p2), key=lambda k: (k[0], str(k[1]))):
         item_number, section = key
         prior = existing_decisions.get(key)
+        # **Une référence absente d'un passage y vaut zéro, pas « inconnu ».**
+        # Les deux passages portent le même document : si la ligne n'est pas sur
+        # la feuille n°2, c'est que l'équipe n'y a rien inscrit — et une case
+        # vide compte zéro partout ailleurs. Le tiret qui s'affichait à la place
+        # n'était pas qu'un détail d'affichage : il laissait la ligne sans
+        # quantité à reprendre, donc sans rien à valider, et l'arbitrage de la
+        # zone restait ouvert sur une ligne que personne ne pouvait trancher.
+        q1 = p1.get(key, ZERO)
+        q2 = p2.get(key, ZERO)
         # **Une décision porte sur deux chiffres, et meurt avec eux.** Un
         # arbitrage dit « entre 12 et 15, je retiens 12 » ; si le comptage n°2
         # passe ensuite de 15 à 40, la phrase ne veut plus rien dire. Elle
@@ -214,7 +223,7 @@ def build_arbitration_lines(
         # avec sa proposition, pour ne pas faire retaper le chiffre, mais sans
         # la signature qui la validait.
         moved = prior is not None and (
-            prior.qty_pass_1 != p1.get(key) or prior.qty_pass_2 != p2.get(key)
+            prior.qty_pass_1 != q1 or prior.qty_pass_2 != q2
         )
         out.append(
             ArbitrationLine(
@@ -223,8 +232,8 @@ def build_arbitration_lines(
                 zone_id=zone.zone.id,
                 item_number=item_number,
                 section=section,
-                qty_pass_1=p1.get(key),
-                qty_pass_2=p2.get(key),
+                qty_pass_1=q1,
+                qty_pass_2=q2,
                 qty_arbitrated=prior.qty_arbitrated if prior else None,
                 decided_by=None if moved else (prior.decided_by if prior else None),
                 decided_at=None if moved else (prior.decided_at if prior else None),

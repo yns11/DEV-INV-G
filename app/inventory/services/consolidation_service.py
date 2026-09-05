@@ -54,6 +54,7 @@ from ..errors import (
     NotFoundError,
     ValidationError,
 )
+from .arbitration_service import refresh_after_sheet_writes
 from .context import ENGINE_VERSION, ServiceContext
 
 
@@ -334,6 +335,11 @@ class ConsolidationService:
                 after={"section": str(section), "lineIds": list(line_ids)},
                 conn=conn,
             )
+        # Un reclassement change la **section** des lignes, donc les clés sur
+        # lesquelles les deux passages se comparent : l'ancienne paire disparaît
+        # et une nouvelle apparaît. Sans recalcul, la zone gardait un arbitrage
+        # portant sur une section qu'elle ne contient plus.
+        refresh_after_sheet_writes(ctx, campaign, list(by_sheet))
         return updated
 
     def line_payload(

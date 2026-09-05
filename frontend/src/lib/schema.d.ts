@@ -1169,6 +1169,10 @@ export interface paths {
          *
          *     Sorted with the decisions that still need a human first, then by the euro
          *     impact of the gap — so the most expensive disagreement is dealt with first.
+         *
+         *     ``divergentOnly`` ne garde que les lignes où les deux comptages ne disent
+         *     pas la même chose : c'est ce que l'écran demande, une ligne en accord
+         *     n'appelant aucune décision.
          */
         get: operations["list_arbitrations_api_campaigns__campaign_id__generic_arbitrations_get"];
         put?: never;
@@ -1666,37 +1670,17 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Trancher en lot les écarts ouverts d'une zone
-         * @description Retenir le comptage n°1, le n°2, ou la proposition — partout à la fois.
+         * Valider en lot les quantités affichées
+         * @description Valider d'un geste ce que l'écran affiche.
+         *
+         *     Le corps porte les quantités visibles, ligne par ligne : c'est la seule
+         *     façon qu'un « Valider tout » valide ce que l'utilisateur a sous les yeux
+         *     plutôt que ce que le serveur recalculerait de son côté.
          *
          *     Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
          *     jugement pris une par une.
          */
         post: operations["decide_arbitrations_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_decide_all_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/arbitrations/prefill-pass-2": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Pré-remplir les écarts d'une zone avec le comptage n°2
-         * @description Copy pass 2 into the open arbitrations — a shortcut, not a decision.
-         *
-         *     The quantities land in the fields; each one still has to be validated (or
-         *     changed) before the consolidation will use it. Lines already decided are
-         *     left untouched.
-         */
-        post: operations["prefill_with_pass_2_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_prefill_pass_2_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3080,20 +3064,33 @@ export interface components {
             unit?: string | null;
         };
         /**
+         * BulkArbitrationDecision
+         * @description Une ligne d'arbitrage et la quantité que l'écran affiche pour elle.
+         */
+        BulkArbitrationDecision: {
+            /** Id */
+            id: string;
+            /** Qty */
+            qty: number | string;
+        };
+        /**
          * BulkArbitrationRequest
-         * @description Trancher d'un geste tout ce qui reste ouvert dans une zone.
+         * @description Valider d'un geste les quantités visibles à l'écran.
          *
-         *     ``choice`` dit *par quelle règle*, jamais une quantité : sur quarante
-         *     écarts, c'est la règle qui se décide une fois — « le second comptage fait
-         *     foi, la première équipe comptait sous la pluie » — et les quarante
-         *     quantités qui en découlent.
+         *     Le corps portait auparavant une *règle* — « le n°1 partout », « le n°2
+         *     partout », « les propositions » — et le serveur allait rechercher la
+         *     quantité lui-même. C'est ce qui cassait : une quantité tapée dans le champ,
+         *     ou posée là par un bouton de pré-remplissage local, n'existait pas côté
+         *     serveur, si bien que « Valider tout » comptait comme non tranchées des
+         *     lignes qui portaient un chiffre sous les yeux de l'utilisateur.
+         *
+         *     Le choix de la règle reste ce qu'il a toujours été — un geste de
+         *     remplissage — mais il se fait maintenant là où il se voit, dans les champs,
+         *     et c'est leur contenu qui remonte.
          */
         BulkArbitrationRequest: {
-            /**
-             * Choice
-             * @enum {string}
-             */
-            choice: "PASS_1" | "PASS_2" | "PROPOSED";
+            /** Decisions */
+            decisions?: components["schemas"]["BulkArbitrationDecision"][];
         };
         /**
          * BulkArbitrationResponse
@@ -6818,6 +6815,7 @@ export interface operations {
         parameters: {
             query?: {
                 zoneId?: string | null;
+                divergentOnly?: boolean;
             };
             header?: {
                 "x-forwarded-email"?: string | null;
@@ -7719,44 +7717,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BulkArbitrationResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    prefill_with_pass_2_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_prefill_pass_2_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                zone_id: string;
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: number;
-                    };
                 };
             };
             /** @description Validation Error */

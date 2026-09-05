@@ -406,9 +406,28 @@ class TestTwoPassResolution:
         )
         lines = build_arbitration_lines(zone, campaign_id="c", id_factory=next_id)
         assert {l.item_number for l in lines} == {"VIS", "COLLE"}
+
+    def test_the_pass_that_did_not_list_the_article_counted_zero(self):
+        """Un tiret n'est pas une quantité, et il n'y avait rien à trancher.
+
+        Les deux passages portent le même document : une référence absente de la
+        feuille n°2 dit que l'équipe n'y a rien inscrit, et une case vide compte
+        zéro partout ailleurs. Tant que ce côté valait ``None``, la ligne
+        s'affichait « — », le bouton de validation restait grisé faute de
+        quantité à reprendre, et l'arbitrage de la zone ne pouvait pas se
+        terminer.
+        """
+        zone = zone_counts(
+            rows_1=[("VIS", CountSection.LINE_SIDE, 100)],
+            rows_2=[("COLLE", CountSection.LINE_SIDE, 4)],
+        )
+        lines = build_arbitration_lines(zone, campaign_id="c", id_factory=next_id)
         vis = next(l for l in lines if l.item_number == "VIS")
+        colle = next(l for l in lines if l.item_number == "COLLE")
         assert vis.qty_pass_1 == Decimal("100.000000")
-        assert vis.qty_pass_2 is None
+        assert vis.qty_pass_2 == Decimal("0")
+        assert colle.qty_pass_1 == Decimal("0")
+        assert colle.qty_pass_2 == Decimal("4.000000")
 
 
 class TestZoneCompleteness:

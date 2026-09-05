@@ -379,9 +379,11 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
         ),
         evidence=archive,
         sheets=SimpleNamespace(
-            list_zones=lambda cid: zones,
-            list_sheets=lambda cid: sheets,
-            lines_by_sheet=lambda cid: lines_by_sheet,
+            list_zones=lambda cid, **kw: zones,
+            list_sheets=lambda cid, **kw: sheets,
+            lines_by_sheet=lambda cid, **kw: lines_by_sheet,
+            list_arbitrations=lambda cid, **kw: [],
+            upsert_arbitrations=lambda lines, **kw: len(lines),
             replace_sheet_lines=lambda sid, lines, *, actor, conn=None, keep_layout=False: (
                 written.append(sid) or ctx.db.note(f"lignes:{sid}")
             ),
@@ -518,7 +520,13 @@ class TestUneFeuilleEcriteEstUneFeuilleJustifiee:
             "lignes:s-0", "feuille:s-0", "lignes:s-1", "feuille:s-1",
         }
         assert db.all_writes_inside_one_transaction(), db.writes
-        assert db.opened == 2, "une transaction par feuille, pas une pour la pile"
+        # Chaque feuille dans **sa** transaction : ses lignes et sa preuve
+        # ensemble, et rien de la feuille d'à côté. Compter les transactions
+        # ouvertes sur toute la durée mesurait autre chose — le recalcul des
+        # arbitrages, qui suit la pile, en ouvre légitimement d'autres.
+        assert len(db.transactions_of("lignes:s-0", "feuille:s-0")) == 1
+        assert len(db.transactions_of("lignes:s-1", "feuille:s-1")) == 1
+        assert db.transactions_of("lignes:s-0") != db.transactions_of("lignes:s-1")
 
 
 class TestTheStackIsNotTruncatedInSilence:
@@ -670,7 +678,13 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
         evidence=archive,
         sheets=SimpleNamespace(
             get_sheet=lambda sid: sheet,
-            list_zones=lambda cid: [zone],
+            list_zones=lambda cid, **kw: [zone],
+            # Une lecture change les quantités : le recalcul de l'arbitrage
+            # relit donc les feuilles de la zone juste après.
+            list_sheets=lambda cid, **kw: [sheet],
+            lines_by_sheet=lambda cid, **kw: {},
+            list_arbitrations=lambda cid, **kw: [],
+            upsert_arbitrations=lambda lines, **kw: len(lines),
             list_sheet_lines=lambda sid: expected,
             replace_sheet_lines=lambda sid, lines, *, actor, conn=None, keep_layout=False: ctx.db.note(
                 f"lignes:{sid}"

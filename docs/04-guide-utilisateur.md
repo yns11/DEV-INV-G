@@ -692,7 +692,12 @@ la clôture. Ils n'apparaissaient auparavant que trois semaines plus tard.
 et avant le passage en analyse — qui l'attend.
 
 Pour chaque emplacement scellé, l'application confronte ce que l'ERP en dit le
-jour J au physique qui y a été posté :
+jour J au physique qui y a été posté. **La liste ne montre que ce qui a
+dérivé** : une dérive nulle est le cas normal — l'emplacement était balisé, et
+poster son journal a réaligné l'ERP —, donc l'absence d'information. La
+confrontation, elle, a bien lieu sur chaque ligne et reste en base.
+
+Le calcul :
 
 ```
 dérive = stock ERP du jour J − physique posté au précomptage
@@ -911,17 +916,41 @@ elle passe désormais entière, au prix de quelques appels de plus.
 
 **GENERIQUE → Arbitrages.**
 
-Le tableau compare comptage n°1 et n°2 pour **chaque article présent dans l'un
-ou l'autre** — y compris ceux qu'une seule équipe a comptés, que l'ancien
-processus ne voyait pas.
+Le tableau ne liste que les **désaccords** — une ligne sur laquelle les deux
+équipes s'accordent n'appelle aucune décision, et sur une zone de quatre cents
+références elle enterrait les neuf qui en appellent une. Il couvre **chaque
+article présent dans l'un ou l'autre** passage, y compris ceux qu'une seule
+équipe a comptés, que l'ancien processus ne voyait pas.
+
+Une référence comptée dans un passage et pas dans l'autre affiche **0** de ce
+côté-là, pas un tiret : les deux passages portent le même document, donc ne pas
+trouver la ligne sur la feuille n°2 dit que l'équipe n'y a rien inscrit — et une
+case vide compte zéro partout ailleurs.
 
 Les lignes sont triées : décisions requises d'abord, puis par **impact en euros**.
-Le désaccord le plus coûteux est traité en premier.
+Le désaccord le plus coûteux est traité en premier. La grille se filtre comme
+toutes les autres, et porte la colonne **Zone** : la vue peut couvrir la
+campagne entière.
 
-Pour chaque écart : saisissez la quantité retenue, ou cliquez **n°2** pour
-préremplir avec le second comptage. Le bouton **Retenir le comptage n°2 partout**
-traite la zone entière — chaque ligne reste enregistrée comme une décision
-explicite, à votre nom.
+**Trois boutons, et deux d'entre eux n'écrivent rien.**
+
+| Bouton | Ce qu'il fait |
+|---|---|
+| **Tout le n°1** / **Tout le n°2** | Posent la quantité de ce passage dans **chaque champ**. Rien n'est enregistré : vous relisez, vous corrigez, puis vous validez |
+| **Valider tout** | Enregistre **les quantités affichées**, telles qu'elles sont à l'écran |
+
+Chaque champ est prérempli d'office avec le comptage n°2 — le plus tardif, donc
+le mieux informé. Ligne à ligne, les boutons **n°1** et **n°2** reprennent l'un
+ou l'autre, et **Valider** enregistre. Une ligne déjà tranchée à la main n'est
+jamais retouchée par un geste de lot.
+
+> **Un arbitrage meurt avec les chiffres qu'il tranche.** Si l'un des deux
+> comptages change après coup — une saisie, un scan, un import, un reclassement
+> de WIP —, la décision est rouverte : elle garde sa proposition, pour ne pas
+> faire retaper le chiffre, mais perd la signature qui la validait. Cela vaut
+> **quel que soit le statut de la zone**, y compris sur une zone déjà déclarée
+> terminée : c'est même le cas où l'oubli coûterait le plus cher, puisque plus
+> rien en aval ne reposerait la question.
 
 ### 2.11 Consolider
 

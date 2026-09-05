@@ -52,6 +52,7 @@ from ..ingest import (
     map_locations,
     sheet_lines_from_rows,
 )
+from .arbitration_service import refresh_after_sheet_writes
 from .context import ServiceContext, utcnow
 from .import_batches import (
     ImportBatches,
@@ -1203,6 +1204,12 @@ class ImportService:
                 after=outcome.details,
                 conn=conn,
             )
+        # L'import pose des lignes sur les **deux** passages : la comparaison
+        # d'une zone déjà comptée change donc de contenu. Recalculée ici, elle
+        # ne décrit plus une feuille d'avant l'import.
+        refresh_after_sheet_writes(
+            ctx, campaign, [s.id for s in ctx.sheets.list_sheets(campaign.id)]
+        )
         return outcome
 
     # --------------------------------------------------------------- helpers

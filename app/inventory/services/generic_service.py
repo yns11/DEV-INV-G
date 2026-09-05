@@ -12,10 +12,6 @@ from decimal import Decimal
 from typing import Any
 
 from ..db import new_id
-from ..domain.consolidation import (
-    ZoneCounts,
-    build_arbitration_lines,
-)
 from ..domain.enums import (
     AuditAction,
     CampaignStatus,
@@ -43,6 +39,7 @@ from ..errors import (
     ValidationError,
     WorkflowError,
 )
+from .arbitration_service import refresh_zone_arbitrations
 from .context import ServiceContext
 from .manager_service import Perimeter
 
@@ -506,7 +503,7 @@ class GenericService:
             # L'arbitrage se calcule sur les quantités du moment : le rafraîchir
             # d'abord évite de refuser une clôture pour un écart déjà tranché,
             # ou de l'accepter alors qu'une saisie vient d'en créer un.
-            self.refresh_arbitrations(campaign, zone_id)
+            refresh_zone_arbitrations(ctx, campaign, zone_id)
             pending = sum(
                 1
                 for a in ctx.sheets.list_arbitrations(campaign.id)
@@ -723,7 +720,7 @@ class GenericService:
         # faire perdre des quantités relevées à la main.
         if zone is not None and zone.passes > 1:
             try:
-                self.refresh_arbitrations(campaign, zone.id)
+                refresh_zone_arbitrations(ctx, campaign, zone.id)
             except Exception:
                 # Journalisé, jamais tu : l'échec ne remonte pas à l'écran
                 # parce que la saisie, elle, est enregistrée — annoncer un
@@ -855,195 +852,6 @@ class GenericService:
 
     # ---------------------------------------------------------- AI extraction
 
-    # ----------------------------------------------------------- arbitration
-
-    def refresh_arbitrations(
-        self, campaign: Campaign, zone_id: str
-    ) -> list[dict[str, Any]]:
-        """Rebuild the pass-1 vs pass-2 comparison for a zone.
-
-        Existing human decisions are preserved: recomputing the comparison must
-        never erase an arbitration somebody already made.
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "count_entries")
-        zone_counts = self._zone_counts(campaign, zone_id)
-        # A single-pass zone has nothing to compare: there is no second opinion,
-        # so producing arbitration lines would manufacture a decision nobody can
-        # make and block the consolidation for ever.
-        if zone_counts.passes_required < 2:
-            return []
-        lines = build_arbitration_lines(
-            zone_counts, campaign_id=campaign.id, id_factory=new_id
-        )
-        if lines:
-            ctx.sheets.upsert_arbitrations(lines)
-        return self.list_arbitrations(campaign, zone_id)
-
-    def list_arbitrations(
-        self, campaign: Campaign, zone_id: str | None = None
-    ) -> list[dict[str, Any]]:
-        ctx = self.ctx
-        items = ctx.referentials.items_by_number(campaign.id)
-        tolerance = campaign.config.arbitration_tolerance
-        out: list[dict[str, Any]] = []
-        for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id):
-            q1, q2 = line.qty_pass_1, line.qty_pass_2
-            divergent = q1 != q2
-            if divergent and tolerance > 0 and q1 is not None and q2 is not None:
-                base = max(abs(q1), abs(q2))
-                divergent = base == 0 or abs(q2 - q1) / base > tolerance
-            out.append({
-                **line.model_dump(mode="json"),
-                "name": items[line.item_number].name
-                if line.item_number in items else "",
-                "gap": float(line.gap),
-                "divergent": divergent,
-                "needsDecision": divergent and not line.is_resolved,
-                "isProposed": line.is_proposed,
-                "unitCost": float(items[line.item_number].std_price)
-                if line.item_number in items else 0.0,
-                "gapValue": float(
-                    line.gap * items[line.item_number].std_price
-                ) if line.item_number in items else 0.0,
-            })
-        out.sort(key=lambda r: (not r["needsDecision"], -abs(r["gapValue"])))
-        return out
-
-    def decide_arbitration(
-        self,
-        campaign: Campaign,
-        arbitration_id: str,
-        qty: Decimal,
-        *,
-        comment: str = "",
-    ) -> None:
-        ctx = self.ctx
-        ctx.guard(campaign, "count_entries")
-        if qty < 0:
-            raise ValidationError("Une quantité arbitrée ne peut pas être négative.")
-        ctx.sheets.decide_arbitration(
-            arbitration_id, qty, actor=ctx.actor, comment=comment
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.ARBITRATE,
-            entity_type="arbitration",
-            entity_id=arbitration_id,
-            summary=f"Arbitrage : quantité retenue {qty}",
-            after={"qty": str(qty), "comment": comment},
-        )
-
-    #: Ce qu'un arbitrage en lot peut retenir, et où il va le chercher.
-    #:
-    #: Les trois répondent à une question réelle. « Le n°1 fait foi » et « le
-    #: n°2 fait foi » sont la décision qu'on prend quand une équipe a compté
-    #: dans de mauvaises conditions et que l'autre a recompté proprement — et la
-    #: prendre quarante fois de suite à la main n'y ajoute aucun jugement.
-    #: « Valider les propositions » entérine ce qui a déjà été pré-rempli et
-    #: relu.
-    BULK_CHOICES = ("PASS_1", "PASS_2", "PROPOSED")
-
-    def decide_arbitrations(
-        self, campaign: Campaign, zone_id: str, *, choice: str
-    ) -> dict[str, int]:
-        """Trancher d'un geste tout ce qui reste ouvert dans une zone.
-
-        Ligne par ligne était la seule voie, et sur une zone de quarante écarts
-        dont on sait déjà lequel des deux comptages fait foi, c'est quarante
-        gestes qui n'ajoutent aucun jugement — donc quarante occasions de se
-        tromper de champ, et une raison de ne pas arbitrer du tout.
-
-        Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
-        jugement pris une par une. Et une ligne comptée par une seule équipe
-        retient ce qui existe, quel que soit le choix — « le n°2 fait foi » ne
-        veut pas dire « oublie ce que le n°1 a trouvé quand le n°2 n'est pas
-        passé ».
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "count_entries")
-        if choice not in self.BULK_CHOICES:
-            raise ValidationError(
-                f"Choix d'arbitrage inconnu : {choice!r}.",
-                allowed=list(self.BULK_CHOICES),
-            )
-
-        decided = 0
-        skipped = 0
-        for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id):
-            if line.is_resolved:
-                continue
-            if choice == "PROPOSED":
-                qty = line.qty_arbitrated
-            else:
-                first = choice == "PASS_1"
-                qty = line.qty_pass_1 if first else line.qty_pass_2
-                if qty is None:
-                    qty = line.qty_pass_2 if first else line.qty_pass_1
-            if qty is None or qty < 0:
-                # Rien à retenir, ou une quantité qu'on refuserait une par une :
-                # la ligne reste ouverte et le compte le dit, plutôt que de
-                # laisser croire que la zone est arbitrée.
-                skipped += 1
-                continue
-            ctx.sheets.decide_arbitration(
-                line.id, qty, actor=ctx.actor, comment=_BULK_COMMENTS[choice]
-            )
-            decided += 1
-
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.ARBITRATE,
-            entity_type="zone",
-            entity_id=zone_id,
-            summary=(
-                f"{decided} arbitrage(s) tranché(s) en lot — "
-                f"{_BULK_COMMENTS[choice]}"
-            ),
-            after={"choice": choice, "decided": decided, "skipped": skipped},
-        )
-        return {"decided": decided, "skipped": skipped}
-
-    def prefill_with_pass_2(self, campaign: Campaign, zone_id: str) -> int:
-        """Copy the pass-2 quantity into every open arbitration of a zone.
-
-        A convenience, not a decision. It saves typing the same figure forty
-        times; it does **not** say anybody looked at those forty lines. The
-        values land in the fields the user is about to work through, and each one
-        still has to be confirmed — the consolidation ignores a proposal until
-        somebody validates it.
-
-        Lines already decided are left alone: a bulk pre-fill must never quietly
-        overwrite a judgement somebody made line by line.
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "count_entries")
-        proposals: dict[str, Decimal] = {}
-        for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id):
-            if line.is_resolved or line.qty_pass_1 == line.qty_pass_2:
-                continue
-            qty = line.qty_pass_2 if line.qty_pass_2 is not None else line.qty_pass_1
-            if qty is None:
-                continue
-            proposals[line.id] = qty
-
-        written = ctx.sheets.propose_arbitrations(
-            campaign.id, proposals,
-            comment="Pré-rempli avec le comptage n°2 — à valider.",
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.UPDATE,
-            entity_type="zone",
-            entity_id=zone_id,
-            summary=(
-                f"{written} arbitrage(s) pré-rempli(s) avec le comptage n°2 "
-                "(aucune validation)"
-            ),
-            after={"proposed": written},
-        )
-        return written
-
     # --------------------------------------------------------- consolidation
 
     # --------------------------------------------------------------- helpers
@@ -1116,30 +924,6 @@ class GenericService:
         return ctx.sheets.replace_sheet_lines(
             second.id, mirrored, actor=ctx.actor, conn=conn
         )
-
-    def _zone_counts(self, campaign: Campaign, zone_id: str) -> ZoneCounts:
-        ctx = self.ctx
-        zone = next(
-            (z for z in ctx.sheets.list_zones(campaign.id) if z.id == zone_id), None
-        )
-        if zone is None:
-            raise NotFoundError("Zone introuvable.", zoneId=zone_id)
-        return ZoneCounts(
-            zone=zone,
-            sheets=ctx.sheets.list_sheets(campaign.id, zone_id=zone_id),
-            lines_by_sheet=ctx.sheets.lines_by_sheet(campaign.id),
-            arbitrations=ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id),
-        )
-
-
-#: Ce qu'un arbitrage tranché en lot écrit dans son commentaire. La trace dit
-#: *par quelle règle* la quantité a été retenue : « 12 » sans rien d'autre ne
-#: se relit pas six mois plus tard.
-_BULK_COMMENTS = {
-    "PASS_1": "Comptage n°1 retenu (arbitrage en lot).",
-    "PASS_2": "Comptage n°2 retenu (arbitrage en lot).",
-    "PROPOSED": "Proposition validée (arbitrage en lot).",
-}
 
 
 def _line_kind(value: Any) -> CountLineKind:

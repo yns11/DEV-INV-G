@@ -167,18 +167,20 @@ def generic_service() -> tuple[GenericService, Any, Any]:
         source=DataSource.MANUAL,
     )
     ctx.sheets = SimpleNamespace(
-        list_zones=lambda cid: [zone],
+        list_zones=lambda cid, **kw: [zone],
         create_zone=create_zone,
         ensure_sheets=ensure_sheets,
         set_zone_closed=set_zone_closed,
-        list_arbitrations=lambda cid: [],
+        list_arbitrations=lambda cid, **kw: [],
+        # Le recalcul de l'arbitrage écrit dans sa propre transaction.
+        upsert_arbitrations=lambda lines, **kw: len(lines),
         get_sheet=lambda sid: sheet,
         # Le service relit les feuilles pour savoir de quelles zones les lignes
         # supprimées viennent : le document se décide sur le passage 1 et vaut
         # pour les deux.
         list_sheets=lambda cid, **kw: [sheet],
         list_sheet_lines=lambda sid, **kw: [],
-        lines_by_sheet=lambda cid: {"s-1": [existing]},
+        lines_by_sheet=lambda cid, **kw: {"s-1": [existing]},
         delete_sheet_line=delete_sheet_line,
         replace_sheet_lines=replace_sheet_lines,
         upsert_sheet_lines=upsert_sheet_lines,

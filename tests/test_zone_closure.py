@@ -49,6 +49,28 @@ def arbitration(*, resolved: bool, gap: bool = True) -> ArbitrationLine:
     )
 
 
+#: Les zones dont l'arbitrage a été recalculé pendant le contrôle en cours.
+#:
+#: Le recalcul a quitté ``GenericService`` pour devenir une fonction partagée
+#: par les cinq écritures de lignes de feuille : poser un attribut sur
+#: l'instance ne remplaçait donc plus rien, et le témoin restait vide alors que
+#: le service appelait bien la vraie fonction. C'est le module appelant qu'on
+#: remplace.
+REFRESHED: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def _witness_the_refresh(monkeypatch):
+    from inventory.services import generic_service as module
+
+    REFRESHED.clear()
+    monkeypatch.setattr(
+        module,
+        "refresh_zone_arbitrations",
+        lambda ctx, campaign, zone_id: REFRESHED.append(zone_id),
+    )
+
+
 def service(
     *,
     closed: bool = False,
@@ -63,11 +85,14 @@ def service(
     )
     written: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
-    refreshed: list[str] = []
 
     sheets = SimpleNamespace(
-        list_zones=lambda cid: [zone],
-        list_arbitrations=lambda cid: list(arbitrations),
+        list_zones=lambda cid, **kw: [zone],
+        list_arbitrations=lambda cid, **kw: list(arbitrations),
+        # Le recalcul relit les feuilles et leurs lignes dans sa transaction.
+        list_sheets=lambda cid, **kw: [],
+        lines_by_sheet=lambda cid, **kw: {},
+        upsert_arbitrations=lambda lines, **kw: len(lines),
         set_zone_closed=lambda cid, zid, *, closed, actor, conn=None: written.append(
             {"campaign": cid, "zone": zid, "closed": closed, "actor": actor}
         ),
@@ -84,12 +109,7 @@ def service(
     with_transactions(ctx)
     with_access(ctx)
     generic = GenericService(cast(Any, ctx))
-    # L'arbitrage est recalculé avant toute clôture ; ici on note l'appel
-    # plutôt que de refaire tourner la consolidation.
-    generic.refresh_arbitrations = (  # type: ignore[method-assign]
-        lambda campaign, zid: refreshed.append(zid)
-    )
-    return generic, written, events, refreshed, zone_id
+    return generic, written, events, REFRESHED, zone_id
 
 
 class TestClosingAZone:

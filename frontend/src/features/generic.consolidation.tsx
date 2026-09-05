@@ -333,7 +333,7 @@ function ConsolidationResult({
       render: (row) => (
         <DrillCell
           disabled={row.qty === 0}
-          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'counted' })}
+          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'generic' })}
         >
           <strong className="num">{qty(row.qty)}</strong>
         </DrillCell>

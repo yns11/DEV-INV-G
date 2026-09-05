@@ -390,12 +390,15 @@ class SheetRepository(_Base):
         )
         return (row or {}).get("at")
 
-    def lines_by_sheet(self, campaign_id: str) -> dict[str, list[CountSheetLine]]:
+    def lines_by_sheet(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> dict[str, list[CountSheetLine]]:
         rows = self._fetch_all(
             f"SELECT {self._SHEET_LINE_COLUMNS} FROM count_sheet_line "
             "WHERE campaign_id = %s AND deleted_at IS NULL "
             "ORDER BY sheet_id, display_order",
             (campaign_id,),
+            conn=conn,
         )
         out: dict[str, list[CountSheetLine]] = {}
         for r in rows:
@@ -534,7 +537,11 @@ class SheetRepository(_Base):
     # -- arbitration ---------------------------------------------------------
 
     def list_arbitrations(
-        self, campaign_id: str, *, zone_id: str | None = None
+        self,
+        campaign_id: str,
+        *,
+        zone_id: str | None = None,
+        conn: psycopg.Connection | None = None,
     ) -> list[ArbitrationLine]:
         clauses = ["campaign_id = %s"]
         params: list[Any] = [campaign_id]
@@ -546,6 +553,7 @@ class SheetRepository(_Base):
             "qty_pass_2, qty_arbitrated, decided_by, decided_at, comment "
             f"FROM arbitration WHERE {' AND '.join(clauses)} ORDER BY item_number",
             params,
+            conn=conn,
         )
         return [
             ArbitrationLine(
@@ -567,12 +575,26 @@ class SheetRepository(_Base):
             "INSERT INTO arbitration (id, campaign_id, zone_id, item_number, section, "
             "qty_pass_1, qty_pass_2, qty_arbitrated, decided_by, decided_at, comment, "
             "updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
+            # **Ce que le domaine écrit fait foi, y compris quand il écrit
+            # NULL.** Ces trois colonnes ont porté un ``COALESCE(EXCLUDED.…,
+            # arbitration.…)`` — une prudence qui gardait la décision existante
+            # quand la ligne n'en apportait pas. Elle défaisait la seule règle
+            # qui compte ici : un arbitrage dont l'un des deux comptages a bougé
+            # perd sa signature. ``build_arbitration_lines`` posait bien
+            # ``decided_by = None`` ; ``COALESCE(NULL, l'ancien)`` rendait
+            # l'ancien, et la décision périmée survivait — visible nulle part,
+            # puisque le domaine, lui, était juste, et que les contrôles le
+            # vérifiaient sur le domaine.
+            #
+            # La fonction du domaine recopie déjà la décision antérieure quand
+            # elle reste valable : l'affectation directe la préserve donc dans
+            # ce cas, et l'efface dans l'autre. C'est exactement ce qui est
+            # voulu, et il n'y a qu'un seul endroit qui en décide.
             "ON CONFLICT (zone_id, item_number, section) DO UPDATE SET "
             "qty_pass_1 = EXCLUDED.qty_pass_1, qty_pass_2 = EXCLUDED.qty_pass_2, "
-            "qty_arbitrated = COALESCE(EXCLUDED.qty_arbitrated, "
-            "arbitration.qty_arbitrated), "
-            "decided_by = COALESCE(EXCLUDED.decided_by, arbitration.decided_by), "
-            "decided_at = COALESCE(EXCLUDED.decided_at, arbitration.decided_at), "
+            "qty_arbitrated = EXCLUDED.qty_arbitrated, "
+            "decided_by = EXCLUDED.decided_by, "
+            "decided_at = EXCLUDED.decided_at, "
             "comment = EXCLUDED.comment, updated_at = now()",
             [
                 (l.id, l.campaign_id, l.zone_id, l.item_number, str(l.section),

@@ -65,14 +65,25 @@ class FakeTransactions:
         self.opened = 0
         self.depth = 0
         self.writes: dict[str, int] = {}
+        #: Dans **quelle** transaction chaque écriture a eu lieu, par son rang
+        #: d'ouverture. ``opened`` seul ne répondait qu'à « combien » : une
+        #: commande qui ouvre légitimement une transaction de plus, ailleurs et
+        #: après, faisait alors échouer un contrôle qui voulait dire « ces deux
+        #: écritures-ci ne sont pas dans la même ».
+        self.write_txn: dict[str, int] = {}
 
     def note(self, what: str) -> None:
         """Enregistre qu'une écriture a eu lieu, et à quelle profondeur."""
         self.writes[what] = self.depth
+        self.write_txn[what] = self.opened
 
     def all_writes_inside_one_transaction(self) -> bool:
         """Vrai si des écritures ont eu lieu, toutes dans une transaction."""
         return bool(self.writes) and all(d == 1 for d in self.writes.values())
+
+    def transactions_of(self, *names: str) -> set[int]:
+        """Les transactions dans lesquelles ces écritures-là ont eu lieu."""
+        return {self.write_txn[name] for name in names}
 
     def transaction(self):
         from contextlib import contextmanager

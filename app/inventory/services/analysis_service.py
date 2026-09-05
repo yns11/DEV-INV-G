@@ -19,6 +19,7 @@ from typing import Any
 import pandas as pd
 
 from ..db import new_id
+from ..domain.consolidation import ZoneCounts, resolve_zone_quantities
 from ..domain.controls import (
     check_book_stock,
     check_items,
@@ -29,12 +30,18 @@ from ..domain.controls import (
     group_findings,
     summarise,
 )
-from ..domain.enums import AuditAction, JournalStatus
+from ..domain.enums import (
+    AuditAction,
+    CountSection,
+    ItemType,
+    JournalStatus,
+)
 from ..domain.models import (
     AdjustmentLine,
     Campaign,
     VarianceAnalysis,
     VarianceLine,
+    Zone,
 )
 from ..domain.variance import (
     CountedQty,
@@ -50,6 +57,16 @@ from ..errors import NotFoundError, ValidationError
 from .context import ServiceContext
 
 log = logging.getLogger(__name__)
+
+
+#: Le nom des sections tel que la décomposition l'affiche. Les mêmes mots que
+#: l'écran, sans quoi la fenêtre qui explique un chiffre parlerait une autre
+#: langue que la colonne qui le porte.
+_SECTION_LABELS = {
+    "LINE_SIDE": "Bord de ligne",
+    "WIP_OK": "WIP assemblé",
+    "WIP": "WIP (à éclater)",
+}
 
 __all__ = ["AnalysisService"]
 
@@ -500,6 +517,7 @@ class AnalysisService:
     #: The figures a screen can ask "where does this come from?" about.
     BREAKDOWN_ASPECTS = (
         "book", "counted", "physical", "line_side", "wip_ok", "wip", "variance",
+        "generic",
     )
 
     def breakdown(
@@ -543,6 +561,7 @@ class AnalysisService:
             "line_side": lambda c, i: self._sheet_rows(c, i, "LINE_SIDE"),
             "wip_ok": lambda c, i: self._sheet_rows(c, i, "WIP_OK"),
             "wip": self._wip_rows,
+            "generic": self._generic_rows,
             "variance": self._variance_rows_for,
             "physical": self._physical_rows,
         }[aspect](campaign, item_number)
@@ -641,35 +660,102 @@ class AnalysisService:
                 })
         return out
 
+    def _retained_by_zone(
+        self, campaign: Campaign
+    ) -> list[tuple[Zone, dict[tuple[str, CountSection], Decimal], set[tuple[str, str]]]]:
+        """Ce que chaque zone retient, zone par zone — et ce qui reste à trancher.
+
+        **La décomposition doit dire la même chose que le journal**, sinon elle
+        n'explique rien : elle listait une ligne par feuille, donc deux fois la
+        même quantité sur une zone à double comptage, et elle affichait les deux
+        chiffres bruts là où la consolidation, elle, n'en retient qu'un — celui
+        sur lequel les deux passages s'accordent, ou celui qu'un arbitrage a
+        tranché. Un total de 60 050 se décomposait ainsi en deux lignes de
+        60 050.
+
+        C'est donc la **même fonction** que la consolidation qui répond ici.
+        ``provisional`` pour qu'une zone dont l'arbitrage traîne montre quand
+        même son chiffre le plus probable plutôt qu'un trou ; les clés encore
+        ouvertes sont renvoyées à part, et la fenêtre le dit.
+        """
+        ctx = self.ctx
+        lines_by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
+        sheets = ctx.sheets.list_sheets(campaign.id)
+        out = []
+        for zone in ctx.sheets.list_zones(campaign.id):
+            counts = ZoneCounts(
+                zone=zone,
+                sheets=[s for s in sheets if s.zone_id == zone.id],
+                lines_by_sheet=lines_by_sheet,
+            )
+            retained, findings = resolve_zone_quantities(
+                counts,
+                arbitration_tolerance=campaign.config.arbitration_tolerance,
+                provisional=True,
+            )
+            pending = {
+                (f.item_number, str(f.context.get("section", "")))
+                for f in findings
+                if f.code == "ARBITRATION_PENDING" and f.item_number
+            }
+            out.append((zone, retained, pending))
+        return out
+
     def _sheet_rows(
         self, campaign: Campaign, item_number: str, section: str
     ) -> list[dict[str, Any]]:
-        """The counting-sheet lines behind a GENERIQUE section total."""
-        ctx = self.ctx
-        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
-        sheets = {s.id: s for s in ctx.sheets.list_sheets(campaign.id)}
+        """Ce que chaque zone GENERIQUE apporte à un total de section."""
         generic = campaign.config.generic_key
+        wanted = CountSection(section)
         out: list[dict[str, Any]] = []
-        for sheet_id, lines in ctx.sheets.lines_by_sheet(campaign.id).items():
-            sheet = sheets.get(sheet_id)
-            if sheet is None:
+        for zone, retained, pending in self._retained_by_zone(campaign):
+            qty = retained.get((item_number, wanted))
+            if qty is None:
                 continue
-            zone = zones.get(sheet.zone_id)
-            for line in lines:
-                if line.item_number != item_number or str(line.section) != section:
-                    continue
-                out.append({
-                    "origin": zone.label or zone.code if zone else "",
-                    "where": f"{generic.warehouse_id} / {generic.location_id}",
-                    "warehouseId": generic.warehouse_id,
-                    "locationId": generic.location_id,
-                    "detail": (
-                        f"zone {zone.code if zone else '?'} · comptage n°"
-                        f"{1 if str(sheet.pass_no) == 'PASS_1' else 2}"
-                    ),
-                    "qty": float(line.qty),
-                })
+            unresolved = (item_number, section) in pending
+            out.append({
+                "origin": zone.label or zone.code,
+                "where": f"{generic.warehouse_id} / {generic.location_id}",
+                "warehouseId": generic.warehouse_id,
+                "locationId": generic.location_id,
+                "detail": (
+                    f"zone {zone.code}"
+                    + (" · arbitrage en attente" if unresolved else "")
+                ),
+                "qty": float(qty),
+            })
         return out
+
+    def _generic_rows(
+        self, campaign: Campaign, item_number: str
+    ) -> list[dict[str, Any]]:
+        """La part GENERIQUE d'une référence, et **elle seule**.
+
+        Le total d'une ligne du journal consolidé ouvrait la décomposition du
+        stock compté de toute la campagne : les treize pièces d'un autre
+        emplacement s'y affichaient à côté des soixante mille de GENERIQUE,
+        alors que le journal consolidé, lui, ne les compte pas — et à raison.
+        Une fenêtre qui explique un chiffre par des quantités qui n'y sont pas
+        est pire qu'aucune fenêtre.
+
+        Les deux règles que la consolidation applique le sont ici aussi, sans
+        quoi le total afficherait des lignes que le journal écarte : un produit
+        fini n'entre que par la porte du WIP, et un article exclu du périmètre
+        GENERIQUE sort après l'éclatement.
+        """
+        items = self.ctx.referentials.items_by_number(campaign.id)
+        item = items.get(item_number)
+        if item is not None and item.excluded_from_generic:
+            return []
+        finished = item is not None and item.item_type is ItemType.FINISHED
+        rows: list[dict[str, Any]] = []
+        if not finished:
+            for section in ("LINE_SIDE", "WIP_OK"):
+                label = _SECTION_LABELS[section]
+                for row in self._sheet_rows(campaign, item_number, section):
+                    rows.append({**row, "detail": f"{row['detail']} · {label}"})
+        rows.extend(self._wip_rows(campaign, item_number))
+        return rows
 
     def _wip_rows(self, campaign: Campaign, item_number: str) -> list[dict[str, Any]]:
         generic = campaign.config.generic_key

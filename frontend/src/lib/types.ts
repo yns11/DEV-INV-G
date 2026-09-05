@@ -580,6 +580,9 @@ export interface Arbitration {
   decided_at: string | null
   comment: string
   name: string
+  /** La zone qui porte l'écart — la vue peut couvrir toute la campagne. */
+  zoneCode: string
+  zoneLabel: string
   gap: number
   gapValue: number
   unitCost: number

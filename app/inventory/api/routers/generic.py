@@ -7,10 +7,16 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from ...errors import ValidationError
-from ...services import ConsolidationService, GenericService, ScanJobService
+from ...services import (
+    ArbitrationService,
+    ConsolidationService,
+    GenericService,
+    ScanJobService,
+)
 from ..deps import (
     CampaignDep,
     Ctx,
+    arbitration_service,
     consolidation_service,
     generic_service,
     resolve_perimeter,
@@ -36,6 +42,7 @@ from ..uploads import offload, read_upload
 router = APIRouter(prefix="/campaigns/{campaign_id}/generic", tags=["GENERIQUE"])
 
 Service = Annotated[GenericService, Depends(generic_service)]
+Arbitration = Annotated[ArbitrationService, Depends(arbitration_service)]
 
 #: La consolidation a son propre service : elle lit les feuilles, elle ne les
 #: écrit pas, et elle est la seule à parler d'ERP, de nomenclatures et de valeur.
@@ -390,22 +397,27 @@ def get_scan_job(
 @router.get("/arbitrations", summary="Écarts entre comptage n°1 et n°2")
 def list_arbitrations(
     campaign: CampaignDep,
-    service: Service,
+    service: Arbitration,
     zone_id: Annotated[str | None, Query(alias="zoneId")] = None,
+    divergent_only: Annotated[bool, Query(alias="divergentOnly")] = False,
 ) -> list[dict[str, Any]]:
     """Every (item, section) present in either pass, valued and sorted.
 
     Sorted with the decisions that still need a human first, then by the euro
     impact of the gap — so the most expensive disagreement is dealt with first.
+
+    ``divergentOnly`` ne garde que les lignes où les deux comptages ne disent
+    pas la même chose : c'est ce que l'écran demande, une ligne en accord
+    n'appelant aucune décision.
     """
-    return service.list_arbitrations(campaign, zone_id)
+    return service.list(campaign, zone_id, divergent_only=divergent_only)
 
 
 @router.post("/zones/{zone_id}/arbitrations/refresh", summary="Recalculer les écarts")
 def refresh_arbitrations(
-    campaign: CampaignDep, zone_id: str, service: Service
+    campaign: CampaignDep, zone_id: str, service: Arbitration
 ) -> list[dict[str, Any]]:
-    return service.refresh_arbitrations(campaign, zone_id)
+    return service.refresh(campaign, zone_id)
 
 
 @router.post("/arbitrations/{arbitration_id}", summary="Arbitrer un écart")
@@ -413,9 +425,9 @@ def decide_arbitration(
     campaign: CampaignDep,
     arbitration_id: str,
     payload: ArbitrationDecisionRequest,
-    service: Service,
+    service: Arbitration,
 ) -> dict[str, bool]:
-    service.decide_arbitration(
+    service.decide(
         campaign, arbitration_id, payload.qty, comment=payload.comment
     )
     return {"decided": True}
@@ -423,37 +435,27 @@ def decide_arbitration(
 
 @router.post(
     "/zones/{zone_id}/arbitrations/decide-all",
-    summary="Trancher en lot les écarts ouverts d'une zone",
+    summary="Valider en lot les quantités affichées",
     responses={200: {"model": BulkArbitrationResponse}},
 )
 def decide_arbitrations(
     campaign: CampaignDep,
     zone_id: str,
     payload: BulkArbitrationRequest,
-    service: Service,
+    service: Arbitration,
 ) -> dict[str, int]:
-    """Retenir le comptage n°1, le n°2, ou la proposition — partout à la fois.
+    """Valider d'un geste ce que l'écran affiche.
+
+    Le corps porte les quantités visibles, ligne par ligne : c'est la seule
+    façon qu'un « Valider tout » valide ce que l'utilisateur a sous les yeux
+    plutôt que ce que le serveur recalculerait de son côté.
 
     Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
     jugement pris une par une.
     """
-    return service.decide_arbitrations(campaign, zone_id, choice=payload.choice)
-
-
-@router.post(
-    "/zones/{zone_id}/arbitrations/prefill-pass-2",
-    summary="Pré-remplir les écarts d'une zone avec le comptage n°2",
-)
-def prefill_with_pass_2(
-    campaign: CampaignDep, zone_id: str, service: Service
-) -> dict[str, int]:
-    """Copy pass 2 into the open arbitrations — a shortcut, not a decision.
-
-    The quantities land in the fields; each one still has to be validated (or
-    changed) before the consolidation will use it. Lines already decided are
-    left untouched.
-    """
-    return {"proposed": service.prefill_with_pass_2(campaign, zone_id)}
+    return service.decide_many(
+        campaign, zone_id, {d.id: d.qty for d in payload.decisions}
+    )
 
 
 # --------------------------------------------------------------------------- #

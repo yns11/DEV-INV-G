@@ -407,57 +407,102 @@ class TestArbitrerEnLot:
             for a in sheets.list_arbitrations(campaign.id, zone_id=zone.id)
         }
 
+    def arbitration_service(self, service):
+        """L'arbitrage a quitté ``GenericService`` pour son propre service.
+
+        Il est appelé par les cinq écritures de lignes de feuille, dont trois
+        vivent dans d'autres services : le garder méthode d'un seul d'entre eux
+        laissait les autres sans recalcul.
+        """
+        from inventory.services import ArbitrationService
+
+        return ArbitrationService(service.ctx)
+
+    def ids(self, sheets, campaign, zone):
+        return {
+            a.item_number: a.id
+            for a in sheets.list_arbitrations(campaign.id, zone_id=zone.id)
+        }
+
     def test_tout_le_comptage_1(self, zone_arbitree):
+        """« Tout le n°1 » remplit l'écran ; c'est « Valider tout » qui écrit,
+        et il poste les quantités affichées."""
+        from decimal import Decimal
+
         service, campaign, zone, sheets = zone_arbitree
-        assert service.decide_arbitrations(
-            campaign, zone.id, choice="PASS_1"
-        )["decided"] == 2
+        arbitration = self.arbitration_service(service)
+        ids = self.ids(sheets, campaign, zone)
+        out = arbitration.decide_many(campaign, zone.id, {
+            ids["P-1"]: Decimal(12), ids["P-2"]: Decimal(30),
+        })
+        assert out["decided"] == 2
         assert self.retained(sheets, campaign, zone) == {
             "P-1": (12, True), "P-2": (30, True),
         }
 
     def test_tout_le_comptage_2(self, zone_arbitree):
+        from decimal import Decimal
+
         service, campaign, zone, sheets = zone_arbitree
-        service.decide_arbitrations(campaign, zone.id, choice="PASS_2")
+        arbitration = self.arbitration_service(service)
+        ids = self.ids(sheets, campaign, zone)
+        arbitration.decide_many(campaign, zone.id, {
+            ids["P-1"]: Decimal(15), ids["P-2"]: Decimal(28),
+        })
         assert self.retained(sheets, campaign, zone) == {
             "P-1": (15, True), "P-2": (28, True),
         }
 
     def test_une_ligne_deja_tranchee_n_est_pas_retouchee(self, zone_arbitree):
         """Un lot ne défait pas un jugement pris une par une."""
-        service, campaign, zone, sheets = zone_arbitree
-        one = next(
-            a for a in sheets.list_arbitrations(campaign.id, zone_id=zone.id)
-            if a.item_number == "P-1"
-        )
-        service.decide_arbitration(campaign, one.id, __import__("decimal").Decimal(13))
+        from decimal import Decimal
 
-        service.decide_arbitrations(campaign, zone.id, choice="PASS_2")
+        service, campaign, zone, sheets = zone_arbitree
+        arbitration = self.arbitration_service(service)
+        ids = self.ids(sheets, campaign, zone)
+        arbitration.decide(campaign, ids["P-1"], Decimal(13))
+
+        arbitration.decide_many(campaign, zone.id, {
+            ids["P-1"]: Decimal(15), ids["P-2"]: Decimal(28),
+        })
         assert self.retained(sheets, campaign, zone)["P-1"] == (13, True)
 
-    def test_valider_tout_enterine_les_propositions(self, zone_arbitree):
+    def test_valider_tout_ecrit_ce_que_lecran_affiche(self, zone_arbitree):
+        """Le défaut corrigé : le serveur allait chercher la quantité lui-même,
+        et ne voyait pas les champs — « Valider tout » annonçait alors des
+        lignes non tranchées en montrant à l'utilisateur les quantités qu'il
+        croyait valider."""
+        from decimal import Decimal
+
         service, campaign, zone, sheets = zone_arbitree
-        service.prefill_with_pass_2(campaign, zone.id)
+        arbitration = self.arbitration_service(service)
+        ids = self.ids(sheets, campaign, zone)
+        out = arbitration.decide_many(campaign, zone.id, {
+            ids["P-1"]: Decimal(13), ids["P-2"]: Decimal(29),
+        })
+        assert out == {"decided": 2, "skipped": 0}
+        assert self.retained(sheets, campaign, zone) == {
+            "P-1": (13, True), "P-2": (29, True),
+        }
 
-        assert service.decide_arbitrations(
-            campaign, zone.id, choice="PROPOSED"
-        )["decided"] == 2
-        assert all(
-            resolved for _q, resolved in self.retained(sheets, campaign, zone).values()
-        )
-
-    def test_valider_tout_sans_proposition_ne_tranche_rien(self, zone_arbitree):
+    def test_valider_tout_sans_quantite_ne_tranche_rien(self, zone_arbitree):
         """Et le dit : une zone laissée ouverte ne doit pas se lire comme finie."""
         service, campaign, zone, sheets = zone_arbitree
-        result = service.decide_arbitrations(campaign, zone.id, choice="PROPOSED")
+        arbitration = self.arbitration_service(service)
+        result = arbitration.decide_many(campaign, zone.id, {})
         assert result == {"decided": 0, "skipped": 2}
         assert not any(
             resolved for _q, resolved in self.retained(sheets, campaign, zone).values()
         )
 
-    def test_un_choix_inconnu_est_refuse(self, zone_arbitree):
-        from inventory.errors import ValidationError
+    def test_un_arbitrage_etranger_a_la_zone_est_refuse(self, zone_arbitree):
+        """Les identifiants arrivent dans le corps de la requête ; la zone,
+        elle, est dans l'URL."""
+        from decimal import Decimal
+
+        from inventory.errors import NotFoundError
 
         service, campaign, zone, _sheets = zone_arbitree
-        with pytest.raises(ValidationError):
-            service.decide_arbitrations(campaign, zone.id, choice="LE_PLUS_GRAND")
+        arbitration = self.arbitration_service(service)
+        with pytest.raises(NotFoundError):
+            arbitration.decide_many(campaign, zone.id, {new_id(): Decimal(1)})

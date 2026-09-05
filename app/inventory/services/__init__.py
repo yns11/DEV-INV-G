@@ -6,6 +6,11 @@ written — so no router and no repository has to remember any of that.
 """
 
 from .analysis_service import AnalysisService
+from .arbitration_service import (
+    ArbitrationService,
+    refresh_after_sheet_writes,
+    refresh_zone_arbitrations,
+)
 from .assistant_service import AssistantService
 from .campaign_service import DEFAULT_THRESHOLDS, CampaignService
 from .consolidation_service import ConsolidationService
@@ -30,6 +35,9 @@ from .stock_flow_service import StockFlowService
 
 __all__ = [
     "AnalysisService",
+    "ArbitrationService",
+    "refresh_after_sheet_writes",
+    "refresh_zone_arbitrations",
     "AssistantService",
     "CampaignService",
     "ArchivedEvidence",

@@ -365,3 +365,55 @@ class TestChaqueArticleTombeJuste:
             assert ligne.book_value == Decimal(theorique["stockErpValeur"]), (
                 f"{theorique['article']} : valeur du stock ERP"
             )
+
+
+class TestLeClasseurDeRepliTombeSurLeMemeCalcul:
+    """Le repli confronté au calcul théorique, pas seulement au moteur.
+
+    Le classeur est vérifié ailleurs contre
+    :func:`~inventory.domain.consolidation.consolidate_generic`. Ici il l'est
+    contre ``oracle.py``, écrit **sans l'application** : si les deux se
+    trompaient de la même façon, ce serait visible ici et nulle part ailleurs.
+
+    Le contrôle passe aussi par le vrai point d'entrée — ``ReportService`` sur
+    une campagne montée en base, comme la route le fait. Un classeur parfait
+    qu'aucun service n'engendre est la panne habituelle de ce dépôt.
+    """
+
+    def _classeur(self, charge) -> bytes:
+        from inventory.services.report_service import ReportService
+
+        ctx, campaign = charge
+        content, filename = ReportService(ctx).consolidation_fallback(campaign)
+        assert filename.endswith(".xlsx")
+        assert campaign.code in filename
+        return content
+
+    def test_le_service_le_produit_et_le_trace(self, charge):
+        ctx, campaign = charge
+        self._classeur(charge)
+        traces = [
+            e for e in ctx.audit.list(campaign.id, limit=10_000)
+            if e.entity_type == "consolidation" and "repli" in e.summary
+        ]
+        assert traces, "l'export du classeur de repli n'est pas au journal d'audit"
+
+    def test_recalcule_il_rend_les_quantites_theoriques(self, charge, attendu):
+        import tableur
+
+        if not tableur.AVAILABLE:
+            pytest.skip(tableur.WHY_NOT)
+
+        feuilles = tableur.recalculate(self._classeur(charge))
+        grille = feuilles["Journal consolidé"]
+        colonnes = [str(c) for c in grille[0]]
+        journal = {
+            ligne[0]: dict(zip(colonnes, ligne, strict=False))
+            for ligne in grille[1:] if ligne[0]
+        }
+        for ref, qte in attendu["consolidationGenerique"].items():
+            assert ref in journal, f"{ref} n'a pas de ligne au classeur"
+            obtenu = Decimal(str(journal[ref]["Quantité totale"] or 0))
+            assert abs(obtenu - Decimal(qte)) <= Decimal("0.000001"), (
+                f"{ref} : le classeur dit {obtenu}, le calcul théorique {qte}"
+            )

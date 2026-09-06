@@ -76,6 +76,22 @@ class ConsolidationService:
             available instead of refusing to. Only for the live variance — the
             posted run must never guess which of two counts is right.
         """
+        return consolidate_generic(
+            self.payload(campaign, preview=preview, provisional=provisional)
+        )
+
+    def payload(
+        self, campaign: Campaign, *, preview: bool = False, provisional: bool = False
+    ) -> ConsolidationInput:
+        """Tout ce dont la consolidation a besoin, lu une fois.
+
+        Public, et c'est le point : le classeur de repli doit porter **le même**
+        référentiel, les mêmes nomenclatures et les mêmes zones que le calcul
+        qu'il rejoue. Une seconde lecture de la base écrite pour l'export aurait
+        pu diverger de celle-ci — un filtre oublié, une exclusion appliquée
+        ailleurs — et le repli aurait alors donné d'autres chiffres que
+        l'application sans que rien ne l'annonce.
+        """
         ctx = self.ctx
         items = ctx.referentials.items_by_number(campaign.id)
         bom_links = ctx.referentials.list_bom_links(campaign.id)
@@ -98,7 +114,7 @@ class ConsolidationService:
         for arb in arbitrations:
             arb_by_zone.setdefault(arb.zone_id, []).append(arb)
 
-        payload = ConsolidationInput(
+        return ConsolidationInput(
             campaign_id=campaign.id,
             zones=[
                 ZoneCounts(
@@ -116,7 +132,6 @@ class ConsolidationService:
             require_done_zones=not preview,
             provisional=provisional,
         )
-        return consolidate_generic(payload)
 
     def _generic_book_stock(self, campaign: Campaign) -> dict[str, Decimal]:
         """What the ERP says is in GENERIQUE, per article.

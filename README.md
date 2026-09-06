@@ -17,7 +17,7 @@ PRÉPARATION ──────► COMPTAGE ──────► ANALYSE & AJUS
 
 | Fichier actuel | Remplacé par |
 |---|---|
-| `Compil GENERIQUE.xlsx` — 54 onglets, 9 requêtes Power Query | Le moteur de consolidation GENERIQUE, avec éclatement BOM tracé et arbitrage outillé |
+| `Compil GENERIQUE.xlsx` — 54 onglets, 9 requêtes Power Query | Le moteur de consolidation GENERIQUE, avec éclatement BOM tracé et arbitrage outillé — et, pour le jour où l'application ne répond pas, un classeur de repli engendré qui refait le même calcul par formules |
 | `BILAN INVENTAIRE.xlsx` — 13 onglets, 17,6 Mo, `#REF!` en production | Le module d'analyse : écarts recalculés, contrôles, analytics, causes |
 | `STOCK AVANT INVENTAIRE.xlsx` | Le snapshot gelé, horodaté et opposable |
 | Les copier/coller vers l'ERP | Des exports au format d'import ERP |
@@ -62,6 +62,15 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   comptés par une seule équipe, se tranche en lot quand on sait laquelle des
   deux fait foi, et **se refait dès qu'un des deux comptages change** : une
   décision porte sur deux chiffres, et meurt avec eux.
+- **Un classeur de repli, et il se recalcule.** L'export du dossier est une
+  photo : on la classe, on ne la corrige pas. Un second classeur part avec lui,
+  qui porte les *données* — le référentiel, les nomenclatures, une feuille par
+  zone — et refait la consolidation GENERIQUE **par formules**. Corriger un
+  comptage met à jour le relevé et le journal, sans ressaisie et sans
+  l'application. C'est ce qu'était `Compil GENERIQUE.xlsx`, mais engendré à
+  chaque export au lieu d'être maintenu à la main — et la recette le fait
+  **recalculer pour de vrai** avant de le livrer, puis compare chaque ligne avec
+  ce que le moteur produit.
 - **Lecture pour tous, écriture pour ceux qui la portent.** Une campagne se
   consulte et s'exporte par tout le monde ; elle ne se modifie que par son
   créateur et les neuf gestionnaires qu'il a déclarés. Le contrôle est posé au
@@ -157,7 +166,7 @@ frontend/                   React + TypeScript + Vite
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
 fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
-tests/                      2893 contrôles ; 279 exigent un PostgreSQL, ignorés sinon
+tests/                      2937 contrôles ; 281 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -186,15 +195,20 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 2893 contrôles ; 279 ignorés sans PostgreSQL
+make test            # 2937 contrôles ; 281 ignorés sans PostgreSQL
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000
 make dev-ui          # Vite avec proxy vers l'API, port 5173
 
-npm --prefix frontend run test   # 525 contrôles navigateur (vitest + jsdom)
+npm --prefix frontend run test   # 530 contrôles navigateur (vitest + jsdom)
 npm --prefix frontend run e2e    # le parcours complet, Playwright, app démarrée
 ```
+
+Une poignée de contrôles font **recalculer** le classeur de repli par
+LibreOffice Calc et comparent son journal à celui du moteur. Ils s'ignorent
+quand il n'est pas installé — comme ceux qui exigent un PostgreSQL — et les
+contrôles de structure du même fichier, eux, tournent partout.
 
 Trois bancs, trois portées. Les contrôles Python tiennent les règles et l'API ;
 `vitest` tient le TypeScript — grille, formats, collage — sans démarrer quoi

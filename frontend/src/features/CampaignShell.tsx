@@ -118,6 +118,23 @@ function CampaignHeader({ overview }: { overview: Overview }) {
           >
             Exporter
           </Button>
+          {/* Le second fichier de l'export, et il ne fait pas le même travail :
+              le dossier est une photo qu'on classe, celui-ci porte les données
+              et recalcule le journal. Deux boutons plutôt qu'un menu, parce que
+              c'est le jour où l'application ne répond pas qu'on vient le
+              chercher — et ce jour-là, on ne cherche pas dans un menu. */}
+          <Button
+            icon={<Icons.refresh size={14} />}
+            title={
+              'Classeur de repli : la consolidation GENERIQUE refaite par ' +
+              'formules, qui se recalcule quand on corrige un comptage'
+            }
+            onClick={() =>
+              startDownload(downloads.consolidationFallback(campaign.id))
+            }
+          >
+            Repli
+          </Button>
           {/* Le changement de phase gèle des données : proposer le bouton à
               quelqu'un qui n'a pas le droit de le presser reviendrait à faire
               découvrir la règle par un refus. */}

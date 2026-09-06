@@ -19,6 +19,22 @@ router = APIRouter(prefix="/campaigns/{campaign_id}/reports", tags=["rapports"])
 Service = Annotated[ReportService, Depends(report_service)]
 
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_PDF = "application/pdf"
+
+
+def _file(media_type: str, description: str) -> dict:
+    """Dire dans le contrat qu'une route rend un fichier, et lequel.
+
+    Sans cela le contrat annonce du JSON — ce que ces routes ne rendent
+    jamais — et le client généré propose de désérialiser un classeur.
+    """
+    return {
+        200: {
+            "description": description,
+            "content": {media_type: {"schema": {"type": "string",
+                                                "format": "binary"}}},
+        }
+    }
 
 
 #: Shared print options. Printing is available from the first phase — paper is
@@ -28,7 +44,11 @@ _WithSources = Annotated[bool, Query(alias="withSources")]
 _BlankLines = Annotated[int, Query(ge=0, le=MAX_BLANK_LINES, alias="blankLines")]
 
 
-@router.get("/counting-sheets/{sheet_id}.pdf", summary="Imprimer une feuille")
+@router.get(
+    "/counting-sheets/{sheet_id}.pdf",
+    summary="Imprimer une feuille",
+    responses=_file(_PDF, "Une feuille de comptage imprimable"),
+)
 def counting_sheet(
     campaign: CampaignDep,
     sheet_id: str,
@@ -52,7 +72,11 @@ def counting_sheet(
     return attachment(payload, filename, "application/pdf")
 
 
-@router.get("/counting-sheets.pdf", summary="Imprimer toutes les feuilles d'un passage")
+@router.get(
+    "/counting-sheets.pdf",
+    summary="Imprimer toutes les feuilles d'un passage",
+    responses=_file(_PDF, "Toutes les feuilles d’un passage, en un document"),
+)
 def all_counting_sheets(
     campaign: CampaignDep,
     service: Service,
@@ -81,7 +105,11 @@ def all_counting_sheets(
     return attachment(payload, filename, "application/pdf")
 
 
-@router.get("/journals/{journal_id}.xlsx", summary="Exporter un journal pour l'ERP")
+@router.get(
+    "/journals/{journal_id}.xlsx",
+    summary="Exporter un journal pour l'ERP",
+    responses=_file(_XLSX, "Un journal au format d’import ERP"),
+)
 def journal_export(
     campaign: CampaignDep, journal_id: str, service: Service
 ) -> Response:
@@ -94,7 +122,11 @@ def journal_export(
     return attachment(payload, filename, _XLSX)
 
 
-@router.post("/table.xlsx", summary="Exporter un tableau affiché")
+@router.post(
+    "/table.xlsx",
+    summary="Exporter un tableau affiché",
+    responses=_file(_XLSX, "Le tableau affiché, en classeur"),
+)
 def table_export(
     campaign: CampaignDep, payload: TableExportRequest, service: Service
 ) -> Response:
@@ -121,7 +153,11 @@ _Granularity = Annotated[
 _MaterialOnly = Annotated[bool, Query(alias="materialOnly")]
 
 
-@router.get("/variances.xlsx", summary="Exporter les écarts en Excel")
+@router.get(
+    "/variances.xlsx",
+    summary="Exporter les écarts en Excel",
+    responses=_file(_XLSX, "Les écarts, une colonne par chiffre"),
+)
 def variance_export(
     campaign: CampaignDep,
     service: Service,
@@ -141,7 +177,11 @@ def variance_export(
     return attachment(payload, filename, _XLSX)
 
 
-@router.get("/variances.pdf", summary="Imprimer les écarts")
+@router.get(
+    "/variances.pdf",
+    summary="Imprimer les écarts",
+    responses=_file(_PDF, "Les écarts, en document à remettre"),
+)
 def variance_pdf(
     campaign: CampaignDep,
     service: Service,
@@ -159,7 +199,11 @@ def variance_pdf(
     return attachment(payload, filename, "application/pdf")
 
 
-@router.get("/campaign.xlsx", summary="Exporter le dossier complet de la campagne")
+@router.get(
+    "/campaign.xlsx",
+    summary="Exporter le dossier complet de la campagne",
+    responses=_file(_XLSX, "Le dossier complet de la campagne"),
+)
 def campaign_workbook(campaign: CampaignDep, service: Service) -> Response:
     """The full dossier: KPIs, variances, snapshot, journals, WIP, causes, audit.
 
@@ -170,7 +214,28 @@ def campaign_workbook(campaign: CampaignDep, service: Service) -> Response:
     return attachment(payload, filename, _XLSX)
 
 
-@router.get("/grids/{contract_key}.xlsx", summary="Exporter une grille ou son modèle")
+@router.get(
+    "/consolidation-fallback.xlsx",
+    summary="Exporter le classeur de repli de la consolidation GENERIQUE",
+    responses=_file(_XLSX, "Le classeur de repli de la consolidation GENERIQUE"),
+)
+def consolidation_fallback(campaign: CampaignDep, service: Service) -> Response:
+    """Le second classeur : la consolidation GENERIQUE **refaite par formules**.
+
+    Le dossier de campagne est une photo ; celui-ci porte les données —
+    référentiel, nomenclatures, une feuille par zone — et recalcule le journal
+    consolidé à chaque correction. C'est le repli du jour où l'application n'est
+    pas joignable et où le journal doit partir quand même.
+    """
+    payload, filename = service.consolidation_fallback(campaign)
+    return attachment(payload, filename, _XLSX)
+
+
+@router.get(
+    "/grids/{contract_key}.xlsx",
+    summary="Exporter une grille ou son modèle",
+    responses=_file(_XLSX, "Une grille, ou son modèle quand elle est vide"),
+)
 def grid_export(
     campaign: CampaignDep, contract_key: str, service: Service
 ) -> Response:

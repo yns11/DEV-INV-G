@@ -18,8 +18,10 @@ from ..reporting.exports import (
     build_variance_pdf,
     build_workbook,
 )
+from ..reporting.fallback import build_consolidation_fallback
 from .analysis_service import AnalysisService
 from .campaign_source import grid_rows as campaign_grid_rows
+from .consolidation_service import ConsolidationService
 from .context import ENGINE_VERSION, ServiceContext, utcnow
 
 log = logging.getLogger(__name__)
@@ -495,6 +497,58 @@ class ReportService:
             summary=f"Export du dossier complet ({len(sheets)} onglets)",
         )
         return payload, f"bilan-inventaire_{campaign.code}.xlsx"
+
+    def consolidation_fallback(self, campaign: Campaign) -> tuple[bytes, str]:
+        """Le second classeur : la consolidation GENERIQUE, refaite par formules.
+
+        Le dossier de campagne est une photo — on la classe, on ne la corrige
+        pas. Celui-ci est l'autre document : il porte les données et les
+        recalcule. Le jour où l'application n'est pas joignable et où le journal
+        doit partir quand même, c'est le fichier qu'on ouvre.
+
+        Il est engendré à partir de **la même entrée que le moteur**, et non
+        d'une seconde lecture de la base : le référentiel, les nomenclatures et
+        les zones y sont ceux du calcul qu'il rejoue.
+
+        Les deux options de cette entrée — n'inclure que les zones terminées,
+        deviner une quantité quand l'arbitrage est en attente — pilotent le
+        **calcul**, et le classeur n'en fait aucun : il porte toutes les zones,
+        et ce sont ses formules qui décident. Elles restent donc à leur défaut
+        plutôt que d'être posées à une valeur sans effet, qui ferait croire à un
+        choix.
+        """
+        ctx = self.ctx
+        payload = ConsolidationService(ctx).payload(campaign)
+        config = campaign.config
+        content = build_consolidation_fallback(
+            payload,
+            campaign_code=campaign.code,
+            campaign_label=campaign.label,
+            count_date=campaign.count_date,
+            generic_key=(
+                f"{config.generic_warehouse} / {config.generic_location}"
+            ),
+            provenance={
+                "Statut de la campagne": str(campaign.status),
+                "Stock ERP gelé le": _iso(campaign.book_stock_frozen_at),
+                "Comptage clôturé le": _iso(campaign.counting_frozen_at),
+                "Profondeur d'éclatement": config.max_bom_depth,
+                "Version du moteur de calcul": ENGINE_VERSION,
+                "Généré le": utcnow().isoformat(timespec="seconds"),
+                "Généré par": ctx.actor,
+            },
+        )
+        ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.EXPORT,
+            entity_type="consolidation",
+            entity_id=campaign.id,
+            summary=(
+                f"Export du classeur de repli GENERIQUE "
+                f"({len(payload.zones)} zone(s))"
+            ),
+        )
+        return content, f"repli-consolidation-generique_{campaign.code}.xlsx"
 
     # ------------------------------------------------------------- variances
 

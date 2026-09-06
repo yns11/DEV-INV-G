@@ -291,7 +291,7 @@ plafond d'interface. **[HV]**
 | **C-11** | **Analyses avancées** | ABC/XYZ, atypiques, familles, priorité de recomptage, Benford, biais d'arrondi |
 | **C-12** | **Assistance IA** | Lecture des feuilles scannées, propositions de causes, synthèse, questions/réponses sur le dossier — **toujours en proposition** |
 | **C-13** | **Comparaison inter-campagnes** | Confronter deux inventaires par les flux de la période |
-| **C-14** | **Exports et documents** | Feuilles imprimables, classeur de dossier, journal au format d'import ERP, exports de grilles |
+| **C-14** | **Exports et documents** | Feuilles imprimables, classeur de dossier, **classeur de repli qui recalcule la consolidation GENERIQUE**, journal au format d'import ERP, exports de grilles |
 | **C-15** | **Traçabilité** | Journal d'audit inaltérable, historique des imports, conservation des pièces d'origine |
 | **C-16** | **Habilitation et périmètres** | Rôles, gestionnaires, affectations, filtrage serveur |
 | **C-17** | **Archivage et clôture** | Publication d'une copie opposable, liste de contrôle de clôture, gel définitif |
@@ -675,6 +675,14 @@ posée explicitement et à trois reprises (`guide §1.6`, `§2.1`, `§2.9`).
 - **Les nomenclatures étant gelées pendant le comptage**, la résolution proposée est de **compter ces assemblages tels quels** (reclassement), en un geste.
 - **Preuve du besoin** : en rejouant la campagne réelle de juin 2026, **4 assemblages comptés en WIP n'avaient aucune nomenclature**, pour 8 lignes de comptage. Sous Excel, ces quantités ont été perdues sans que personne ne le sache.
 - **Statut** : **[CO]**, appuyé sur une mesure.
+
+### EX-CONS-3 — Un classeur de repli qui refait la consolidation
+- **Besoin exprimé** : *« Dans l'export d'une campagne, rajoute un 2nd fichier Excel qui fait office de repli pour la partie consolidation du journal B06VRAC GENERIQUE. […] Les feuilles data et journal consolidé se recalculent dès qu'une donnée change dans les autres feuilles. »*
+- **Ce qui est demandé n'est pas un second export** : le dossier de campagne est une *photo* — le corriger ne change rien. Ce fichier-ci porte les **données** (référentiel, nomenclatures, une feuille par zone) et **recalcule** le journal, pour le jour où le journal doit partir sans l'application.
+- **Résultat attendu** : une feuille articles, une feuille de liens de nomenclature, **une seule feuille par zone même quand elle est comptée deux fois** (une quantité est retenue par ligne), une feuille qui relève références, sections et quantités des zones, et une feuille de journal consolidé en formules. Modifier une quantité de comptage met à jour les deux dernières sans ressaisie.
+- **Exigence de fiabilité** : recalculé, le classeur doit rendre **les chiffres de l'application** — mêmes quantités retenues, mêmes sections, mêmes exclusions, même arbitrage.
+- **Ce que le format ne permet pas doit être dit** : un tableur n'ajoute pas de lignes de lui-même, et l'aplatissement des nomenclatures est un instantané. Ces deux limites figurent dans le fichier.
+- **Statut** : **[EC]** — demande explicite ; réalisé, `reporting/fallback.py`, `test_classeur_de_repli.py`.
 
 ## D.8 Écarts, analyses, ajustements
 
@@ -1303,6 +1311,15 @@ un WIP de 5 `SF-10`, un produit fini compté en bord de ligne, un article exclu
 **Attendu** : `P-100 = 50` (30 comptés + 20 éclatés), `P-300 = 115`
 (105 arbitrés + 10 éclatés) ; le produit fini écarté ; l'article exclu retiré
 **après** l'éclatement mais **conservant son stock ERP**, donc son écart de −20.
+
+### R-3 bis — Le classeur de repli rend les chiffres de l'application
+**Entrée** : la même campagne que R-3, exportée en classeur de repli, puis
+**recalculée par un tableur**.
+**Attendu** : le journal du classeur porte les mêmes articles, les mêmes
+quantités et la même décomposition en trois sections que la consolidation de
+l'application. Corriger un comptage sur la feuille d'une zone met à jour la
+feuille de relevé et le journal ; corriger **un seul** des deux passages rouvre
+l'arbitrage et retire la ligne du total, comme à l'écran.
 
 ### R-4 — Une ligne de passage ne compte pas
 **Entrée** : un journal de précomptage portant 3 unités sur un emplacement

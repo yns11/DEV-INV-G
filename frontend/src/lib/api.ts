@@ -1077,6 +1077,13 @@ export const assistantApi = {
 
 export const downloads = {
   campaignWorkbook: (id: string) => `/campaigns/${id}/reports/campaign.xlsx`,
+  /**
+   * Le second fichier de l'export : la consolidation GENERIQUE **refaite par
+   * formules**. Le dossier est une photo, celui-ci se recalcule — c'est le
+   * repli du jour où l'application ne répond pas et où le journal doit partir.
+   */
+  consolidationFallback: (id: string) =>
+    `/campaigns/${id}/reports/consolidation-fallback.xlsx`,
   gridTemplate: (id: string, key: string) => `/campaigns/${id}/reports/grids/${key}.xlsx`,
   journal: (id: string, journalId: string) =>
     `/campaigns/${id}/reports/journals/${journalId}.xlsx`,

@@ -66,10 +66,21 @@ interface Filters {
   owner: string
   from: string
   to: string
+  /** Bornes sur la date de **création**, distinctes de celles du comptage. */
+  createdFrom: string
+  createdTo: string
   mine: boolean
 }
 
-const NO_FILTER: Filters = { text: '', status: '', owner: '', from: '', to: '', mine: false }
+const NO_FILTER: Filters = {
+  text: '', status: '', owner: '', from: '', to: '',
+  createdFrom: '', createdTo: '', mine: false,
+}
+
+/** La journée d'un horodatage ISO, sans passer par un fuseau. */
+function day(timestamp: string | null | undefined): string {
+  return (timestamp ?? '').slice(0, 10)
+}
 
 function matches(campaign: Campaign, filters: Filters, me: string): boolean {
   const needle = filters.text.trim().toLowerCase()
@@ -86,6 +97,11 @@ function matches(campaign: Campaign, filters: Filters, me: string): boolean {
   // no timezone to shift a count date by a day.
   if (filters.from && campaign.count_date < filters.from) return false
   if (filters.to && campaign.count_date > filters.to) return false
+  // La création se compare sur sa seule journée : l'horodatage porte l'heure,
+  // et « créées le 12 » exclurait tout ce qui l'a été après minuit.
+  const created = day(campaign.created_at)
+  if (filters.createdFrom && created < filters.createdFrom) return false
+  if (filters.createdTo && created > filters.createdTo) return false
   if (filters.mine && campaign.created_by !== me) return false
   return true
 }
@@ -286,7 +302,10 @@ function CampaignFilters({
   return (
     <Card>
       <div className="stack" style={{ gap: 'var(--space-3)' }}>
-      <div className="filters-row">
+      {/* Dense : sept champs sur une ligne au lieu de cinq. Les deux plages de
+          dates en prennent deux chacune, et une rangée qui passe à la ligne
+          sépare visuellement des filtres qui se lisent ensemble. */}
+      <div className="filters-row filters-row--dense">
         <Field label="Recherche">
           <SearchInput
             value={filters.text}
@@ -341,6 +360,27 @@ function CampaignFilters({
               aria-label="Comptage jusqu’au"
               value={filters.to}
               onChange={(e) => set('to', e.target.value)}
+            />
+          </div>
+        </Field>
+        </div>
+        <div className="field--wide">
+        <Field label="Date de création">
+          <div className="row" style={{ gap: 'var(--space-2)' }}>
+            <input
+              className="input"
+              type="date"
+              aria-label="Créée à partir du"
+              value={filters.createdFrom}
+              onChange={(e) => set('createdFrom', e.target.value)}
+            />
+            <span className="subtle">→</span>
+            <input
+              className="input"
+              type="date"
+              aria-label="Créée jusqu’au"
+              value={filters.createdTo}
+              onChange={(e) => set('createdTo', e.target.value)}
             />
           </div>
         </Field>
@@ -569,8 +609,18 @@ function CampaignTable({
       render: (campaign) => <span className="num">{fmtDate(campaign.count_date)}</span>,
       value: (campaign) => campaign.count_date,
     },
-    // La date de création reste sur la carte : la grille est déjà large, et
-    // c'est la date d'*inventaire* qui sert à retrouver une campagne.
+    {
+      key: 'created_at',
+      label: 'Créée le',
+      width: 140,
+      sortable: true,
+      // Distincte de la date de comptage, et les deux servent : l'une dit
+      // *quand l'inventaire a eu lieu*, l'autre *depuis quand ce dossier
+      // traîne*. Une campagne préparée en janvier pour un comptage de juin ne
+      // se retrouve que par la seconde.
+      render: (campaign) => <span className="num">{fmtDate(campaign.created_at)}</span>,
+      value: (campaign) => day(campaign.created_at),
+    },
     { key: 'created_by', label: 'Propriétaire', width: 180, sortable: true },
     {
       key: 'book_stock_frozen_at',

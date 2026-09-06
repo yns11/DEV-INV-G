@@ -1107,7 +1107,49 @@ export interface StockFlowReport {
 // Générés : la réponse est déclarée côté serveur, donc renommer un champ y
 // fait échouer `tsc` ici plutôt que d'afficher `undefined` à l'écran.
 
+/**
+ * Une campagne dont on pourrait reprendre une grille, et ce qu'elle en porte.
+ *
+ * `rows` est l'information qui fait choisir : sans elle, l'écran offre une
+ * liste de codes et de dates, on désigne au jugé, et on découvre après coup
+ * que la campagne ne portait rien sur cette grille.
+ */
+export interface CampaignSource {
+  id: string
+  code: string
+  label: string
+  status: CampaignStatus
+  countDate: string
+  createdAt: string | null
+  createdBy: string
+  rows: number
+}
+
 export type ErpJournal = Schemas['ErpJournalResponse']
+
+/**
+ * Une ligne de journal ERP, au grain où l'ERP la produit.
+ *
+ * `inScope` est la seule chose que l'application ajoute, et c'est celle qui
+ * décide de tout : hors périmètre, la ligne est conservée comme trace d'un
+ * déplacement et **ne compte pas**.
+ */
+export interface ErpJournalLine {
+  id: string
+  erp_line_number: number | null
+  site_id: string
+  warehouse_id: string
+  location_id: string
+  label_id: string
+  serial_number: string
+  item_number: string
+  unit: string
+  inventory_status_id: string
+  qtyOnHand: number
+  qtyCounted: number
+  varianceQty: number
+  inScope: boolean
+}
 export type ScopeCandidate = Schemas['ScopeCandidate']
 export type RescanLocation = Schemas['RescanLocation']
 export type LabelResolution = 'KEEP_NEW' | 'KEEP_SEALED' | 'RECOUNT'

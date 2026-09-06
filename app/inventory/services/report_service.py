@@ -19,6 +19,7 @@ from ..reporting.exports import (
     build_workbook,
 )
 from .analysis_service import AnalysisService
+from .campaign_source import grid_rows as campaign_grid_rows
 from .context import ENGINE_VERSION, ServiceContext, utcnow
 
 log = logging.getLogger(__name__)
@@ -821,69 +822,14 @@ def _printable_lines(
 
 
 def _grid_rows(ctx: ServiceContext, campaign: Campaign, key: str) -> list[list[Any]]:
-    match key:
-        case "items":
-            return [
-                [i.item_number, i.name, i.search_name, i.item_group,
-                 i.lifecycle_state, str(i.item_type), i.category, i.program,
-                 str(i.commonality), i.unit, float(i.std_price),
-                 ",".join(sorted(str(e) for e in i.exclusions))]
-                for i in ctx.referentials.list_items(campaign.id)
-            ]
-        case "boms":
-            items = ctx.referentials.items_by_number(campaign.id)
-            return [
-                [l.parent_item,
-                 items[l.parent_item].name if l.parent_item in items else "",
-                 l.child_item, float(l.qty_per), l.unit]
-                for l in ctx.referentials.list_bom_links(campaign.id)
-            ]
-        case "book_stock":
-            return [
-                [b.item_number, b.warehouse_id, b.location_id, float(b.qty),
-                 b.unit, float(b.unit_cost)]
-                for b in ctx.book_stock.list(campaign.id)
-            ]
-        case "locations":
-            return [
-                [l.warehouse_id, l.location_id, l.zone, str(l.type), str(l.status)]
-                for l in ctx.referentials.list_locations(campaign.id)
-            ]
-        case "zones":
-            return [
-                [z.code, z.label, z.sector, z.display_order]
-                for z in ctx.sheets.list_zones(campaign.id)
-            ]
-        case "count_sheets":
-            # Pass 1 only: both passes carry the same article list by
-            # construction, and exporting it twice would re-import as duplicates.
-            from ..domain.enums import SheetPass
+    """Une grille de cette campagne, dans l'ordre des colonnes du contrat.
 
-            zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
-            lines_by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
-            # Les intertitres et les lignes vides ne sortent pas : le fichier
-            # porte la sous-section en colonne, et l'import repose les
-            # séparateurs à partir d'elle. Les exporter en plus les
-            # dédoublerait au rechargement.
-            return [
-                [zones[sheet.zone_id].code, line.item_number, str(line.section),
-                 line.subsection, line.unit]
-                for sheet in ctx.sheets.list_sheets(campaign.id)
-                if sheet.pass_no is SheetPass.PASS_1 and sheet.zone_id in zones
-                for line in lines_by_sheet.get(sheet.id, ())
-                if line.line_kind is CountLineKind.ARTICLE
-            ]
-        case "adjustments":
-            return [
-                [a.item_number,
-                 a.physical_date.isoformat() if a.physical_date else "",
-                 str(a.kind), a.journal_number, float(a.qty), a.unit,
-                 float(a.value), a.warehouse_id, a.location_id, a.reason_code,
-                 a.comment]
-                for a in ctx.adjustments.list(campaign.id)
-            ]
-        case _:
-            return []
+    La définition vit à côté, dans :mod:`~inventory.services.campaign_source` :
+    elle sert à la fois l'export d'une grille et l'import « depuis une autre
+    campagne », et deux copies auraient fini par répondre différemment à la
+    même question — « que sait-on ressortir de cette campagne ? ».
+    """
+    return campaign_grid_rows(ctx, campaign, key)
 
 
 def _kpi_rows(kpis: Any) -> list[tuple[str, Any]]:

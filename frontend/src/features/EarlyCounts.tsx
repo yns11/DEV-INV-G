@@ -57,6 +57,7 @@ import {
   useErrorToast,
   useToast,
 } from '../components/ui'
+import { ErpJournalLinesModal } from './earlyCounts.journalLines'
 
 type View = 'journaux' | 'derives' | 'etiquettes' | 'rescanner'
 
@@ -257,6 +258,7 @@ function Journals({
   const contracts = useQuery({ queryKey: ['contracts'], queryFn: api.contracts })
   const contract = contracts.data?.find((c) => c.key === 'count_journal_lines')
   const [open, setOpen] = useState<string | null>(null)
+  const [lines, setLines] = useState<ErpJournal | null>(null)
 
   // Le geste inverse de « Déclarer et sceller », au même endroit que lui. Il
   // n'existait que dans l'onglet « À rescanner », c'est-à-dire là où une
@@ -362,6 +364,22 @@ function Journals({
         </span>
       ),
     },
+    {
+      key: 'open',
+      label: '',
+      width: 110,
+      sortable: false,
+      filter: false,
+      sticky: 'right',
+      // Ce que l'agrégat ne dit pas : d'où il vient. Un journal de six cents
+      // lignes n'en compte parfois que quatre cents, et c'est ici qu'on lit
+      // pourquoi.
+      render: (row) => (
+        <Button size="sm" variant="ghost" onClick={() => setLines(row)}>
+          Ouvrir
+        </Button>
+      ),
+    },
   ]
 
   return (
@@ -423,6 +441,13 @@ function Journals({
               campaignId={campaignId}
               journal={journals.find((j) => j.id === open)!}
               onDone={() => setOpen(null)}
+            />
+          )}
+          {lines && (
+            <ErpJournalLinesModal
+              campaignId={campaignId}
+              journal={lines}
+              onClose={() => setLines(null)}
             />
           )}
         </div>

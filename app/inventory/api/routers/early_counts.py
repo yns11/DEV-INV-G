@@ -6,7 +6,7 @@ analyses entre plusieurs campagnes.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 
@@ -17,6 +17,7 @@ from ..deps import CampaignDep, drift_service, early_count_service
 from ..responses import (
     DriftResponse,
     DriftsResolved,
+    ErpJournalLineResponse,
     ErpJournalResponse,
     LabelAlert,
     RecountedInPlace,
@@ -57,6 +58,24 @@ def _keys(payload: JournalScopeRequest) -> list[LocationKey]:
 def list_erp_journals(campaign: CampaignDep, service: Early) -> list[ErpJournalResponse]:
     """Les journaux tels que l'ERP les tient, avec leur périmètre déclaré."""
     return service.list_journals(campaign.id)
+
+
+@router.get(
+    "/journals/{erp_journal_id}/lines",
+    summary="Lignes brutes d'un journal ERP",
+    responses={200: {"model": list[ErpJournalLineResponse]}},
+)
+def erp_journal_lines(
+    campaign: CampaignDep, service: Early, erp_journal_id: str
+) -> list[dict[str, Any]]:
+    """Ce que l'ERP a réellement envoyé, ligne par ligne.
+
+    L'application agrège vers l'emplacement ; l'agrégat ne dit pas d'où il
+    vient. Chaque ligne porte donc son appartenance au périmètre déclaré —
+    hors périmètre, elle est conservée comme trace d'un déplacement et **ne
+    compte pas**.
+    """
+    return service.journal_lines(campaign.id, erp_journal_id)
 
 
 @router.get(

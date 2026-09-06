@@ -994,6 +994,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/early-counts/journals/{erp_journal_id}/lines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lignes brutes d'un journal ERP
+         * @description Ce que l'ERP a réellement envoyé, ligne par ligne.
+         *
+         *     L'application agrège vers l'emplacement ; l'agrégat ne dit pas d'où il
+         *     vient. Chaque ligne porte donc son appartenance au périmètre déclaré —
+         *     hors périmètre, elle est conservée comme trace d'un déplacement et **ne
+         *     compte pas**.
+         */
+        get: operations["erp_journal_lines_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__lines_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/early-counts/journals/{erp_journal_id}/scope": {
         parameters: {
             query?: never;
@@ -1773,6 +1798,61 @@ export interface paths {
          *     *would* happen, which is how a user checks a file before committing to it.
          */
         post: operations["import_file_api_campaigns__campaign_id__import__target__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/import/{target}/campaign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reprendre une grille d'une autre campagne
+         * @description Relire une campagne existante à la forme de cette grille.
+         *
+         *     Le référentiel articles d'un trimestre est celui du suivant à quelques
+         *     lignes près, un stock ERP de contrôle se rejoue, et les journaux de
+         *     comptage avancés d'une campagne annulée n'ont aucune raison d'être
+         *     ressaisis. La duplication de campagne couvre le cas où l'on repart de
+         *     zéro ; celui-ci couvre le cas — bien plus fréquent — où la campagne existe
+         *     déjà et où il ne manque qu'une grille.
+         *
+         *     Comme la lecture ERP, les lignes rentrent **au même point** qu'un fichier :
+         *     mêmes validations, même essai à blanc, même grille modifiable ensuite. Ce
+         *     n'est pas une porte dérobée dans le référentiel.
+         */
+        post: operations["import_from_campaign_api_campaigns__campaign_id__import__target__campaign_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/import/{target}/campaign-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Campagnes dont cette grille peut être reprise
+         * @description Les campagnes candidates, **et ce que chacune porte sur cette grille**.
+         *
+         *     Le décompte est ce qui fait choisir : sans lui, l'écran offre une liste de
+         *     codes et de dates, on désigne au jugé, et on découvre après coup que la
+         *     campagne ne portait rien.
+         */
+        get: operations["campaign_sources_api_campaigns__campaign_id__import__target__campaign_sources_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3291,6 +3371,40 @@ export interface components {
             allowFormulas: boolean;
         };
         /**
+         * CampaignSourceResponse
+         * @description Une campagne dont on pourrait reprendre une grille, et ce qu'elle porte.
+         *
+         *     ``rows`` est l'information qui fait choisir : sans elle, l'écran offre une
+         *     liste de codes et de dates, on désigne au jugé, et on découvre après coup
+         *     que la campagne ne portait rien sur cette grille.
+         */
+        CampaignSourceResponse: {
+            /** Code */
+            code: string;
+            /** Countdate */
+            countDate: string;
+            /** Createdat */
+            createdAt: string | null;
+            /**
+             * Createdby
+             * @default
+             */
+            createdBy: string;
+            /** Id */
+            id: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Rows */
+            rows: number;
+            /** Status */
+            status: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * CampaignStatus
          * @description Lifecycle of a campaign — PREPARATION → COUNTING → ANALYSIS → CLOSED.
          * @enum {string}
@@ -3521,6 +3635,66 @@ export interface components {
         DriftsResolved: {
             /** Resolved */
             resolved: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ErpJournalLineResponse
+         * @description Une ligne de journal ERP, au grain où l'ERP la produit.
+         *
+         *     ``inScope`` est la seule chose que l'application ajoute, et c'est celle qui
+         *     décide de tout : hors périmètre, la ligne est conservée comme trace d'un
+         *     déplacement et **ne compte pas**.
+         */
+        ErpJournalLineResponse: {
+            /** Erpjournalid */
+            erpJournalId: string;
+            /** Erplinenumber */
+            erpLineNumber: number | null;
+            /** Id */
+            id: string;
+            /** Inscope */
+            inScope: boolean;
+            /**
+             * Inventorystatusid
+             * @default
+             */
+            inventoryStatusId: string;
+            /** Itemnumber */
+            itemNumber: string;
+            /**
+             * Labelid
+             * @default
+             */
+            labelId: string;
+            /**
+             * Locationid
+             * @default
+             */
+            locationId: string;
+            /** Qtycounted */
+            qtyCounted: number;
+            /** Qtyonhand */
+            qtyOnHand: number;
+            /**
+             * Serialnumber
+             * @default
+             */
+            serialNumber: string;
+            /**
+             * Siteid
+             * @default
+             */
+            siteId: string;
+            /**
+             * Unit
+             * @default PCE
+             */
+            unit: string;
+            /** Varianceqty */
+            varianceQty: number;
+            /** Warehouseid */
+            warehouseId: string;
         } & {
             [key: string]: unknown;
         };
@@ -6551,6 +6725,42 @@ export interface operations {
             };
         };
     };
+    erp_journal_lines_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__lines_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                erp_journal_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErpJournalLineResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     declare_scope_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__scope_put: {
         parameters: {
             query?: never;
@@ -7876,6 +8086,83 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_from_campaign_api_campaigns__campaign_id__import__target__campaign_post: {
+        parameters: {
+            query: {
+                sourceCampaignId: string;
+                dryRun?: boolean;
+                replace?: boolean;
+                allowPartial?: boolean;
+            };
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                target: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    campaign_sources_api_campaigns__campaign_id__import__target__campaign_sources_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                target: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignSourceResponse"][];
                 };
             };
             /** @description Validation Error */

@@ -10,7 +10,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api, download, downloads } from '../lib/api'
 import { compositeKey, splitCompositeKey } from '../lib/rowKey'
-import type { GridContract, Journal, JournalStatus, Overview } from '../lib/types'
+import type {
+  GridContract,
+  Journal,
+  JournalLine,
+  JournalStatus,
+  Overview,
+} from '../lib/types'
 import {
   DASH,
   JOURNAL_STATUS_LABELS,
@@ -368,6 +374,115 @@ function JournalModal({
     onError: (error) => showError(error, 'Correction impossible'),
   })
 
+  const canEdit = editable && journal.status !== 'POSTED'
+
+  const lineColumns: Column<JournalLine>[] = [
+    {
+      key: 'item_number',
+      label: 'Article',
+      width: 180,
+      filter: 'text',
+      render: (row) => <span className="mono">{row.item_number}</span>,
+    },
+    {
+      key: 'qty_imported',
+      label: 'Importé',
+      width: 110,
+      numeric: true,
+      filter: 'range',
+      render: (row) =>
+        row.qty_imported === null ? (
+          <span className="subtle">—</span>
+        ) : (
+          <span className="subtle">{qty(row.qty_imported)}</span>
+        ),
+    },
+    {
+      key: 'qty_manual',
+      label: 'Corrigé',
+      width: 120,
+      numeric: true,
+      filter: 'range',
+      // La valeur importée reste à côté : c'est tout l'intérêt des deux
+      // colonnes, et recharger l'export dix fois dans la journée ne doit
+      // jamais effacer ce qu'une main a écrit ici.
+      render: (row) =>
+        canEdit ? (
+          <input
+            className="num"
+            inputMode="decimal"
+            defaultValue={row.qty_manual ?? ''}
+            placeholder="—"
+            aria-label={`Quantité corrigée ${row.item_number}`}
+            onBlur={(event) => {
+              const raw = event.target.value.trim()
+              const next = raw === '' ? null : Number(raw.replace(',', '.'))
+              if (next === (row.qty_manual ?? null)) return
+              if (next !== null && Number.isNaN(next)) return
+              saveLine.mutate({
+                lineId: row.id,
+                itemNumber: row.item_number,
+                qty: next,
+              })
+            }}
+          />
+        ) : row.qty_manual === null ? (
+          <span className="subtle">—</span>
+        ) : (
+          qty(row.qty_manual)
+        ),
+    },
+    {
+      key: 'qty',
+      label: 'Retenu',
+      width: 110,
+      numeric: true,
+      filter: 'range',
+      render: (row) => <strong>{qty(row.qty)}</strong>,
+    },
+    {
+      key: 'bookQty',
+      label: 'Stock ERP',
+      width: 120,
+      numeric: true,
+      filter: 'range',
+      render: (row) => <span className="subtle">{qty(row.bookQty)}</span>,
+    },
+    {
+      key: 'varianceQty',
+      label: 'Écart',
+      width: 110,
+      numeric: true,
+      filter: 'range',
+      render: (row) => (
+        <span
+          className={
+            row.varianceQty === 0 ? 'neutral' : row.varianceQty > 0 ? 'pos' : 'neg'
+          }
+        >
+          {qty(row.varianceQty)}
+        </span>
+      ),
+    },
+    { key: 'unit', label: 'Unité', width: 90, filter: 'choice' },
+    {
+      key: 'effectiveSource',
+      label: 'Source',
+      width: 150,
+      filter: 'choice',
+      render: (row) => (
+        <SourceBadge source={row.effectiveSource} overridden={row.isOverridden} />
+      ),
+    },
+    {
+      key: 'comment',
+      label: 'Commentaire',
+      width: 220,
+      filter: 'text',
+      render: (row) => row.comment || <span className="subtle">—</span>,
+    },
+  ]
+
   return (
     <Modal
       title={
@@ -427,69 +542,17 @@ function JournalModal({
               </Alert>
             )}
 
-            <div className="table-wrap" style={{ maxHeight: 420 }}>
-              <table className="data">
-                <thead>
-                  <tr>
-                    <th>Article</th>
-                    <th className="num">Importé</th>
-                    <th className="num">Corrigé</th>
-                    <th className="num">Retenu</th>
-                    <th className="num">Stock ERP</th>
-                    <th className="num">Écart</th>
-                    <th>Source</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.lines.map((line) => (
-                    <tr key={line.id}>
-                      <td className="mono">{line.item_number}</td>
-                      <td className="num subtle">
-                        {line.qty_imported === null ? '—' : qty(line.qty_imported)}
-                      </td>
-                      <td className="editable num">
-                        {editable && journal.status !== 'POSTED' ? (
-                          <input
-                            className="num"
-                            inputMode="decimal"
-                            defaultValue={line.qty_manual ?? ''}
-                            placeholder="—"
-                            onBlur={(event) => {
-                              const raw = event.target.value.trim()
-                              const next = raw === '' ? null : Number(raw.replace(',', '.'))
-                              if (next === (line.qty_manual ?? null)) return
-                              if (next !== null && Number.isNaN(next)) return
-                              saveLine.mutate({
-                                lineId: line.id,
-                                itemNumber: line.item_number,
-                                qty: next,
-                              })
-                            }}
-                          />
-                        ) : line.qty_manual === null ? (
-                          <span className="subtle">—</span>
-                        ) : (
-                          qty(line.qty_manual)
-                        )}
-                      </td>
-                      <td className="num">
-                        <strong>{qty(line.qty)}</strong>
-                      </td>
-                      <td className="num subtle">{qty(line.bookQty)}</td>
-                      <td className={`num ${line.varianceQty === 0 ? 'neutral' : line.varianceQty > 0 ? 'pos' : 'neg'}`}>
-                        {qty(line.varianceQty)}
-                      </td>
-                      <td>
-                        <SourceBadge
-                          source={line.effectiveSource}
-                          overridden={line.isOverridden}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataGrid<JournalLine>
+              rows={data.lines}
+              columns={lineColumns}
+              getRowId={(row) => row.id}
+              maxHeight={420}
+              exportTitle={`Journal ${journal.warehouse_id} ${journal.location_id}`}
+              campaignId={campaignId}
+              searchPlaceholder="Filtrer par référence…"
+              emptyTitle="Aucune ligne sur ce journal"
+              emptyBody="Chargez l’export ERP, ou saisissez une quantité."
+            />
 
             {journal.status === 'POSTED' && (
               <Alert tone="info" title="Journal posté">

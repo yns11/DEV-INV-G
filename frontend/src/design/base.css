@@ -507,6 +507,26 @@ h1, h2, h3, h4 {
   grid-column: span 2;
 }
 
+/* Sept champs sur une ligne plutôt que cinq.
+   Une barre de filtres qui passe à la ligne sépare visuellement des critères
+   qui se lisent ensemble, et fait descendre la grille d'autant. La piste
+   minimale se resserre donc — les listes déroulantes et la recherche s'en
+   accommodent, ce sont les plages de dates qui portent la contrainte, et
+   elles gardent leurs deux pistes. */
+.filters-row--dense {
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: var(--space-2) var(--space-3);
+}
+
+/* Un `input[type=date]` réclame plus large qu'il n'a besoin ; sans cela il
+   déborde sa piste au lieu de la partager avec sa borne jumelle. */
+.filters-row--dense .field--wide .input[type='date'] {
+  min-width: 0;
+  flex: 1 1 0;
+  padding-left: var(--space-2);
+  padding-right: var(--space-2);
+}
+
 .filters-row .field,
 .filters-row .input,
 .filters-row .select,

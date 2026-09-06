@@ -42,6 +42,11 @@ const EXCEPTION_PILLS: Array<{ code: string; label: string; hint: string }> = [
     label: 'Soldés à zéro',
     hint: 'Stock ERP en GENERIQUE que personne n’a compté : le journal le solde explicitement.',
   },
+  {
+    code: 'UNKNOWN_ITEM',
+    label: 'Hors référentiel',
+    hint: 'Comptés dans GENERIQUE mais absents du référentiel articles : écartés du journal, sans désignation ni prix, ils n’y seraient valorisables par rien. La quantité est ici pour être corrigée — sur la feuille, ou en complétant le référentiel.',
+  },
 ]
 
 // --------------------------------------------------------------------------- //

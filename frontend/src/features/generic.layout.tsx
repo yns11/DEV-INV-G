@@ -139,6 +139,19 @@ export function SheetLayoutModal({
     edit(next)
   }
 
+  /**
+   * Vider une section entière.
+   *
+   * Une section se refait parfois de zéro — un bord de ligne réorganisé, un
+   * WIP qui a changé d'atelier — et la retirer ligne à ligne sur quatre-vingts
+   * références est le genre de travail qui fait renoncer, donc garder une
+   * feuille fausse. Rien n'est écrit avant « Enregistrer » : le geste se défait
+   * par « Annuler les modifications », comme les autres.
+   */
+  const clearSection = (section: string) => {
+    edit(lines.filter((line) => String(line.section ?? 'LINE_SIDE') !== section))
+  }
+
   /** Les lignes d'une section, avec leur rang dans le document entier. */
   const bySection = useMemo(() => {
     const groups: Record<string, Array<{ line: LayoutLine; index: number }>> = {}
@@ -212,6 +225,23 @@ export function SheetLayoutModal({
                       Laissez vide pour reprendre le texte par défaut.
                     </span>
                   </label>
+
+                  {group.length > 0 && (
+                    <div className="row">
+                      <span className="subtle">
+                        {group.length} ligne(s) dans cette section
+                      </span>
+                      <span className="spacer" />
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title={`Retirer les ${group.length} lignes de la section ${sectionLabel(section)}`}
+                        onClick={() => clearSection(section)}
+                      >
+                        Vider la section
+                      </Button>
+                    </div>
+                  )}
 
                   <table className="data">
                     <tbody>

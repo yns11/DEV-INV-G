@@ -546,11 +546,27 @@ export function SheetModal({
                   searchPlaceholder="Filtrer les lignes…"
                   maxHeight={454}
                   toolbar={
-                    !draft && editable && section === PRINTED_SECTIONS[0] ? (
-                      <Button size="sm" onClick={() => setDraft(rows)}>
-                        Modifier les lignes
-                      </Button>
-                    ) : null
+                    <>
+                      {!draft && editable && section === PRINTED_SECTIONS[0] && (
+                        <Button size="sm" onClick={() => setDraft(rows)}>
+                          Modifier les lignes
+                        </Button>
+                      )}
+                      {/* Une section se refait parfois de zéro. La vider ligne
+                          à ligne sur quatre-vingts références est le genre de
+                          travail qui fait renoncer — donc garder une feuille
+                          fausse. Rien n'est écrit avant « Enregistrer ». */}
+                      {draft && editable && (bySection[section] ?? []).length > 0 && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title={`Retirer les ${(bySection[section] ?? []).length} lignes de cette section`}
+                          onClick={() => replaceSection(section, [])}
+                        >
+                          Vider la section
+                        </Button>
+                      )}
+                    </>
                   }
                 />
               </Card>

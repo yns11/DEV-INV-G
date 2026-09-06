@@ -482,18 +482,41 @@ def consolidate_generic(payload: ConsolidationInput) -> ConsolidationResult:
             continue
 
         if item is None:
+            # **Hors référentiel, hors journal.** La ligne partait quand même,
+            # et c'était la seule quantité du journal que rien ne pouvait
+            # valoriser : ni désignation, ni prix, ni type, donc aucun écart
+            # calculable et aucune règle de matérialité applicable. Postée dans
+            # l'ERP, elle y désigne un article qui n'existe pas dans le
+            # référentiel de la campagne — un import qui échoue à la ligne près,
+            # ou pire, un article homonyme.
+            #
+            # La règle est la même que partout ailleurs : le référentiel fait
+            # foi, et une référence inconnue est une erreur de ligne, jamais un
+            # article créé par effet de bord. La quantité n'est pas perdue pour
+            # autant — elle est nommée, chiffrée, rattachée à ses zones, et la
+            # pastille « Hors référentiel » de l'écran la montre.
             result.findings.append(
                 ControlFinding(
                     code="UNKNOWN_ITEM",
                     severity=ControlSeverity.WARNING,
                     message=(
                         f"{item_number} est compté dans GENERIQUE mais absent du "
-                        "référentiel articles de la campagne."
+                        "référentiel articles de la campagne : sa quantité est "
+                        "écartée du journal consolidé. Ajoutez-le au référentiel, "
+                        "ou corrigez la référence sur la feuille."
                     ),
                     entity_type="consolidation",
                     item_number=item_number,
+                    context={
+                        "qty": str(total),
+                        "zone": ", ".join(sorted(contributors.get(item_number, ()))),
+                        "lineSide": str(qty_ls),
+                        "wipOk": str(qty_ok),
+                        "wipExploded": str(qty_wip),
+                    },
                 )
             )
+            continue
 
         result.lines.append(
             ConsolidatedLine(

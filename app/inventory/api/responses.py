@@ -50,6 +50,8 @@ from ..ingest.contracts import FieldType
 
 __all__ = [
     "ScopeLocation",
+    "CampaignSourceResponse",
+    "ErpJournalLineResponse",
     "ErpJournalResponse",
     "ScopeCandidate",
     "ScopeDeclared",
@@ -414,6 +416,50 @@ class GridContractResponse(Payload):
 class ScopeLocation(Payload):
     warehouse_id: str = Field(alias="warehouseId")
     location_id: str = Field(alias="locationId")
+
+
+class ErpJournalLineResponse(Payload):
+    """Une ligne de journal ERP, au grain où l'ERP la produit.
+
+    ``inScope`` est la seule chose que l'application ajoute, et c'est celle qui
+    décide de tout : hors périmètre, la ligne est conservée comme trace d'un
+    déplacement et **ne compte pas**.
+    """
+
+    id: str
+    erp_journal_id: str = Field(alias="erpJournalId")
+    erp_line_number: int | None = Field(default=None, alias="erpLineNumber")
+    site_id: str = Field(default="", alias="siteId")
+    warehouse_id: str = Field(alias="warehouseId")
+    location_id: str = Field(default="", alias="locationId")
+    #: Un identifiant se transporte : ni majuscules, ni zéros de tête retirés.
+    label_id: str = Field(default="", alias="labelId")
+    serial_number: str = Field(default="", alias="serialNumber")
+    item_number: str = Field(alias="itemNumber")
+    unit: str = "PCE"
+    inventory_status_id: str = Field(default="", alias="inventoryStatusId")
+    qty_on_hand: float = Field(alias="qtyOnHand")
+    qty_counted: float = Field(alias="qtyCounted")
+    variance_qty: float = Field(alias="varianceQty")
+    in_scope: bool = Field(alias="inScope")
+
+
+class CampaignSourceResponse(Payload):
+    """Une campagne dont on pourrait reprendre une grille, et ce qu'elle porte.
+
+    ``rows`` est l'information qui fait choisir : sans elle, l'écran offre une
+    liste de codes et de dates, on désigne au jugé, et on découvre après coup
+    que la campagne ne portait rien sur cette grille.
+    """
+
+    id: str
+    code: str
+    label: str = ""
+    status: str
+    count_date: str = Field(alias="countDate")
+    created_at: str | None = Field(default=None, alias="createdAt")
+    created_by: str = Field(default="", alias="createdBy")
+    rows: int
 
 
 class ErpJournalResponse(Payload):

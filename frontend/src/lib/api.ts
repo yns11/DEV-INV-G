@@ -12,6 +12,8 @@ import type {
   Drift,
   DriftResolution,
   ErpJournal,
+  ErpJournalLine,
+  CampaignSource,
   LabelAlert,
   RecountedInPlace,
   LabelResolution,
@@ -457,6 +459,30 @@ export const api = {
       })}`,
       { method: 'POST' },
     ),
+  /** Les campagnes dont cette grille peut être reprise, et ce qu'elles portent. */
+  campaignSources: (id: string, target: string) =>
+    request<CampaignSource[]>(
+      `/campaigns/${id}/import/${target}/campaign-sources`,
+    ),
+  /**
+   * Reprendre une grille d'une autre campagne.
+   *
+   * Les lignes rentrent au même point qu'un fichier : mêmes validations, même
+   * essai à blanc, même grille modifiable ensuite. Ce n'est pas une porte
+   * dérobée dans le référentiel.
+   */
+  importFromCampaign: (id: string, target: string, sourceCampaignId: string, options: {
+    dryRun?: boolean
+    replace?: boolean
+  } = {}) =>
+    request<ImportResult & ImportPreview>(
+      `/campaigns/${id}/import/${target}/campaign${qs({
+        sourceCampaignId,
+        dryRun: options.dryRun || undefined,
+        replace: options.replace || undefined,
+      })}`,
+      { method: 'POST' },
+    ),
   importPaste: (id: string, target: string, text: string, options: {
     dryRun?: boolean
     replace?: boolean
@@ -483,6 +509,11 @@ export const api = {
   // -------------------------------------------------------- comptages avancés
   erpJournals: (id: string) =>
     request<ErpJournal[]>(`/campaigns/${id}/early-counts/journals`),
+  /** Les lignes brutes d'un journal ERP, telles que l'ERP les a produites. */
+  erpJournalLines: (id: string, journalId: string) =>
+    request<ErpJournalLine[]>(
+      `/campaigns/${id}/early-counts/journals/${journalId}/lines`,
+    ),
   scopeProposal: (id: string, journalId: string) =>
     request<ScopeCandidate[]>(
       `/campaigns/${id}/early-counts/journals/${journalId}/scope-proposal`,

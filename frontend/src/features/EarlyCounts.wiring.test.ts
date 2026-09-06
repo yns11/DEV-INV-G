@@ -16,7 +16,19 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf
 const APP = read('../App.tsx')
 const NAVIGATION = read('../lib/navigation.ts')
 const API = read('../lib/api.ts')
-const SCREEN = read('./EarlyCounts.tsx')
+/**
+ * L'écran, et les fenêtres qu'il ouvre.
+ *
+ * Une modale ouverte *depuis* l'écran en fait partie : elle n'est pas un
+ * second écran, elle n'a ni route ni entrée de navigation, et l'exigence est la
+ * même — ce que le client expose doit être appelé de quelque part. Les nommer
+ * une par une plutôt que balayer le dossier : le jour où un module cesse d'être
+ * ouvert par l'écran, la liste le dit.
+ */
+const SCREEN = [
+  read('./EarlyCounts.tsx'),
+  read('./earlyCounts.journalLines.tsx'),
+].join('\n')
 const ROUTER = read('../../../app/inventory/api/routers/early_counts.py')
 
 describe("l'écran est atteignable", () => {
@@ -60,16 +72,17 @@ describe('le client vise des adresses que le serveur sert', () => {
     ...ROUTER.matchAll(/@router\.(get|post|put)\(\s*\n?\s*"([^"]+)"/g),
   ].map((match) => match[2] ?? '')
 
-  it('le routeur en déclare dix', () => {
-    // Onze avant : le lot avancé en portait cinq — ouvrir, lister, clore,
-    // sceller, desceller. Le journal ERP *est* le précomptage, et déclarer son
-    // périmètre scelle ; il reste le descellement, plus les deux routes que le
-    // traitement des étiquettes a demandées.
-    expect(served).toHaveLength(10)
+  it('le routeur en déclare onze', () => {
+    // Dix, puis onze : les lignes brutes d'un journal ERP vivaient en base sans
+    // qu'aucun écran ne les montre. L'application agrège vers l'emplacement, et
+    // l'agrégat ne dit pas d'où il vient — un journal de six cents lignes n'en
+    // compte parfois que quatre cents.
+    expect(served).toHaveLength(11)
   })
 
   it.each([
     ['erpJournals', '/journals'],
+    ['erpJournalLines', '/lines'],
     ['scopeProposal', '/scope-proposal'],
     ['declareScope', '/scope'],
     ['unsealJournal', '/unseal'],
@@ -105,8 +118,8 @@ describe("l'écran appelle réellement le client", () => {
       return API.slice(start, start + 600).includes('/early-counts')
     })
 
-  it('le client en expose dix, une par route', () => {
-    expect(methods).toHaveLength(10)
+  it('le client en expose onze, une par route', () => {
+    expect(methods).toHaveLength(11)
   })
 
   it.each(methods.map((name) => [name]))('api.%s', (name) => {

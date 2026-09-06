@@ -166,7 +166,19 @@ n'aurait aucun sens.
    besoin pour compléter une ligne à la main. Pour ressortir du champ au
    clavier : **Échap**, puis Tab (ou Maj+Tab, qui n'a jamais changé).
 
-Les trois passent par la **même vérification** : les lignes sont validées une à
+4. **Reprendre d'une autre campagne** — le référentiel d'un trimestre est celui
+   du suivant à quelques lignes près. La fenêtre de choix liste les campagnes
+   existantes **avec ce que chacune porte sur cette grille** : « INV-2026-06 ·
+   4 128 articles » se choisit d'un coup d'œil, et une campagne qui ne porte
+   rien se voit sans être ouverte. Le geste existe sur toutes les grilles qu'une
+   campagne sait redonner — articles, nomenclatures, stock ERP, emplacements,
+   zones, feuilles, **journaux de comptage avancés**, ajustements.
+
+   > À ne pas confondre avec la duplication de campagne (1.2), qui *crée* une
+   > campagne à partir d'une autre. Celle-ci remplit une grille d'une campagne
+   > qui existe déjà.
+
+Les quatre passent par la **même vérification** : les lignes sont validées une à
 une et le résultat s'affiche — acceptées, rejetées, pourquoi, à quelle ligne —
 **avant** que quoi que ce soit ne soit enregistré. Et dans les trois cas la
 grille reste modifiable ensuite : une désignation se corrige à la main, un prix
@@ -301,6 +313,13 @@ trio feuille + article + section qui doit être unique, pas l'article.
 
 Les lignes sont posées sur **les deux comptages**, quantités vides. Ne
 pré-remplir que le n°1 rendrait le n°2 aveugle et fausserait l'arbitrage.
+
+**Vider une section.** L'aperçu de la feuille, comme l'écran de saisie, permet
+de retirer d'un geste toutes les lignes d'une section. Une section se refait
+parfois de zéro — un bord de ligne réorganisé, un WIP qui a changé d'atelier —
+et la vider ligne à ligne sur quatre-vingts références est le genre de travail
+qui fait renoncer, donc garder une feuille fausse. Rien n'est écrit avant
+« Enregistrer ».
 
 **Nombre de comptages.** Sélectionnez des zones dans la grille et choisissez
 « Un seul comptage » ou « Double comptage ». Le double comptage est la règle ;
@@ -455,6 +474,12 @@ Le déroulé, pour chaque journal de précomptage :
    Un journal réel couvre parfois cinquante emplacements ou plus : la colonne
    *Périmètre* en affiche le nombre et les deux premiers. La liste entière
    s'obtient au survol, et part telle quelle dans le filtre et l'export Excel.
+3 bis. **Ouvrir un journal** montre ses lignes brutes, telles que l'ERP les a
+   produites : numéro de ligne, emplacement, étiquette, numéro de série, stock
+   ERP, quantité comptée, écart. La colonne **Périmètre** dit lesquelles
+   comptent — un journal porte des lignes sur des emplacements qu'il ne couvre
+   pas, et celles-là sont la trace d'un déplacement. La grille se filtre, se
+   trie et s'exporte comme les autres.
 4. **Balisez physiquement** les emplacements. Cette étape n'est pas dans
    l'application, mais c'est elle qui rend tout le reste valable.
 
@@ -679,7 +704,9 @@ Le bandeau de campagne affiche deux jauges :
 
 ### 2.6 Corriger une ligne
 
-Ouvrez un journal, saisissez la quantité dans la colonne **Corrigé**. La valeur
+Ouvrez un journal : la grille se manœuvre comme les autres — filtres par
+colonne, choix des colonnes, totaux en pied, export. Saisissez la quantité dans
+la colonne **Corrigé**. La valeur
 importée reste visible à côté, et le badge de source passe à *Saisie manuelle*.
 
 L'écran affiche aussi les **articles du stock ERP que personne n'a comptés**
@@ -963,6 +990,11 @@ manquent, et ce qui bloque. Le bouton **Consolider** :
 2. applique la règle de chaque section (tel quel / éclaté) ;
 3. exclut les articles hors périmètre GENERIQUE — **après** l'éclatement, pour
    ne pas perdre les composants d'un assemblage hors périmètre ;
+   **et écarte les articles absents du référentiel** : sans article, une ligne
+   n'a ni désignation, ni prix, ni type, donc rien pour la valoriser, et postée
+   dans l'ERP elle y désignerait une référence que la campagne ne connaît pas.
+   La quantité n'est pas perdue — la pastille **Hors référentiel** la nomme,
+   la chiffre et dit de quelles zones elle vient ;
 4. alimente le journal INVV de `B06VRAC / GENERIQUE` ;
 5. produit la **décomposition du WIP** : quel assemblage a produit quelle
    quantité de quel composant, dans quelle zone.

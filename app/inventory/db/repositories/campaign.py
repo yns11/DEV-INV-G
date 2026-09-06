@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, ClassVar
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -86,6 +86,52 @@ class CampaignRepository(_Base):
             (limit, offset),
         )
         return [self._to_model(r) for r in rows], int(total["n"]) if total else 0
+
+    #: Où compter les lignes d'une grille, par campagne.
+    #:
+    #: Le nom des tables appartient au dépôt ; quelles grilles se reprennent
+    #: appartient au service. Les deux listes doivent se recouvrir, et
+    #: ``tests/test_import_campagne.py`` l'exige — une grille reprenable sans
+    #: requête de comptage s'afficherait « 0 ligne » sur toutes les campagnes,
+    #: donc inchoisissable, alors qu'elle porte de quoi remplir.
+    _GRID_TABLES: ClassVar[dict[str, tuple[str, str]]] = {
+        "items": ("item", "deleted_at IS NULL"),
+        "boms": ("bom_link", "deleted_at IS NULL"),
+        "book_stock": ("book_stock", ""),
+        "locations": ("location", ""),
+        "zones": ("zone", "deleted_at IS NULL"),
+        # Le passage 1 seul : les deux feuilles portent la même liste, et
+        # compter les deux annoncerait le double de ce qui serait repris.
+        "count_sheets": (
+            "count_sheet_line l JOIN count_sheet s ON s.id = l.sheet_id",
+            "l.deleted_at IS NULL AND l.line_kind = 'ARTICLE' "
+            "AND s.pass_no = 'PASS_1'",
+        ),
+        "count_journal_lines": ("erp_journal_line", ""),
+        "adjustments": ("adjustment_line", "deleted_at IS NULL"),
+    }
+
+    def grid_counts(self, grid_key: str) -> dict[str, int]:
+        """Combien de lignes chaque campagne porte sur cette grille.
+
+        Une seule requête pour toutes les campagnes : l'écran de reprise en
+        affiche une par ligne, et interroger campagne par campagne ferait deux
+        cents allers-retours pour remplir une liste.
+        """
+        entry = self._GRID_TABLES.get(grid_key)
+        if entry is None:
+            return {}
+        table, where = entry
+        alias = "l." if " JOIN " in table else ""
+        clauses = [f"{alias}campaign_id IS NOT NULL"]
+        if where:
+            clauses.append(where)
+        rows = self._fetch_all(
+            f"SELECT {alias}campaign_id AS cid, count(*) AS n FROM {table} "
+            f"WHERE {' AND '.join(clauses)} GROUP BY {alias}campaign_id",
+            (),
+        )
+        return {str(r["cid"]): int(r["n"]) for r in rows}
 
     def get(self, campaign_id: str) -> Campaign:
         row = self._fetch_one(

@@ -404,6 +404,48 @@ class EarlyCountService:
             for journal in self.ctx.erp_journals.list(campaign_id)
         ]
 
+    def journal_lines(
+        self, campaign_id: str, erp_journal_id: str
+    ) -> list[dict[str, Any]]:
+        """Les lignes brutes d'un journal ERP, telles que l'ERP les a produites.
+
+        Elles existaient en base sans qu'aucun écran ne les montre. C'est
+        pourtant ce qu'on veut lire quand un périmètre surprend, quand une
+        étiquette est signalée, ou simplement pour vérifier qu'un import a
+        rapporté ce qu'on croit : l'application agrège vers l'emplacement, et
+        l'agrégat ne dit pas d'où il vient.
+
+        Chaque ligne porte son appartenance au périmètre déclaré. C'est la seule
+        chose que l'application ajoute à la ligne, et c'est celle qui décide de
+        tout : une ligne hors périmètre est conservée comme trace d'un
+        déplacement, mais **elle ne compte pas** — sans le dire, la grille
+        laisserait additionner des quantités que le journal ne retient pas.
+        """
+        journal = next(
+            (
+                j
+                for j in self.ctx.erp_journals.list(campaign_id)
+                if j.id == erp_journal_id
+            ),
+            None,
+        )
+        if journal is None:
+            raise NotFoundError(
+                "Journal ERP introuvable dans cette campagne.",
+                erpJournalId=erp_journal_id,
+            )
+        scope = {(k.warehouse_id, k.location_id) for k in journal.scope}
+        return [
+            {
+                **line.model_dump(mode="json"),
+                "qtyOnHand": float(line.qty_on_hand),
+                "qtyCounted": float(line.qty_counted),
+                "varianceQty": float(line.variance_qty),
+                "inScope": (line.warehouse_id, line.location_id) in scope,
+            }
+            for line in self.ctx.erp_journals.lines(campaign_id, erp_journal_id)
+        ]
+
     # -------------------------------------------------------------- étiquettes
 
     def label_alerts(self, campaign_id: str) -> list[dict[str, Any]]:

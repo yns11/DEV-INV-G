@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from ..db import new_id
@@ -17,12 +18,27 @@ from ..domain.workflow import (
     derive_zone_status,
     passes_for,
 )
-from ..errors import ConflictError, ValidationError
+from ..errors import (
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
 from .context import ENGINE_VERSION, ServiceContext, utcnow
 
 log = logging.getLogger(__name__)
 
-__all__ = ["CampaignService", "DEFAULT_THRESHOLDS"]
+__all__ = ["CampaignService", "DEFAULT_THRESHOLDS", "MAX_BULK_DELETE"]
+
+
+#: Combien de campagnes une suppression en lot accepte d'un coup.
+#:
+#: La même borne que la page de la liste : on supprime ce qu'on voit, et une
+#: borne plus haute que ce que l'écran montre serait une borne qu'on ne peut
+#: pas atteindre en cochant. Elle existe surtout pour qu'un appel malformé
+#: — ou une sélection oubliée sur dix mille lignes — soit refusé avec un
+#: message plutôt que d'occuper la base une minute.
+MAX_BULK_DELETE = 100
 
 
 #: Sensible starting thresholds, derived from the historical analysis of the
@@ -253,6 +269,104 @@ class CampaignService:
             )
             ctx.campaigns.soft_delete(campaign_id, actor=ctx.actor, conn=conn)
         log.info("Campaign %s deleted by %s", campaign.code, ctx.actor)
+
+    def delete_many(self, campaign_ids: Sequence[str]) -> list[str]:
+        """Retirer un lot de campagnes, en une fois et sous les mêmes règles.
+
+        Le geste manquait, et il manquait là où on en a le plus besoin : après
+        quelques années, la liste porte les essais, les campagnes annulées et
+        les doublons d'un import raté. Les retirer une par une — ouvrir, lire,
+        confirmer, recommencer — est ce qui fait qu'on ne le fait pas.
+
+        **Tout ou rien.** Le lot est vérifié en entier avant qu'une seule ligne
+        ne bouge, et un seul refus arrête l'ensemble en nommant les fautives.
+        Une suppression à moitié appliquée est le pire des trois résultats
+        possibles : on a sélectionné huit campagnes, cinq ont disparu, et il
+        faut relire la liste pour savoir lesquelles.
+
+        **Les mêmes règles qu'une par une**, et c'est pour cela que la
+        vérification passe par :meth:`ServiceContext.require_owner` plutôt que
+        par une condition réécrite ici : une seconde expression de « seul son
+        auteur peut la supprimer » aurait pu diverger, et c'est le lot — dix
+        campagnes d'un coup — qui aurait profité de l'écart.
+
+        Les refus sont **tous** rassemblés avant d'être levés. Rendre la main
+        sur la première fautive ferait recommencer autant de fois qu'il y en a,
+        et chaque essai ne montrerait que la suivante.
+
+        :returns: les codes supprimés, dans l'ordre demandé.
+        :raises ValidationError: lot vide, ou au-delà de :data:`MAX_BULK_DELETE`.
+        :raises PermissionDeniedError: une au moins n'appartient pas à l'acteur.
+        :raises NotFoundError: une au moins n'existe pas ou est déjà retirée.
+        """
+        ctx = self.ctx
+        # Dédoublonné en gardant l'ordre : une même campagne cochée deux fois
+        # par deux chemins ne doit pas produire deux traces d'audit.
+        wanted = list(dict.fromkeys(campaign_ids))
+        if not wanted:
+            raise ValidationError("Aucune campagne à supprimer.")
+        if len(wanted) > MAX_BULK_DELETE:
+            raise ValidationError(
+                f"{len(wanted)} campagnes demandées : la suppression en lot en "
+                f"accepte {MAX_BULK_DELETE} au maximum.",
+                requested=len(wanted),
+                maximum=MAX_BULK_DELETE,
+            )
+
+        campaigns: list[Campaign] = []
+        missing: list[str] = []
+        refused: list[str] = []
+        for campaign_id in wanted:
+            try:
+                campaign = ctx.campaigns.get(campaign_id)
+            except NotFoundError:
+                missing.append(campaign_id)
+                continue
+            try:
+                ctx.require_owner(campaign, "supprimer une campagne")
+            except PermissionDeniedError:
+                refused.append(campaign.code)
+                continue
+            campaigns.append(campaign)
+
+        # L'ordre des deux refus n'est pas indifférent : « elle ne vous
+        # appartient pas » se corrige en décochant, « elle n'existe plus » se
+        # corrige en rafraîchissant. La première est celle qu'on veut lire.
+        if refused:
+            raise PermissionDeniedError(
+                f"{len(refused)} campagne(s) du lot ne vous appartiennent pas : "
+                f"{', '.join(refused)}. Aucune n'a été supprimée.",
+                codes=refused,
+            )
+        if missing:
+            raise NotFoundError(
+                f"{len(missing)} campagne(s) du lot n'existent plus ou ont déjà "
+                "été supprimées. Aucune n'a été supprimée.",
+                campaignIds=missing,
+            )
+
+        with ctx.db.transaction() as conn:
+            for campaign in campaigns:
+                # Une trace par campagne, et non une pour le lot : l'audit se
+                # relit campagne par campagne, et une entrée unique portant dix
+                # codes serait invisible depuis neuf d'entre elles.
+                ctx.record(
+                    campaign_id=campaign.id,
+                    action=AuditAction.DELETE,
+                    entity_type="campaign",
+                    entity_id=campaign.id,
+                    summary=(
+                        f"Suppression de la campagne {campaign.code} "
+                        f"(lot de {len(campaigns)})"
+                    ),
+                    before={"code": campaign.code, "status": str(campaign.status)},
+                    conn=conn,
+                )
+                ctx.campaigns.soft_delete(campaign.id, actor=ctx.actor, conn=conn)
+
+        codes = [campaign.code for campaign in campaigns]
+        log.info("Campaigns %s deleted by %s", ", ".join(codes), ctx.actor)
+        return codes
 
     def clone(
         self,

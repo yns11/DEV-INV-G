@@ -247,6 +247,12 @@ export const api = {
     }),
   deleteCampaign: (id: string) =>
     request<void>(`/campaigns/${id}`, { method: 'DELETE' }),
+  /** Tout ou rien : un seul refus arrête le lot et le dit. */
+  deleteCampaigns: (ids: string[]) =>
+    request<{ deleted: number; codes: string[] }>('/campaigns/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
   transitionReadiness: (id: string, target: string) =>
     request<TransitionReadiness>(`/campaigns/${id}/transition-readiness${qs({ target })}`),
   // Lisible pendant toute la phase d'analyse, et pas seulement dans la fenêtre

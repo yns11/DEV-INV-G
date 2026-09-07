@@ -63,6 +63,7 @@ __all__ = [
     "CampaignPage",
     "ClosureChecklistResponse",
     "DeletedResponse",
+    "BulkDeletedResponse",
     "BulkArbitrationResponse",
     "SectionLabelsResponse",
     "GridContractResponse",
@@ -235,6 +236,18 @@ class CampaignPage(Payload):
 
 class DeletedResponse(Payload):
     deleted: bool
+
+
+class BulkDeletedResponse(Payload):
+    """Ce qu'une suppression en lot a retiré.
+
+    Les codes et non seulement le compte : c'est ce qui permet au message de
+    dire *quoi*, et à qui vient d'en supprimer douze de reconnaître la
+    treizième qui n'y est pas.
+    """
+
+    deleted: int
+    codes: list[str]
 
 
 class BulkArbitrationResponse(Payload):

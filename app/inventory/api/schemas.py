@@ -25,12 +25,14 @@ from ..domain.enums import (
     LabelResolution,
     LocationStatus,
 )
+from ..services.campaign_service import MAX_BULK_DELETE
 
 __all__ = [
     "ApiModel",
     "ErrorPayload",
     "CreateCampaignRequest",
     "CloneCampaignRequest",
+    "DeleteCampaignsRequest",
     "TransitionRequest",
     "ThresholdPayload",
     "UpdateThresholdsRequest",
@@ -210,6 +212,17 @@ class CloneCampaignRequest(ApiModel):
     count_date: dt.date = Field(alias="countDate")
     include_zones: bool = Field(default=True, alias="includeZones")
     include_sheet_lines: bool = Field(default=True, alias="includeSheetLines")
+
+
+class DeleteCampaignsRequest(ApiModel):
+    """Le lot à retirer.
+
+    Borné par le contrat lui-même et non seulement par le service : une liste
+    sans borne est une requête qu'on peut envoyer, et refuser cent mille
+    identifiants après les avoir lus coûte déjà de les avoir lus.
+    """
+
+    ids: list[str] = Field(min_length=1, max_length=MAX_BULK_DELETE)
 
 
 class TransitionRequest(ApiModel):

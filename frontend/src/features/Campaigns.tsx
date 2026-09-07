@@ -110,6 +110,10 @@ export function CampaignsPage() {
   const [creating, setCreating] = useState(false)
   const [cloning, setCloning] = useState<Campaign | null>(null)
   const [deleting, setDeleting] = useState<Campaign | null>(null)
+  // La sélection porte des identifiants et non des campagnes : elle survit à un
+  // rechargement de la liste, qui remplace les objets sans changer les clés.
+  const [selection, setSelection] = useState<Set<string>>(new Set())
+  const [deletingBatch, setDeletingBatch] = useState(false)
   const [display, setDisplayState] = useState<Display>(readDisplay)
   const [filters, setFilters] = useState<Filters>(NO_FILTER)
   // Le serveur borne la page. `limit` monte quand l'utilisateur demande la
@@ -158,6 +162,22 @@ export function CampaignsPage() {
 
   const filtering = JSON.stringify(filters) !== JSON.stringify(NO_FILTER)
   const total = loaded.length
+
+  // Ce qui est **coché et visible**. Une campagne cochée puis chassée par un
+  // filtre ne doit pas partir avec le lot : elle n'est plus à l'écran, et
+  // personne ne la relit avant de confirmer. L'inverse — la décocher d'office —
+  // ferait perdre la sélection à chaque frappe dans la barre de recherche.
+  const chosen = useMemo(
+    () => shown.filter((campaign) => selection.has(campaign.id)),
+    [shown, selection],
+  )
+  const toggleOne = (id: string) => {
+    setSelection((current) => {
+      const next = new Set(current)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
+  }
 
   return (
     <div className="stack" style={{ gap: 'var(--space-5)' }}>
@@ -210,6 +230,15 @@ export function CampaignsPage() {
               loading={query.isFetching}
             />
 
+            {chosen.length > 0 && (
+              <SelectionBar
+                chosen={chosen}
+                actor={actor}
+                onClear={() => setSelection(new Set())}
+                onDelete={() => setDeletingBatch(true)}
+              />
+            )}
+
             {shown.length === 0 ? (
               <Card>
                 <EmptyState
@@ -229,6 +258,8 @@ export function CampaignsPage() {
                 actor={actor}
                 onClone={setCloning}
                 onDelete={setDeleting}
+                selection={selection}
+                onSelectionChange={setSelection}
               />
             ) : (
               <>
@@ -238,6 +269,8 @@ export function CampaignsPage() {
                   actor={actor}
                   onClone={setCloning}
                   onDelete={setDeleting}
+                  selection={selection}
+                  onToggle={toggleOne}
                 />
                 <CampaignGrid
                   title="Campagnes clôturées"
@@ -245,6 +278,8 @@ export function CampaignsPage() {
                   actor={actor}
                   onClone={setCloning}
                   onDelete={setDeleting}
+                  selection={selection}
+                  onToggle={toggleOne}
                 />
               </>
             )}
@@ -256,6 +291,21 @@ export function CampaignsPage() {
       {cloning && <CloneCampaignModal source={cloning} onClose={() => setCloning(null)} />}
       {deleting && (
         <DeleteCampaignModal campaign={deleting} onClose={() => setDeleting(null)} />
+      )}
+      {deletingBatch && (
+        <DeleteCampaignsModal
+          campaigns={chosen}
+          actor={actor}
+          onClose={() => setDeletingBatch(false)}
+          onDeleted={(ids) => {
+            setSelection((current) => {
+              const next = new Set(current)
+              for (const id of ids) next.delete(id)
+              return next
+            })
+            setDeletingBatch(false)
+          }}
+        />
       )}
     </div>
   )
@@ -477,18 +527,107 @@ function DeleteButton({
   )
 }
 
+/**
+ * Ce qui est coché, et ce qu'on peut en faire.
+ *
+ * Une seule barre pour les deux affichages plutôt qu'une action dans la barre
+ * d'outils de la grille : en vignettes il n'y a pas de barre d'outils, et la
+ * sélection ne doit pas exister à moitié selon la façon dont on regarde la
+ * liste.
+ *
+ * Elle dit **combien seront supprimées** plutôt que combien sont cochées. Les
+ * deux chiffres diffèrent dès qu'une campagne d'un collègue est dans le lot, et
+ * c'est le second qu'on croit avoir demandé.
+ */
+function SelectionBar({
+  chosen,
+  actor,
+  onClear,
+  onDelete,
+}: {
+  chosen: Campaign[]
+  actor: string
+  onClear: () => void
+  onDelete: () => void
+}) {
+  const deletable = chosen.filter((c) => deletionBlocker(c, actor) === null)
+  const blocked = chosen.length - deletable.length
+  return (
+    <div
+      className="row"
+      style={{
+        gap: 'var(--space-3)',
+        padding: 'var(--space-3)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius-md)',
+        background: 'var(--bg-inset)',
+      }}
+    >
+      <Badge tone="accent">{chosen.length} sélectionnée(s)</Badge>
+      {blocked > 0 && (
+        <span className="subtle">
+          dont {blocked} créée(s) par quelqu’un d’autre, qui ne partiront pas
+        </span>
+      )}
+      <span className="spacer" />
+      <Button size="sm" variant="ghost" onClick={onClear}>
+        Tout désélectionner
+      </Button>
+      <Button
+        size="sm"
+        variant="danger"
+        icon={<Icons.trash size={13} />}
+        disabled={deletable.length === 0}
+        title={
+          deletable.length === 0
+            ? 'Aucune des campagnes cochées ne vous appartient.'
+            : `Supprimer ${deletable.length} campagne(s)`
+        }
+        onClick={onDelete}
+      >
+        Supprimer la sélection ({deletable.length})
+      </Button>
+    </div>
+  )
+}
+
+/** La case à cocher d'une vignette, au même endroit sur chaque carte. */
+function SelectBox({
+  campaign,
+  selection,
+  onToggle,
+}: {
+  campaign: Campaign
+  selection: Set<string>
+  onToggle: (id: string) => void
+}) {
+  return (
+    <input
+      type="checkbox"
+      checked={selection.has(campaign.id)}
+      onChange={() => onToggle(campaign.id)}
+      aria-label={`Sélectionner ${campaign.code}`}
+      title={`Sélectionner ${campaign.code}`}
+    />
+  )
+}
+
 function CampaignGrid({
   title,
   campaigns,
   actor,
   onClone,
   onDelete,
+  selection,
+  onToggle,
 }: {
   title: string
   campaigns: Campaign[]
   actor: string
   onClone: (campaign: Campaign) => void
   onDelete: (campaign: Campaign) => void
+  selection: Set<string>
+  onToggle: (id: string) => void
 }) {
   if (campaigns.length === 0) return null
   return (
@@ -499,9 +638,16 @@ function CampaignGrid({
           <article key={campaign.id} className="card">
             <div className="card__body stack" style={{ gap: 'var(--space-3)' }}>
               <div className="row" style={{ justifyContent: 'space-between' }}>
-                <Badge tone={campaign.status} dot>
-                  {toLabel(CAMPAIGN_STATUS_LABELS, campaign.status)}
-                </Badge>
+                <span className="row" style={{ gap: 'var(--space-2)' }}>
+                  <SelectBox
+                    campaign={campaign}
+                    selection={selection}
+                    onToggle={onToggle}
+                  />
+                  <Badge tone={campaign.status} dot>
+                    {toLabel(CAMPAIGN_STATUS_LABELS, campaign.status)}
+                  </Badge>
+                </span>
                 <span className="subtle">{relativeTime(campaign.created_at)}</span>
               </div>
               <div>
@@ -569,11 +715,15 @@ function CampaignTable({
   actor,
   onClone,
   onDelete,
+  selection,
+  onSelectionChange,
 }: {
   campaigns: Campaign[]
   actor: string
   onClone: (campaign: Campaign) => void
   onDelete: (campaign: Campaign) => void
+  selection: Set<string>
+  onSelectionChange: (selection: Set<string>) => void
 }) {
   const columns: Column<Campaign>[] = [
     {
@@ -667,9 +817,136 @@ function CampaignTable({
       rows={campaigns}
       getRowId={(campaign) => campaign.id}
       searchable={false}
+      selectable
+      selected={selection}
+      onSelectedChange={onSelectionChange}
       initialSort={{ key: 'count_date', direction: 'desc' }}
       emptyTitle="Aucune campagne"
     />
+  )
+}
+
+/**
+ * Le lot, relu avant d'être retiré.
+ *
+ * La fenêtre nomme **chaque** campagne plutôt que d'annoncer un compte. « Douze
+ * campagnes seront supprimées » ne se vérifie pas : c'est précisément le geste
+ * où l'on veut relire la liste, et où une case cochée par erreur trois écrans
+ * plus haut se rattrape encore.
+ *
+ * Ce qui ne partira pas est montré **à part**, avec sa raison. Le serveur
+ * refuserait le lot entier si on le lui envoyait — c'est sa règle, et elle est
+ * la bonne — mais découvrir ici qu'on ne peut rien supprimer parce qu'une
+ * campagne d'un collègue traîne dans la sélection ferait recommencer à
+ * l'aveugle.
+ */
+function DeleteCampaignsModal({
+  campaigns,
+  actor,
+  onClose,
+  onDeleted,
+}: {
+  campaigns: Campaign[]
+  actor: string
+  onClose: () => void
+  onDeleted: (ids: string[]) => void
+}) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+
+  const deletable = campaigns.filter((c) => deletionBlocker(c, actor) === null)
+  const blocked = campaigns.filter((c) => deletionBlocker(c, actor) !== null)
+
+  const mutation = useMutation({
+    mutationFn: () => api.deleteCampaigns(deletable.map((c) => c.id)),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      toast.success(
+        `${result.deleted} campagne(s) supprimée(s)`,
+        result.codes.join(', '),
+      )
+      onDeleted(deletable.map((c) => c.id))
+    },
+    onError: (error) => showError(error, 'Suppression impossible'),
+  })
+
+  return (
+    <Modal
+      title={`Supprimer ${deletable.length} campagne(s) ?`}
+      onClose={onClose}
+      width={640}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Annuler
+          </Button>
+          <Button
+            variant="danger"
+            disabled={mutation.isPending || deletable.length === 0}
+            onClick={() => mutation.mutate()}
+          >
+            {mutation.isPending
+              ? 'Suppression…'
+              : `Supprimer les ${deletable.length} campagne(s)`}
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        {deletable.length === 0 ? (
+          <Alert tone="warning" title="Rien à supprimer ici">
+            Aucune des campagnes cochées ne vous appartient. Seul l’auteur d’une
+            campagne peut la retirer.
+          </Alert>
+        ) : (
+          <div className="table-wrap" style={{ maxHeight: 260 }}>
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Libellé</th>
+                  <th>Comptage</th>
+                  <th>Statut</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deletable.map((campaign) => (
+                  <tr key={campaign.id}>
+                    <td className="mono">{campaign.code}</td>
+                    <td className="truncate">{campaign.label || '—'}</td>
+                    <td className="num">{fmtDate(campaign.count_date)}</td>
+                    <td>
+                      <Badge tone={campaign.status} dot>
+                        {toLabel(CAMPAIGN_STATUS_LABELS, campaign.status)}
+                      </Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {blocked.length > 0 && (
+          <Alert
+            tone="warning"
+            title={`${blocked.length} campagne(s) resteront en place`}
+          >
+            {blocked.map((c) => c.code).join(', ')} — seul leur auteur peut les
+            supprimer.
+          </Alert>
+        )}
+
+        <Alert tone="info" title="Suppression logique, et tout ou rien">
+          Les campagnes quittent la liste et leurs codes redeviennent
+          disponibles. Rien n’est effacé : comptages, journaux, ajustements et
+          journal d’audit restent en base, et chaque suppression y est tracée.
+          Si l’une du lot est refusée au moment de l’envoi, aucune n’est
+          supprimée.
+        </Alert>
+      </div>
+    </Modal>
   )
 }
 

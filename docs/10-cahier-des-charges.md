@@ -419,6 +419,15 @@ posée explicitement et à trois reprises (`guide §1.6`, `§2.1`, `§2.9`).
 - **Résultat** : la campagne quitte les listes ; comptages, journaux, ajustements et **journal d'audit restent** ; la suppression est elle-même tracée ; le code métier redevient disponible.
 - **Statut** : **[CO]** — `guide §Retrouver une campagne`, `test_campaign_deletion.py`.
 
+### EX-CAM-4b — Supprimer un lot de campagnes
+- **Besoin exprimé** : *« Permettre de supprimer un lot sélectionné de campagnes (actuellement la suppression se fait uniquement une à une). »*
+- **Déclencheur** : après quelques années la liste porte des essais, des campagnes annulées et les doublons d'un import raté. Les retirer une par une — ouvrir, lire, confirmer, recommencer — est ce qui fait qu'on ne le fait pas.
+- **Acteur** : le **propriétaire de chacune**. Les règles de EX-CAM-4 s'appliquent sans exception ni assouplissement pour le lot.
+- **Résultat attendu** : **tout ou rien**. Le lot est vérifié en entier avant qu'une ligne ne bouge ; un seul refus l'arrête et **nomme les fautives**. Une suppression à moitié appliquée obligerait à relire la liste pour savoir ce qui a disparu.
+- **Exception** : une campagne du lot supprimée entre-temps par quelqu'un d'autre arrête également le lot, plutôt que d'être passée sous silence.
+- **Critère d'acceptation** : sur un lot mêlant des campagnes de l'acteur et d'un collègue, aucune n'est supprimée et le message nomme celles qui ne lui appartiennent pas.
+- **Statut** : **[EC]** — demande explicite ; réalisé, `test_campaign_deletion.py`.
+
 ### EX-CAM-5 — Régler les paramètres de campagne
 - **Seuils de matérialité** par type d'article — modifiables **en Préparation uniquement**.
 - **Acceptation des formules dans les comptages** — modifiable **pendant le comptage**, contrairement aux seuils.

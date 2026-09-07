@@ -31,6 +31,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/bulk-delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Supprimer un lot de campagnes
+         * @description Retirer plusieurs campagnes d'un geste, sous les règles de l'unitaire.
+         *
+         *     **Tout ou rien** : le lot est vérifié en entier avant qu'une ligne ne
+         *     bouge, et une seule campagne qui n'appartient pas à l'appelant l'arrête en
+         *     la nommant. Une suppression à moitié appliquée laisserait à relire la liste
+         *     pour savoir ce qui a disparu.
+         */
+        post: operations["delete_campaigns_api_campaigns_bulk_delete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/clone": {
         parameters: {
             query?: never;
@@ -3215,6 +3240,22 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * BulkDeletedResponse
+         * @description Ce qu'une suppression en lot a retiré.
+         *
+         *     Les codes et non seulement le compte : c'est ce qui permet au message de
+         *     dire *quoi*, et à qui vient d'en supprimer douze de reconnaître la
+         *     treizième qui n'y est pas.
+         */
+        BulkDeletedResponse: {
+            /** Codes */
+            codes: string[];
+            /** Deleted */
+            deleted: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * Campaign
          * @description An inventory campaign — the immutable dossier the whole app revolves around.
          */
@@ -3558,6 +3599,18 @@ export interface components {
             label: string;
             /** Thresholds */
             thresholds?: components["schemas"]["ThresholdPayload"][] | null;
+        };
+        /**
+         * DeleteCampaignsRequest
+         * @description Le lot à retirer.
+         *
+         *     Borné par le contrat lui-même et non seulement par le service : une liste
+         *     sans borne est une requête qu'on peut envoyer, et refuser cent mille
+         *     identifiants après les avoir lus coûte déjà de les avoir lus.
+         */
+        DeleteCampaignsRequest: {
+            /** Ids */
+            ids: string[];
         };
         /** DeletedResponse */
         DeletedResponse: {
@@ -4958,6 +5011,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Campaign"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_campaigns_api_campaigns_bulk_delete_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteCampaignsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkDeletedResponse"];
                 };
             };
             /** @description Validation Error */

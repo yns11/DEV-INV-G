@@ -169,6 +169,32 @@ class SheetRepository(_Base):
             conn=conn,
         )
 
+    def rename_zone(
+        self,
+        campaign_id: str,
+        zone_id: str,
+        *,
+        code: str,
+        label: str,
+        sector: str,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Renommer une zone — son code, son libellé, son secteur.
+
+        Séparé de :meth:`update_zones`, qui pose **un** attribut sur un lot :
+        un renommage porte sur une zone et sur trois champs à la fois, et le
+        faire entrer dans le poseur en lot aurait rendu celui-ci capable de
+        donner le même code à quarante zones d'un coup.
+        """
+        return self._execute(
+            "UPDATE zone SET code = %s, label = %s, sector = %s, "
+            "updated_by = %s, updated_at = now() "
+            "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
+            (code, label, sector, actor, campaign_id, zone_id),
+            conn=conn,
+        )
+
     def list_sheets(
         self,
         campaign_id: str,

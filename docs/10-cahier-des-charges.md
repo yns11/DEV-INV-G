@@ -582,6 +582,7 @@ posée explicitement et à trois reprises (`guide §1.6`, `§2.1`, `§2.9`).
 - **Les sous-sections et les lignes vides apparaissent à la fois sur la feuille imprimée et dans le formulaire de saisie/scan.** **[EC]**
 - **Une sous-section ne s'imprime pas en colonne** : *« le faire uniquement dans le modèle et l'import, mais pas dans le rendu imprimé où la sous-section apparaît comme séparateur (ne pas ajouter de colonnes dans les feuilles imprimées, juste une ligne qui indique la sous-section) »*. **[EC]**
 - **N'importe quelle ligne doit pouvoir être supprimée**, pas seulement les lignes vides et les intertitres. **[EC]**
+- **Des références du référentiel doivent pouvoir être ajoutées depuis l'aperçu**, à un endroit et dans une section choisis — et pas seulement des intertitres et des lignes vides. *« permettre de rajouter des lignes d'articles du référentiel (et pas uniquement les lignes vides et intertitres) »*. Ajouter un article oublié obligeait sinon à quitter la feuille pour la liste plate. **[EC]**
 - **Un intertitre et une ligne vide n'affichent aucune donnée, ni en lecture ni en modification.** **[EC]**
 - **L'ordre des lignes est une donnée de la feuille** et doit être respecté partout : impression, saisie, lecture de scan. **[EC]**
 - **Statut** : **[EC]** — demandes explicites, citations de résumé de session et transcript direct.
@@ -602,6 +603,14 @@ posée explicitement et à trois reprises (`guide §1.6`, `§2.1`, `§2.9`).
 - **Conséquence d'affichage** : une vue « toutes les lignes » n'a pas à présenter les deux passages, puisqu'ils portent la même liste. **[EC]**
 - **Statut** : **[EC]** pour la propagation, **[HV]** pour la préservation des quantités.
 
+### EX-ZON-4b — Renommer une zone
+- **Besoin exprimé** : *« permettre également de renommer une zone »*.
+- **Déclencheur** : le code d'une zone se décide avant de connaître le terrain et se révèle faux une fois sur place. Le seul recours était de supprimer la zone et de la recréer — donc de perdre ses feuilles, leur liste d'articles et leurs quantités.
+- **Résultat attendu** : le code, le libellé et le secteur se corrigent ; **rien d'autre ne bouge**. Feuilles, lignes, comptages et arbitrages restent attachés à la zone.
+- **Règles** : un code vide est refusé ; un code déjà porté par une autre zone de la campagne est refusé **en la nommant** ; le code est normalisé comme à la création, pour que deux zones ne deviennent pas distinctes par leur seule casse.
+- **Conséquence à annoncer** : l'import des feuilles reconnaît une zone à son **code**. Recharger ensuite un fichier qui porte encore l'ancien crée une seconde zone. *L'interdire reviendrait à refuser un renommage légitime pour un fichier que personne ne rechargera peut-être ; l'écran le dit donc au moment du geste.*
+- **Statut** : **[EC]** — demande explicite ; réalisé, `test_feuille_et_zone.py`.
+
 ### EX-ZON-5 — Imprimer les feuilles
 - **Trois documents possibles, et l'écran n'offre que ceux qui existent** :
 
@@ -612,10 +621,12 @@ posée explicitement et à trois reprises (`guide §1.6`, `§2.1`, `§2.9`).
 | **Avec quantités** — le relevé de ce qui est revenu | les deux | à partir du comptage |
 
 - **Une zone dont la liste est connue ne se voit jamais proposer la grille vide** — elle ferait réécrire à la main une liste que l'application détient. Symétriquement pour l'inverse.
-- **La feuille à compter reçoit quelques lignes libres par section** ; **le relevé rempli n'en reçoit aucune** — inviter à écrire sur un relevé le rendrait discutable.
+- **La feuille à compter reçoit quelques lignes libres par section** ; **le relevé rempli n'en reçoit aucune** — inviter à écrire sur un relevé le rendrait discutable. Leur nombre est réglé sur ce qu'on y écrit réellement : **quatre au bord de ligne, deux en en-cours**. **[EC]** — *« réduire le nombre de lignes vides imprimées à la fin de chaque section à 4 pour le BDL et 2 pour le WIP »*. *Le repreneur doit retenir l'intention — peu de lignes, davantage là où les surprises arrivent — et non ces deux nombres, qui dépendent de la hauteur de ligne retenue.*
+- **Une section d'en-cours qui ne porte aucun article ne s'imprime pas du tout** : ni son bandeau, ni ses lignes libres. **[EC]** — *« ne pas imprimer les sections WIP et WIP_OK si elles ne contiennent aucun article »*. Beaucoup de zones n'ont ni WIP ni WIP assemblé, et leur feuille sortait avec un tiers de page consacré à des sections que la zone n'a pas. **Le bord de ligne, lui, s'imprime toujours** : ses lignes libres sont l'endroit où l'on note une référence que personne n'avait listée, et c'est sur une feuille courte qu'on en a le plus besoin.
 - **Exigences de lisibilité terrain** : sections séparées visuellement, colonne de comptage large, bloc signature, **identité de la feuille rappelée en pied de chaque page** (une page séparée de sa liasse reste traçable), marges serrées et lignes hautes (*un chiffre écrit avec des gants a besoin de place*), désignations **tronquées plutôt que repliées** (une cellule sur deux lignes diviserait par deux le nombre de lignes par page).
 - **Répartition des largeurs** : la référence doit primer sur la désignation, le comptage et l'unité. **[EC]** — demande chiffrée : *« diminuer la taille des colonnes désignation, comptage et unité de 10 %, 5 % et 20 % respectivement pour augmenter la taille de la colonne Référence »*. **Le repreneur doit retenir l'intention — priorité à la référence — et non ces pourcentages, qui étaient relatifs à une mise en page donnée.**
 - **Les commentaires doivent tenir dans leur case** sur le relevé imprimé. **[EC]**
+- **La désignation imprimée est bornée à 41 caractères.** **[EC]** — *« pour le nombre de caractère max à afficher dans la désignation d'un article dans les feuilles imprimées, le passer à 41 caractères »*. *Une seconde borne, sur la largeur réelle de la colonne, garde ce chiffre sûr : une désignation d'atelier de 41 caractères tient, une suite de 41 lettres larges déborderait — et, la hauteur de ligne étant imposée, elle se replierait par-dessus les lignes suivantes.* Le repreneur doit retenir les deux : un compte de caractères lisible dans l'exigence, et l'obligation que le texte tienne.
 - **Statut** : **[CO]** pour la matrice des trois documents, **[EC]** pour les largeurs et les commentaires.
 
 ### EX-ZON-6 — Saisir les quantités

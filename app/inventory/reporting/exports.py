@@ -26,6 +26,7 @@ from ..domain.printing import BLANK_ROWS_PER_SECTION, PrintMode
 
 __all__ = [
     "build_workbook",
+    "printed_sections",
     "build_counting_sheet_pdf",
     "build_journal_export",
     "build_variance_pdf",
@@ -324,11 +325,9 @@ def build_counting_sheet_pdf(
 
     filled = mode is PrintMode.FILLED
     printed_a_section = False
-    for section in ("LINE_SIDE", "WIP", "WIP_OK"):
-        section_lines = [] if mode is PrintMode.BLANK else by_section.get(section, [])
-        extras = _blank_rows_for(section, mode=mode, requested=blank_lines)
-        if not section_lines and not extras:
-            continue
+    for section, section_lines, extras in printed_sections(
+        by_section, mode=mode, blank_lines=blank_lines
+    ):
 
         # The section title travels *inside* the table as a repeated row rather
         # than sitting above it as a paragraph. That is what makes it reappear
@@ -454,7 +453,18 @@ def _body_row(
 
     row: list[Any] = [
         paragraph(str(line.get("item_number", "")), cell),
-        paragraph(_shorten(str(line.get("name", "")), name_width), cell),
+        # Sur la mise en page à hauteur imposée, la troncature tient compte de
+        # la largeur réelle de la case ; sur celle du relevé, les lignes
+        # s'agrandissent et le texte peut s'enrouler sans rien pousser.
+        paragraph(
+            _shorten(str(line.get("name", "")), name_width)
+            if with_sources
+            else _fit(
+                str(line.get("name", "")),
+                chars=name_width, points=_NAME_COLUMN_POINTS,
+            ),
+            cell,
+        ),
         quantity,
         str(line.get("unit", "PCE")),
     ]
@@ -517,8 +527,20 @@ _SOURCE_LABELS = {
 #: prose, elle s'enroule sur plusieurs lignes, et la hauteur de la ligne suit.
 _COMMENT_MAX_CHARS = 180
 
-_NAME_MAX_CHARS = 29
+#: Quarante et un, et non vingt-neuf : les désignations d'atelier que la feuille
+#: porte désormais (voir ``CountSheetLine.name``) sont plus longues que celles de
+#: l'ERP, et se faisaient couper au milieu d'un mot. :func:`_fit` garde le
+#: chiffre sûr en le bornant aussi à la largeur réelle de la colonne.
+_NAME_MAX_CHARS = 41
 _NAME_MAX_CHARS_WITH_SOURCES = 18
+
+#: Le corps du texte des lignes, en points. Nommé parce que deux endroits en
+#: dépendent : la mise en page du tableau et la mesure de :func:`_fit`.
+_BODY_FONT_SIZE = 8.5
+
+#: Ce que la colonne « Désignation » peut réellement afficher, en points : sa
+#: largeur moins les marges internes gauche et droite de la cellule.
+_NAME_COLUMN_POINTS = _WIDTHS_PLAIN[1] * 72 / 25.4 - 12
 
 
 def _blank_rows_for(section: str, *, mode: PrintMode, requested: int) -> int:
@@ -538,8 +560,92 @@ def _blank_rows_for(section: str, *, mode: PrintMode, requested: int) -> int:
     return BLANK_ROWS_PER_SECTION.get(section, 0)
 
 
+#: Les sections d'une feuille, dans l'ordre où elles s'impriment.
+PRINTED_SECTIONS = ("LINE_SIDE", "WIP", "WIP_OK")
+
+
+def printed_sections(
+    by_section: Mapping[str, Sequence[dict[str, Any]]],
+    *,
+    mode: PrintMode,
+    blank_lines: int,
+) -> list[tuple[str, list[dict[str, Any]], int]]:
+    """Quelles sections sortent de l'imprimante, avec leurs lignes libres.
+
+    Sortie du rendu parce que c'est une **décision**, et qu'une décision se
+    relit et se vérifie sans fabriquer un PDF pour aller y chercher du texte.
+
+    **Une section d'en-cours sans article ne s'imprime pas.** Beaucoup de zones
+    n'ont ni WIP ni WIP assemblé, et leur feuille sortait pourtant avec deux
+    bandeaux et leurs cases vides sous lesquels il n'y a rien à compter — un
+    tiers de la page, et une invitation à écrire dans une section que la zone
+    n'a pas.
+
+    **Le bord de ligne, lui, s'imprime toujours.** Ses lignes libres sont
+    l'endroit où l'on note une référence que personne n'avait listée, et c'est
+    précisément sur une feuille courte qu'on en a le plus besoin.
+    """
+    out: list[tuple[str, list[dict[str, Any]], int]] = []
+    for section in PRINTED_SECTIONS:
+        lines = [] if mode is PrintMode.BLANK else list(by_section.get(section, ()))
+        extras = _blank_rows_for(section, mode=mode, requested=blank_lines)
+        if section != "LINE_SIDE" and not _has_articles(lines):
+            continue
+        if not lines and not extras:
+            continue
+        out.append((section, lines, extras))
+    return out
+
+
+def _has_articles(lines: Sequence[dict[str, Any]]) -> bool:
+    """La section porte-t-elle une référence à compter ?
+
+    Un intertitre et une ligne vide n'en sont pas : une section qui ne
+    contiendrait qu'eux n'a rien à faire compter, et son bandeau sur le papier
+    ne serait qu'un titre au-dessus du vide.
+    """
+    return any(
+        str(line.get("line_kind") or "ARTICLE") == "ARTICLE"
+        and line.get("item_number")
+        for line in lines
+    )
+
+
 def _shorten(name: str, limit: int = _NAME_MAX_CHARS) -> str:
     return name if len(name) <= limit else name[: limit - 1] + "…"
+
+
+def _fit(name: str, *, chars: int, points: float) -> str:
+    """Tronquer à *chars* caractères, **et** à ce que la case peut afficher.
+
+    Deux bornes, parce qu'une seule ne suffit pas. Le compte de caractères est
+    ce que le métier demande — quarante et un, pour que les désignations
+    d'atelier passent en entier. La largeur est ce qui rend ce chiffre sûr : à
+    8,5 points, quarante et un caractères d'une désignation réelle occupent
+    207 points sur les 227 de la colonne, mais quarante et un « M » en
+    occuperaient 290. Le texte passerait alors à la ligne, la hauteur de rang
+    étant imposée il déborderait sur les lignes suivantes, et une feuille de
+    quatre-vingts références se terminerait par-dessus son pied de page.
+
+    Borner sur la seule largeur aurait été plus court et moins bon : le nombre
+    de caractères est ce qui se relit dans une exigence, et il ne doit pas se
+    déduire d'une police.
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    def width(text: str) -> float:
+        return stringWidth(text, "Helvetica", _BODY_FONT_SIZE)
+
+    text = _shorten(name, chars)
+    if width(text) <= points:
+        return text
+    # Le cas rare, et il se règle en rognant caractère par caractère plutôt
+    # qu'en estimant une largeur moyenne : une estimation se trompe justement
+    # sur les chaînes qui posent problème.
+    cut = len(text)
+    while cut > 1 and width(text[: cut - 1] + "…") > points:
+        cut -= 1
+    return text[: cut - 1] + "…"
 
 
 def build_variance_pdf(

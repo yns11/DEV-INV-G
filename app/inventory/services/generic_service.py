@@ -11,6 +11,8 @@ from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
+from pydantic import ValidationError as PydanticValidationError
+
 from ..db import new_id
 from ..domain.enums import (
     AuditAction,
@@ -255,6 +257,97 @@ class GenericService:
         # A zone is what unlocks the pilotage steps; the counts move with it.
         ctx.forget_progress(campaign.id)
         return zone
+
+    def rename_zone(
+        self,
+        campaign: Campaign,
+        zone_id: str,
+        *,
+        code: str,
+        label: str | None = None,
+        sector: str | None = None,
+    ) -> Zone:
+        """Renommer une zone : son code, son libellé, son secteur.
+
+        Le code d'une zone se décide avant de connaître le terrain, et il se
+        révèle faux une fois sur place — « B15 » qui désigne en réalité deux
+        aires, un code recopié d'une campagne où l'atelier s'appelait
+        autrement. Le seul recours était de supprimer la zone et de la
+        recréer, ce qui emporte ses feuilles, donc sa liste d'articles et ses
+        quantités.
+
+        **Ce que le renommage ne fait pas** : il ne touche à rien d'autre. Les
+        feuilles, les lignes, les comptages et les arbitrages sont rattachés à
+        l'identifiant de la zone, jamais à son code — c'est ce qui rend
+        l'opération sûre.
+
+        **Ce qu'il faut savoir** : le code est la clé sur laquelle l'import des
+        feuilles reconnaît une zone. Recharger ensuite un fichier qui porte
+        encore l'ancien code **créera une seconde zone**, au lieu de compléter
+        celle-ci. L'écran le dit ; le refuser serait interdire un renommage
+        légitime pour un fichier que personne ne rechargera peut-être jamais.
+        """
+        ctx = self.ctx
+        ctx.guard(campaign, "zones")
+        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
+        zone = zones.get(zone_id)
+        if zone is None:
+            raise NotFoundError("Zone introuvable.", zoneId=zone_id)
+
+        renamed = zone.model_copy(update={
+            "code": code,
+            "label": zone.label if label is None else label,
+            "sector": zone.sector if sector is None else sector,
+        })
+        # Validé par le modèle, donc normalisé comme à la création : un code
+        # saisi en minuscules devient le même code, et deux zones ne peuvent
+        # pas se retrouver distinctes par leur seule casse.
+        #
+        # Le refus du modèle est retraduit : brut, c'est une erreur de contrat
+        # Pydantic — « value error, zone code is required » — qui remonterait en
+        # 500 à qui appelle le service autrement que par la route, et qui ne dit
+        # rien à qui vient d'effacer une case.
+        try:
+            renamed = Zone.model_validate(renamed.model_dump())
+        except PydanticValidationError as error:
+            raise ValidationError(
+                "Une zone sans code ne se retrouve pas : donnez-lui un nom.",
+                code=code,
+            ) from error
+        taken = {z.code for z in zones.values() if z.id != zone_id}
+        if renamed.code in taken:
+            raise ConflictError(
+                f"Une zone « {renamed.code} » existe déjà dans cette campagne.",
+                code=renamed.code,
+            )
+        if (renamed.code, renamed.label, renamed.sector) == (
+            zone.code, zone.label, zone.sector
+        ):
+            return zone
+
+        with ctx.db.transaction() as conn:
+            ctx.sheets.rename_zone(
+                campaign.id, zone_id,
+                code=renamed.code, label=renamed.label, sector=renamed.sector,
+                actor=ctx.actor, conn=conn,
+            )
+            ctx.record(
+                campaign_id=campaign.id,
+                action=AuditAction.UPDATE,
+                entity_type="zone",
+                entity_id=zone_id,
+                summary=(
+                    f"Zone {zone.code} renommée en {renamed.code}"
+                    if renamed.code != zone.code
+                    else f"Zone {zone.code} : libellé ou secteur modifié"
+                ),
+                before={"code": zone.code, "label": zone.label,
+                        "sector": zone.sector},
+                after={"code": renamed.code, "label": renamed.label,
+                       "sector": renamed.sector},
+                conn=conn,
+            )
+        return renamed
 
     def set_zone_passes(
         self, campaign: Campaign, zone_ids: Sequence[str], passes: int

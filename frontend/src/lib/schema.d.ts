@@ -1782,6 +1782,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Renommer une zone
+         * @description Changer le code d'une zone — et, s'il le faut, son libellé et son secteur.
+         *
+         *     Le code se décide avant de connaître le terrain et se révèle faux une fois
+         *     sur place. Le seul recours était de supprimer la zone et de la recréer, ce
+         *     qui emporte ses feuilles avec leur liste d'articles et leurs quantités.
+         *
+         *     Rien d'autre ne bouge : feuilles, lignes, comptages et arbitrages sont
+         *     rattachés à l'identifiant de la zone, jamais à son code.
+         */
+        post: operations["rename_zone_api_campaigns__campaign_id__generic_zones__zone_id__rename_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/section-labels": {
         parameters: {
             query?: never;
@@ -4896,6 +4923,22 @@ export interface components {
             passes: number;
             /** Zoneids */
             zoneIds: string[];
+        };
+        /**
+         * ZoneRenameRequest
+         * @description Le nouveau nom d'une zone.
+         *
+         *     Le libellé et le secteur sont facultatifs et ``None`` les laisse en place :
+         *     renommer une zone est un geste sur son code, et l'écran qui ne propose que
+         *     lui ne doit pas effacer les deux autres en passant.
+         */
+        ZoneRenameRequest: {
+            /** Code */
+            code: string;
+            /** Label */
+            label?: string | null;
+            /** Sector */
+            sector?: string | null;
         };
         /** ZoneRequest */
         ZoneRequest: {
@@ -8110,6 +8153,46 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ZoneClosureRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_zone_api_campaigns__campaign_id__generic_zones__zone_id__rename_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                zone_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneRenameRequest"];
             };
         };
         responses: {

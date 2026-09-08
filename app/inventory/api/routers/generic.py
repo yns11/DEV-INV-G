@@ -34,6 +34,7 @@ from ..schemas import (
     ZoneDeleteRequest,
     ZoneNegativeRequest,
     ZonePassesRequest,
+    ZoneRenameRequest,
     ZoneRequest,
     ZoneSectionLabelsRequest,
 )
@@ -98,6 +99,29 @@ def create_zone(
         passes=payload.passes,
         free_entry=payload.free_entry,
         manager_code=payload.manager_code,
+    )
+    return zone.model_dump(mode="json")
+
+
+@router.post("/zones/{zone_id}/rename", summary="Renommer une zone")
+def rename_zone(
+    campaign: CampaignDep,
+    zone_id: str,
+    payload: ZoneRenameRequest,
+    service: Service,
+) -> dict[str, Any]:
+    """Changer le code d'une zone — et, s'il le faut, son libellé et son secteur.
+
+    Le code se décide avant de connaître le terrain et se révèle faux une fois
+    sur place. Le seul recours était de supprimer la zone et de la recréer, ce
+    qui emporte ses feuilles avec leur liste d'articles et leurs quantités.
+
+    Rien d'autre ne bouge : feuilles, lignes, comptages et arbitrages sont
+    rattachés à l'identifiant de la zone, jamais à son code.
+    """
+    zone = service.rename_zone(
+        campaign, zone_id,
+        code=payload.code, label=payload.label, sector=payload.sector,
     )
     return zone.model_dump(mode="json")
 

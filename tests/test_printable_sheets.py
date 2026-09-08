@@ -63,22 +63,53 @@ class TestSheetWithoutQuantities:
         assert "P-001" in pages[0]
         assert "42" not in pages[0]
 
-    def test_every_section_gets_room_for_an_unlisted_article(self):
-        """A part found in a corner has to have somewhere to be written down."""
-        pages = render([line("P-001")])
-        text = "\n".join(pages)
-        # All three tables print, even though only the line side has content.
+    def test_the_line_side_always_gets_room_for_an_unlisted_article(self):
+        """A part found in a corner has to have somewhere to be written down.
+
+        Le bord de ligne est cet endroit, et il s'imprime donc toujours — même
+        sur une zone dont c'est la seule section, où l'on en a le plus besoin.
+        """
+        text = "\n".join(render([line("P-001")]))
         assert "Composants en bord de ligne" in text
-        assert "en-cours non déclaré" in text
+
+    def test_an_empty_wip_section_is_not_printed_at_all(self):
+        """Deux bandeaux et leurs cases vides sous lesquels il n'y a rien.
+
+        Beaucoup de zones n'ont ni WIP ni WIP assemblé : leur feuille sortait
+        avec un tiers de page occupé par des sections que la zone n'a pas, et
+        une invitation à écrire dedans.
+        """
+        text = "\n".join(render([line("P-001")]))
+        assert "en-cours non déclaré" not in text
+        assert "MOM OK" not in text
+
+    def test_a_wip_section_that_carries_an_article_still_prints(self):
+        text = "\n".join(render([line("P-001"), line("P-002", "WIP_OK")]))
         assert "MOM OK" in text
+        assert "en-cours non déclaré" not in text
+
+    def test_a_heading_alone_does_not_bring_its_section_back(self):
+        """Un intertitre est de la mise en page : il ne fait compter personne."""
+        text = "\n".join(render([
+            line("P-001"),
+            {"item_number": "", "name": "", "section": "WIP", "unit": "",
+             "qty": None, "source": "MANUAL", "comment": "",
+             "line_kind": "SUBSECTION", "label": "Établi 3"},
+        ]))
+        assert "Établi 3" not in text
 
     def test_a_line_that_was_never_counted_is_still_printed(self):
         pages = render([line("P-001", qty=None), line("P-002", qty=7)])
         assert "P-001" in pages[0] and "P-002" in pages[0]
 
-    def test_the_free_row_allowance_is_five_three_two(self):
-        """Sized from where surprises actually turn up, not evenly."""
-        assert BLANK_ROWS_PER_SECTION == {"LINE_SIDE": 5, "WIP": 3, "WIP_OK": 2}
+    def test_the_free_row_allowance_is_four_two_two(self):
+        """Sized from where surprises actually turn up, not evenly.
+
+        Revue à la baisse — cinq et trois au départ : ces lignes restent sur la
+        page, et une section qui se termine sur trois cases vides pousse la
+        suivante sur un second feuillet que personne ne voulait imprimer.
+        """
+        assert BLANK_ROWS_PER_SECTION == {"LINE_SIDE": 4, "WIP": 2, "WIP_OK": 2}
 
 
 class TestFilledSheet:
@@ -105,10 +136,25 @@ class TestFilledSheet:
         assert "0" in pages[0]
 
     def test_no_blank_rows_are_appended(self):
-        """Inviting somebody to write on a record would make it not a record."""
-        blank = render([line("P-001", qty=1)])
-        filled = render([line("P-001", qty=1)], mode=PrintMode.FILLED)
-        assert len("\n".join(filled)) < len("\n".join(blank))
+        """Inviting somebody to write on a record would make it not a record.
+
+        Vérifié sur la règle et non sur la longueur du texte extrait : une
+        ligne vide ne porte aucun caractère, et comparer deux PDF par leur
+        volume de texte ne mesurait donc pas les lignes libres. Cela passait
+        tant que la liste imprimait trois sections et le relevé une — c'est-à-
+        dire pour une raison qui n'avait rien à voir.
+        """
+        from inventory.reporting.exports import printed_sections
+
+        by_section = {"LINE_SIDE": [line("P-001", qty=1)]}
+        for mode, expected in (
+            (PrintMode.LIST, BLANK_ROWS_PER_SECTION["LINE_SIDE"]),
+            (PrintMode.FILLED, 0),
+        ):
+            sections = printed_sections(by_section, mode=mode, blank_lines=0)
+            assert [extras for _, _, extras in sections] == [expected], mode
+
+        assert "1" in "\n".join(render([line("P-001", qty=1)], mode=PrintMode.FILLED))
 
     def test_sources_and_comments_are_optional_columns(self):
         without = render([line("P-001", qty=1, comment="raturé")], mode=PrintMode.FILLED)
@@ -348,7 +394,10 @@ class TestLesEnTetesDeSection:
     def test_les_sections_non_personnalisees_gardent_leur_defaut(self):
         """Sinon personnaliser une section reviendrait à recopier les deux autres."""
         text = "\n".join(render(
-            [line("P-001")], section_titles={"LINE_SIDE": "Bord de ligne, zone B15"}
+            # Une ligne en WIP, pour que la section s'imprime : c'est là qu'on
+            # vérifie qu'elle a gardé son texte par défaut.
+            [line("P-001"), line("P-002", "WIP")],
+            section_titles={"LINE_SIDE": "Bord de ligne, zone B15"},
         ))
         assert "Bord de ligne, zone B15" in text
         assert "en-cours non déclaré" in text

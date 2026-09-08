@@ -41,6 +41,13 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   deux passages. Un article absent du référentiel est une erreur de ligne, jamais
   un article créé par effet de bord — et la règle vaut pour le stock ERP comme
   pour les feuilles, dans les trois modes d'import.
+- **La feuille se conçoit comme une page.** On y pose ses intertitres, ses
+  lignes vides **et ses références** — prises dans le référentiel, à l'endroit
+  choisi, dans la section choisie. Ce qui n'a rien à compter ne s'imprime pas :
+  une zone sans en-cours ne sort plus avec un tiers de page consacré à deux
+  sections qu'elle n'a pas. Et une zone mal nommée se renomme, au lieu de se
+  supprimer et se refaire — ses feuilles, ses comptages et ses arbitrages
+  tiennent à son identité, jamais à son code.
 - **La feuille nomme les pièces comme l'atelier les nomme.** Les listes qui
   l'alimentent viennent des ateliers, et elles portent leurs désignations. Celle
   qu'on importe ou colle en conception de zone **remplace** celle du référentiel
@@ -172,7 +179,7 @@ frontend/                   React + TypeScript + Vite
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
 fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
-tests/                      2992 contrôles ; 281 exigent un PostgreSQL, ignorés sinon
+tests/                      3032 contrôles ; 281 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -201,7 +208,7 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 2992 contrôles ; 281 ignorés sans PostgreSQL
+make test            # 3032 contrôles ; 281 ignorés sans PostgreSQL
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000

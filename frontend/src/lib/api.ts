@@ -683,6 +683,16 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ lines, replace, expectedVersion }),
     }),
+  /** Renommer une zone : son code, et facultativement libellé et secteur. */
+  renameZone: (
+    id: string,
+    zoneId: string,
+    body: { code: string; label?: string; sector?: string },
+  ) =>
+    request<Zone>(`/campaigns/${id}/generic/zones/${zoneId}/rename`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   deleteSheetLine: (id: string, lineId: string) =>
     request<{ deleted: boolean }>(`/campaigns/${id}/generic/lines/${lineId}`, {
       method: 'DELETE',

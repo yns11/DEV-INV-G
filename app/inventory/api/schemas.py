@@ -54,6 +54,7 @@ __all__ = [
     "UnsealRequest",
     "DriftResolutionRequest",
     "ZoneRequest",
+    "ZoneRenameRequest",
     "ZonePassesRequest",
     "ZoneNegativeRequest",
     "ZoneSectionLabelsRequest",
@@ -384,6 +385,19 @@ class ZoneRequest(ApiModel):
     #: right after.
     free_entry: bool = Field(default=True, alias="freeEntry")
     manager_code: str = Field(default="", alias="managerCode")
+
+
+class ZoneRenameRequest(ApiModel):
+    """Le nouveau nom d'une zone.
+
+    Le libellé et le secteur sont facultatifs et ``None`` les laisse en place :
+    renommer une zone est un geste sur son code, et l'écran qui ne propose que
+    lui ne doit pas effacer les deux autres en passant.
+    """
+
+    code: str = Field(min_length=1, max_length=100)
+    label: str | None = Field(default=None, max_length=200)
+    sector: str | None = Field(default=None, max_length=120)
 
 
 class ZonePassesRequest(ApiModel):

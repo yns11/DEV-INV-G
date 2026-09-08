@@ -22,6 +22,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { Sheet, Zone } from '../lib/types'
+import { ItemPicker } from '../components/ItemPicker'
 import { DEFAULT_SECTION_TITLES } from '../lib/format'
 import { sectionLabel } from './sectionColumn'
 import {
@@ -126,6 +127,50 @@ export function SheetLayoutModal({
   })
 
   const edit = (next: LayoutLine[]) => setDraft(next)
+
+  /**
+   * Où insérer les articles que le sélecteur va rendre.
+   *
+   * Le rang **et** la section, parce que les deux sont nécessaires et qu'aucun
+   * ne se déduit de l'autre : une section vide n'a pas de ligne après laquelle
+   * insérer, et un rang seul ne dirait pas dans quelle section la référence
+   * doit compter — ce qui décide de la règle de consolidation.
+   */
+  const [picking, setPicking] = useState<
+    { index: number; section: string } | null
+  >(null)
+
+  /**
+   * Ajouter des références du référentiel, à un endroit choisi.
+   *
+   * L'aperçu savait insérer un intertitre et une ligne vide, mais pas une
+   * référence : ajouter un article oublié obligeait à quitter la feuille pour
+   * la grille plate, à y retrouver la zone, puis à revenir vérifier où la ligne
+   * était tombée. C'est pourtant le même geste de préparation que les deux
+   * autres, et il se décide en regardant la page.
+   *
+   * Plusieurs d'un coup : on ajoute rarement une seule référence, et les
+   * ajouter une par une redemanderait le même choix de place à chaque fois.
+   */
+  const insertItems = (
+    at: { index: number; section: string },
+    items: Array<{ item_number: string; name: string; unit: string }>,
+  ) => {
+    const next = [...lines]
+    next.splice(
+      at.index + 1,
+      0,
+      ...items.map((item) => ({
+        section: at.section,
+        line_kind: 'ARTICLE',
+        item_number: item.item_number,
+        name: item.name,
+        unit: item.unit || 'PCE',
+      })),
+    )
+    edit(next)
+    setPicking(null)
+  }
 
   const insertAfter = (index: number, kind: 'SUBSECTION' | 'SPACER', section: string) => {
     const next = [...lines]
@@ -326,6 +371,15 @@ export function SheetLayoutModal({
                                 >
                                   Ligne vide
                                 </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  aria-label="Insérer des articles en dessous"
+                                  title="Insérer des articles du référentiel en dessous"
+                                  onClick={() => setPicking({ index, section })}
+                                >
+                                  Articles
+                                </Button>
                                 {/* N'importe quelle ligne, article compris.
                                     Renvoyer vers « Toutes les lignes » pour
                                     retirer une référence obligeait à quitter
@@ -379,6 +433,21 @@ export function SheetLayoutModal({
                             >
                               Ajouter une ligne vide
                             </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              icon={<Icons.plus size={13} />}
+                              onClick={() =>
+                                setPicking({
+                                  index: group.length
+                                    ? group[group.length - 1]!.index
+                                    : lines.length - 1,
+                                  section,
+                                })
+                              }
+                            >
+                              Ajouter des articles
+                            </Button>
                           </span>
                         </td>
                       </tr>
@@ -390,6 +459,15 @@ export function SheetLayoutModal({
           </div>
         )}
       </AsyncBoundary>
+
+      {picking && (
+        <ItemPicker
+          campaignId={campaignId}
+          title={`Ajouter des articles — ${sectionLabel(picking.section)}`}
+          onClose={() => setPicking(null)}
+          onPick={(items) => insertItems(picking, items)}
+        />
+      )}
     </Modal>
   )
 }

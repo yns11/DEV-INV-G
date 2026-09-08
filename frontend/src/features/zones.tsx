@@ -285,6 +285,7 @@ export function ZonesAdminGrid({
     onError: (error) => showError(error, 'Affectation impossible'),
   })
 
+  const [renaming, setRenaming] = useState<Zone | null>(null)
   const byCode = new Map(managers.map((m) => [m.code, m]))
   const columns: Column<Zone>[] = [
     { key: 'code', label: 'Zone', width: 200 },
@@ -340,6 +341,27 @@ export function ZonesAdminGrid({
         ),
       value: (row) => (row.allow_negative ? 1 : 0),
     },
+    ...(editable
+      ? [
+          {
+            key: 'rename',
+            label: '',
+            width: 52,
+            sortable: false,
+            filter: false as const,
+            render: (row: Zone) => (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Icons.pencil size={13} />}
+                aria-label={`Renommer ${row.code}`}
+                title={`Renommer ${row.code}`}
+                onClick={() => setRenaming(row)}
+              />
+            ),
+          } satisfies Column<Zone>,
+        ]
+      : []),
     ...(onOpen
       ? [
           {
@@ -556,6 +578,13 @@ export function ZonesAdminGrid({
           onClose={() => setCreating(false)}
         />
       )}
+      {renaming && (
+        <RenameZoneModal
+          campaignId={campaignId}
+          zone={renaming}
+          onClose={() => setRenaming(null)}
+        />
+      )}
       {removing && (
         <ConfirmDelete
           what={
@@ -573,5 +602,107 @@ export function ZonesAdminGrid({
         />
       )}
     </Card>
+  )
+}
+
+
+/**
+ * Renommer une zone.
+ *
+ * Le code d'une zone se décide avant d'avoir vu le terrain, et il se révèle
+ * faux une fois sur place — deux aires sous un seul code, un code recopié d'une
+ * campagne où l'atelier s'appelait autrement. Le seul recours était de
+ * supprimer la zone et de la recréer, ce qui emporte ses feuilles avec leur
+ * liste d'articles et leurs quantités.
+ *
+ * Rien d'autre ne bouge : feuilles, lignes, comptages et arbitrages tiennent à
+ * l'identifiant de la zone, jamais à son code. La seule conséquence est dite
+ * ici plutôt que découverte plus tard — l'import des feuilles reconnaît une
+ * zone à son code, et un fichier qui porte encore l'ancien en créera une
+ * seconde.
+ */
+function RenameZoneModal({
+  campaignId,
+  zone,
+  onClose,
+}: {
+  campaignId: string
+  zone: Zone
+  onClose: () => void
+}) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+  const [form, setForm] = useState({
+    code: zone.code,
+    label: zone.label ?? '',
+    sector: zone.sector ?? '',
+  })
+
+  const rename = useMutation({
+    mutationFn: () => api.renameZone(campaignId, zone.id, form),
+    onSuccess: (renamed) => {
+      void queryClient.invalidateQueries()
+      toast.success(
+        `Zone renommée en ${renamed.code}`,
+        'Ses feuilles, ses lignes et ses comptages sont inchangés.',
+      )
+      onClose()
+    },
+    onError: (error) => showError(error, 'Renommage impossible'),
+  })
+
+  const changed =
+    form.code !== zone.code ||
+    form.label !== (zone.label ?? '') ||
+    form.sector !== (zone.sector ?? '')
+
+  return (
+    <Modal
+      title={`Renommer ${zone.code}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            Annuler
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!changed || !form.code.trim() || rename.isPending}
+            onClick={() => rename.mutate()}
+          >
+            {rename.isPending ? 'Renommage…' : 'Renommer'}
+          </Button>
+        </>
+      }
+    >
+      <div className="stack">
+        <Field label="Code de la zone" hint="C’est le nom imprimé en tête de la feuille.">
+          <input
+            value={form.code}
+            autoFocus
+            onChange={(event) => setForm({ ...form, code: event.target.value })}
+          />
+        </Field>
+        <Field label="Libellé">
+          <input
+            value={form.label}
+            onChange={(event) => setForm({ ...form, label: event.target.value })}
+          />
+        </Field>
+        <Field label="Secteur">
+          <input
+            value={form.sector}
+            onChange={(event) => setForm({ ...form, sector: event.target.value })}
+          />
+        </Field>
+        <Alert tone="info" title="Ce que le renommage ne touche pas">
+          Les feuilles, leurs lignes, les comptages déjà saisis et les arbitrages
+          restent attachés à cette zone. En revanche, l’import des feuilles
+          reconnaît une zone à son <strong>code</strong> : recharger ensuite un
+          fichier qui porte encore « {zone.code} » créera une seconde zone.
+        </Alert>
+      </div>
+    </Modal>
   )
 }

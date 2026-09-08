@@ -45,7 +45,12 @@ class PrintMode(StrEnum):
 #: article nobody listed can be written down instead of being remembered. Sized
 #: from what actually turns up: the line side is where surprises happen, the two
 #: WIP sections much less so.
-BLANK_ROWS_PER_SECTION = {"LINE_SIDE": 5, "WIP": 3, "WIP_OK": 2}
+#:
+#: Revu à la baisse — 5 et 3 au départ — sur les feuilles réelles : les lignes
+#: rendues ici sont des lignes qui restent sur la page, et une section qui se
+#: termine sur trois cases vides pousse la suivante sur un second feuillet que
+#: personne ne voulait imprimer.
+BLANK_ROWS_PER_SECTION = {"LINE_SIDE": 4, "WIP": 2, "WIP_OK": 2}
 
 
 def available_print_modes(

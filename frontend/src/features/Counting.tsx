@@ -20,6 +20,7 @@ import type {
 import {
   DASH,
   JOURNAL_STATUS_LABELS,
+  SEAL_STATUS_LABELS,
   moneyShort,
   qty,
   label as toLabel,
@@ -182,6 +183,38 @@ function JournalsTab({
         </span>
       ),
       value: (row) => row.status,
+    },
+    {
+      // Après le statut de comptage, et distinct de lui : l'un dit où en est la
+      // saisie, l'autre dit si l'emplacement a déjà été compté avant le jour J.
+      // Un emplacement précompté et scellé ressemblait ici à un emplacement qui
+      // attend encore quelqu'un — c'est pourtant la première chose qu'on
+      // regarde le matin du comptage, quand on répartit les équipes.
+      key: 'sealStatus',
+      label: 'Scellement',
+      width: 180,
+      filter: 'choice',
+      render: (row) => (
+        <Badge
+          tone={
+            row.sealStatus === 'SEALED_DRIFTING'
+              ? 'warning'
+              : row.sealStatus === 'SEALED_CLEAN'
+                ? 'success'
+                : 'neutral'
+          }
+          title={
+            row.sealStatus === 'SEALED_DRIFTING'
+              ? 'Précompté et scellé, mais l’ERP du jour J ne dit pas tout à fait la même chose. Rien à trancher : voir les dérives dans les Contrôles.'
+              : row.sealStatus === 'SEALED_CLEAN'
+                ? 'Précompté et scellé : son comptage est fait, daté et figé.'
+                : 'Compté le jour J, avec le reste.'
+          }
+        >
+          {toLabel(SEAL_STATUS_LABELS, row.sealStatus)}
+        </Badge>
+      ),
+      value: (row) => toLabel(SEAL_STATUS_LABELS, row.sealStatus),
     },
     {
       // Lu dans les lignes, pas dans l'en-tête. `journal_number` est un champ

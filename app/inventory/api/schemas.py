@@ -18,11 +18,9 @@ from ..domain.enums import (
     CampaignStatus,
     CountLineKind,
     CountSection,
-    DriftResolution,
     ExclusionScope,
     ItemType,
     JournalStatus,
-    LabelResolution,
     LocationStatus,
 )
 from ..services.campaign_service import MAX_BULK_DELETE
@@ -50,9 +48,7 @@ __all__ = [
     "JournalStatusRequest",
     "JournalLineRequest",
     "JournalScopeRequest",
-    "LabelDecisionRequest",
     "UnsealRequest",
-    "DriftResolutionRequest",
     "ZoneRequest",
     "ZoneRenameRequest",
     "ZonePassesRequest",
@@ -332,33 +328,10 @@ class JournalScopeRequest(ApiModel):
     locations: list[LocationKeyPayload] = Field(min_length=1)
 
 
-class LabelDecisionRequest(ApiModel):
-    """Où est la pièce : les deux emplacements, et ce qu'on a constaté."""
-
-    label_id: str = Field(min_length=1, alias="labelId")
-    item_number: str = Field(min_length=1, alias="itemNumber")
-    decision: LabelResolution
-    sealed_warehouse_id: str = Field(alias="sealedWarehouseId")
-    sealed_location_id: str = Field(alias="sealedLocationId")
-    other_warehouse_id: str = Field(alias="otherWarehouseId")
-    other_location_id: str = Field(alias="otherLocationId")
-    comment: str = ""
-
-
 class UnsealRequest(ApiModel):
     """Le descellement annule une preuve datée : il se motive."""
 
     reason: str = Field(min_length=1)
-
-
-class DriftResolutionRequest(ApiModel):
-    drift_ids: list[str] = Field(min_length=1, alias="driftIds")
-    resolution: DriftResolution
-    #: Obligatoire pour ``KEEP_EARLY`` — le service le vérifie, parce que c'est
-    #: une règle métier et non une contrainte de forme : cette issue laisse la
-    #: campagne et l'ERP en désaccord, et il faut dire pourquoi.
-    cause_code: str = Field(default="", alias="causeCode")
-    comment: str = ""
 
 
 class JournalLineRequest(ApiModel):

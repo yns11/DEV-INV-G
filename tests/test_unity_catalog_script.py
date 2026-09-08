@@ -161,15 +161,19 @@ class TestApplyingTheRealFile:
 
         assert any(s.startswith("CREATE SCHEMA") for s in envoyees)
         creations = [s for s in envoyees if s.startswith("CREATE TABLE")]
-        assert len(creations) == 13
+        assert len(creations) == 12
         assert any("publication" in s for s in creations), "le manifeste qui manquait"
-        # Les trois tables des comptages avancés : sans elles, l'archive ne
-        # dirait ni contre quoi un emplacement précompté a été compté, ni ce
-        # qu'on a décidé de l'écart constaté le jour J.
-        for table in (
-            "early_count_label_decision", "early_count_drift", "erp_journal_scope",
-        ):
+        # Les deux tables des comptages avancés : sans elles, l'archive ne
+        # dirait ni quels emplacements ont été comptés en avance, ni ce que
+        # l'ERP en disait le jour J.
+        for table in ("early_count_drift", "erp_journal_scope"):
             assert any(table in s for s in creations), table
+
+        # Et celle qui portait les issues d'étiquette s'en va avec elles : une
+        # étiquette scellée retrouvée ailleurs se regarde, elle ne se tranche
+        # plus. La garder créerait, campagne après campagne, une table Delta
+        # vide que personne ne saurait interpréter.
+        assert not any("early_count_label_decision" in s for s in creations)
 
     def test_chaque_instruction_porte_le_catalogue_du_fichier(self):
         client = FakeClient()

@@ -14,7 +14,7 @@ le reste de l'application est écrit : emplacement plus article.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Collection, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import psycopg
@@ -395,23 +395,22 @@ class ErpJournalRepository(_Base):
         self,
         campaign_id: str,
         *,
-        excluded_labels: Collection[tuple[str, str]] = (),
         conn: psycopg.Connection | None = None,
     ) -> list[dict[str, Any]]:
         """Référence et comptage par (entrepôt, emplacement, article), dans le périmètre.
 
-        C'est ici que le journal devient autonome : ``qty_on_hand`` agrège la
-        colonne « Stock ERP » des lignes, c'est-à-dire le stock d'avant comptage,
-        et un lot avancé n'a donc besoin d'aucun chargement séparé.
+        ``qty_on_hand`` agrège la colonne « Stock ERP » des lignes, c'est-à-dire
+        le stock que l'ERP annonçait au moment du comptage. Il sert à afficher
+        le journal tel qu'il est arrivé ; la référence de la campagne, elle, est
+        ailleurs et elle est unique — le stock ERP du jour J.
 
         La jointure sur le périmètre déclaré n'est pas décorative : sans elle,
-        une ligne de passage créerait une référence sur un emplacement que le
+        une ligne de passage créerait une ligne sur un emplacement que le
         journal ne couvre pas.
 
-        ``excluded_labels`` porte les étiquettes qu'une décision a fait sortir de
-        leur emplacement scellé — la pièce est ailleurs, quelqu'un est allé
-        voir. Les exclure ici plutôt qu'après coup est ce qui fait que la
-        référence, le comptage et l'écart racontent la même histoire.
+        **Aucune étiquette n'est exclue.** Une étiquette scellée retrouvée
+        ailleurs se signale, elle ne se tranche plus : l'agrégation rend donc ce
+        que les journaux disent, sans qu'une décision vienne en retirer une part.
         """
         return self._fetch_all(
             """
@@ -433,17 +432,10 @@ class ErpJournalRepository(_Base):
              AND s.warehouse_id = l.warehouse_id
              AND s.location_id = l.location_id
             WHERE l.campaign_id = %(cid)s AND j.deleted_at IS NULL
-              AND (l.label_id, l.item_number) <> ALL (
-                    SELECT * FROM unnest(%(labels)s::text[], %(items)s::text[])
-              )
             GROUP BY l.warehouse_id, l.location_id, l.item_number
             ORDER BY l.warehouse_id, l.location_id, l.item_number
             """,
-            {
-                "cid": campaign_id,
-                "labels": [label for label, _ in excluded_labels],
-                "items": [item for _, item in excluded_labels],
-            },
+            {"cid": campaign_id},
             conn=conn,
         )
 
@@ -456,21 +448,24 @@ class ErpJournalRepository(_Base):
     ) -> list[dict[str, Any]]:
         """Les étiquettes d'un emplacement scellé retrouvées **ailleurs**.
 
-        Le seul contrôle du dispositif qui descende au grain de l'étiquette, et
-        celui qui rattrape ce que la dérive ne voit pas : une pièce sortie d'un
+        Le seul regard du dispositif qui descende au grain de l'étiquette, et
+        celui qui montre ce que la dérive ne voit pas : une pièce sortie d'un
         emplacement scellé sans aucune transaction ERP laisse une dérive nulle,
         mais si elle est re-scannée ailleurs, son étiquette apparaît dans un
         second journal.
+
+        **Une liste, et rien de plus.** Elle n'exclut rien d'aucune agrégation
+        et n'appelle aucune décision : elle dit ce qui a bougé entre le
+        précomptage et le jour J, à qui veut aller voir.
 
         Deux restrictions, et chacune corrige une liste qui ne voulait rien dire.
 
         **Ailleurs veut dire un autre emplacement.** La condition ne portait que
         sur le journal : deux journaux passant sur le même emplacement scellé
         remplissaient l'écran de lignes « ATP / SF1 comptée aussi en ATP / SF1 ».
-        La pièce n'a pas bougé, et les trois issues proposées — la mettre au
-        nouvel emplacement, l'en enlever, la rescanner — n'ont aucun sens quand
-        il n'y a pas de nouvel emplacement. Ce cas-là est un second passage sur
-        le même emplacement : :meth:`labels_recounted_in_place` le dit.
+        La pièce n'a pas bougé, et il n'y a rien à montrer quand il n'y a pas de
+        nouvel emplacement. Ce cas-là est un second passage sur le même
+        emplacement : :meth:`labels_recounted_in_place` le dit.
 
         **Le point de vue est celui du journal propriétaire.** Sans cela, la
         ligne de l'autre journal servait à son tour de départ et la même paire

@@ -10,14 +10,11 @@
 
 import type {
   Drift,
-  DriftResolution,
   ErpJournal,
   ErpJournalLine,
   CampaignSource,
   LabelAlert,
   RecountedInPlace,
-  LabelResolution,
-  RescanLocation,
   ScopeCandidate,
   ClosureChecklist,
   CampaignPage,
@@ -538,40 +535,8 @@ export const api = {
       `/campaigns/${id}/early-counts/journals/${journalId}/unseal`,
       { method: 'POST', body: JSON.stringify({ reason }) },
     ),
-  decideLabel: (
-    id: string,
-    body: {
-      labelId: string
-      itemNumber: string
-      decision: LabelResolution
-      sealedWarehouseId: string
-      sealedLocationId: string
-      otherWarehouseId: string
-      otherLocationId: string
-      comment?: string
-    },
-  ) =>
-    request<LabelAlert>(`/campaigns/${id}/early-counts/label-alerts/decide`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  toRescan: (id: string) =>
-    request<RescanLocation[]>(`/campaigns/${id}/early-counts/to-rescan`),
   drifts: (id: string) =>
     request<Drift[]>(`/campaigns/${id}/early-counts/drifts`),
-  resolveDrifts: (
-    id: string,
-    body: {
-      driftIds: string[]
-      resolution: DriftResolution
-      causeCode?: string
-      comment?: string
-    },
-  ) =>
-    request<{ resolved: number }>(`/campaigns/${id}/early-counts/drifts/resolve`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
   labelAlerts: (id: string) =>
     request<LabelAlert[]>(`/campaigns/${id}/early-counts/label-alerts`),
   recountedInPlace: (id: string) =>

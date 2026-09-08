@@ -176,30 +176,28 @@ export const SECTIONS: Section[] = [
     ],
   },
 
-  // --- Comptage -------------------------------------------------------------
   {
-    // En tête du comptage, parce que c'est ce qui se fait en premier : un
-    // emplacement précompté l'est des jours avant le jour J, avant même que le
-    // stock ERP ne soit gelé. Le mettre après donnait un ordre de lecture qui
-    // contredisait l'ordre des gestes.
+    // En préparation, et non en comptage : un emplacement précompté l'est des
+    // jours avant le jour J, avant même que le stock ERP n'existe. Le ranger
+    // dans le comptage donnait un ordre de lecture qui contredisait l'ordre
+    // des gestes, et obligeait à passer la campagne en comptage — donc à geler
+    // le référentiel — pour compter deux emplacements.
     to: 'comptages-avances',
     label: 'Comptages avancés',
     icon: 'history',
-    phase: 'COUNTING',
+    phase: 'PREPARATION',
     lede: 'Compter certains emplacements avant le jour J, et sceller leur comptage.',
     // `early_counts`, et pas `count_journals` : ce dernier attend le stock ERP
     // chargé, qui arrive le jour J. L'écran serait resté fermé jusqu'après le
-    // moment où il sert — un lot avancé se compte des jours avant, et sa
-    // référence est dans son propre journal.
+    // moment où il sert.
     enabled: (o) => ready(o, 'early_counts'),
     locked: (o) => blocked(o, 'early_counts') ?? '',
-    subs: [
-      { id: 'journaux', label: 'Journaux ERP' },
-      { id: 'derives', label: 'Dérives' },
-      { id: 'etiquettes', label: 'Étiquettes' },
-      { id: 'rescanner', label: 'À rescanner' },
-    ],
+    // Une seule vue, donc aucun volet. Les dérives et les étiquettes sont
+    // parties dans les Contrôles : elles ne se décident plus, elles se
+    // regardent — et ce qui se regarde a sa place avec les autres constats.
   },
+
+  // --- Comptage -------------------------------------------------------------
   {
     to: 'stock-erp',
     label: 'Stock ERP',
@@ -285,6 +283,15 @@ export const SECTIONS: Section[] = [
     // références qu'il n'a pas pu charger, ce qui se lit le jour de l'import.
     enabled: () => true,
     badge: (_o, _focus, alerts) => alerts.controls || null,
+    // Les deux listes du précomptage, là où on regarde ce qui ne va pas. Elles
+    // n'appellent aucune action et ne bloquent rien — un précomptage est posté
+    // dans l'ERP avant la photo du jour J, donc ce qu'elles montrent est ce qui
+    // a bougé entre les deux dates, pas un écart à trancher.
+    subs: [
+      { id: 'constats', label: 'Constats' },
+      { id: 'derives', label: 'Dérives' },
+      { id: 'etiquettes', label: 'Étiquettes' },
+    ],
   },
   {
     to: 'ecarts',

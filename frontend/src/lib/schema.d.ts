@@ -961,38 +961,16 @@ export interface paths {
         };
         /**
          * Lister les dérives des emplacements scellés
-         * @description ``ERP@J − physique@T0``, par article et emplacement scellé.
+         * @description ``ERP@J − compté@T0``, par article et emplacement scellé.
          *
-         *     Attendue nulle. ``blocksAnalysis`` marque celles qui arrêtent le passage en
-         *     analyse tant que personne n'a dit laquelle des deux quantités fait foi.
+         *     Attendue nulle, et seules les non nulles sont rendues. En affichage seul :
+         *     un précomptage est posté dans l'ERP avant la photo du jour J, donc ce qui
+         *     subsiste ici est ce qui a bougé entre les deux dates — rien à trancher, et
+         *     rien qui bloque.
          */
         get: operations["list_drifts_api_campaigns__campaign_id__early_counts_drifts_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/drifts/resolve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Trancher des dérives
-         * @description Quelle quantité fait foi au jour J ?
-         *
-         *     Deux réponses : conserver le comptage avancé — avec une cause, parce que la
-         *     campagne et l'ERP resteront alors en désaccord — ou recompter, ce qui rend
-         *     l'emplacement au comptage général.
-         */
-        post: operations["resolve_drifts_api_campaigns__campaign_id__early_counts_drifts_resolve_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1117,39 +1095,19 @@ export interface paths {
         };
         /**
          * Étiquettes scellées comptées ailleurs
-         * @description Le seul contrôle qui descende au grain de l'étiquette.
+         * @description Le seul regard qui descende au grain de l'étiquette.
          *
-         *     Il rattrape ce que la dérive ne voit pas : une pièce sortie d'un emplacement
+         *     Il montre ce que la dérive ne voit pas : une pièce sortie d'un emplacement
          *     scellé sans aucune transaction ERP laisse une dérive nulle, mais si elle est
          *     re-scannée ailleurs, son étiquette apparaît dans un second journal.
+         *
+         *     En affichage seul. La liste n'exclut rien d'aucune agrégation et n'appelle
+         *     aucune décision : elle dit ce qui a bougé entre le précomptage et le jour J,
+         *     à qui veut aller voir.
          */
         get: operations["label_alerts_api_campaigns__campaign_id__early_counts_label_alerts_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/label-alerts/decide": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Dire où est la pièce
-         * @description Trois issues, et chacune agit sur les quantités.
-         *
-         *     La mettre au nouvel emplacement retire l'étiquette de l'emplacement scellé ;
-         *     l'en enlever retire la ligne de l'autre journal ; la signaler ne retire
-         *     rien et met l'emplacement scellé sur la liste de ceux à rescanner.
-         */
-        post: operations["decide_label_api_campaigns__campaign_id__early_counts_label_alerts_decide_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1174,30 +1132,6 @@ export interface paths {
          *     le journal retenu et celui qui ne l'est pas.
          */
         get: operations["recounted_in_place_api_campaigns__campaign_id__early_counts_recounted_in_place_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/to-rescan": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Emplacements à desceller et rescanner
-         * @description Les emplacements scellés dont une étiquette reste en question.
-         *
-         *     Ceux que l'issue « signaler » désigne : on n'a pas voulu trancher sur pièce,
-         *     et la façon d'en sortir est d'aller recompter. C'est l'ancien emplacement —
-         *     le scellé — qu'il faut desceller pour que le jour J le reprenne.
-         */
-        get: operations["to_rescan_api_campaigns__campaign_id__early_counts_to_rescan_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3647,59 +3581,16 @@ export interface components {
             [key: string]: unknown;
         };
         /**
-         * DriftResolution
-         * @description Ce qu'un exploitant décide d'une dérive matérielle.
-         *
-         *     Une dérive est l'écart entre le stock ERP du jour J et le physique posté au
-         *     précomptage, sur un emplacement scellé. Elle est attendue nulle ; quand elle
-         *     ne l'est pas, **une seule question se pose** : quelle quantité fait foi au
-         *     jour J ?
-         *
-         *     Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une : un
-         *     journal de précomptage se charge une fois posté et validé dans l'ERP, si
-         *     bien que le réalignement est acquis en pratique plutôt que diagnostiqué
-         *     après coup. « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
-         *     d'ajustement, qui a déjà son sens, sa table et sa place dans le calcul —
-         *     en faire une issue de la dérive aurait dupliqué une fonction et forcé à
-         *     choisir entre deux gestes qui ne s'excluent pas.
-         * @enum {string}
-         */
-        DriftResolution: "KEEP_EARLY" | "RECOUNT";
-        /** DriftResolutionRequest */
-        DriftResolutionRequest: {
-            /**
-             * Causecode
-             * @default
-             */
-            causeCode: string;
-            /**
-             * Comment
-             * @default
-             */
-            comment: string;
-            /** Driftids */
-            driftIds: string[];
-            resolution: components["schemas"]["DriftResolution"];
-        };
-        /**
          * DriftResponse
-         * @description ``ERP@J − physique@T0`` sur un emplacement scellé, attendue nulle.
+         * @description ``ERP@J − compté@T0`` sur un emplacement scellé, attendue nulle.
+         *
+         *     Un indice, pas un écart : le précomptage a été posté dans l'ERP avant la
+         *     photo du jour J, donc ce qui subsiste est ce qui a bougé entre les deux
+         *     dates. Aucune décision ne s'y attache, et rien n'est bloqué.
          */
         DriftResponse: {
-            /** Blocksanalysis */
-            blocksAnalysis: boolean;
             /** Campaignid */
             campaignId: string;
-            /**
-             * Causecode
-             * @default
-             */
-            causeCode: string;
-            /**
-             * Comment
-             * @default
-             */
-            comment: string;
             /** Driftqty */
             driftQty: number;
             /** Driftvalue */
@@ -3708,38 +3599,16 @@ export interface components {
             erpJournalId: string | null;
             /** Id */
             id: string;
-            /** Ismaterial */
-            isMaterial: boolean;
-            /** Isresolved */
-            isResolved: boolean;
             /** Itemnumber */
             itemNumber: string;
             /** Locationid */
             locationId: string;
+            /** Qtycountedt0 */
+            qtyCountedT0: number;
             /** Qtyerpj */
             qtyErpJ: number;
-            /** Qtyerpt0 */
-            qtyErpT0: number;
-            /** Qtyphysicalt0 */
-            qtyPhysicalT0: number;
-            /** Resolution */
-            resolution: string | null;
-            /** Resolvedat */
-            resolvedAt: string | null;
-            /**
-             * Resolvedby
-             * @default
-             */
-            resolvedBy: string;
             /** Warehouseid */
             warehouseId: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /** DriftsResolved */
-        DriftsResolved: {
-            /** Resolved */
-            resolved: number;
         } & {
             [key: string]: unknown;
         };
@@ -4155,24 +4024,11 @@ export interface components {
          * LabelAlert
          * @description Une étiquette d'un emplacement scellé, comptée dans un autre journal.
          *
-         *     Le seul contrôle qui descende au grain de l'étiquette, et celui qui rattrape
-         *     ce que la dérive ne voit pas.
+         *     Le seul regard qui descende au grain de l'étiquette, et celui qui montre ce
+         *     que la dérive ne voit pas. En affichage seul : la ligne n'exclut rien
+         *     d'aucune agrégation et n'appelle aucune décision.
          */
         LabelAlert: {
-            /**
-             * Comment
-             * @default
-             */
-            comment: string;
-            /** Decidedat */
-            decidedAt: string | null;
-            /**
-             * Decidedby
-             * @default
-             */
-            decidedBy: string;
-            /** Decision */
-            decision: string | null;
             /** Itemnumber */
             itemNumber: string;
             /** Labelid */
@@ -4192,44 +4048,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /**
-         * LabelDecisionRequest
-         * @description Où est la pièce : les deux emplacements, et ce qu'on a constaté.
-         */
-        LabelDecisionRequest: {
-            /**
-             * Comment
-             * @default
-             */
-            comment: string;
-            decision: components["schemas"]["LabelResolution"];
-            /** Itemnumber */
-            itemNumber: string;
-            /** Labelid */
-            labelId: string;
-            /** Otherlocationid */
-            otherLocationId: string;
-            /** Otherwarehouseid */
-            otherWarehouseId: string;
-            /** Sealedlocationid */
-            sealedLocationId: string;
-            /** Sealedwarehouseid */
-            sealedWarehouseId: string;
-        };
-        /**
-         * LabelResolution
-         * @description Où est la pièce, quand une étiquette scellée reparaît ailleurs.
-         *
-         *     Le contrôle par étiquette est le seul du dispositif qui descende sous le
-         *     grain « emplacement + article », et le seul qui rattrape une pièce sortie
-         *     d'un emplacement scellé **sans aucune transaction ERP** : la dérive, elle,
-         *     reste nulle dans ce cas, faute d'avoir quoi que ce soit à comparer.
-         *
-         *     La question n'a pas de réponse calculable. Deux journaux affirment chacun
-         *     détenir la même étiquette ; seul quelqu'un qui va voir peut trancher.
-         * @enum {string}
-         */
-        LabelResolution: "KEEP_NEW" | "KEEP_SEALED" | "RECOUNT";
         /** LocationKeyPayload */
         LocationKeyPayload: {
             /**
@@ -4473,9 +4291,9 @@ export interface components {
          * @description Un emplacement scellé qu'un second journal a recompté **sur place**.
          *
          *     Distinct de :class:`LabelAlert`, et la distinction porte : là, l'étiquette
-         *     est où elle doit être, il n'y a pas de nouvel emplacement, et aucune des
-         *     trois issues ne s'applique. Ce qui se joue est un second comptage du même
-         *     emplacement — seul le journal qui le possède est retenu.
+         *     est où elle doit être, il n'y a pas de nouvel emplacement, et il n'y a donc
+         *     rien à signaler d'un déplacement. Ce qui se joue est un second comptage du
+         *     même emplacement — seul le journal qui le possède est retenu.
          */
         RecountedInPlace: {
             /** Labelcount */
@@ -4488,61 +4306,6 @@ export interface components {
             sealedLocationId: string;
             /** Sealedwarehouseid */
             sealedWarehouseId: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * RescanLabel
-         * @description Une étiquette qui met un emplacement scellé en question.
-         */
-        RescanLabel: {
-            /**
-             * Comment
-             * @default
-             */
-            comment: string;
-            /**
-             * Decidedby
-             * @default
-             */
-            decidedBy: string;
-            /** Itemnumber */
-            itemNumber: string;
-            /** Labelid */
-            labelId: string;
-            /** Otherlocationid */
-            otherLocationId: string;
-            /** Otherwarehouseid */
-            otherWarehouseId: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * RescanLocation
-         * @description Un emplacement scellé qu'il faut desceller et rescanner.
-         *
-         *     Ce que l'issue « signaler » produit : on n'a pas tranché sur pièce, et la
-         *     façon d'en sortir est d'aller recompter.
-         */
-        RescanLocation: {
-            /** Erpjournalid */
-            erpJournalId: string | null;
-            /**
-             * Issealed
-             * @default false
-             */
-            isSealed: boolean;
-            /**
-             * Journalnumber
-             * @default
-             */
-            journalNumber: string;
-            /** Labels */
-            labels: components["schemas"]["RescanLabel"][];
-            /** Locationid */
-            locationId: string;
-            /** Warehouseid */
-            warehouseId: string;
         } & {
             [key: string]: unknown;
         };
@@ -6811,45 +6574,6 @@ export interface operations {
             };
         };
     };
-    resolve_drifts_api_campaigns__campaign_id__early_counts_drifts_resolve_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DriftResolutionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DriftsResolved"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     list_erp_journals_api_campaigns__campaign_id__early_counts_journals_get: {
         parameters: {
             query?: never;
@@ -7072,45 +6796,6 @@ export interface operations {
             };
         };
     };
-    decide_label_api_campaigns__campaign_id__early_counts_label_alerts_decide_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LabelDecisionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LabelAlert"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     recounted_in_place_api_campaigns__campaign_id__early_counts_recounted_in_place_get: {
         parameters: {
             query?: never;
@@ -7133,41 +6818,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RecountedInPlace"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    to_rescan_api_campaigns__campaign_id__early_counts_to_rescan_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RescanLocation"][];
                 };
             };
             /** @description Validation Error */

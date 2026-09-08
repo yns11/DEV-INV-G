@@ -1,40 +1,36 @@
 """Les comptages avancés : un journal ERP, son périmètre, son scellement.
 
-Compter certains emplacements à J-1 ou J-2 pour alléger le jour J, sans éclater
-preuves, écarts et analyses entre plusieurs campagnes.
+Compter certains emplacements à J-1 ou J-2 pour alléger le jour J.
 
-Ce que ce module tient, et pourquoi
------------------------------------
-**Le journal ERP *est* le précomptage.** Une version antérieure interposait un
-« lot » entre le journal et le scellement. Le métier a tranché : un précomptage
-couvre exactement un journal, qui couvre un ou plusieurs emplacements. Le lot
-n'apportait qu'un regroupement dont personne n'avait besoin, plus deux champs —
-la date du comptage et le scellement — qui appartiennent au journal.
+Ce que ce module ne fait plus, et pourquoi
+------------------------------------------
+**Rien ne se calcule à partir d'un comptage avancé.** Le dispositif portait sa
+propre référence — le stock ERP d'avant comptage, ``ERP@T0`` — contre laquelle
+l'écart d'un emplacement scellé était mesuré. Cette référence n'existe plus.
 
-**Déclarer le périmètre vaut scellement.** Dire quels emplacements ce journal
-couvre, c'est dire lesquels sont comptés et ne bougeront plus : il n'y avait
-aucune décision entre les deux, seulement des clics. Le geste unique pose la
-référence dans la foulée.
+La raison est dans l'ordre des faits : un journal de précomptage est **posté
+dans l'ERP** avant que la photo du jour J ne soit prise, et cette photo l'a donc
+déjà intégré. La correction de l'inventaire n'est pas perdue, elle est
+enregistrée plus tôt — dans l'ERP, avant la campagne. Mesurer une seconde fois
+contre un état antérieur revenait à compter deux fois la même correction, et
+c'est ce qui rendait le dispositif si difficile à lire : deux axes qui se
+ressemblaient, six gestes dont quatre ne changeaient aucun chiffre.
 
-**Le journal porte sa propre référence.** La colonne « Stock ERP »
-(``OnHandQuantity``) donne le stock d'avant comptage, ligne à ligne. Aucun
-chargement séparé : le fichier qui apporte le comptage apporte aussi ce contre
-quoi il se compare. Et sa colonne « Date de comptage » donne la date du relevé,
-qui date la référence — elle n'est plus retapée.
+Ce qui reste, et à quoi cela sert
+---------------------------------
+**Déclarer le périmètre d'un journal scelle ses emplacements.** Le scellement
+dit *lesquels sont comptés par ce journal-là*, et il décide encore de deux
+choses réelles : quelles lignes comptent pour un emplacement — celles de son
+propriétaire, jamais celles d'un journal de passage — et le statut de son
+journal de comptage.
 
-**La référence d'un emplacement scellé est celle de son précomptage.**
-:attr:`~inventory.domain.models.VarianceLine.variance_qty` documente déjà la
-règle : le snapshot gelé est *ce contre quoi la campagne a été comptée*. Elle
-vaut pour le jour J sur un emplacement ordinaire, et pour T0 sur un emplacement
-précompté. Même règle, deux dates. Sans elle, poster le journal ayant réaligné
-l'ERP sur le physique, l'écart d'un emplacement précompté serait **nul** dans le
-cas nominal et le résultat de son inventaire disparaîtrait.
+**Deux listes, en affichage seul.** La dérive — ``ERP@J − compté@T0`` — et les
+étiquettes d'un emplacement scellé retrouvées ailleurs. Elles se regardent, elles
+n'appellent aucune décision et ne bloquent rien : ce sont des indices sur ce qui
+a bougé entre le précomptage et le jour J, pas des écarts à trancher.
 
-**Un réimport remplace et met à jour.** Recharger le journal, ou en charger un
-autre qui touche un emplacement déjà scellé, recalcule la référence et rescelle.
-C'est la règle métier, et elle est la bonne : la dernière lecture de l'ERP est la
-plus juste, et une preuve qu'on ne peut plus corriger n'est pas une preuve, c'est
-une impasse.
+**La référence est unique** : le stock ERP du jour J, gelé, pour tout article et
+tout emplacement.
 """
 
 from __future__ import annotations
@@ -48,13 +44,10 @@ from ..domain.enums import (
     AuditAction,
     DataSource,
     JournalStatus,
-    LabelResolution,
 )
 from ..domain.models import (
-    BookStockLine,
     Campaign,
     CountJournalLine,
-    LabelDecision,
     LocationKey,
 )
 from ..errors import ConflictError, NotFoundError, ValidationError
@@ -164,10 +157,6 @@ class EarlyCountService:
                 campaign.id, erp_journal_id, keys, actor=ctx.actor, conn=conn
             )
             ctx.journals.ensure_journals(campaign.id, list(keys), conn=conn)
-            reference = self._reference_lines(campaign, journal, keys, conn=conn)
-            ctx.book_stock.replace_for_journal(
-                campaign.id, erp_journal_id, reference, conn=conn
-            )
             touched, counted = self._counted_lines(campaign, keys, conn=conn)
             ctx.journals.replace_imported_lines(
                 campaign.id, touched, counted, conn=conn
@@ -209,12 +198,11 @@ class EarlyCountService:
                 entity_id=erp_journal_id,
                 summary=(
                     f"Journal {journal.journal_number} : {count} emplacement(s) "
-                    f"déclarés et scellés, {len(reference)} ligne(s) de "
-                    f"référence, {len(dropped)} journal(aux) de passage retiré(s)."
+                    f"déclarés et scellés, {len(dropped)} journal(aux) de "
+                    "passage retiré(s)."
                 ),
                 after={
                     "locations": [str(k) for k in keys],
-                    "referenceLines": len(reference),
                     "countedOn": (
                         journal.counted_on.isoformat() if journal.counted_on else None
                     ),
@@ -244,9 +232,6 @@ class EarlyCountService:
         journal = self._erp_journal(campaign, erp_journal_id)
         keys = list(journal.scope)
         with ctx.db.transaction() as conn:
-            ctx.book_stock.replace_for_journal(
-                campaign.id, erp_journal_id, [], conn=conn
-            )
             ctx.journals.unseal(
                 campaign.id,
                 [(k.warehouse_id, k.location_id) for k in keys],
@@ -292,12 +277,6 @@ class EarlyCountService:
             for journal in ctx.erp_journals.list(campaign.id, conn=conn):
                 if not journal.scope_declared or not journal.scope:
                     continue
-                reference = self._reference_lines(
-                    campaign, journal, journal.scope, conn=conn
-                )
-                ctx.book_stock.replace_for_journal(
-                    campaign.id, journal.id, reference, conn=conn
-                )
                 touched, counted = self._counted_lines(
                     campaign, journal.scope, conn=conn
                 )
@@ -451,13 +430,17 @@ class EarlyCountService:
     def label_alerts(self, campaign_id: str) -> list[dict[str, Any]]:
         """Les étiquettes d'un emplacement scellé comptées dans un autre journal.
 
-        Le seul contrôle qui descende au grain de l'étiquette, et celui qui
-        rattrape ce que la dérive ne voit pas : une pièce sortie d'un
-        emplacement scellé sans aucune transaction ERP laisse une dérive nulle,
-        mais si elle est re-scannée ailleurs — précomptage voisin ou comptage du
-        jour J — son étiquette apparaît dans un second journal.
+        Le seul indice qui descende au grain de l'étiquette, et celui qui montre
+        ce que la dérive ne voit pas : une pièce sortie d'un emplacement scellé
+        sans aucune transaction ERP laisse une dérive nulle, mais si elle est
+        re-scannée ailleurs — précomptage voisin ou comptage du jour J — son
+        étiquette apparaît dans un second journal.
 
-        Chaque alerte porte l'issue qu'on lui a donnée, ou aucune.
+        **En affichage seul.** La liste portait trois issues, dont chacune
+        retirait une quantité d'un côté ou de l'autre. Aucune ne subsiste : rien
+        ne se calcule à partir d'un comptage avancé, et une pièce comptée deux
+        fois se règle sur le terrain, pas en excluant une ligne d'une
+        agrégation.
         """
         sealed = [
             LocationKey(warehouse_id=warehouse, location_id=location)
@@ -465,16 +448,8 @@ class EarlyCountService:
                 self.ctx.journals.sealed_keys(campaign_id)
             )
         ]
-        decided = {
-            (d.label_id, d.item_number): d
-            for d in self.ctx.label_decisions.list(campaign_id)
-        }
-        alerts = []
-        for row in self.ctx.erp_journals.labels_counted_elsewhere(
-            campaign_id, sealed
-        ):
-            decision = decided.get((row["label_id"], row["item_number"]))
-            alerts.append({
+        return [
+            {
                 "labelId": row["label_id"],
                 "itemNumber": row["item_number"],
                 "sealedWarehouseId": row["sealed_warehouse_id"],
@@ -483,16 +458,11 @@ class EarlyCountService:
                 "otherLocationId": row["other_location_id"],
                 "otherJournalNumber": row["other_journal_number"],
                 "otherQtyCounted": float(row["other_qty_counted"] or 0),
-                "decision": str(decision.decision) if decision else None,
-                "comment": decision.comment if decision else "",
-                "decidedBy": decision.decided_by if decision else "",
-                "decidedAt": (
-                    decision.decided_at.isoformat()
-                    if decision and decision.decided_at
-                    else None
-                ),
-            })
-        return alerts
+            }
+            for row in self.ctx.erp_journals.labels_counted_elsewhere(
+                campaign_id, sealed
+            )
+        ]
 
     def labels_recounted_in_place(self, campaign_id: str) -> list[dict[str, Any]]:
         """Les emplacements scellés qu'un second journal a recomptés sur place.
@@ -522,112 +492,6 @@ class EarlyCountService:
             )
         ]
 
-    def decide_label(
-        self,
-        campaign: Campaign,
-        *,
-        label_id: str,
-        item_number: str,
-        decision: LabelResolution,
-        sealed: LocationKey,
-        other: LocationKey,
-        comment: str = "",
-    ) -> LabelDecision:
-        """Dire où est la pièce, et en tirer les conséquences sur les quantités.
-
-        Trois issues, et chacune agit :
-
-        * ``KEEP_NEW`` — elle est au nouvel emplacement. L'étiquette sort de
-          l'agrégation de l'emplacement scellé, qui perd la quantité.
-        * ``KEEP_SEALED`` — elle n'a pas bougé. C'est la ligne de l'autre
-          journal qui est l'erreur, et c'est elle qui sort.
-        * ``RECOUNT`` — on ne tranche pas sur pièce. Rien n'est exclu, et
-          l'emplacement scellé rejoint la liste de ceux à desceller et rescanner.
-
-        L'effet passe par l'agrégation, qui est rejouée ici : une décision qui
-        ne changerait les chiffres qu'au prochain import serait une décision
-        qu'on croit prise et qui ne l'est pas.
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "early_counts")
-        if not label_id.strip():
-            raise ValidationError("Une décision porte sur une étiquette nommée.")
-        record = LabelDecision(
-            id=new_id(),
-            campaign_id=campaign.id,
-            label_id=label_id,
-            item_number=item_number,
-            decision=decision,
-            sealed_warehouse_id=sealed.warehouse_id,
-            sealed_location_id=sealed.location_id,
-            other_warehouse_id=other.warehouse_id,
-            other_location_id=other.location_id,
-            comment=comment,
-            decided_by=ctx.actor,
-        )
-        with ctx.db.transaction() as conn:
-            ctx.label_decisions.decide(record, conn=conn)
-            ctx.record(
-                campaign_id=campaign.id,
-                action=AuditAction.UPDATE,
-                entity_type="early_count_label",
-                entity_id=record.id,
-                summary=(
-                    f"Étiquette {label_id} ({item_number}) : "
-                    f"{_DECISION_LABELS[decision]}."
-                ),
-                after={
-                    "decision": str(decision),
-                    "sealed": str(sealed),
-                    "other": str(other),
-                    "comment": comment,
-                },
-                conn=conn,
-            )
-        # La décision retire l'étiquette d'un côté ou de l'autre : la référence
-        # des emplacements scellés se recalcule dans la foulée.
-        self.reseal_after_import(campaign)
-        return record
-
-    def locations_to_rescan(self, campaign_id: str) -> list[dict[str, Any]]:
-        """Les emplacements scellés dont une étiquette est en question.
-
-        Ceux que ``RECOUNT`` désigne : on n'a pas voulu trancher sur pièce, et
-        la façon d'en sortir est d'aller recompter. La liste expose l'ancien
-        emplacement — celui qui est scellé — parce que c'est lui qu'il faut
-        desceller pour que le comptage du jour J le reprenne.
-        """
-        journals = {
-            (k.warehouse_id, k.location_id): journal
-            for journal in self.ctx.erp_journals.list(campaign_id)
-            for k in journal.scope
-        }
-        grouped: dict[tuple[str, str], dict[str, Any]] = {}
-        for decision in self.ctx.label_decisions.list(campaign_id):
-            if decision.decision is not LabelResolution.RECOUNT:
-                continue
-            key = (decision.sealed_warehouse_id, decision.sealed_location_id)
-            journal = journals.get(key)
-            entry = grouped.setdefault(key, {
-                "warehouseId": key[0],
-                "locationId": key[1],
-                "journalNumber": journal.journal_number if journal else "",
-                "erpJournalId": journal.id if journal else None,
-                "isSealed": bool(journal and journal.is_sealed),
-                "labels": [],
-            })
-            entry["labels"].append({
-                "labelId": decision.label_id,
-                "itemNumber": decision.item_number,
-                "otherWarehouseId": decision.other_warehouse_id,
-                "otherLocationId": decision.other_location_id,
-                "comment": decision.comment,
-                "decidedBy": decision.decided_by,
-            })
-        return sorted(
-            grouped.values(), key=lambda e: (e["warehouseId"], e["locationId"])
-        )
-
     # ----------------------------------------------------------------- interne
 
     def _aggregate(
@@ -639,22 +503,15 @@ class EarlyCountService:
     ) -> list[tuple[LocationKey, dict[str, Any]]]:
         """Les lignes du périmètre, agrégées par emplacement et article.
 
-        Une seule lecture pour la référence *et* le comptage, et c'est la raison
-        d'être de cette fonction : les deux nombres d'un même écart doivent
-        venir de la même requête, sur la même connexion, avec les mêmes
-        étiquettes exclues. Les avoir calculés séparément est exactement ce qui
-        produisait une référence tirée d'un journal et un comptage tiré d'un
-        autre.
+        Sur la même connexion que l'écriture qui l'appelle : le périmètre vient
+        d'être déclaré dans la transaction en cours, et une autre connexion du
+        pool ne le verrait pas — l'agrégation ne ramènerait rien, et le
+        scellement poserait un comptage vide sans que rien ne le signale.
         """
         wanted = set(keys)
-        excluded = {
-            (d.label_id, d.item_number)
-            for d in self.ctx.label_decisions.list(campaign.id, conn=conn)
-            if d.excluded_from_sealed
-        }
         rows: list[tuple[LocationKey, dict[str, Any]]] = []
         for row in self.ctx.erp_journals.aggregate_in_scope(
-            campaign.id, excluded_labels=excluded, conn=conn
+            campaign.id, conn=conn
         ):
             key = LocationKey(
                 warehouse_id=row["warehouse_id"], location_id=row["location_id"]
@@ -702,47 +559,6 @@ class EarlyCountService:
         ]
         return touched, lines
 
-    def _reference_lines(
-        self,
-        campaign: Campaign,
-        journal: Any,
-        keys: Sequence[LocationKey],
-        *,
-        conn: Any = None,
-    ) -> list[BookStockLine]:
-        """`ERP@T0` pour les emplacements du journal, lu dans le journal lui-même.
-
-        Les étiquettes qu'une décision a fait sortir de l'emplacement scellé ne
-        comptent pas : c'est tout l'effet de ``KEEP_NEW``.
-
-        Lue sur **la même connexion** que l'écriture qui l'appelle. Le périmètre
-        vient d'être déclaré dans la transaction en cours : une autre connexion
-        du pool ne le verrait pas, l'agrégation ne ramènerait rien, et le
-        scellement poserait une référence vide sans que rien ne le signale.
-        """
-        prices = {
-            number: item.std_price
-            for number, item in self.ctx.referentials.items_by_number(
-                campaign.id
-            ).items()
-        }
-        lines: list[BookStockLine] = []
-        for key, row in self._aggregate(campaign, keys, conn=conn):
-            lines.append(
-                BookStockLine(
-                    campaign_id=campaign.id,
-                    item_number=row["item_number"],
-                    warehouse_id=key.warehouse_id,
-                    location_id=key.location_id,
-                    qty=row["qty_on_hand"],
-                    unit=row["unit"] or "PCE",
-                    unit_cost=prices.get(row["item_number"], 0),
-                    reference_date=journal.counted_on,
-                    erp_journal_id=journal.id,
-                )
-            )
-        return lines
-
     def _erp_journal(self, campaign: Campaign, erp_journal_id: str):
         for journal in self.ctx.erp_journals.list(campaign.id):
             if journal.id == erp_journal_id:
@@ -750,10 +566,3 @@ class EarlyCountService:
         raise NotFoundError(
             "Journal ERP introuvable dans cette campagne.", journalId=erp_journal_id
         )
-
-
-_DECISION_LABELS = {
-    LabelResolution.KEEP_NEW: "placée au nouvel emplacement",
-    LabelResolution.KEEP_SEALED: "retirée du nouvel emplacement",
-    LabelResolution.RECOUNT: "signalée, emplacement à desceller et rescanner",
-}

@@ -55,9 +55,7 @@ __all__ = [
     "ErpJournalResponse",
     "ScopeCandidate",
     "ScopeDeclared",
-    "RescanLocation",
     "DriftResponse",
-    "DriftsResolved",
     "LabelAlert",
     "RecountedInPlace",
     "CampaignPage",
@@ -518,34 +516,13 @@ class ScopeDeclared(Payload):
     locations: int
 
 
-class RescanLabel(Payload):
-    """Une étiquette qui met un emplacement scellé en question."""
-
-    label_id: str = Field(alias="labelId")
-    item_number: str = Field(alias="itemNumber")
-    other_warehouse_id: str = Field(alias="otherWarehouseId")
-    other_location_id: str = Field(alias="otherLocationId")
-    comment: str = ""
-    decided_by: str = Field(default="", alias="decidedBy")
-
-
-class RescanLocation(Payload):
-    """Un emplacement scellé qu'il faut desceller et rescanner.
-
-    Ce que l'issue « signaler » produit : on n'a pas tranché sur pièce, et la
-    façon d'en sortir est d'aller recompter.
-    """
-
-    warehouse_id: str = Field(alias="warehouseId")
-    location_id: str = Field(alias="locationId")
-    journal_number: str = Field(default="", alias="journalNumber")
-    erp_journal_id: str | None = Field(default=None, alias="erpJournalId")
-    is_sealed: bool = Field(default=False, alias="isSealed")
-    labels: list[RescanLabel] = Field(default_factory=list)
-
-
 class DriftResponse(Payload):
-    """``ERP@J − physique@T0`` sur un emplacement scellé, attendue nulle."""
+    """``ERP@J − compté@T0`` sur un emplacement scellé, attendue nulle.
+
+    Un indice, pas un écart : le précomptage a été posté dans l'ERP avant la
+    photo du jour J, donc ce qui subsiste est ce qui a bougé entre les deux
+    dates. Aucune décision ne s'y attache, et rien n'est bloqué.
+    """
 
     id: str
     campaign_id: str = Field(alias="campaignId")
@@ -553,33 +530,20 @@ class DriftResponse(Payload):
     warehouse_id: str = Field(alias="warehouseId")
     location_id: str = Field(alias="locationId")
     item_number: str = Field(alias="itemNumber")
-    #: La référence de l'emplacement — le stock ERP d'avant son précomptage.
-    qty_erp_t0: float = Field(alias="qtyErpT0")
-    qty_physical_t0: float = Field(alias="qtyPhysicalT0")
+    #: Ce que le précomptage a compté.
+    qty_counted_t0: float = Field(alias="qtyCountedT0")
+    #: La référence unique de la campagne : le stock ERP du jour J, gelé.
     qty_erp_j: float = Field(alias="qtyErpJ")
     drift_qty: float = Field(alias="driftQty")
     drift_value: float = Field(alias="driftValue")
-    is_material: bool = Field(alias="isMaterial")
-    resolution: str | None = None
-    cause_code: str = Field(default="", alias="causeCode")
-    comment: str = ""
-    resolved_at: str | None = Field(default=None, alias="resolvedAt")
-    resolved_by: str = Field(default="", alias="resolvedBy")
-    is_resolved: bool = Field(alias="isResolved")
-    #: Vrai tant qu'une dérive matérielle n'a pas d'issue : le passage en
-    #: analyse est alors refusé.
-    blocks_analysis: bool = Field(alias="blocksAnalysis")
-
-
-class DriftsResolved(Payload):
-    resolved: int
 
 
 class LabelAlert(Payload):
     """Une étiquette d'un emplacement scellé, comptée dans un autre journal.
 
-    Le seul contrôle qui descende au grain de l'étiquette, et celui qui rattrape
-    ce que la dérive ne voit pas.
+    Le seul regard qui descende au grain de l'étiquette, et celui qui montre ce
+    que la dérive ne voit pas. En affichage seul : la ligne n'exclut rien
+    d'aucune agrégation et n'appelle aucune décision.
     """
 
     label_id: str = Field(alias="labelId")
@@ -590,20 +554,15 @@ class LabelAlert(Payload):
     other_location_id: str = Field(alias="otherLocationId")
     other_journal_number: str = Field(alias="otherJournalNumber")
     other_qty_counted: float = Field(alias="otherQtyCounted")
-    #: L'issue donnée, ou rien tant que personne n'est allé voir.
-    decision: str | None = None
-    comment: str = ""
-    decided_by: str = Field(default="", alias="decidedBy")
-    decided_at: str | None = Field(default=None, alias="decidedAt")
 
 
 class RecountedInPlace(Payload):
     """Un emplacement scellé qu'un second journal a recompté **sur place**.
 
     Distinct de :class:`LabelAlert`, et la distinction porte : là, l'étiquette
-    est où elle doit être, il n'y a pas de nouvel emplacement, et aucune des
-    trois issues ne s'applique. Ce qui se joue est un second comptage du même
-    emplacement — seul le journal qui le possède est retenu.
+    est où elle doit être, il n'y a pas de nouvel emplacement, et il n'y a donc
+    rien à signaler d'un déplacement. Ce qui se joue est un second comptage du
+    même emplacement — seul le journal qui le possède est retenu.
     """
 
     sealed_warehouse_id: str = Field(alias="sealedWarehouseId")

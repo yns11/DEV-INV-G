@@ -230,24 +230,25 @@ function PerimeterNote({ overview }: { overview: Overview }) {
  * so switching slides moves the numbers and nothing else; a first slide built
  * out of taller cards made the whole strip jump on every arrow press.
  *
- * The stock and variance boards need the book stock to be frozen; before that
- * they would show five dashes, so they are not offered at all rather than
- * offered empty.
+ * **Rien avant le gel du stock ERP.** Ni les écarts, ni l'avancement. La
+ * référence de la campagne est unique — le stock ERP du jour J — et tant
+ * qu'elle n'est pas posée, un chiffre affiché ici est un chiffre sans point de
+ * comparaison. Un précomptage n'en tient pas lieu : il est posté dans l'ERP
+ * *avant* que la photo du jour J ne soit prise, donc la photo l'a déjà intégré,
+ * et l'écart « partiel » qu'on affichait pour ses emplacements comptait deux
+ * fois la même correction.
  */
 function KpiCarousel({ overview }: { overview: Overview }) {
   const { campaign, journalProgress, genericProgress, counts } = overview
-  // Une référence figée suffit — pas nécessairement *toute* la référence. Le
-  // scellement d'un précomptage fige la sienne emplacement par emplacement, et
-  // les chiffres de ces emplacements sont définitifs dès la déclaration.
-  const sealed = counts.sealedLocations ?? 0
-  const hasBookStock = campaign.book_stock_frozen_at !== null || sealed > 0
-  const partial = campaign.book_stock_frozen_at === null
+  const frozen = campaign.book_stock_frozen_at !== null
 
   const kpis = useQuery({
     queryKey: ['kpis', campaign.id],
     queryFn: () => api.kpis(campaign.id),
-    enabled: hasBookStock,
+    enabled: frozen,
   })
+
+  if (!frozen) return null
 
   const slides: Array<{ id: string; label: string; content: ReactNode }> = [
     {
@@ -310,124 +311,120 @@ function KpiCarousel({ overview }: { overview: Overview }) {
     },
   ]
 
-  if (hasBookStock) {
-    slides.push({
-      id: 'stock',
-      label: partial ? 'Stock et écarts (précomptages)' : 'Stock et écarts',
-      content: (
-        <AsyncBoundary
-          query={kpis}
-          skeleton={
-            <div className="grid grid--kpi">
-              {Array.from({ length: 5 }, (_, i) => (
-                <div key={i} className="kpi">
-                  <Skeleton height={52} />
-                </div>
-              ))}
-            </div>
-          }
-        >
-          {(data) => (
-            <div className="grid grid--kpi">
-              <Kpi
-                label="Stock ERP"
-                value={moneyShort(data.bookValue)}
-                compare={<span className="num">{qty(data.bookQty)} unités</span>}
-                hero
-              />
-              <Kpi
-                label="Stock physique"
-                value={moneyShort(data.physicalValue)}
-                compare={<span className="num">{qty(data.physicalQty)} unités</span>}
-                hint="Ce qui a été compté, plus les mouvements postés depuis. C’est ce total-là que l’écart oppose au stock ERP."
-              />
-              <Kpi
-                label="Écart net"
-                value={signedMoney(data.netVarianceValue)}
-                tone={signClass(data.netVarianceValue) as 'pos' | 'neg' | 'neutral'}
-                compare={<span className="num">{signedNum(data.netVarianceQty)} unités</span>}
-                hint="Somme signée : les surplus compensent les manques."
-              />
-              <Kpi
-                label="Écart brut"
-                value={moneyShort(data.grossVarianceValue)}
-                tone="neg"
-                compare={<span>{data.materialLineCount} ligne(s) hors seuils</span>}
-                hint="Somme des écarts en valeur absolue."
-              />
-              <Kpi
-                label="Fiabilité brute"
-                value={percent(data.grossReliabilityValue, 2)}
-                compare={
-                  <span>
-                    nette <strong className="num">{percent(data.netReliabilityValue, 2)}</strong>
-                  </span>
-                }
-                hint="1 − Σ|écart €| / Σ stock ERP €. La nette, compensée, flatte."
-              />
-              <Kpi
-                label="IRA"
-                value={percent(data.ira, 2)}
-                compare={
-                  <span className="num">
-                    {data.accurateLineCount.toLocaleString('fr-FR')} /{' '}
-                    {data.lineCount.toLocaleString('fr-FR')} exacts
-                  </span>
-                }
-                hint="Part des couples article/emplacement dans la tolérance."
-              />
-            </div>
-          )}
-        </AsyncBoundary>
-      ),
-    })
-    slides.push({
-      id: 'coverage',
-      label: partial
-        ? 'Couverture (précomptages)'
-        : 'Couverture du comptage',
-      content: (
-        <AsyncBoundary query={kpis} skeleton={<Skeleton height={120} />}>
-          {(data) => (
-            <div className="grid grid--kpi">
-              <Kpi
-                label="Lignes analysées"
-                value={data.lineCount.toLocaleString('fr-FR')}
-                compare={<span>couples article / emplacement</span>}
-                hero
-              />
-              <Kpi
-                label="Comptés sans stock ERP"
-                value={data.countedOnlyCount.toLocaleString('fr-FR')}
-                tone={data.countedOnlyCount ? 'neg' : 'neutral'}
-                compare={<span>trouvé là où l’ERP ne voyait rien</span>}
-                hint="Souvent un emplacement mal saisi. À vérifier avant ajustement."
-              />
-              <Kpi
-                label="Jamais comptés"
-                value={data.bookOnlyCount.toLocaleString('fr-FR')}
-                tone={data.bookOnlyCount ? 'neg' : 'neutral'}
-                compare={<span>seront soldés à zéro à la clôture</span>}
-              />
-              <Kpi
-                label="Ajustements postés"
-                value={moneyShort(data.adjustedValue)}
-                compare={<span>déjà compris dans l’écart</span>}
-                hint={`Les mouvements postés après le comptage : ils s’ajoutent à lui pour former le stock physique. Le comptage seul montrait ${moneyShort(data.countedVarianceValue)}.`}
-              />
-              <Kpi
-                label="Lignes hors seuils"
-                value={data.materialLineCount.toLocaleString('fr-FR')}
-                tone={data.materialLineCount ? 'neg' : 'neutral'}
-                compare={<span>à analyser une par une</span>}
-                hint="Celles dont l’écart dépasse le seuil de leur type d’article."
-              />
-            </div>
-          )}
-        </AsyncBoundary>
-      ),
-    })
-  }
+  slides.push({
+    id: 'stock',
+    label: 'Stock et écarts',
+    content: (
+      <AsyncBoundary
+        query={kpis}
+        skeleton={
+          <div className="grid grid--kpi">
+            {Array.from({ length: 5 }, (_, i) => (
+              <div key={i} className="kpi">
+                <Skeleton height={52} />
+              </div>
+            ))}
+          </div>
+        }
+      >
+        {(data) => (
+          <div className="grid grid--kpi">
+            <Kpi
+              label="Stock ERP"
+              value={moneyShort(data.bookValue)}
+              compare={<span className="num">{qty(data.bookQty)} unités</span>}
+              hero
+            />
+            <Kpi
+              label="Stock physique"
+              value={moneyShort(data.physicalValue)}
+              compare={<span className="num">{qty(data.physicalQty)} unités</span>}
+              hint="Ce qui a été compté, plus les mouvements postés depuis. C’est ce total-là que l’écart oppose au stock ERP."
+            />
+            <Kpi
+              label="Écart net"
+              value={signedMoney(data.netVarianceValue)}
+              tone={signClass(data.netVarianceValue) as 'pos' | 'neg' | 'neutral'}
+              compare={<span className="num">{signedNum(data.netVarianceQty)} unités</span>}
+              hint="Somme signée : les surplus compensent les manques."
+            />
+            <Kpi
+              label="Écart brut"
+              value={moneyShort(data.grossVarianceValue)}
+              tone="neg"
+              compare={<span>{data.materialLineCount} ligne(s) hors seuils</span>}
+              hint="Somme des écarts en valeur absolue."
+            />
+            <Kpi
+              label="Fiabilité brute"
+              value={percent(data.grossReliabilityValue, 2)}
+              compare={
+                <span>
+                  nette <strong className="num">{percent(data.netReliabilityValue, 2)}</strong>
+                </span>
+              }
+              hint="1 − Σ|écart €| / Σ stock ERP €. La nette, compensée, flatte."
+            />
+            <Kpi
+              label="IRA"
+              value={percent(data.ira, 2)}
+              compare={
+                <span className="num">
+                  {data.accurateLineCount.toLocaleString('fr-FR')} /{' '}
+                  {data.lineCount.toLocaleString('fr-FR')} exacts
+                </span>
+              }
+              hint="Part des couples article/emplacement dans la tolérance."
+            />
+          </div>
+        )}
+      </AsyncBoundary>
+    ),
+  })
+  slides.push({
+    id: 'coverage',
+    label: 'Couverture du comptage',
+    content: (
+      <AsyncBoundary query={kpis} skeleton={<Skeleton height={120} />}>
+        {(data) => (
+          <div className="grid grid--kpi">
+            <Kpi
+              label="Lignes analysées"
+              value={data.lineCount.toLocaleString('fr-FR')}
+              compare={<span>couples article / emplacement</span>}
+              hero
+            />
+            <Kpi
+              label="Comptés sans stock ERP"
+              value={data.countedOnlyCount.toLocaleString('fr-FR')}
+              tone={data.countedOnlyCount ? 'neg' : 'neutral'}
+              compare={<span>trouvé là où l’ERP ne voyait rien</span>}
+              hint="Souvent un emplacement mal saisi. À vérifier avant ajustement."
+            />
+            <Kpi
+              label="Jamais comptés"
+              value={data.bookOnlyCount.toLocaleString('fr-FR')}
+              tone={data.bookOnlyCount ? 'neg' : 'neutral'}
+              compare={<span>seront soldés à zéro à la clôture</span>}
+            />
+            <Kpi
+              label="Ajustements postés"
+              value={moneyShort(data.adjustedValue)}
+              compare={<span>déjà compris dans l’écart</span>}
+              hint={`Les mouvements postés après le comptage : ils s’ajoutent à lui pour former le stock physique. Le comptage seul montrait ${moneyShort(data.countedVarianceValue)}.`}
+            />
+            <Kpi
+              label="Lignes hors seuils"
+              value={data.materialLineCount.toLocaleString('fr-FR')}
+              tone={data.materialLineCount ? 'neg' : 'neutral'}
+              compare={<span>à analyser une par une</span>}
+              hint="Celles dont l’écart dépasse le seuil de leur type d’article."
+            />
+          </div>
+        )}
+      </AsyncBoundary>
+    ),
+  })
 
   return <Carousel slides={slides} alignColumns storageKey={`campaign.${campaign.id}`} />
 }

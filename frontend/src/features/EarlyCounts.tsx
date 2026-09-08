@@ -10,40 +10,29 @@
  * propose — emplacements des lignes, moins le tampon, moins ceux déjà pris, le
  * plus probable en tête — et l'utilisateur tranche.
  *
- * **Les lots ensuite.** Un lot s'ouvre sur des journaux dont le périmètre est
- * déclaré, se clôt, puis se scelle. Le scellement pose la référence de ses
- * emplacements — lue dans la colonne « Stock ERP » du journal, sans chargement
- * séparé — et refuse tant qu'un journal n'est pas posté dans l'ERP.
+ * **Le scellement ensuite.** Déclarer le périmètre d'un journal scelle ses
+ * emplacements, et le scellement dit *lesquels sont comptés par ce journal-là*.
+ * Il ne pose aucune référence : la référence de la campagne est unique, et
+ * c'est le stock ERP du jour J.
  *
- * **Les dérives enfin, le jour J.** `ERP@J − physique@T0`, attendue nulle. Quand
- * elle ne l'est pas, une seule question : quelle quantité fait foi ? Deux
- * réponses, conserver ou recompter, et le passage en analyse attend qu'on ait
- * répondu.
- *
- * **Les alertes d'étiquette sont à part, et le méritent.** Elles rattrapent ce
- * que la dérive ne voit pas : une pièce sortie d'un emplacement scellé sans
- * transaction ERP laisse une dérive nulle, mais si elle est re-scannée
- * ailleurs, son étiquette apparaît dans un second journal.
+ * **Et c'est tout.** L'écran portait aussi les dérives, les étiquettes et les
+ * emplacements à rescanner. Rien ne se calcule plus à partir d'un comptage
+ * avancé : un journal de précomptage est posté dans l'ERP avant que la photo du
+ * jour J ne soit prise, et cette photo l'a donc déjà intégré. Les dérives et
+ * les étiquettes ne sont plus que deux listes à regarder, sans action requise
+ * ni constat bloquant — elles sont passées dans les Contrôles, avec les autres
+ * constats. « À rescanner » n'existait que par l'issue « signaler », qui n'est
+ * plus proposée.
  */
 
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api } from '../lib/api'
-import type {
-  Drift,
-  DriftResolution,
-  LabelResolution,
-  ErpJournal,
-  LabelAlert,
-  Overview,
-  ScopeCandidate,
-} from '../lib/types'
-import { DASH, date as formatDate, qty, relativeTime, signedMoney, signedNum } from '../lib/format'
-import { useSubSection } from '../lib/subsection'
+import type { ErpJournal, Overview, ScopeCandidate } from '../lib/types'
+import { DASH, date as formatDate, qty, relativeTime } from '../lib/format'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { ImportPanel } from '../components/ImportPanel'
-import { SubSectionTabs } from '../components/SubSectionTabs'
 import {
   Alert,
   AsyncBoundary,
@@ -51,73 +40,12 @@ import {
   Button,
   Card,
   EmptyState,
-  Field,
   Kpi,
   Skeleton,
   useErrorToast,
   useToast,
 } from '../components/ui'
 import { ErpJournalLinesModal } from './earlyCounts.journalLines'
-
-type View = 'journaux' | 'derives' | 'etiquettes' | 'rescanner'
-
-const VIEWS: Array<{ id: View; label: string }> = [
-  { id: 'journaux', label: 'Journaux ERP' },
-  { id: 'derives', label: 'Dérives' },
-  { id: 'etiquettes', label: 'Étiquettes' },
-  { id: 'rescanner', label: 'À rescanner' },
-]
-
-/** Les trois issues d'une étiquette scellée recomptée ailleurs. */
-const LABEL_ACTIONS: Array<{
-  id: LabelResolution
-  label: string
-  hint: string
-}> = [
-  {
-    id: 'KEEP_NEW',
-    label: 'La mettre au nouvel emplacement',
-    hint:
-      'La pièce est bien là où elle a reparu. L’étiquette sort de ' +
-      'l’emplacement scellé, qui perd la quantité correspondante.',
-  },
-  {
-    id: 'KEEP_SEALED',
-    label: 'L’enlever du nouvel emplacement',
-    hint:
-      'La pièce n’a pas bougé. C’est la ligne de l’autre journal qui est ' +
-      'l’erreur, et c’est elle qui sort du comptage.',
-  },
-  {
-    id: 'RECOUNT',
-    label: 'Signaler : à rescanner',
-    hint:
-      'On ne tranche pas sur pièce. Rien n’est retiré, et l’emplacement ' +
-      'scellé rejoint la liste de ceux à desceller et rescanner.',
-  },
-]
-
-/** Les deux issues d'une dérive, et ce que chacune engage. */
-const RESOLUTIONS: Array<{
-  id: DriftResolution
-  label: string
-  hint: string
-}> = [
-  {
-    id: 'KEEP_EARLY',
-    label: 'Conserver le comptage avancé',
-    hint:
-      'Le physique relevé à T0 fait foi. La campagne et l’ERP resteront en ' +
-      'désaccord de la valeur de la dérive : la cause est obligatoire.',
-  },
-  {
-    id: 'RECOUNT',
-    label: 'Recompter le jour J',
-    hint:
-      'L’emplacement est descellé et rejoint le comptage général ; sa ' +
-      'référence redevient le stock ERP du jour J.',
-  },
-]
 
 /**
  * La clé d'un emplacement dans une sélection.
@@ -165,35 +93,19 @@ export default function EarlyCounts() {
   // l'écran se cassait au premier accès, sur une campagne où tout allait bien.
   const overview = useOutletContext<Overview>()
   const campaignId = overview.campaign.id
-  const [view, setView] = useSubSection<View>('journaux', VIEWS.map((v) => v.id))
 
   return (
     <div className="stack">
       <LastImport overview={overview} />
-      <SubSectionTabs<View>
-        section="comptages-avances"
-        overview={overview}
-        value={view}
-        onChange={setView}
+      <Journals
+        campaignId={campaignId}
+        canWrite={overview.permissions.earlyCounts}
+        // Le gel ferme la fenêtre du précomptage, et c'en est la définition :
+        // précompter veut dire *avant* la référence générale. Après, il n'y a
+        // plus rien à déclarer ni à sceller — l'écran cessait pourtant de le
+        // dire et le geste finissait en 500.
+        frozen={overview.campaign.book_stock_frozen_at !== null}
       />
-      {view === 'journaux' && (
-        <Journals
-          campaignId={campaignId}
-          canWrite={overview.permissions.earlyCounts}
-          // Le gel ferme la fenêtre du précomptage, et c'en est la définition :
-          // précompter veut dire *avant* la référence générale. Après, il n'y a
-          // plus rien à déclarer ni à sceller — l'écran cessait pourtant de le
-          // dire et le geste finissait en 500.
-          frozen={overview.campaign.book_stock_frozen_at !== null}
-        />
-      )}
-      {view === 'derives' && <Drifts campaignId={campaignId} />}
-      {view === 'etiquettes' && (
-        <Labels campaignId={campaignId} canWrite={overview.permissions.earlyCounts} />
-      )}
-      {view === 'rescanner' && (
-        <ToRescan campaignId={campaignId} canWrite={overview.permissions.earlyCounts} />
-      )}
     </div>
   )
 }
@@ -274,7 +186,6 @@ function Journals({
       )
       client.invalidateQueries({ queryKey: ['erp-journals', campaignId] })
       client.invalidateQueries({ queryKey: ['overview', campaignId] })
-      client.invalidateQueries({ queryKey: ['to-rescan', campaignId] })
       client.invalidateQueries({ queryKey: ['drifts', campaignId] })
     },
     onError: (error: unknown) => onError(error),
@@ -557,489 +468,5 @@ function ScopePicker({
         )}
       </AsyncBoundary>
     </Card>
-  )
-}
-
-// --------------------------------------------------------------------------
-// Dérives
-// --------------------------------------------------------------------------
-
-function Drifts({ campaignId }: { campaignId: string }) {
-  const client = useQueryClient()
-  const toast = useToast()
-  const onError = useErrorToast()
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [cause, setCause] = useState('MOUVEMENT_APRES_SCELLEMENT')
-  const [comment, setComment] = useState('')
-
-  const query = useQuery({
-    queryKey: ['drifts', campaignId],
-    queryFn: () => api.drifts(campaignId),
-  })
-
-  const resolve = useMutation({
-    mutationFn: (resolution: DriftResolution) =>
-      api.resolveDrifts(campaignId, {
-        driftIds: [...selected],
-        resolution,
-        causeCode: resolution === 'KEEP_EARLY' ? cause : '',
-        comment,
-      }),
-    onSuccess: (result) => {
-      toast.success(`${result.resolved} dérive(s) tranchée(s).`)
-      setSelected(new Set())
-      client.invalidateQueries({ queryKey: ['drifts', campaignId] })
-    },
-    onError: (error: unknown) => onError(error),
-  })
-
-  const columns: Column<Drift>[] = [
-    { key: 'warehouseId', label: 'Entrepôt', width: 110 },
-    { key: 'locationId', label: 'Emplacement', width: 150 },
-    { key: 'itemNumber', label: 'Référence', width: 170 },
-    {
-      key: 'qtyErpT0',
-      label: 'ERP avant précomptage',
-      width: 170,
-      numeric: true,
-      render: (row) => qty(row.qtyErpT0),
-    },
-    {
-      key: 'qtyPhysicalT0',
-      label: 'Physique T0',
-      width: 140,
-      numeric: true,
-      render: (row) => qty(row.qtyPhysicalT0),
-    },
-    {
-      key: 'qtyErpJ',
-      label: 'ERP jour J',
-      width: 130,
-      numeric: true,
-      render: (row) => qty(row.qtyErpJ),
-    },
-    {
-      key: 'driftQty',
-      label: 'Dérive',
-      width: 130,
-      numeric: true,
-      render: (row) => signedNum(row.driftQty),
-    },
-    {
-      key: 'driftValue',
-      label: 'Valeur',
-      width: 130,
-      numeric: true,
-      render: (row) => signedMoney(row.driftValue),
-    },
-    {
-      key: 'resolution',
-      label: 'Issue',
-      width: 200,
-      render: (row) =>
-        row.isResolved ? (
-          <Badge tone="success">
-            {row.resolution === 'KEEP_EARLY' ? 'Comptage avancé' : 'Recompté'}
-          </Badge>
-        ) : row.isMaterial ? (
-          <Badge tone="danger">À trancher</Badge>
-        ) : (
-          DASH
-        ),
-    },
-  ]
-
-  return (
-    <AsyncBoundary
-      query={query}
-      skeleton={<Skeleton height={240} />}
-      isEmpty={(rows) => rows.length === 0}
-      empty={
-        <EmptyState title="Aucune dérive">
-            Aucun emplacement scellé, ou le stock ERP général n’a pas encore été chargé.
-        </EmptyState>
-      }
-    >
-      {(drifts) => {
-        const blocking = drifts.filter((d) => d.blocksAnalysis)
-        return (
-          <div className="stack">
-            {blocking.length > 0 && (
-              <Alert tone="warning" title="Le passage en analyse attend">
-                {blocking.length} dérive(s) matérielle(s) n’ont pas d’issue. Le
-                stock ERP du jour J ne dit pas la même chose que le physique
-                posté au précomptage : dites, pour chacune, laquelle fait foi.
-              </Alert>
-            )}
-            <Card
-              title="Dérives des emplacements scellés"
-              message="ERP du jour J moins physique posté à T0. Attendue nulle : l’emplacement était balisé, et poster son journal a réaligné l’ERP sur le physique compté."
-              actions={
-                selected.size > 0 ? (
-                  <>
-                    {RESOLUTIONS.map((r) => (
-                      <Button
-                        key={r.id}
-                        size="sm"
-                        variant={r.id === 'RECOUNT' ? 'ghost' : 'primary'}
-                        title={r.hint}
-                        disabled={resolve.isPending}
-                        onClick={() => resolve.mutate(r.id)}
-                      >
-                        {r.label}
-                      </Button>
-                    ))}
-                  </>
-                ) : null
-              }
-            >
-              {selected.size > 0 && (
-                <div className="stack">
-                  <label>
-                    Cause (obligatoire pour « conserver »)
-                    <input
-                      value={cause}
-                      onChange={(e) => setCause(e.target.value)}
-                    />
-                  </label>
-                  <label>
-                    Commentaire
-                    <input
-                      value={comment}
-                      onChange={(e) => setComment(e.target.value)}
-                    />
-                  </label>
-                </div>
-              )}
-              <DataGrid<Drift>
-                rows={drifts}
-                columns={columns}
-                getRowId={(row) => row.id}
-                selectable
-                selected={selected}
-                onSelectedChange={setSelected}
-                exportTitle="Dérives"
-                campaignId={campaignId}
-              />
-            </Card>
-          </div>
-        )
-      }}
-    </AsyncBoundary>
-  )
-}
-
-// --------------------------------------------------------------------------
-// Étiquettes
-// --------------------------------------------------------------------------
-
-/**
- * Ce qui a été retiré de la liste des étiquettes comptées ailleurs, et pourquoi.
- *
- * Deux journaux passés sur le même emplacement scellé y produisaient une ligne
- * par étiquette, avec « ATP / SF1 » dans les deux colonnes d'emplacement — la
- * pièce n'a pas bougé, et aucune des trois issues n'a de sens sans nouvel
- * emplacement. Elles noyaient les vrais déplacements, seuls à traiter.
- *
- * Les retirer en silence cacherait pourtant un fait : deux journaux ont compté
- * le même emplacement, parfois avec des quantités différentes, et un seul est
- * retenu. C'est ce que ce bandeau dit — au-dessus de la frontière asynchrone,
- * parce qu'il doit rester visible quand la liste, elle, est vide.
- */
-function RecountedInPlaceNotice({ campaignId }: { campaignId: string }) {
-  const query = useQuery({
-    queryKey: ['recounted-in-place', campaignId],
-    queryFn: () => api.recountedInPlace(campaignId),
-  })
-  const rows = query.data ?? []
-  if (rows.length === 0) return null
-  const labels = rows.reduce((sum, row) => sum + row.labelCount, 0)
-  return (
-    <Alert tone="info" title="Emplacements recomptés sur place">
-      {rows.length} emplacement(s) scellés, {labels} étiquette(s) : un second
-      journal les a comptés au même endroit. Ce n’est pas un déplacement — rien à
-      trancher — mais seul le journal qui possède l’emplacement est retenu.
-      <ul>
-        {rows.map((row) => (
-          <li
-            key={`${row.sealedWarehouseId}-${row.sealedLocationId}-${row.otherJournalNumber}`}
-          >
-            {row.sealedWarehouseId} / {row.sealedLocationId} — retenu{' '}
-            {row.ownerJournalNumber || DASH}, ignoré {row.otherJournalNumber} (
-            {row.labelCount} étiquette(s))
-          </li>
-        ))}
-      </ul>
-    </Alert>
-  )
-}
-
-function Labels({
-  campaignId,
-  canWrite,
-}: {
-  campaignId: string
-  canWrite: boolean
-}) {
-  const client = useQueryClient()
-  const toast = useToast()
-  const onError = useErrorToast()
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [comment, setComment] = useState('')
-
-  const query = useQuery({
-    queryKey: ['label-alerts', campaignId],
-    queryFn: () => api.labelAlerts(campaignId),
-  })
-
-  const decide = useMutation({
-    mutationFn: async ({
-      decision,
-      alerts,
-    }: {
-      decision: LabelResolution
-      alerts: LabelAlert[]
-    }) => {
-      for (const alert of alerts) {
-        await api.decideLabel(campaignId, {
-          labelId: alert.labelId,
-          itemNumber: alert.itemNumber,
-          decision,
-          sealedWarehouseId: alert.sealedWarehouseId,
-          sealedLocationId: alert.sealedLocationId,
-          otherWarehouseId: alert.otherWarehouseId,
-          otherLocationId: alert.otherLocationId,
-          comment,
-        })
-      }
-      return alerts.length
-    },
-    onSuccess: (count) => {
-      toast.success(`${count} étiquette(s) tranchée(s).`)
-      setSelected(new Set())
-      client.invalidateQueries({ queryKey: ['label-alerts', campaignId] })
-      client.invalidateQueries({ queryKey: ['to-rescan', campaignId] })
-      client.invalidateQueries({ queryKey: ['drifts', campaignId] })
-    },
-    onError: (error: unknown) => onError(error),
-  })
-
-  const rowId = (row: LabelAlert) =>
-    `${row.labelId}-${row.itemNumber}-${row.otherJournalNumber}`
-
-  const columns: Column<LabelAlert>[] = [
-    { key: 'labelId', label: 'Étiquette', width: 150 },
-    { key: 'itemNumber', label: 'Référence', width: 170 },
-    {
-      key: 'sealedLocationId',
-      label: 'Emplacement scellé',
-      width: 190,
-      render: (row) => `${row.sealedWarehouseId} / ${row.sealedLocationId}`,
-    },
-    {
-      key: 'otherLocationId',
-      label: 'Comptée aussi en',
-      width: 190,
-      render: (row) => `${row.otherWarehouseId} / ${row.otherLocationId}`,
-    },
-    { key: 'otherJournalNumber', label: 'Dans le journal', width: 150 },
-    {
-      key: 'otherQtyCounted',
-      label: 'Quantité',
-      width: 110,
-      numeric: true,
-      render: (row) => qty(row.otherQtyCounted),
-    },
-    {
-      key: 'decision',
-      label: 'Issue',
-      width: 230,
-      value: (row) => row.decision ?? '',
-      render: (row) =>
-        row.decision ? (
-          <Badge tone={row.decision === 'RECOUNT' ? 'warning' : 'success'}>
-            {LABEL_ACTIONS.find((a) => a.id === row.decision)?.label ?? row.decision}
-          </Badge>
-        ) : (
-          <Badge tone="danger">À trancher</Badge>
-        ),
-    },
-  ]
-
-  return (
-    <div className="stack">
-    <RecountedInPlaceNotice campaignId={campaignId} />
-    <AsyncBoundary
-      query={query}
-      skeleton={<Skeleton height={200} />}
-      isEmpty={(rows) => rows.length === 0}
-      empty={
-        <EmptyState title="Aucune étiquette signalée">
-            Aucune étiquette d’un emplacement scellé ne se retrouve comptée à un autre emplacement.
-        </EmptyState>
-      }
-    >
-      {(alerts) => {
-        const chosen = alerts.filter((row) => selected.has(rowId(row)))
-        return (
-          <Card
-            title="Étiquettes scellées comptées ailleurs"
-            message="Ce que la dérive ne voit pas. Une pièce sortie d’un emplacement scellé sans transaction ERP laisse une dérive nulle ; si elle est re-scannée ailleurs, son étiquette apparaît dans un second journal."
-            actions={
-              chosen.length > 0 && canWrite ? (
-                <>
-                  {LABEL_ACTIONS.map((action) => (
-                    <Button
-                      key={action.id}
-                      size="sm"
-                      variant={action.id === 'RECOUNT' ? 'ghost' : 'primary'}
-                      title={action.hint}
-                      disabled={decide.isPending}
-                      onClick={() =>
-                        decide.mutate({ decision: action.id, alerts: chosen })
-                      }
-                    >
-                      {action.label}
-                    </Button>
-                  ))}
-                </>
-              ) : null
-            }
-          >
-            {chosen.length > 0 && (
-              <Field label="Commentaire" hint="Ce qu’on a vu en allant vérifier.">
-                <input
-                  className="input"
-                  value={comment}
-                  onChange={(e) => setComment(e.target.value)}
-                />
-              </Field>
-            )}
-            <DataGrid<LabelAlert>
-              rows={alerts}
-              columns={columns}
-              getRowId={rowId}
-              selectable
-              selected={selected}
-              onSelectedChange={setSelected}
-              exportTitle="Étiquettes signalées"
-              campaignId={campaignId}
-            />
-          </Card>
-        )
-      }}
-    </AsyncBoundary>
-    </div>
-  )
-}
-
-// --------------------------------------------------------------------------
-// Emplacements à desceller et rescanner
-// --------------------------------------------------------------------------
-
-/**
- * Ce que l'issue « signaler » produit.
- *
- * On n'a pas voulu trancher sur pièce, et la façon d'en sortir est d'aller
- * recompter. La liste expose l'**ancien** emplacement — le scellé — parce que
- * c'est celui-là qu'il faut desceller pour que le comptage du jour J le
- * reprenne, et l'étiquette qui a soulevé la question.
- */
-function ToRescan({
-  campaignId,
-  canWrite,
-}: {
-  campaignId: string
-  canWrite: boolean
-}) {
-  const client = useQueryClient()
-  const toast = useToast()
-  const onError = useErrorToast()
-  const query = useQuery({
-    queryKey: ['to-rescan', campaignId],
-    queryFn: () => api.toRescan(campaignId),
-  })
-
-  const unseal = useMutation({
-    mutationFn: ({ journalId, reason }: { journalId: string; reason: string }) =>
-      api.unsealJournal(campaignId, journalId, reason),
-    onSuccess: (result) => {
-      toast.success(
-        `Journal descellé : ${result.locations} emplacement(s) rendus au comptage général.`,
-      )
-      client.invalidateQueries({ queryKey: ['to-rescan', campaignId] })
-      client.invalidateQueries({ queryKey: ['erp-journals', campaignId] })
-      client.invalidateQueries({ queryKey: ['drifts', campaignId] })
-    },
-    onError: (error: unknown) => onError(error),
-  })
-
-  return (
-    <AsyncBoundary
-      query={query}
-      skeleton={<Skeleton height={200} />}
-      isEmpty={(rows) => rows.length === 0}
-      empty={
-        <EmptyState title="Rien à rescanner">
-            Aucune étiquette signalée ne met un emplacement scellé en question.
-        </EmptyState>
-      }
-    >
-      {(places) => (
-        <Card
-          title="Emplacements à desceller et rescanner"
-          message="Une étiquette de ces emplacements a été comptée ailleurs, et personne n’a voulu trancher sur pièce. Desceller rend l’emplacement au comptage du jour J, qui le recomptera."
-        >
-          <ul className="stack">
-            {places.map((place) => (
-              <li key={`${place.warehouseId}-${place.locationId}`}>
-                <strong>
-                  {place.warehouseId} / {place.locationId}
-                </strong>{' '}
-                {place.isSealed ? (
-                  <Badge tone="warning">Scellé</Badge>
-                ) : (
-                  <Badge tone="neutral">Déjà descellé</Badge>
-                )}{' '}
-                — journal {place.journalNumber || DASH}, {place.labels.length}{' '}
-                étiquette(s) en question
-                {place.isSealed && canWrite && place.erpJournalId && (
-                  <>
-                    {'  '}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        const reason = window.prompt(
-                          'Desceller annule une preuve datée. Motif :',
-                        )
-                        if (reason?.trim()) {
-                          unseal.mutate({
-                            journalId: place.erpJournalId!,
-                            reason,
-                          })
-                        }
-                      }}
-                    >
-                      Desceller le journal
-                    </Button>
-                  </>
-                )}
-                <ul>
-                  {place.labels.map((label) => (
-                    <li key={`${label.labelId}-${label.itemNumber}`}>
-                      <span className="mono">{label.labelId}</span> —{' '}
-                      {label.itemNumber}, revue en {label.otherWarehouseId} /{' '}
-                      {label.otherLocationId}
-                      {label.comment ? ` — ${label.comment}` : ''}
-                    </li>
-                  ))}
-                </ul>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
-    </AsyncBoundary>
   )
 }

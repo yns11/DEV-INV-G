@@ -63,15 +63,16 @@ def book(item: str, wh: str, loc: str, qty, cost="10") -> BookStockLine:
     )
 
 
-def precount(item: str, wh: str, loc: str, qty, cost="10") -> BookStockLine:
-    """Une ligne de référence posée par le scellement d'un précomptage.
+def at_cost(item: str, wh: str, loc: str, qty, cost="10") -> BookStockLine:
+    """Une ligne de référence portant un coût que l'ERP lui a donné.
 
-    Ce qui la distingue : `erp_journal_id`. Sa valorisation est le prix standard
-    du référentiel, pas le coût que l'ERP portait au gel.
+    La référence est unique — le stock ERP du jour J — mais elle n'arrive pas
+    avec un coût unique : l'ERP porte le sien, ligne à ligne, et il n'est pas
+    celui du référentiel. C'est ce coût-là que la valorisation doit ignorer.
     """
     return BookStockLine(
         campaign_id="c", item_number=item, warehouse_id=wh, location_id=loc,
-        qty=qty, unit_cost=cost, erp_journal_id="j-1",
+        qty=qty, unit_cost=cost,
     )
 
 
@@ -485,17 +486,15 @@ class TestAnExcludedArticleProducesNoVariance:
         assert sum(line.variance_value for line in lines) == 0
 
 
-class TestTheStockHasTwoOrigins:
-    """Le snapshot général et la référence d'un emplacement précompté.
+class TestTheLineCostNeverValuesTheCampaign:
+    """Deux lignes du même article, deux coûts, un seul total.
 
-    Depuis les comptages avancés, `book_stock` porte les deux dans la même
-    table, et elles ne portent pas le même coût : le snapshot porte celui que
-    l'ERP tenait au gel, le précomptage porte le prix standard.
-
-    Aucune des deux ne valorise la campagne. La base est **le prix standard du
-    référentiel, partout et des deux côtés** — c'est ce qui rend le stock ERP et
-    le stock compté comparables, et ce qui met le total à l'abri de l'ordre des
-    lignes.
+    `book_stock` porte le coût que l'ERP tenait au gel, et il varie d'une ligne
+    à l'autre : deux emplacements du même article peuvent arriver à quatre et à
+    neuf. Aucun des deux ne valorise la campagne. La base est **le prix standard
+    du référentiel, partout et des deux côtés** — c'est ce qui rend le stock ERP
+    et le stock compté comparables, et ce qui met le total à l'abri de l'ordre
+    des lignes.
     """
 
     def _lines(self, camp, book_stock):
@@ -506,7 +505,7 @@ class TestTheStockHasTwoOrigins:
 
     def test_both_origins_are_valued_at_the_standard_price(self, campaign):
         [line] = self._lines(campaign, [
-            precount("A", "ATP", "SOL", Decimal(10), cost="4"),
+            at_cost("A", "ATP", "SOL", Decimal(10), cost="4"),
             book("A", "B06", "AUTRE", Decimal(100), cost="9"),
         ])
         assert line.book_qty == Decimal(110), "les quantités s'additionnent"
@@ -516,23 +515,24 @@ class TestTheStockHasTwoOrigins:
     def test_the_total_does_not_depend_on_the_order_of_the_lines(self, campaign):
         """Sans cela, un VACUUM suffisait à changer un chiffre signé."""
         [first] = self._lines(campaign, [
-            precount("A", "ATP", "SOL", Decimal(10), cost="4"),
+            at_cost("A", "ATP", "SOL", Decimal(10), cost="4"),
             book("A", "B06", "AUTRE", Decimal(100), cost="9"),
         ])
         [second] = self._lines(campaign, [
             book("A", "B06", "AUTRE", Decimal(100), cost="9"),
-            precount("A", "ATP", "SOL", Decimal(10), cost="4"),
+            at_cost("A", "ATP", "SOL", Decimal(10), cost="4"),
         ])
         assert first.book_value == second.book_value == Decimal(1100)
 
-    def test_loading_the_general_stock_does_not_move_the_valuation(self, campaign):
-        """Avant le chargement général, un précomptage vaut déjà son prix.
+    def test_one_line_alone_is_valued_the_same_way(self, campaign):
+        """Le prix ne dépend pas de ce qui accompagne la ligne.
 
-        Il valait le prix standard puis, au chargement, celui du snapshot : le
-        total bougeait sans qu'aucune quantité n'ait changé.
+        Une ligne valait le prix standard seule, puis celui de l'ERP dès qu'une
+        seconde arrivait : le total bougeait sans qu'aucune quantité n'ait
+        changé.
         """
         [alone] = self._lines(
-            campaign, [precount("A", "ATP", "SOL", Decimal(10), cost="4")]
+            campaign, [at_cost("A", "ATP", "SOL", Decimal(10), cost="4")]
         )
         assert alone.unit_cost == Decimal(10)
         assert alone.book_value == Decimal(100)
@@ -552,9 +552,9 @@ class TestValuingBookStockLines:
         assert line.unit_cost == Decimal(10)
         assert line.value == Decimal(100)
 
-    def test_a_precount_line_is_valued_the_same_way(self):
+    def test_a_line_with_another_cost_is_valued_the_same_way(self):
         [line] = at_standard_price(
-            [precount("A", "ATP", "SOL", Decimal(10), cost="4")], ITEMS
+            [at_cost("A", "ATP", "SOL", Decimal(10), cost="4")], ITEMS
         )
         assert line.unit_cost == Decimal(10)
 

@@ -164,6 +164,20 @@ export const JOURNAL_STATUS_LABELS: Record<string, string> = {
   BOOK_ENFORCED: 'Forcé au stock ERP',
 }
 
+/**
+ * Ce qu'un emplacement a vécu avant le jour J.
+ *
+ * Trois valeurs et pas deux : une dérive ne change rien à ce qu'on demande de
+ * l'emplacement — rien n'est requis, rien n'est bloqué — mais elle dit que
+ * quelque chose a bougé entre le précomptage et le jour J, et quelqu'un voudra
+ * peut-être aller voir avant de clore.
+ */
+export const SEAL_STATUS_LABELS: Record<string, string> = {
+  UNSEALED: 'Non scellé',
+  SEALED_CLEAN: 'Scellé sans dérive',
+  SEALED_DRIFTING: 'Scellé avec dérives',
+}
+
 export const ZONE_STATUS_LABELS: Record<string, string> = {
   PENDING: 'À compter',
   IN_PROGRESS: 'En cours',

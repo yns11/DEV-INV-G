@@ -152,7 +152,8 @@ class Editable:
 
 #: Per-status permission matrix.
 #:
-#: PREPARATION  thresholds + referentials + printable sheets are being built.
+#: PREPARATION  thresholds + referentials + printable sheets are being built,
+#:              and the advance counts happen — days before the count itself.
 #: COUNTING     referentials are frozen, *except* that new GENERIQUE sheets may
 #:              still be created (explicit requirement); the book stock is
 #:              loaded then frozen; journals and sheets are the live objects.
@@ -169,7 +170,16 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         book_stock=False,
         zones=True,
         count_journals=False,
-        early_counts=False,
+        # Un précomptage se fait des jours avant le jour J, et donc pendant la
+        # préparation : charger ses journaux ERP, déclarer leur périmètre et les
+        # sceller sont des gestes de cette phase-là. Les refuser ici obligeait à
+        # passer la campagne en comptage pour compter deux emplacements, c'est-à-
+        # dire à geler le référentiel bien avant qu'il ne soit prêt.
+        #
+        # Ce que cela n'ouvre pas : le stock ERP (`book_stock=False`) et les
+        # journaux de comptage restent fermés. Un précomptage ne pose pas de
+        # référence — la référence est unique et elle arrive le jour J.
+        early_counts=True,
         count_sheets=True,
         count_entries=False,
         adjustments=False,
@@ -257,7 +267,6 @@ def campaign_transition_blockers(
     book_stock_frozen: bool = False,
     blocking_controls: Sequence[ControlFinding] = (),
     unexplained_material: int = 0,
-    unresolved_drift: int = 0,
     publication_done: bool = True,
 ) -> list[ControlFinding]:
     """Business preconditions that must hold before *target* can be entered.
@@ -313,22 +322,6 @@ def campaign_transition_blockers(
                     ),
                     entity_type="count_journal",
                     context={"pending": len(pending)},
-                )
-            )
-        if unresolved_drift:
-            blockers.append(
-                ControlFinding(
-                    code="EARLY_COUNT_DRIFT_UNRESOLVED",
-                    severity=ControlSeverity.BLOCKER,
-                    message=(
-                        f"{unresolved_drift} dérive(s) matérielle(s) sur des "
-                        "emplacements scellés n'ont pas d'issue. Le stock ERP du "
-                        "jour J ne dit pas la même chose que le physique posté "
-                        "au précomptage : décidez, pour chacune, laquelle fait "
-                        "foi — conserver le comptage avancé, ou recompter."
-                    ),
-                    entity_type="early_count_drift",
-                    context={"unresolved": unresolved_drift},
                 )
             )
         open_zones = [z for z in zone_statuses if z is not ZoneStatus.DONE]

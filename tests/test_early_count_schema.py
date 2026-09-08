@@ -125,38 +125,117 @@ class TestTheMigrationReplays:
     dépendent : la migration passait une fois et échouait ensuite.
 
     Un déploiement ne rejoue pas une migration déjà enregistrée, si bien que
-    rien ne l'aurait signalé — jusqu'au jour où une reprise, une base recréée à
-    partir d'un dump partiel ou un correctif d'empreinte la ferait repasser.
+    rien ne l'aurait signalé — jusqu'au jour où une reprise ou une base recréée
+    à partir d'un dump partiel la ferait repasser.
+
+    Ce que la 029 change, et ce qu'elle ne peut pas rendre
+    -----------------------------------------------------
+    Elle retire `is_material` de la table des dérives, et la 025 crée un index
+    partiel `WHERE is_material AND resolution IS NULL`. Postgres analyse le
+    prédicat **avant** de regarder si le nom est déjà pris : un `CREATE INDEX IF
+    NOT EXISTS` échoue donc sur une colonne absente, même quand l'index existe.
+
+    Rejouer la 025 seule sur un schéma déjà à jour n'est donc plus possible, et
+    aucune écriture de la 029 ne le rendrait possible sans garder en base deux
+    colonnes que plus rien ne remplit. Ce qui reste vrai — et qui est ce qu'une
+    reprise exécute réellement — est la séquence complète sur les tables qui
+    manquent : la 025 les repose telles qu'elle les connaît, et la 029 les
+    ramène à leur forme actuelle.
     """
 
-    def test_applying_it_a_second_time_changes_nothing(self, db):
-        """Les deux dans l'ordre : la 026 défait ce que la 025 a posé.
-
-        Rejouer la 025 seule recréerait le lot que la 026 supprime, et
-        l'assertion finale décrirait un schéma qui n'existe nulle part. C'est la
-        séquence qui est idempotente, pas chaque fichier pris isolément.
-        """
-        from inventory.db.migrations import MIGRATIONS_DIR
-
-        for name in (
-            "025_comptages_avances.sql",
-            "026_le_journal_est_le_precomptage.sql",
-        ):
-            sql = (MIGRATIONS_DIR / name).read_text(encoding="utf-8")
-            with db.transaction() as conn, conn.cursor() as cur:
-                cur.execute(sql)
+    def _early_tables(self, db) -> set[str]:
         with db.connection() as conn:
-            tables = {
+            return {
                 row["table_name"]
                 for row in conn.execute(
                     "SELECT table_name FROM information_schema.tables "
                     "WHERE table_schema = 'inventory' "
-                    "AND (table_name LIKE 'erp_journal%' OR table_name LIKE 'early_count%')"
+                    "AND (table_name LIKE 'erp_journal%' "
+                    "     OR table_name LIKE 'early_count%')"
                 ).fetchall()
             }
-        assert tables == {
+
+    def _replay(self, db, *names: str) -> None:
+        from inventory.db.migrations import MIGRATIONS_DIR
+
+        for name in names:
+            sql = (MIGRATIONS_DIR / name).read_text(encoding="utf-8")
+            with db.transaction() as conn, conn.cursor() as cur:
+                cur.execute(sql)
+
+    def test_the_sequence_rebuilds_what_a_partial_dump_lost(self, db):
+        """Le scénario que la reprise exécute vraiment.
+
+        Les tables des comptages avancés manquent ; les trois fichiers qui les
+        façonnent repassent dans l'ordre. La 025 les repose telles qu'elle les
+        connaît — avec `is_material`, la table des décisions d'étiquette, la
+        référence portée par un journal — et la 029 les ramène à leur forme
+        actuelle. Rejouer la 025 seule décrirait un schéma qui n'existe nulle
+        part : c'est la séquence qui est idempotente, pas chaque fichier pris
+        isolément.
+        """
+        with db.transaction() as conn:
+            conn.execute("DROP TABLE IF EXISTS early_count_label_decision")
+            conn.execute("DROP TABLE IF EXISTS early_count_drift")
+            conn.execute("DROP TABLE IF EXISTS erp_journal_line")
+            conn.execute("DROP TABLE IF EXISTS erp_journal_scope")
+            conn.execute("DROP TABLE IF EXISTS erp_journal CASCADE")
+
+        self._replay(
+            db,
+            "025_comptages_avances.sql",
+            "026_le_journal_est_le_precomptage.sql",
+            "029_une_seule_reference.sql",
+        )
+
+        assert self._early_tables(db) == {
             "erp_journal", "erp_journal_scope", "erp_journal_line",
-            "early_count_label_decision", "early_count_drift",
+            "early_count_drift",
+        }, "la table des décisions d'étiquette ne revient pas"
+
+    def test_the_drift_comes_back_with_two_quantities_and_no_decision(self, db):
+        """La 029 a bien le dernier mot sur la forme de la table."""
+        with db.connection() as conn:
+            columns = {
+                row["column_name"]
+                for row in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'inventory' "
+                    "AND table_name = 'early_count_drift'"
+                ).fetchall()
+            }
+        assert "qty_counted_t0" in columns
+        assert "qty_erp_j" in columns
+        for gone in ("qty_erp_t0", "qty_physical_t0", "is_material", "resolution",
+                     "cause_code", "resolved_at", "resolved_by"):
+            assert gone not in columns, gone
+
+    def test_the_book_stock_no_longer_points_at_a_journal(self, db):
+        """La référence ne vient plus d'un précomptage : elle est unique."""
+        with db.connection() as conn:
+            columns = {
+                row["column_name"]
+                for row in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'inventory' AND table_name = 'book_stock'"
+                ).fetchall()
+            }
+        assert "erp_journal_id" not in columns
+        assert "reference_date" in columns, "elle garde sa date, qui est celle du jour J"
+
+    def test_the_new_file_replays_on_its_own(self, db):
+        """La 029 seule, deux fois, sur un schéma complet.
+
+        C'est ce qu'un correctif d'empreinte ferait repasser, et c'est la seule
+        forme de rejeu dont elle réponde : la 025 et la 026, elles, s'appuient
+        chacune sur des colonnes que la suivante retire.
+        """
+        self._replay(db, "029_une_seule_reference.sql")
+        self._replay(db, "029_une_seule_reference.sql")
+
+        assert self._early_tables(db) == {
+            "erp_journal", "erp_journal_scope", "erp_journal_line",
+            "early_count_drift",
         }
 
 

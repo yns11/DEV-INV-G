@@ -79,10 +79,11 @@ Le carrousel doit alors afficher exactement les chiffres ci-dessus.
 
 | Cas | Où il se joue |
 |---|---|
-| Précomptage scellé, référence à sa date | `NPEM-A`, `NPEM-B` |
+| Précomptage scellé : il compte son emplacement, il n'en référence pas | `NPEM-A`, `NPEM-B` |
 | Un journal couvrant **deux** emplacements | `NPEM-A` → `ATP/SOL` + `ATP/SE2` |
 | **Ligne de passage** : un journal touche un emplacement qu'il ne couvre pas | `NPEM-A` ligne 4 → `B06/PAL02` |
-| Le snapshot du jour J **ne reprend pas** un emplacement scellé | lignes à 999 dans `05-…` |
+| Le snapshot du jour J **couvre aussi** les emplacements scellés, et il a déjà intégré leur précomptage posté | les 5 premières lignes de `05-…` |
+| **Dérive** : ce qui a bougé entre le précomptage et le jour J | `P-300` sur `ATP/SE2` : compté 210, ERP du jour J 205 |
 | Étiquette scellée recomptée ailleurs | `ET-002` : `ATP/SOL` → `ATP/QUAI` |
 | Journal **vrac** : l'étiquette générique n'est pas une identité | `NPEM-B`, étiquette `VRAC` |
 | Emplacement **désactivé** (tampon) hors périmètre | `INV/01` |
@@ -107,7 +108,7 @@ Le carrousel doit alors afficher exactement les chiffres ci-dessus.
 | `02-nomenclatures.csv` | `boms` | 4 liens, 2 niveaux |
 | `03-emplacements.csv` | `locations` | 10 emplacements, 1 désactivé |
 | `04-journaux-precomptage.csv` | `count_journal_lines` | 2 journaux avancés, 6 lignes |
-| `05-stock-erp-jour-j.csv` | `book_stock` | 14 lignes, dont 5 sur des emplacements scellés |
+| `05-stock-erp-jour-j.csv` | `book_stock` | 14 lignes, dont 5 sur des emplacements précomptés |
 | `06-journaux-jour-j.csv` | `count_journal_lines` | 1 journal, 4 lignes |
 | `07-zones-generique.csv` | `zones` | 1 zone, 2 passages |
 | `08-feuilles-generique.csv` | `count_sheets` | 5 lignes pré-imprimées |

@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Container, Mapping, Sequence
 from decimal import Decimal
 from typing import Annotated, Any, Self
 
@@ -29,7 +29,6 @@ from .enums import (
     CountLineKind,
     CountSection,
     DataSource,
-    DriftResolution,
     ExclusionScope,
     FlowKind,
     FlowSource,
@@ -37,9 +36,9 @@ from .enums import (
     ItemType,
     JournalKind,
     JournalStatus,
-    LabelResolution,
     LocationStatus,
     LocationType,
+    SealStatus,
     SheetPass,
 )
 from .quantities import ZERO, quantize_money, quantize_qty, to_decimal
@@ -65,10 +64,10 @@ __all__ = [
     "CountJournal",
     "CountJournalLine",
     "erp_journal_numbers",
+    "seal_status",
     "sheet_designation",
     "ErpJournal",
     "ErpJournalLine",
-    "LabelDecision",
     "EarlyCountDrift",
     "Zone",
     "CountSheet",
@@ -612,21 +611,15 @@ class BookStockLine(DomainModel):
     unit: str = "PCE"
     #: Unit cost captured at snapshot time; the campaign is valued with it.
     unit_cost: Decimal = ZERO
-    #: La date à laquelle cette référence a été prise.
+    #: La date à laquelle cette référence a été prise — le jour J, pour toute
+    #: ligne de la campagne.
     #:
-    #: Le jour J pour la plupart des lignes ; la date du précomptage pour les
-    #: emplacements scellés, dont la référence est le stock ERP d'avant leur
-    #: comptage. La règle est la même dans les deux cas, et c'est celle que
-    #: :attr:`VarianceLine.variance_qty` documente déjà : la référence est *ce
-    #: contre quoi la campagne a été comptée*. Elle s'applique simplement à deux
-    #: dates dès qu'on précompte.
-    #:
-    #: D'où cette colonne : le total « stock ERP » d'une campagne qui précompte
-    #: est composite, et un rapprochement avec un état ERP tiré à une date unique
-    #: trouverait une différence que rien n'expliquerait.
+    #: La référence est unique et elle vaut pour tout emplacement, scellé ou
+    #: non : un précomptage est posté dans l'ERP *avant* que la photo du jour J
+    #: ne soit prise, donc la photo l'a déjà intégré. Elle ne porte plus qu'une
+    #: date, et cette colonne dit laquelle — de quoi rapprocher la campagne d'un
+    #: état ERP tiré le même jour sans avoir à deviner.
     reference_date: dt.date | None = None
-    #: Le lot avancé d'où vient cette référence, quand elle n'est pas du jour J.
-    erp_journal_id: str | None = None
 
     @field_validator("item_number", "warehouse_id", "location_id", "unit", mode="before")
     @classmethod
@@ -796,6 +789,23 @@ def erp_journal_numbers(lines: Sequence[CountJournalLine]) -> list[str]:
     un fait — pas une anomalie — et n'en garder qu'un le cacherait.
     """
     return sorted({line.erp_journal_number for line in lines if line.erp_journal_number})
+
+
+def seal_status(
+    journal: CountJournal, *, drifting: Container[LocationKey]
+) -> SealStatus:
+    """Le statut de scellement d'un emplacement, en une règle et un seul endroit.
+
+    ``drifting`` porte les emplacements sur lesquels une dérive non nulle
+    subsiste. Passé plutôt que relu ici : la grille en affiche des centaines, et
+    une lecture par ligne rendrait la question du jour J plus coûteuse que la
+    réponse.
+    """
+    if journal.sealed_at is None:
+        return SealStatus.UNSEALED
+    if journal.key in drifting:
+        return SealStatus.SEALED_DRIFTING
+    return SealStatus.SEALED_CLEAN
 
 
 def sheet_designation(line: CountSheetLine, items: Mapping[str, Item]) -> str:
@@ -971,82 +981,26 @@ class ErpJournalLine(DomainModel):
 # Comptages avancés
 # --------------------------------------------------------------------------- #
 
-class LabelDecision(DomainModel):
-    """Où est la pièce, quand une étiquette scellée reparaît ailleurs.
-
-    Le contrôle par étiquette rattrape ce que la dérive ne voit pas : une pièce
-    sortie d'un emplacement scellé sans transaction ERP laisse une dérive nulle,
-    mais si elle est re-scannée ailleurs, son étiquette apparaît dans un second
-    journal. La question posée est alors simple et une seule personne peut y
-    répondre — où est-elle réellement ?
-
-    Trois réponses, et chacune a un effet mesurable sur les quantités :
-
-    * :attr:`LabelResolution.KEEP_NEW` — elle est au nouvel emplacement, donc
-      elle sort de l'agrégation de l'emplacement scellé ;
-    * :attr:`LabelResolution.KEEP_SEALED` — elle n'a pas bougé, donc c'est la
-      ligne de l'autre journal qui sort ;
-    * :attr:`LabelResolution.RECOUNT` — on ne tranche pas sur pièce. Rien n'est
-      exclu, et l'ancien emplacement rejoint la liste des emplacements à
-      desceller et rescanner.
-
-    Les emplacements sont figés à la décision. Un réimport qui déplacerait
-    encore l'étiquette ne réécrit pas ce qu'un humain a constaté.
-    """
-
-    id: str
-    campaign_id: str
-    label_id: str
-    item_number: str
-    decision: LabelResolution
-    sealed_warehouse_id: str = ""
-    sealed_location_id: str = ""
-    other_warehouse_id: str = ""
-    other_location_id: str = ""
-    comment: str = ""
-    decided_at: dt.datetime | None = None
-    decided_by: str = ""
-
-    @field_validator("item_number", "sealed_warehouse_id", "sealed_location_id",
-                     "other_warehouse_id", "other_location_id", mode="before")
-    @classmethod
-    def _key(cls, v: Any) -> str:
-        return normalise_key(str(v) if v is not None else "")
-
-    @field_validator("label_id", mode="before")
-    @classmethod
-    def _label(cls, v: Any) -> str:
-        # Jamais normalisée : « 001609231 » perd ses zéros de tête au premier
-        # passage par autre chose qu'une chaîne, et une étiquette tronquée ne se
-        # rattache plus à rien.
-        return "" if v is None else str(v).strip()
-
-    @property
-    def excluded_from_sealed(self) -> bool:
-        """L'étiquette quitte l'emplacement scellé."""
-        return self.decision is LabelResolution.KEEP_NEW
-
-    @property
-    def excluded_from_other(self) -> bool:
-        """L'étiquette reste où elle était ; l'autre ligne est l'erreur."""
-        return self.decision is LabelResolution.KEEP_SEALED
-
-
 class EarlyCountDrift(DomainModel):
-    """L'écart entre le stock ERP du jour J et le physique posté au précomptage.
+    """L'écart entre le stock ERP du jour J et ce qu'un précomptage avait compté.
 
-    Attendue nulle : l'emplacement a été balisé, et poster son journal a
-    réaligné l'ERP sur le physique compté. Quand elle ne l'est pas, une seule
-    question se pose — quelle quantité fait foi au jour J ? — et
-    :class:`DriftResolution` en porte les deux réponses.
+    ``ERP@J − compté@T0``, par article et par emplacement scellé.
+
+    **Un indice, pas un écart.** Elle ne mesure rien de la campagne : le journal
+    de précomptage a été posté dans l'ERP avant que la photo du jour J ne soit
+    prise, et cette photo l'a donc déjà intégré. Ce qui reste après ce
+    réalignement, c'est ce qui a bougé entre les deux dates — une sortie, une
+    réception, une correction. Cela se regarde, cela n'appelle aucune décision
+    et ne bloque rien : l'écart d'inventaire, lui, se mesure ailleurs, contre la
+    référence unique du jour J.
 
     Ce que cette dérive ne verra pas
     --------------------------------
     Elle se calcule entre deux lectures de l'ERP, donc elle ne voit que ce que
     l'ERP a appris. Une pièce sortie d'un emplacement scellé sans aucune
     transaction laisse une dérive nulle. Si elle est re-scannée ailleurs le jour
-    J, c'est le contrôle par étiquette qui la rattrape ; sinon rien ne la voit,
-    et la perte n'apparaîtra qu'à l'inventaire suivant.
+    J, c'est le contrôle par étiquette qui la montre ; sinon rien ne la voit, et
+    la perte n'apparaîtra qu'à l'inventaire suivant.
     """
 
     id: str
@@ -1055,26 +1009,20 @@ class EarlyCountDrift(DomainModel):
     warehouse_id: str
     location_id: str
     item_number: str
-    #: Le stock ERP d'avant le comptage avancé — la référence de l'emplacement.
-    qty_erp_t0: Decimal = ZERO
-    #: Compté + ajusté à T0.
-    qty_physical_t0: Decimal = ZERO
-    #: Le stock ERP du snapshot général, gelé le jour J.
+    #: Ce que le précomptage a compté. Compté, et rien d'autre : l'ajustement
+    #: des précomptages n'existe plus, et « physique » aurait laissé croire
+    #: qu'un second terme s'y ajoute encore.
+    qty_counted_t0: Decimal = ZERO
+    #: Le stock ERP du snapshot général, gelé le jour J — la référence unique.
     qty_erp_j: Decimal = ZERO
     drift_value: Decimal = ZERO
-    is_material: bool = False
-    resolution: DriftResolution | None = None
-    cause_code: str = ""
-    comment: str = ""
-    resolved_at: dt.datetime | None = None
-    resolved_by: str = ""
 
     @field_validator("item_number", "warehouse_id", "location_id", mode="before")
     @classmethod
     def _key(cls, v: Any) -> str:
         return normalise_key(str(v) if v is not None else "")
 
-    @field_validator("qty_erp_t0", "qty_physical_t0", "qty_erp_j", mode="before")
+    @field_validator("qty_counted_t0", "qty_erp_j", mode="before")
     @classmethod
     def _qty(cls, v: Any) -> Decimal:
         return _as_qty(v if v not in (None, "") else 0)
@@ -1092,21 +1040,12 @@ class EarlyCountDrift(DomainModel):
 
     @property
     def drift_qty(self) -> Decimal:
-        """``ERP@J − physique@T0``, calculée et non stockée.
+        """``ERP@J − compté@T0``, calculée et non stockée.
 
         Stocker la soustraction à côté de ses deux termes aurait ouvert la
         possibilité qu'ils cessent d'être d'accord.
         """
-        return quantize_qty(self.qty_erp_j - self.qty_physical_t0)
-
-    @property
-    def is_resolved(self) -> bool:
-        return self.resolution is not None
-
-    @property
-    def blocks_analysis(self) -> bool:
-        """Une dérive matérielle sans issue arrête le passage en analyse."""
-        return self.is_material and not self.is_resolved
+        return quantize_qty(self.qty_erp_j - self.qty_counted_t0)
 
 
 class Zone(DomainModel):

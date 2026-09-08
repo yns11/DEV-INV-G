@@ -164,8 +164,8 @@ de volumétrie et de performance.
 | **Périmètre d'un journal ERP** | Les emplacements que ce journal couvre réellement. **Déclaré, jamais déduit** |
 | **Étiquette** | Identifiant logistique d'un lot physique (UC, UM, palette) porté par une ligne de journal ERP |
 | **Précomptage** (*comptage avancé*) | Comptage d'emplacements avant le jour J, scellé, portant sa propre référence |
-| **Scellement** | L'acte qui fige la référence et le comptage d'un emplacement précompté |
-| **Dérive** | Stock ERP du jour J − physique posté au précomptage. Attendue nulle |
+| **Scellement** | L'acte qui fige le comptage d'un emplacement précompté et dit quel journal le compte. Il ne pose aucune référence : celle de la campagne est unique, et c'est le stock ERP du jour J |
+| **Dérive** | Stock ERP du jour J − ce que le précomptage avait compté. Attendue nulle, en affichage seul : c'est ce qui a bougé entre les deux dates, pas un écart d'inventaire |
 | **GENERIQUE** | Un emplacement ERP unique couvrant des dizaines d'aires physiques comptées sur papier |
 | **Zone** | Une aire physique de GENERIQUE, comptée par une ou deux équipes |
 | **Feuille de comptage** | Le document papier d'un passage sur une zone |
@@ -281,7 +281,7 @@ plafond d'interface. **[HV]**
 | **C-1** | **Cycle de vie de campagne** | Porter les quatre phases, les gels associés, les préconditions de passage, la duplication d'une campagne antérieure |
 | **C-2** | **Référentiels de campagne** | Constituer et figer articles, nomenclatures, entrepôts/emplacements ; santé des nomenclatures |
 | **C-3** | **Référence de stock** | Charger une photographie ERP datée, la valider ligne à ligne, la geler ; gérer une référence composite en dates |
-| **C-4** | **Comptages avancés** | Importer des journaux ERP, déclarer leur périmètre, sceller, détecter et trancher les dérives et les conflits d'étiquette |
+| **C-4** | **Comptages avancés** | Importer des journaux ERP, déclarer leur périmètre, sceller ; regarder les dérives et les conflits d'étiquette, qui n'appellent aucune décision |
 | **C-5** | **Comptage général** | Un journal par emplacement actif ; import, saisie, correction, forçage, postage, avancement |
 | **C-6** | **Feuilles GENERIQUE** | Concevoir, imprimer, saisir, scanner ; deux passages, arbitrage, clôture de zone |
 | **C-7** | **Consolidation GENERIQUE** | Retenir une quantité par (article, section), appliquer la règle de section, éclater le WIP, produire un journal exportable et sa traçabilité |
@@ -361,7 +361,6 @@ avancés à la main sans qu'aucune écriture n'en dépende.
 | Emplacement précompté | Non déclaré / Scellé / Descellé | Déclaration du périmètre / descellement motivé |
 | Zone | À compter / En cours / Terminée | Les deux premiers se déduisent ; le troisième est décidé |
 | Ligne d'arbitrage | Ouverte / Tranchée / **Rouverte par changement** | Décision humaine ; réouverture automatique (RG-ARB-3) |
-| Dérive | Non tranchée / Comptage avancé conservé / À recompter | Décision humaine, cause obligatoire dans un cas |
 | Écart | Sans cause / Avec cause / Accepté explicitement | Décision humaine, proposition IA à côté |
 
 ## C.3 Systèmes externes et frontières de responsabilité
@@ -502,34 +501,23 @@ posée explicitement et à trois reprises (`guide §1.6`, `§2.1`, `§2.9`).
 - **Résultat attendu** : une vue d'avancement portant, par emplacement, le ou les journaux ERP d'origine, le nombre de lignes, la quantité comptée et le statut ; exportable telle quelle.
 - **Statut** : **[EC]** — citation de résumé de session, traçabilité de seconde main.
 
-### EX-AVC-5 — Trancher les dérives
-- **Définition** : `dérive = stock ERP du jour J − physique posté au précomptage`. **Attendue nulle** : l'emplacement était balisé, et poster son journal a réaligné l'ERP.
-- **Deux issues, et une seule question posée** — *quelle quantité fait foi au jour J ?*
+### EX-AVC-5 — Regarder les dérives
+- **Définition** : `dérive = stock ERP du jour J − compté au précomptage`. **Attendue nulle**, et pour une raison précise : un journal de précomptage est **posté dans l'ERP** avant que la photo du jour J ne soit prise, et cette photo l'a donc déjà intégré.
+- **Aucune action requise, aucun constat bloquant.** Ce qui subsiste après ce réalignement n'est pas un écart d'inventaire — celui-là se mesure contre la référence unique du jour J — mais ce qui a **bougé entre les deux dates** : une sortie, une réception, une correction saisie entre-temps. Cela se regarde ; le passage en analyse n'attend rien.
+- **Ce que le dispositif proposait, et pourquoi il ne le propose plus** : deux issues — conserver le comptage avancé, ou recompter — parce qu'il portait sa propre référence `ERP@T0` contre laquelle un emplacement scellé était mesuré. Cette référence n'existe plus : mesurer une seconde fois contre un état antérieur revenait à **compter deux fois la même correction**, dans le sens qui flatte le résultat.
+- **Conséquence à annoncer** : un emplacement précompté montre désormais un écart voisin de zéro. Sa correction d'inventaire n'est pas perdue — elle a été enregistrée plus tôt, dans l'ERP, avant la campagne.
+- **Affichage** : seules les dérives **non nulles** sont montrées. Une ligne à zéro est le cas normal, donc l'absence d'information ; le calcul, lui, les conserve toutes comme trace de la confrontation.
+- **Limite déclarée** : la dérive se calcule entre deux lectures de l'ERP — une pièce sortie sans aucune transaction laisse une dérive nulle. C'est le contrôle par étiquette qui la montre ; si elle n'est scannée nulle part, **rien ne la voit**, et seul le balisage physique l'évite. *Cette limite doit être écrite dans le produit, pas seulement dans un document.*
+- **Statut** : **[EC]** — décision métier du 8 septembre 2026, `test_early_count_drift.py`.
 
-| Issue | Quand | Ce qu'elle engage |
-|---|---|---|
-| **Conserver le comptage avancé** | Le mouvement est purement informatique | Le physique de T0 est retenu. **Une cause est obligatoire** : la campagne et l'ERP resteront en désaccord de la valeur de la dérive, et personne ne doit le découvrir plus tard |
-| **Recompter le jour J** | On ne fait plus confiance au comptage avancé | L'emplacement est descellé et rejoint le comptage général ; sa référence redevient le stock ERP du jour J |
-
-- **Précondition** : à faire une fois le stock ERP général chargé, **avant le passage en analyse, qui l'exige**.
-- **Limite déclarée** : la dérive se calcule entre deux lectures de l'ERP — une pièce sortie sans aucune transaction laisse une dérive nulle. C'est le contrôle par étiquette qui la rattrape ; si elle n'est scannée nulle part, **rien ne la voit**, et seul le balisage physique l'évite. *Cette limite doit être écrite dans le produit, pas seulement dans un document.*
-- **Statut** : **[CO]** — `guide §2.7`, `test_early_count_drift.py`.
-
-### EX-AVC-6 — Trancher les conflits d'étiquette
+### EX-AVC-6 — Regarder les conflits d'étiquette
 - **Déclencheur** : une étiquette scellée sur un emplacement est comptée **à un autre emplacement**.
-- **Trois issues** :
-
-| Issue | Sens | Effet |
-|---|---|---|
-| **La mettre au nouvel emplacement** | La pièce est bien là où elle a reparu | Elle sort de l'emplacement scellé, qui perd la quantité — **sa référence comme son comptage**, sans quoi la décision creuserait l'écart qu'elle tranche |
-| **L'enlever du nouvel emplacement** | Elle n'a pas bougé | C'est la ligne de l'autre journal qui sort du comptage |
-| **Signaler : à rescanner** | On ne tranche pas sur pièce | Rien n'est retiré ; l'emplacement **scellé** entre dans une liste d'où on le descelle |
-
-- **L'issue survit aux réimports** : une décision prise à neuf heures ne se retrouve pas vierge à neuf heures cinq.
+- **En affichage seul.** La liste n'exclut rien d'aucune agrégation et n'appelle aucune décision : elle dit ce qui a bougé entre le précomptage et le jour J, à qui veut aller voir.
+- **Ce que le dispositif proposait, et pourquoi il ne le propose plus** : trois issues, dont deux retiraient une quantité d'un côté ou de l'autre. Une pièce comptée deux fois se règle **sur le terrain**, pas en retirant une ligne d'une agrégation — et l'exclusion creusait un manquant sur un emplacement dont personne n'était allé vérifier quoi que ce soit.
 - **Deux exclusions de la liste, et elles sont métier** :
   1. **Les emplacements vrac n'ont pas d'étiquette.** Les lignes d'un journal vrac portent toutes la même valeur générique. Elles sont **hors du contrôle par étiquette** — sans cela, deux emplacements vrac quelconques deviennent « la même étiquette comptée aux deux endroits » et la liste se remplit de centaines de faux doublons qui noient les vrais déplacements. **[EC]** — demande explicite avec capture d'écran à l'appui.
-  2. **Deux journaux ayant compté le *même* emplacement** : la pièce n'a pas bougé, il n'y a rien à trancher. Ces cas sont **résumés** (journal retenu, journal écarté) plutôt que masqués.
-- **Statut** : **[EC]** pour le point 1, **[CO]** pour le reste.
+  2. **Deux journaux ayant compté le *même* emplacement** : la pièce n'a pas bougé, il n'y a rien à montrer d'un déplacement. Ces cas sont **résumés** (journal retenu, journal écarté) plutôt que masqués.
+- **Statut** : **[EC]** pour le point 1 et pour l'affichage seul, **[CO]** pour le reste.
 
 ## D.5 Comptage général
 
@@ -941,7 +929,7 @@ articles identiques. **[CO]**
 | Vers | Ce qui bloque |
 |---|---|
 | **Comptage** | Rien de structurel : le stock ERP se charge *pendant* le comptage |
-| **Analyse** | Stock ERP non gelé ; journaux non postés ni forcés ; **dérives matérielles non tranchées** ; zones non terminées |
+| **Analyse** | Stock ERP non gelé ; journaux non postés ni forcés ; zones non terminées |
 | **Clôture** | Écarts matériels sans cause ni acceptation explicite ; archive non publiée |
 
 **[CO]** — `domain/workflow.py`.
@@ -976,16 +964,17 @@ quantités ; tous les journaux postés avant que le stock ERP ne soit chargé.
 
 | # | Règle | Justification | Statut |
 |---|---|---|---|
-| **RG-AVC-1** | **Le journal de précomptage porte sa propre référence** : la colonne « Stock ERP » de ses lignes donne le stock d'avant comptage. **Il n'y a aucun stock à charger séparément** pour un lot avancé | Structure du document ERP | **[CE]** |
+| **RG-AVC-1** | **La référence de la campagne est unique** : le stock ERP du jour J, gelé, pour tout article et tout emplacement — précompté ou non. Un précomptage n'a **aucun stock à charger** et n'en pose aucun : la colonne « Stock ERP » de ses lignes dit ce que l'ERP annonçait au moment du relevé, et rien de plus | Un journal de précomptage est posté dans l'ERP avant que la photo du jour J ne soit prise : elle l'a donc déjà intégré, et lui opposer une seconde référence antérieure compterait deux fois la même correction | **[EC]** — décision métier du 8 septembre 2026 |
 | **RG-AVC-2** | **Le périmètre se déclare, il ne se devine pas.** L'ordre des gestes est indifférent : si deux journaux entrent avant qu'aucun ne soit déclaré, l'emplacement porte leur somme, et **déclarer recalcule le comptage sur le seul propriétaire** | Mesuré : 1 932 lignes sur 58 345 ne portent un autre emplacement que pour matérialiser un déplacement | **[CE]** pour le fait, **[CO]** pour le traitement |
 | **RG-AVC-3** | **Le tri des lignes se fait ligne par ligne, pas emplacement par emplacement** : un même fichier apporte les lignes du propriétaire et celles des journaux de passage | *Écarter la clé entière priverait l'emplacement scellé de sa quantité comptée* | **[CO]** |
 | **RG-AVC-4** | **Le gel du stock ERP ferme la fenêtre du précomptage, et c'en est la définition** : précompter veut dire *avant* la référence générale. Après le gel, il n'y a ni périmètre à déclarer ni emplacement à sceller | Définitionnelle, pas prudentielle | **[CO]** |
-| **RG-AVC-5** | **Le chargement du stock ERP général ne touche pas aux emplacements scellés** | *Sinon le résultat de leur inventaire disparaîtrait le jour J* | **[CO]** |
-| **RG-AVC-6** | **Sceller un précomptage démarre aussi son journal de comptage** | Sans cela il apportait sa référence et rien d'autre, et un journal *en attente* n'entre pas dans le compté | **[CO]** |
+| **RG-AVC-5** | **Le chargement du stock ERP général couvre aussi les emplacements scellés.** Un emplacement précompté montre alors un écart voisin de zéro — et il faut le dire : sa correction d'inventaire n'est pas perdue, elle a été enregistrée plus tôt, dans l'ERP, avant la campagne | Conséquence directe de RG-AVC-1 | **[EC]** |
+| **RG-AVC-6** | **Sceller un précomptage démarre aussi son journal de comptage** | Sans cela il n'apportait rien au compté : un journal *en attente* n'y entre pas | **[CO]** |
 | **RG-AVC-7** | **Un journal ERP ne se supprime pas.** Le geste inverse de « déclarer et sceller » est **desceller** | Un journal ERP n'est pas une saisie mais le reflet d'un document de l'ERP : le supprimer ne le retirerait pas de l'ERP, et laisserait un emplacement scellé sans le journal qui justifie sa référence — donc indéclarable et indescellable | **[CO]**, en réponse à une question explicite du commanditaire |
-| **RG-AVC-8** | **La référence porte sa date.** Une campagne qui précompte a une **référence composite en dates** : le jour J pour la plupart des emplacements, la date du précomptage pour les emplacements scellés | La référence est *ce contre quoi la campagne a été comptée* | **[CO]** |
-| **RG-AVC-9** | **Cette composition doit être dite.** Un rapprochement avec un état ERP tiré à une date unique trouvera une différence, égale à la somme des écarts des précomptages. **La date de référence de chaque ligne est affichée et exportée** | Sinon la différence est inexplicable | **[CO]** |
-| **RG-AVC-10** | **Les écarts des emplacements scellés sont visibles immédiatement**, sans attendre le chargement ni le gel du stock ERP général | *C'est le but même du précomptage : voir l'écart quand on peut encore aller voir sur le terrain* | **[CO]** |
+| **RG-AVC-8** | **La référence porte sa date, et elle n'en a qu'une** : celle de la photo du jour J. Elle reste affichée et exportée, de quoi rapprocher la campagne d'un état ERP tiré le même jour sans avoir à deviner | La référence est *ce contre quoi la campagne a été comptée* | **[EC]** |
+| **RG-AVC-9** | **Ni écart ni indicateur d'avancement n'est affiché tant que le stock ERP n'est pas gelé**, même si des comptages avancés ont eu lieu | Un écart a besoin d'une référence, et il n'y en a qu'une. L'écran affichait des « écarts partiels » sur les emplacements scellés en tenant leur référence pour figée : elle ne l'était pas, et le chiffre comptait deux fois la même correction | **[EC]** |
+| **RG-AVC-10** | **Les comptages avancés se font en phase de préparation**, où l'écran vit désormais. La vue « Journaux ERP » est la seule ; les dérives et les étiquettes ont rejoint les **Contrôles**, et « À rescanner » n'existe plus | Un précomptage a lieu des jours avant le jour J. Le ranger dans le comptage obligeait à y passer la campagne — donc à geler le référentiel — pour compter deux emplacements | **[EC]** |
+| **RG-AVC-11** | **La grille des journaux de comptage porte le statut de scellement** de chaque emplacement, en trois valeurs : *scellé sans dérive*, *scellé avec dérives*, *non scellé* | Le matin du jour J, la question posée à cette grille est « lesquels reste-t-il à compter ? ». Un emplacement précompté y ressemblait à tous les autres | **[EC]** |
 
 ## E.9 Zones et arbitrage
 
@@ -1067,7 +1056,7 @@ réimplémentation perd en premier.
  18. Arbitrer les désaccords entre les deux passages
  19. Terminer les zones
  20. Consolider GENERIQUE  →  journal exportable au format d'import ERP
- 21. Traiter les dérives des emplacements précomptés
+ 21. Regarder les dérives des emplacements précomptés (sans action requise)
  22. Trancher les conflits d'étiquette
   ──► Passage en Analyse : gel de tout ce qui précède
 
@@ -1143,7 +1132,7 @@ réimplémentation perd en premier.
 | **Consolidation** | Exécution horodatée, lignes produites, **décomposition parent → composant → zone** |
 | **Ajustement** | Article, emplacement, date physique, nature, quantité et valeur **signées**, motif, commentaire |
 | **Analyse d'écart** | Cause humaine **et** proposition IA, **séparées**, acceptation explicite éventuelle avec commentaire |
-| **Dérive / décision d'étiquette** | L'emplacement, le constat, l'issue choisie, son auteur, sa cause |
+| **Dérive / étiquette comptée ailleurs** | L'emplacement, le constat, les deux quantités qui le composent. Aucune issue : ces listes se regardent |
 | **Provenance d'import** | Source, fichier, empreinte du contenu, **journée de la photographie**, volumes acceptés et rejetés, **pièce d'origine conservée** |
 | **Audit** | Acteur, action, entité, horodatage, contenu du changement |
 
@@ -1444,7 +1433,7 @@ effacée physiquement.
 | # | Situation | Attendu |
 |---|---|---|
 | **R-27** | Terminer une zone dont les comptages divergent | Refusé, en disant combien de lignes restent à trancher |
-| **R-28** | Passer en Analyse avec une dérive matérielle non tranchée | Refusé, en nommant le nombre |
+| **R-28** | Passer en Analyse avec une dérive non nulle sur un emplacement précompté | **Accepté** : une dérive est un indice de ce qui a bougé entre le précomptage et le jour J, pas un écart à trancher |
 | **R-29** | Clôturer avec un écart matériel sans cause ni acceptation | Refusé, en nommant le nombre |
 | **R-30** | Déclarer un périmètre **après le gel** du stock ERP | Refusé, avec l'explication — **et le geste ne doit pas être offert** |
 | **R-31** | Supprimer une zone en phase Comptage | Refusé ; les alternatives sont nommées |

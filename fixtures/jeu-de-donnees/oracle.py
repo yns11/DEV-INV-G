@@ -13,9 +13,11 @@ Les règles appliquées, dans l'ordre où elles s'enchaînent :
 
 1. **Le périmètre.** Un emplacement `Désactivé` et un article exclu `ALL` sortent
    des quantités *et* des valeurs, des deux côtés.
-2. **La référence.** Un emplacement précompté et scellé porte le stock ERP de
-   son propre journal, à sa date ; tout autre emplacement porte le snapshot du
-   jour J. Une ligne du snapshot qui vise un emplacement scellé est ignorée.
+2. **La référence est unique** : le snapshot du stock ERP du jour J, pour tout
+   article et tout emplacement, scellé ou non. Un précomptage est posté dans
+   l'ERP *avant* que la photo du jour J ne soit prise, donc la photo l'a déjà
+   intégré : lui opposer une seconde référence, antérieure, compterait deux
+   fois la même correction.
 3. **Le comptage.** Seul le journal qui *possède* un emplacement le compte : les
    lignes de passage d'un autre journal restent une trace. `BOOK_ENFORCED`
    contribue la quantité du stock ERP elle-même.
@@ -123,7 +125,6 @@ proprietaire = {
 }
 scelles = set(proprietaire)
 
-reference_t0: dict[tuple[str, str, str], Decimal] = defaultdict(Decimal)
 compte_t0: dict[tuple[str, str, str], Decimal] = defaultdict(Decimal)
 lignes_de_passage: list[dict[str, str]] = []
 
@@ -136,17 +137,16 @@ for r in precomptage:
         continue
     if not actif(*cle) or ref in hors_perimetre:
         continue
-    k = (ref, *cle)
-    reference_t0[k] += dec(r["Stock ERP"])
-    compte_t0[k] += dec(r["Quantité comptée"])
+    # « Stock ERP » du précomptage n'est lu par personne : ce n'est pas une
+    # référence, c'est ce que l'ERP annonçait au moment du relevé.
+    compte_t0[(ref, *cle)] += dec(r["Quantité comptée"])
 
 
 # --------------------------------------------------------------------------- #
-# 3. Stock ERP du jour J — les emplacements scellés sont préservés
+# 3. Stock ERP du jour J — la référence, et elle couvre tout
 # --------------------------------------------------------------------------- #
 
-reference: dict[tuple[str, str, str], Decimal] = dict(reference_t0)
-ignorees_car_scellees: list[tuple[str, str, str]] = []
+reference: dict[tuple[str, str, str], Decimal] = {}
 #: Le coût porté par la ligne de stock. Il ne valorise rien tant que l'article a
 #: un prix standard : la campagne se valorise au prix standard, partout et des
 #: deux côtés. Il est le secours d'un article inconnu ou d'un prix nul — mieux
@@ -156,9 +156,8 @@ cout_de_secours: dict[str, Decimal] = {}
 for r in lire("05-stock-erp-jour-j.csv"):
     cle = (r["Entrepôt"], r["Emplacement"])
     ref = r["Numéro d'article"]
-    if cle in scelles:
-        ignorees_car_scellees.append((ref, *cle))
-        continue
+    # Aucune exception pour les emplacements scellés : leur précomptage a été
+    # posté dans l'ERP avant que cette photo ne soit prise.
     if not actif(*cle) or ref in hors_perimetre:
         continue
     reference[(ref, *cle)] = reference.get((ref, *cle), Decimal(0)) + dec(
@@ -425,13 +424,12 @@ attendu = {
     "arbitragesNonResolus": sorted(desaccords),
     "produitsFinisHorsWip": sorted(finis_hors_wip),
     "emplacementsScelles": sorted(f"{w} / {l}" for w, l in scelles),
-    "referenceScellee": {
+    #: Ce qu'un emplacement scellé a **compté**, et non ce qu'il référence :
+    #: sa référence est celle de tout le monde, le snapshot du jour J.
+    "compteDesEmplacementsScelles": {
         f"{ref} @ {w} / {l}": str(q(qte))
-        for (ref, w, l), qte in sorted(reference_t0.items())
+        for (ref, w, l), qte in sorted(compte_t0.items())
     },
-    "lignesDuSnapshotIgnorees": sorted(
-        f"{ref} @ {w} / {l}" for ref, w, l in ignorees_car_scellees
-    ),
     "lignesDePassage": sorted(
         f"{r['Journal ERP']} ligne {r['Numéro de ligne']} → "
         f"{r['Entrepôt']} / {r['Emplacement']}"

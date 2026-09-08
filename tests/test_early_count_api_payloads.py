@@ -51,19 +51,11 @@ def seeded(client) -> str:
     """
     from inventory.config import get_settings
     from inventory.db.engine import Database
-    from inventory.db.repositories.early_count import (
-        EarlyCountDriftRepository,
-        LabelDecisionRepository,
-    )
+    from inventory.db.repositories.early_count import EarlyCountDriftRepository
     from inventory.db.repositories.erp_journal import ErpJournalRepository
     from inventory.db.repositories.journal import JournalRepository
-    from inventory.domain.enums import JournalKind, LabelResolution
-    from inventory.domain.models import (
-        EarlyCountDrift,
-        ErpJournalLine,
-        LabelDecision,
-        LocationKey,
-    )
+    from inventory.domain.enums import JournalKind
+    from inventory.domain.models import EarlyCountDrift, ErpJournalLine, LocationKey
 
     db = Database(get_settings())
     campaign_id = str(uuid.uuid4())
@@ -132,20 +124,6 @@ def seeded(client) -> str:
         ],
     )
 
-    LabelDecisionRepository(db).decide(
-        LabelDecision(
-            id=str(uuid.uuid4()),
-            campaign_id=campaign_id,
-            label_id="001609231",
-            item_number="MASS-1",
-            decision=LabelResolution.RECOUNT,
-            sealed_warehouse_id=SOL[0],
-            sealed_location_id=SOL[1],
-            other_warehouse_id="ATP",
-            other_location_id="QUAI EXP",
-        )
-    )
-
     EarlyCountDriftRepository(db).replace(
         campaign_id,
         [
@@ -156,11 +134,9 @@ def seeded(client) -> str:
                 warehouse_id=SOL[0],
                 location_id=SOL[1],
                 item_number="MASS-1",
-                qty_erp_t0=Decimal(10),
-                qty_physical_t0=Decimal(12),
+                qty_counted_t0=Decimal(12),
                 qty_erp_j=Decimal(9),
                 drift_value=Decimal("-12.00"),
-                is_material=True,
             )
         ],
     )
@@ -189,12 +165,6 @@ class TestTheDeclarationMatchesWhatComesBack:
         row = _rows(client, seeded, "journals")[0]
         ErpJournalResponse.model_validate(row)
 
-    def test_the_locations_to_rescan(self, client, seeded):
-        from inventory.api.responses import RescanLocation
-
-        row = _rows(client, seeded, "to-rescan")[0]
-        RescanLocation.model_validate(row)
-
     def test_the_drifts(self, client, seeded):
         from inventory.api.responses import DriftResponse
 
@@ -216,6 +186,25 @@ class TestTheScreenFindsTheKeysItReads:
     facultatifs, et l'écran afficherait des cases vides sans que rien n'échoue.
     """
 
+    def test_a_drift_carries_no_decision(self, client, seeded):
+        """L'inverse du contrôle voisin : ces clés-là doivent avoir disparu.
+
+        Une dérive n'appelle aucune décision. Les laisser dans la réponse ferait
+        vivre les colonnes d'issue de l'écran, toujours vides.
+        """
+        row = _rows(client, seeded, "drifts")[0]
+        for gone in ("resolution", "isMaterial", "blocksAnalysis", "causeCode",
+                     "qtyErpT0", "qtyPhysicalT0"):
+            assert gone not in row, gone
+
+    def test_a_label_alert_carries_no_decision_either(self, client, seeded):
+        rows = client.get(
+            f"/api/campaigns/{seeded}/early-counts/label-alerts"
+        ).json()
+        for row in rows:
+            for gone in ("decision", "comment", "decidedBy"):
+                assert gone not in row, gone
+
     @pytest.mark.parametrize(
         "path,field",
         [
@@ -225,11 +214,9 @@ class TestTheScreenFindsTheKeysItReads:
             ("journals", "scopeDeclared"),
             ("journals", "countedOn"),
             ("journals", "isSealed"),
-            ("to-rescan", "warehouseId"),
-            ("to-rescan", "labels"),
             ("drifts", "driftQty"),
             ("drifts", "qtyErpJ"),
-            ("drifts", "blocksAnalysis"),
+            ("drifts", "qtyCountedT0"),
             ("recounted-in-place", "sealedLocationId"),
             ("recounted-in-place", "ownerJournalNumber"),
             ("recounted-in-place", "otherJournalNumber"),

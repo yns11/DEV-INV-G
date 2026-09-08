@@ -79,7 +79,7 @@ describe('sans stock ERP gelé', () => {
   it('les écarts sont refusés, en disant quoi faire', () => {
     show('variances', null)
     expect(refused()).not.toBeNull()
-    expect(screen.getByText(/Scellez un/)).toBeTruthy()
+    expect(screen.getByText(/Chargez-le puis/)).toBeTruthy()
   })
 
   it.each(['variances', 'causes', 'adjustments'] as const)('%s est refusée', (view) => {
@@ -99,33 +99,27 @@ describe('une fois le stock gelé', () => {
 })
 
 
-describe('un précomptage scellé ouvre l’analyse avant le gel', () => {
+describe('un précomptage scellé n’ouvre plus l’analyse avant le gel', () => {
   /**
-   * Le gel du stock ERP est **global** et arrive au jour J. Le scellement d'un
-   * précomptage est un gel **par emplacement** : pour ceux-là, référence et
-   * comptage sont déjà posés et ne bougeront plus, puisque le chargement
-   * général les préserve. Leur écart est donc définitif dès la déclaration.
+   * L'écran affichait des « écarts partiels » sur les emplacements précomptés
+   * et scellés, en tenant leur référence pour figée. Elle ne l'était pas : un
+   * précomptage est **posté dans l'ERP** avant que la photo du jour J ne soit
+   * prise, donc la photo l'a déjà intégré. L'écart affiché comptait ainsi deux
+   * fois la même correction, dans le sens qui flatte.
    *
-   * Attendre le gel général le cachait pendant les jours où l'on peut encore
-   * aller voir sur le terrain — c'est-à-dire au seul moment où il sert.
+   * La référence est unique — le stock ERP du jour J, gelé — et tant qu'elle
+   * n'est pas posée, il n'y a rien à afficher, pas même partiellement.
    */
-  it('les écarts s’affichent', () => {
-    show('variances', null, 3)
-    expect(refused()).toBeNull()
-  })
+  it.each(['variances', 'causes', 'adjustments'] as const)(
+    '%s reste refusée, même avec trois emplacements scellés',
+    (view) => {
+      show(view, null, 3)
+      expect(refused()).not.toBeNull()
+    },
+  )
 
-  it('et disent sur combien d’emplacements ils portent', () => {
-    show('variances', null, 3)
-    expect(
-      screen.getByText(/Écarts partiels — stock ERP pas encore gelé/),
-    ).toBeTruthy()
-    expect(screen.getByText(/3 emplacement/)).toBeTruthy()
-  })
-
-  it('le bandeau disparaît une fois le stock gelé', () => {
+  it('ne parle plus d’écarts partiels', () => {
     show('variances', '2026-06-13T08:00:00Z', 3)
-    expect(
-      screen.queryByText(/Écarts partiels — stock ERP pas encore gelé/),
-    ).toBeNull()
+    expect(screen.queryByText(/Écarts partiels/)).toBeNull()
   })
 })

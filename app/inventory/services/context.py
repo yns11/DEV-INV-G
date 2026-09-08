@@ -30,7 +30,6 @@ from ..db import (
     EvidenceBlobRepository,
     ImportBatchRepository,
     JournalRepository,
-    LabelDecisionRepository,
     ReferentialRepository,
     ScanJobRepository,
     SheetRepository,
@@ -92,10 +91,6 @@ class ServiceContext:
     @functools.cached_property
     def erp_journals(self) -> ErpJournalRepository:
         return ErpJournalRepository(self.db)
-
-    @functools.cached_property
-    def label_decisions(self) -> LabelDecisionRepository:
-        return LabelDecisionRepository(self.db)
 
     @functools.cached_property
     def drifts(self) -> EarlyCountDriftRepository:

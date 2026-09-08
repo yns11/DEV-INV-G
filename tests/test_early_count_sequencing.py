@@ -176,10 +176,11 @@ class TestTheAdvanceCountDoesNotWaitForTheGeneralLoad:
         declared = EarlyCountService(ctx).declare_scope(campaign, journal.id, [SOL])
 
         assert declared == 1
-        # Les seules lignes de stock sont celles que le journal vient de poser :
-        # aucun chargement général n'a eu lieu, et il n'en fallait aucun.
-        reference = ctx.book_stock.list(campaign.id)
-        assert [line.erp_journal_id for line in reference] == [journal.id]
+        # Et aucune ligne de stock : le scellement ne pose plus de référence.
+        # La référence de la campagne est unique — le stock ERP du jour J — et
+        # c'est bien pour cela que déclarer n'a besoin d'aucun chargement.
+        assert ctx.book_stock.list(campaign.id) == []
+        assert ctx.journals.sealed_keys(campaign.id) == {("ATP", "SOL")}
 
 
 class TestWhatTheRelaxationDoesNotTouch:
@@ -207,13 +208,14 @@ class TestWhatTheRelaxationDoesNotTouch:
         assert "articles" in str(caught.value)
 
     @pytest.mark.parametrize(
-        "status", [CampaignStatus.PREPARATION, CampaignStatus.ANALYSIS]
+        "status", [CampaignStatus.ANALYSIS, CampaignStatus.CLOSED]
     )
     def test_the_phase_still_decides(self, db, ctx, status):
-        """Le comptage avancé reste une sous-phase de `COUNTING`, pas un passe-droit.
+        """La fenêtre s'ouvre plus tôt ; elle ne s'ouvre pas partout.
 
-        Déplacer un prérequis d'ordre ne doit pas ouvrir une fenêtre : hors
-        comptage, l'aspect est gelé comme les autres.
+        Le comptage avancé se fait maintenant dès la préparation — c'est là
+        qu'il a lieu, des jours avant le jour J. Une fois le comptage terminé,
+        il n'y a plus rien à précompter, et l'aspect est gelé comme les autres.
         """
         campaign = _campaign(db, status)
         _load_items(ctx, campaign)
@@ -222,6 +224,18 @@ class TestWhatTheRelaxationDoesNotTouch:
             ctx.guard(campaign, "early_counts")
 
         assert "gelé" in str(caught.value)
+
+    def test_but_preparation_is_now_open(self, db, ctx):
+        """Compter deux emplacements n'oblige plus à geler le référentiel.
+
+        La garde refusait en préparation, si bien que précompter exigeait de
+        passer la campagne en comptage : le dispositif demandait, pour servir,
+        exactement ce qu'il permet d'éviter.
+        """
+        campaign = _campaign(db, CampaignStatus.PREPARATION)
+        _load_items(ctx, campaign)
+
+        ctx.guard(campaign, "early_counts")
 
 
 class TestWhatTheScreenIsTold:

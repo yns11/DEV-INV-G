@@ -11,12 +11,13 @@ import datetime as dt
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from inventory.domain.enums import (
     CampaignStatus,
     CountingStage,
-    DriftResolution,
     JournalKind,
+    SealStatus,
 )
 from inventory.domain.models import (
     Campaign,
@@ -26,8 +27,8 @@ from inventory.domain.models import (
     EarlyCountDrift,
     ErpJournal,
     ErpJournalLine,
-    LabelDecision,
     LocationKey,
+    seal_status,
 )
 
 
@@ -239,37 +240,34 @@ class TestSealing:
         assert declared.is_sealed is True
 
 
-class TestTheLabelDecision:
-    """Trois issues, et chacune retire l'étiquette d'un côté ou d'aucun."""
+class TestTheLabelDecisionIsGone:
+    """Une étiquette scellée retrouvée ailleurs ne se tranche plus.
 
-    def _decision(self, decision: str) -> LabelDecision:
-        from inventory.domain.enums import LabelResolution
+    Elle portait trois issues, dont deux retiraient une quantité d'un côté ou de
+    l'autre. Aucune ne subsiste : rien ne se calcule à partir d'un comptage
+    avancé, et une pièce comptée deux fois se règle sur le terrain, pas en
+    excluant une ligne d'une agrégation.
 
-        return LabelDecision(
-            id="d1", campaign_id="c1", label_id="001609231",
-            item_number="MASS-1", decision=LabelResolution(decision),
-        )
+    Épinglé sur l'absence du modèle plutôt que sur celle d'un écran : un modèle
+    laissé en place et plus lu par personne est exactement ce qui fait croire,
+    six mois plus tard, que la règle existe encore.
+    """
 
-    def test_keeping_the_new_place_empties_the_sealed_one(self):
-        decision = self._decision("KEEP_NEW")
-        assert decision.excluded_from_sealed is True
-        assert decision.excluded_from_other is False
+    def test_the_model_is_gone(self):
+        import inventory.domain.models as models
 
-    def test_keeping_the_sealed_place_drops_the_other_line(self):
-        decision = self._decision("KEEP_SEALED")
-        assert decision.excluded_from_sealed is False
-        assert decision.excluded_from_other is True
+        assert not hasattr(models, "LabelDecision")
 
-    def test_signalling_removes_nothing(self):
-        """On n'a pas tranché : retirer une quantité serait trancher."""
-        decision = self._decision("RECOUNT")
-        assert decision.excluded_from_sealed is False
-        assert decision.excluded_from_other is False
+    def test_and_so_is_its_enum(self):
+        import inventory.domain.enums as enums
 
-    def test_the_label_keeps_its_leading_zeros(self):
-        """« 001609231 » perd trois caractères au premier passage par un entier,
-        et une étiquette tronquée ne se rattache plus à rien."""
-        assert self._decision("RECOUNT").label_id == "001609231"
+        assert not hasattr(enums, "LabelResolution")
+        assert not hasattr(enums, "DriftResolution")
+
+    def test_and_the_repository_that_stored_them(self):
+        import inventory.db.repositories as repositories
+
+        assert not hasattr(repositories, "LabelDecisionRepository")
 
 
 class TestTheDrift:
@@ -281,44 +279,81 @@ class TestTheDrift:
         return EarlyCountDrift(**{**base, **kwargs})
 
     def test_the_nominal_case_is_a_null_drift(self):
-        """Le balisage a tenu : l'ERP du jour J vaut le physique posté."""
-        drift = self._drift(qty_erp_t0=10, qty_physical_t0=12, qty_erp_j=12)
-        assert drift.drift_qty == 0
+        """Le balisage a tenu : l'ERP du jour J vaut ce que le précomptage a compté.
 
-    def test_the_drift_is_measured_against_the_physical_not_the_reference(self):
-        """Contre `ERP@T0`, cette dérive vaudrait 2 : c'est l'écart d'inventaire,
-        pas une dérive, et les confondre ferait crier au scellement rompu sur
-        chaque emplacement qui a un écart."""
-        drift = self._drift(qty_erp_t0=10, qty_physical_t0=12, qty_erp_j=12)
-        assert drift.qty_erp_j - drift.qty_erp_t0 == 2
-        assert drift.drift_qty == 0
+        Il vaut ce comptage-là parce que le journal a été **posté dans l'ERP**
+        avant que la photo du jour J ne soit prise : le réalignement est acquis
+        par construction, pas constaté après coup.
+        """
+        assert self._drift(qty_counted_t0=12, qty_erp_j=12).drift_qty == 0
+
+    def test_it_has_two_quantities_and_not_three(self):
+        """``ERP@T0`` n'existe plus : la référence est unique.
+
+        La ligne le portait comme troisième terme, et l'écart mesuré contre lui
+        recopiait l'écart d'inventaire — un écart déjà posté dans l'ERP avant la
+        photo du jour J, donc déjà compté une fois.
+        """
+        with pytest.raises(ValidationError):
+            self._drift(qty_counted_t0=12, qty_erp_j=12, qty_erp_t0=10)
 
     def test_a_movement_after_sealing_shows_up(self):
-        drift = self._drift(qty_erp_t0=10, qty_physical_t0=12, qty_erp_j=9)
-        assert drift.drift_qty == Decimal("-3")
+        assert self._drift(qty_counted_t0=12, qty_erp_j=9).drift_qty == Decimal("-3")
 
-    def test_an_immaterial_drift_does_not_block(self):
-        drift = self._drift(qty_physical_t0=12, qty_erp_j=9, is_material=False)
-        assert drift.blocks_analysis is False
+    def test_it_carries_no_decision_and_no_materiality(self):
+        """Aucune action requise, aucun constat bloquant."""
+        drift = self._drift(qty_counted_t0=12, qty_erp_j=9)
+        for gone in ("is_material", "resolution", "cause_code", "resolved_at",
+                     "resolved_by", "is_resolved", "blocks_analysis"):
+            assert not hasattr(drift, gone), gone
 
-    def test_a_material_drift_without_a_resolution_blocks(self):
-        drift = self._drift(qty_physical_t0=12, qty_erp_j=9, is_material=True)
-        assert drift.is_resolved is False
-        assert drift.blocks_analysis is True
+    def test_the_subtraction_is_computed_and_not_stored(self):
+        """Stocker la soustraction à côté de ses deux termes ouvrirait la
+        possibilité qu'ils cessent d'être d'accord."""
+        drift = self._drift(qty_counted_t0=12, qty_erp_j=9)
+        drift.qty_erp_j = Decimal(4)
+        assert drift.drift_qty == Decimal("-8")
 
-    @pytest.mark.parametrize(
-        "resolution", [DriftResolution.KEEP_EARLY, DriftResolution.RECOUNT]
-    )
-    def test_either_resolution_unblocks(self, resolution):
-        drift = self._drift(
-            qty_physical_t0=12, qty_erp_j=9, is_material=True, resolution=resolution
-        )
-        assert drift.blocks_analysis is False
 
-    def test_there_are_exactly_two_resolutions(self):
-        """« Rejouer le postage » et « ajuster » ont été retirés, et pour de
-        bonnes raisons : on ne scelle qu'un journal posté, et un mouvement réel
-        se saisit par le mécanisme d'ajustement."""
-        assert set(DriftResolution) == {
-            DriftResolution.KEEP_EARLY, DriftResolution.RECOUNT
+class TestTheSealStatus:
+    """Trois valeurs, et la règle qui les choisit vit à un seul endroit."""
+
+    def _journal(self, **kwargs) -> CountJournal:
+        base = {
+            "id": "j1", "campaign_id": "c1",
+            "warehouse_id": "ATP", "location_id": "SOL",
         }
+        return CountJournal(**{**base, **kwargs})
+
+    SEALED = dt.datetime(2026, 6, 10, 18, tzinfo=dt.UTC)
+
+    def test_an_unsealed_location_is_counted_on_the_day(self):
+        assert seal_status(self._journal(), drifting=set()) is SealStatus.UNSEALED
+
+    def test_a_sealed_location_without_a_drift(self):
+        journal = self._journal(sealed_at=self.SEALED)
+        assert seal_status(journal, drifting=set()) is SealStatus.SEALED_CLEAN
+
+    def test_a_sealed_location_with_a_drift(self):
+        journal = self._journal(sealed_at=self.SEALED)
+        assert (
+            seal_status(journal, drifting={journal.key})
+            is SealStatus.SEALED_DRIFTING
+        )
+
+    def test_a_drift_elsewhere_does_not_taint_this_location(self):
+        """Sinon une seule dérive dans la campagne marquerait tout le monde."""
+        journal = self._journal(sealed_at=self.SEALED)
+        elsewhere = LocationKey(warehouse_id="B06", location_id="VRAC")
+        assert seal_status(journal, drifting={elsewhere}) is SealStatus.SEALED_CLEAN
+
+    def test_a_drift_on_an_unsealed_location_changes_nothing(self):
+        """L'ordre des deux questions compte : scellé d'abord, puis dérivé.
+
+        Une dérive ne se calcule que sur les emplacements scellés, mais l'état
+        de la base n'est pas une garantie de code — un reste de campagne
+        précédente suffirait à faire dire « scellé avec dérives » d'un
+        emplacement que personne n'a scellé.
+        """
+        journal = self._journal()
+        assert seal_status(journal, drifting={journal.key}) is SealStatus.UNSEALED

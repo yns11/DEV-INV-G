@@ -25,7 +25,7 @@ class BookStockRepository(_Base):
     def list(self, campaign_id: str) -> list[BookStockLine]:
         rows = self._fetch_all(
             "SELECT campaign_id, item_number, warehouse_id, location_id, qty, unit, "
-            "unit_cost, reference_date, erp_journal_id "
+            "unit_cost, reference_date "
             "FROM book_stock WHERE campaign_id = %s "
             # Un ordre, pour que deux lectures rendent la même chose. La
             # valorisation ne s'en déduit plus — c'est le prix standard du
@@ -42,9 +42,6 @@ class BookStockRepository(_Base):
                 warehouse_id=r["warehouse_id"], location_id=r["location_id"],
                 qty=r["qty"], unit=r["unit"], unit_cost=r["unit_cost"],
                 reference_date=r["reference_date"],
-                erp_journal_id=(
-                    str(r["erp_journal_id"]) if r["erp_journal_id"] else None
-                ),
             )
             for r in rows
         ]
@@ -73,105 +70,35 @@ class BookStockRepository(_Base):
         owns_transaction = conn is None
         ctx = self.db.transaction() if owns_transaction else _NullContext(conn)
         with ctx as connection, connection.cursor() as cur:
-            # Les lignes d'un lot avancé survivent au chargement général, et
-            # les lignes du jour J qui viseraient leurs emplacements ne sont
-            # pas écrites. C'est la règle de référence de la campagne : la
-            # référence est *ce contre quoi la campagne a été comptée*, ce qui
-            # est le jour J pour un emplacement ordinaire et la date du
-            # précomptage pour un emplacement scellé.
+            # **Une seule référence, et elle vaut pour tout emplacement.**
             #
-            # Sans cela, un emplacement précompté afficherait un écart nul dans
-            # le cas nominal — puisque poster son journal a réaligné l'ERP sur
-            # le physique compté — et le résultat de son inventaire
-            # disparaîtrait de la campagne.
+            # Les lignes d'un précomptage survivaient ici, et celles du jour J
+            # qui visaient leurs emplacements n'étaient pas écrites : un
+            # emplacement scellé gardait le stock ERP de son précomptage. Cette
+            # référence-là n'existe plus. Le précomptage a été posté dans l'ERP
+            # avant que la photo du jour J ne soit prise, et la photo l'a donc
+            # déjà intégré : c'est elle, et elle seule, qui fait référence.
+            #
+            # La suppression porte désormais sur tout le stock de la campagne.
+            # Une campagne dont le stock est déjà gelé n'est pas retouchée pour
+            # autant — on ne la recharge plus — et garde ses lignes telles
+            # qu'elle les a connues.
             cur.execute(
-                "DELETE FROM book_stock "
-                "WHERE campaign_id = %s AND erp_journal_id IS NULL",
-                (campaign_id,),
+                "DELETE FROM book_stock WHERE campaign_id = %s", (campaign_id,)
             )
-            cur.execute(
-                "SELECT DISTINCT warehouse_id, location_id FROM book_stock "
-                "WHERE campaign_id = %s AND erp_journal_id IS NOT NULL",
-                (campaign_id,),
-            )
-            reserved = {(r["warehouse_id"], r["location_id"]) for r in cur.fetchall()}
-            kept = [
-                line for line in lines
-                if (line.warehouse_id, line.location_id) not in reserved
-            ]
-            if not kept:
+            if not lines:
                 return 0
             with cur.copy(
                 "COPY book_stock (id, campaign_id, item_number, warehouse_id, "
                 "location_id, qty, unit, unit_cost, import_batch, reference_date) "
                 "FROM STDIN"
             ) as copy:
-                for line in kept:
+                for line in lines:
                     copy.write_row((
                         new_id(), campaign_id, line.item_number,
                         line.warehouse_id, line.location_id, line.qty,
                         line.unit, line.unit_cost, batch_id, line.reference_date,
                     ))
-        return len(kept)
-
-    def replace_for_journal(
-        self,
-        campaign_id: str,
-        erp_journal_id: str,
-        lines: Sequence[BookStockLine],
-        *,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Poser la référence d'un journal de précomptage : `ERP@T0`.
-
-        Aucun chargement de stock séparé n'est nécessaire — la colonne
-        « Stock ERP » du journal *est* le stock d'avant comptage.
-
-        Remplace : un réimport recalcule la référence de ce journal et écrase
-        la précédente. C'est la règle métier, et la bonne — la dernière lecture
-        de l'ERP est la plus juste.
-
-        **Remplace aussi ce qui n'est pas à lui.** La suppression ne portait que
-        sur ``erp_journal_id`` : sur un emplacement que le chargement du stock
-        ERP général avait déjà servi, l'insertion tombait sur ``book_stock_uq``
-        et le scellement remontait un 500. La règle du domaine est pourtant
-        écrite — « la référence d'un emplacement scellé est celle de son
-        précomptage » — et elle dit exactement ce qu'il faut faire de la ligne
-        générale : la remplacer.
-        """
-        owns_transaction = conn is None
-        ctx = self.db.transaction() if owns_transaction else _NullContext(conn)
-        with ctx as connection, connection.cursor() as cur:
-            cur.execute(
-                "DELETE FROM book_stock "
-                "WHERE campaign_id = %s AND erp_journal_id = %s",
-                (campaign_id, erp_journal_id),
-            )
-            if not lines:
-                return 0
-            cur.execute(
-                "DELETE FROM book_stock WHERE campaign_id = %(cid)s "
-                "AND (item_number, warehouse_id, location_id) IN ("
-                "  SELECT * FROM unnest("
-                "    %(items)s::text[], %(wh)s::text[], %(loc)s::text[]"
-                "  )"
-                ")",
-                {
-                    "cid": campaign_id,
-                    "items": [line.item_number for line in lines],
-                    "wh": [line.warehouse_id for line in lines],
-                    "loc": [line.location_id for line in lines],
-                },
-            )
-            with cur.copy(
-                "COPY book_stock (id, campaign_id, item_number, warehouse_id, "
-                "location_id, qty, unit, unit_cost, reference_date, erp_journal_id) "
-                "FROM STDIN"
-            ) as copy:
-                for line in lines:
-                    copy.write_row((
-                        new_id(), campaign_id, line.item_number,
-                        line.warehouse_id, line.location_id, line.qty,
-                        line.unit, line.unit_cost, line.reference_date, erp_journal_id,
-                    ))
         return len(lines)
+
+

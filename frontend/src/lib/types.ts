@@ -18,6 +18,7 @@ type Schemas = components['schemas']
 
 export type CampaignStatus = 'PREPARATION' | 'COUNTING' | 'ANALYSIS' | 'CLOSED'
 export type JournalStatus = 'PENDING' | 'IN_PROGRESS' | 'POSTED' | 'BOOK_ENFORCED'
+export type SealStatus = 'UNSEALED' | 'SEALED_CLEAN' | 'SEALED_DRIFTING'
 /**
  * Trois états, dont deux se déduisent des quantités relevées.
  *
@@ -289,6 +290,15 @@ export interface Journal {
   auto_created: boolean
   /** Le ou les journaux ERP dont viennent les lignes de cet emplacement. */
   erpJournalNumbers: string[]
+  /**
+   * Ce que l'emplacement a vécu avant le jour J.
+   *
+   * Un emplacement précompté et scellé a son comptage déjà fait, daté et figé.
+   * La dérive, quand il y en a une, n'appelle aucune action : elle dit
+   * seulement que quelque chose a bougé depuis, et qu'on voudra peut-être aller
+   * voir avant de clore.
+   */
+  sealStatus: SealStatus
   lineCount: number
   countedQty: number
   overriddenLines: number
@@ -1151,9 +1161,6 @@ export interface ErpJournalLine {
   inScope: boolean
 }
 export type ScopeCandidate = Schemas['ScopeCandidate']
-export type RescanLocation = Schemas['RescanLocation']
-export type LabelResolution = 'KEEP_NEW' | 'KEEP_SEALED' | 'RECOUNT'
 export type Drift = Schemas['DriftResponse']
 export type LabelAlert = Schemas['LabelAlert']
 export type RecountedInPlace = Schemas['RecountedInPlace']
-export type DriftResolution = 'KEEP_EARLY' | 'RECOUNT'

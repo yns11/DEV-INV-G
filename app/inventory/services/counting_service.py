@@ -20,6 +20,7 @@ from ..domain.models import (
     CountJournalLine,
     LocationKey,
     erp_journal_numbers,
+    seal_status,
 )
 from ..domain.variance import at_standard_price
 from ..errors import ConflictError, NotFoundError, ValidationError
@@ -66,6 +67,12 @@ class CountingService:
             ]
         lines_by_journal = ctx.journals.lines_by_journal(campaign_id)
         locations = ctx.referentials.locations_by_key(campaign_id)
+        # Une lecture pour toute la grille, et pas une par journal : le jour J
+        # elle en affiche des centaines, et la question « cet emplacement
+        # est-il déjà compté ? » ne doit pas coûter plus cher que sa réponse.
+        drifting = {
+            drift.key for drift in ctx.drifts.list(campaign_id) if drift.drift_qty != 0
+        }
 
         out: list[dict[str, Any]] = []
         for journal in journals:
@@ -84,6 +91,11 @@ class CountingService:
                 # valeurs quand deux journaux ont alimenté l'emplacement — c'est
                 # un fait, pas une anomalie, et le taire le cacherait.
                 "erpJournalNumbers": erp_journal_numbers(lines),
+                # Scellé sans dérive, scellé avec dérives, non scellé. Un
+                # emplacement précompté a son comptage déjà fait, daté et figé,
+                # et rien ne le disait dans cette grille : il y ressemblait à
+                # un emplacement qui attend encore qu'on aille le compter.
+                "sealStatus": str(seal_status(journal, drifting=drifting)),
                 "locationType": str(location.type) if location else "UNKNOWN",
                 "locationStatus": str(location.status) if location else "ACTIVE",
                 "zone": location.zone if location else "",

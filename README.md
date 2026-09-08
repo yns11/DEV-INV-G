@@ -95,11 +95,15 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   une habilitation : un gestionnaire garde le droit d'agir hors du sien, ce
   qu'exige la couverture d'un collègue à six heures du matin.
 - **Compter avant le jour J, sans éclater le dossier.** Certains emplacements se
-  précomptent à J-1 ou J-2, leur comptage se scelle, et le jour J l'application
-  confronte ce que l'ERP en dit au physique qui y a été posté. La référence
-  d'un emplacement scellé reste celle de son précomptage : sans cela, poster
-  son journal ayant réaligné l'ERP sur le physique, son écart tomberait à zéro
-  et le résultat de son inventaire disparaîtrait.
+  précomptent à J-1 ou J-2, en phase de préparation, et leur comptage se scelle.
+  **La référence de la campagne reste unique** — le stock ERP du jour J, gelé,
+  pour tout emplacement : un journal de précomptage est posté dans l'ERP avant
+  que la photo ne soit prise, donc elle l'a déjà intégré, et lui opposer une
+  seconde référence antérieure compterait deux fois la même correction. Un
+  emplacement précompté montre alors un écart voisin de zéro, et c'est exact :
+  sa correction a été enregistrée plus tôt, dans l'ERP, avant la campagne. Ce
+  qui a bougé entre les deux dates se lit dans les Contrôles — sans action
+  requise, et sans rien qui bloque.
 - **Un transfert entre bacs n'est pas une perte.** L'analyse s'ouvre sur l'écart
   par référence et chiffre explicitement la part qui n'est qu'un déplacement.
 - **Le WIP est explorable.** Chaque quantité éclatée est traçable jusqu'à
@@ -179,7 +183,7 @@ frontend/                   React + TypeScript + Vite
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
 fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
-tests/                      3032 contrôles ; 281 exigent un PostgreSQL, ignorés sinon
+tests/                      3037 contrôles ; 287 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -208,13 +212,13 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 3032 contrôles ; 281 ignorés sans PostgreSQL
+make test            # 3037 contrôles ; 287 ignorés sans PostgreSQL
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000
 make dev-ui          # Vite avec proxy vers l'API, port 5173
 
-npm --prefix frontend run test   # 530 contrôles navigateur (vitest + jsdom)
+npm --prefix frontend run test   # 540 contrôles navigateur (vitest + jsdom)
 npm --prefix frontend run e2e    # le parcours complet, Playwright, app démarrée
 ```
 

@@ -42,12 +42,6 @@ const fixtures = vi.hoisted(() => {
   }))
   return {
     scope,
-    decideLabel: vi.fn(
-      (
-        _campaignId: string,
-        body: { labelId: string; decision: string },
-      ) => Promise.resolve({ ...body }),
-    ),
     unsealJournal: vi.fn(
       (_campaignId: string, _journalId: string, _reason: string) =>
         Promise.resolve({ locations: 57 }),
@@ -84,52 +78,7 @@ vi.mock('../lib/api', () => ({
           scope: [],
         },
       ]),
-    labelAlerts: () =>
-      Promise.resolve([
-        {
-          labelId: '001609233',
-          itemNumber: 'MEL-STA-4412',
-          sealedWarehouseId: 'ATP',
-          sealedLocationId: 'SOL',
-          otherWarehouseId: 'ATP',
-          otherLocationId: 'QUAI EXP',
-          otherJournalNumber: 'NPEM-523004',
-          otherQtyCounted: 8,
-          decision: null,
-        },
-      ]),
-    toRescan: () =>
-      Promise.resolve([
-        {
-          warehouseId: 'ATP',
-          locationId: 'SOL',
-          journalNumber: 'NPEM-521215',
-          erpJournalId: 'j-1',
-          isSealed: true,
-          labels: [
-            {
-              labelId: '001609233',
-              itemNumber: 'MEL-STA-4412',
-              otherWarehouseId: 'ATP',
-              otherLocationId: 'QUAI EXP',
-              comment: '',
-            },
-          ],
-        },
-      ]),
-    decideLabel: fixtures.decideLabel,
     unsealJournal: fixtures.unsealJournal,
-    recountedInPlace: () =>
-      Promise.resolve([
-        {
-          sealedWarehouseId: 'ATP',
-          sealedLocationId: 'SF1',
-          ownerJournalNumber: 'NPEM-521215',
-          otherJournalNumber: 'NPEM-522821',
-          labelCount: 6,
-        },
-      ]),
-    drifts: () => Promise.resolve([]),
     contracts: () =>
       Promise.resolve([
         {
@@ -187,12 +136,13 @@ describe('l’écran s’affiche', () => {
     expect(() => show(null)).not.toThrow()
   })
 
-  it.each(['', '?vue=derives', '?vue=etiquettes', '?vue=rescanner'])(
-    'y compris sur la sous-section « %s »',
-    (search) => {
-      expect(() => show(null, search)).not.toThrow()
-    },
-  )
+  it('y compris quand une ancienne sous-section traîne dans l’URL', () => {
+    // Les quatre volets ont disparu : Journaux ERP est la seule vue. Un
+    // signet gardé de la veille ne doit pas rendre un écran blanc.
+    expect(() => show(null, '?vue=rescanner')).not.toThrow()
+    expect(screen.queryByText('Dérives')).toBeNull()
+    expect(screen.queryByText('À rescanner')).toBeNull()
+  })
 })
 
 describe('la bannière du dernier import', () => {
@@ -237,46 +187,6 @@ describe('la colonne Périmètre', () => {
   })
 })
 
-describe('les étiquettes', () => {
-  it('offrent les trois issues une fois une ligne cochée', async () => {
-    show(null, '?vue=etiquettes')
-    const row = await screen.findByText('001609233')
-    expect(row).toBeTruthy()
-    fireEvent.click(screen.getAllByRole('checkbox')[1]!)
-    expect(
-      await screen.findByRole('button', { name: 'La mettre au nouvel emplacement' }),
-    ).toBeTruthy()
-    expect(
-      screen.getByRole('button', { name: 'L’enlever du nouvel emplacement' }),
-    ).toBeTruthy()
-    expect(
-      screen.getByRole('button', { name: 'Signaler : à rescanner' }),
-    ).toBeTruthy()
-  })
-
-  it('appellent le client avec l’issue et les deux emplacements', async () => {
-    fixtures.decideLabel.mockClear()
-    show(null, '?vue=etiquettes')
-    await screen.findByText('001609233')
-    fireEvent.click(screen.getAllByRole('checkbox')[1]!)
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Signaler : à rescanner' }),
-    )
-
-    await waitFor(() => expect(fixtures.decideLabel).toHaveBeenCalled())
-    const body = fixtures.decideLabel.mock.calls[0]?.[1] as {
-      labelId: string
-      decision: string
-      sealedLocationId: string
-      otherLocationId: string
-    }
-    expect(body.labelId).toBe('001609233')
-    expect(body.decision).toBe('RECOUNT')
-    expect(body.sealedLocationId).toBe('SOL')
-    expect(body.otherLocationId).toBe('QUAI EXP')
-  })
-})
-
 describe('une fois le stock ERP gelé', () => {
   /**
    * Précompter veut dire *avant* la référence générale. Après le gel,
@@ -309,36 +219,6 @@ describe('une fois le stock ERP gelé', () => {
     show(null, '', true)
     expect(
       await screen.findByRole('button', { name: 'Desceller' }),
-    ).toBeTruthy()
-  })
-})
-
-describe('les emplacements recomptés sur place', () => {
-  /**
-   * Ces lignes-là remplissaient la liste des étiquettes comptées ailleurs,
-   * avec le même emplacement dans les deux colonnes — « ATP / SF1 comptée
-   * aussi en ATP / SF1 ». La pièce n'a pas bougé, et aucune des trois issues
-   * n'a de sens sans nouvel emplacement. Elles en sortent ; le bandeau dit
-   * qu'elles existent, sans quoi les retirer les cacherait.
-   */
-  it('sont dits au-dessus de la liste, pas dedans', async () => {
-    show(null, '?vue=etiquettes')
-    expect(
-      await screen.findByText(/Emplacements recomptés sur place/),
-    ).toBeTruthy()
-    // Le journal retenu et celui qui ne l'est pas : c'est la seule chose à
-    // savoir, puisqu'il n'y a rien à trancher.
-    expect(screen.getByText(/retenu NPEM-521215, ignoré NPEM-522821/)).toBeTruthy()
-  })
-})
-
-describe('la liste à rescanner', () => {
-  it('expose l’ancien emplacement, celui qu’il faut desceller', async () => {
-    show(null, '?vue=rescanner')
-    expect(await screen.findByText(/ATP \/ SOL/)).toBeTruthy()
-    expect(screen.getByText(/NPEM-521215/)).toBeTruthy()
-    expect(
-      screen.getByRole('button', { name: 'Desceller le journal' }),
     ).toBeTruthy()
   })
 })

@@ -254,15 +254,41 @@ class TestLeProcessusSeDeroule:
         scelles = {f"{w} / {l}" for w, l in ctx.journals.sealed_keys(campaign.id)}
         assert scelles == set(attendu["emplacementsScelles"])
 
-    def test_le_chargement_general_preserve_leur_reference(self, charge, attendu):
-        """Le snapshot du jour J vise ces emplacements ; il ne doit pas gagner."""
+    def test_leur_comptage_est_celui_de_leur_precomptage(self, charge, attendu):
+        """Ce qu'un emplacement scellé apporte à la campagne : son comptage.
+
+        Sa référence, elle, est celle de tout le monde — le snapshot du jour J.
+        Il portait auparavant le stock ERP de son propre journal, à sa date, et
+        le snapshot qui le visait était ignoré : cette référence-là a été
+        **posée dans l'ERP** avant que la photo ne soit prise, donc la photo
+        l'intègre déjà et l'opposer une seconde fois comptait deux fois la même
+        correction.
+        """
+        ctx, campaign = charge
+        compte = {
+            f"{row['item_number']} @ {row['warehouse_id']} / {row['location_id']}":
+                row["qty"]
+            for row in ctx.journals.counted_quantities(campaign.id)
+        }
+        for cle, attendue in attendu["compteDesEmplacementsScelles"].items():
+            assert compte[cle] == Decimal(attendue), cle
+
+    def test_et_la_reference_du_jour_j_couvre_aussi_ces_emplacements(
+        self, charge
+    ):
+        """La conséquence voulue : elle n'a plus aucune exception.
+
+        Cinq lignes du snapshot visent des emplacements précomptés. Elles
+        étaient ignorées ; elles sont maintenant la référence de ces
+        emplacements, comme de tous les autres.
+        """
         ctx, campaign = charge
         reference = {
-            f"{b.item_number} @ {b.warehouse_id} / {b.location_id}": b.qty
-            for b in ctx.book_stock.list(campaign.id)
+            (b.warehouse_id, b.location_id) for b in ctx.book_stock.list(campaign.id)
         }
-        for cle, attendue in attendu["referenceScellee"].items():
-            assert reference[cle] == Decimal(attendue), cle
+        assert ctx.journals.sealed_keys(campaign.id) <= reference
+        dates = {b.reference_date for b in ctx.book_stock.list(campaign.id)}
+        assert len(dates) == 1, "une seule référence, donc une seule date"
 
     def test_la_consolidation_donne_les_quantites_attendues(self, charge, attendu):
         from inventory.services.consolidation_service import ConsolidationService

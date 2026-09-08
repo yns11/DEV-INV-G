@@ -634,6 +634,46 @@ curl -s -w "\nready:%{http_code}\n"           "$URL/api/health/ready"
 > tient à l'archive des campagnes déjà publiées : le job ne l'écrit plus, et une
 > table qu'on n'écrit plus ne ment pas — elle date.
 
+> **Mise à jour : une seule référence, et les comptages avancés ne calculent
+> plus rien.** Le stock ERP de référence est unique — le snapshot du jour J,
+> gelé, pour tout article et tout emplacement. Un journal de précomptage est
+> posté dans l'ERP *avant* que cette photo ne soit prise, donc la photo l'a déjà
+> intégré : lui opposer une seconde référence, antérieure, comptait deux fois la
+> même correction. Ce qui subsiste des comptages avancés est un affichage — la
+> dérive et les étiquettes retrouvées ailleurs — sans action requise ni constat
+> bloquant. Deux gestes, dans cet ordre.
+>
+> 1. **Redéployer l'App**, qui applique la migration `029` à son démarrage. Elle
+>    retire `book_stock.erp_journal_id`, repose `early_count_drift` sur ses deux
+>    quantités — `qty_counted_t0` et `qty_erp_j` — et supprime
+>    `early_count_label_decision`. La table des dérives est de la donnée dérivée,
+>    que le prochain chargement général recalcule entièrement.
+> 2. **Rejouer `make uc`**. Les colonnes retirées d'une table Delta existante
+>    demandent un geste explicite, pour la même raison qu'aux versions
+>    précédentes :
+>
+> ```sql
+> ALTER TABLE inventory.book_stock_snapshot DROP COLUMN erp_journal_id;
+> ALTER TABLE inventory.early_count_drift RENAME COLUMN qty_physical_t0 TO qty_counted_t0;
+> ALTER TABLE inventory.early_count_drift DROP COLUMN qty_erp_t0;
+> ALTER TABLE inventory.early_count_drift DROP COLUMN is_material;
+> ALTER TABLE inventory.early_count_drift DROP COLUMN resolution;
+> ALTER TABLE inventory.early_count_drift DROP COLUMN cause_code;
+> ALTER TABLE inventory.early_count_drift DROP COLUMN comment;
+> ALTER TABLE inventory.early_count_drift DROP COLUMN resolved_at;
+> ALTER TABLE inventory.early_count_drift DROP COLUMN resolved_by;
+> ```
+>
+> La table Delta `early_count_label_decision` peut être conservée telle quelle
+> si l'on tient à l'archive des campagnes déjà publiées : le job ne l'écrit
+> plus, et une table qu'on n'écrit plus ne ment pas — elle date.
+>
+> **Ce que cela change à l'écran, et qu'il faut annoncer.** Un emplacement
+> précompté montre désormais un écart voisin de zéro. Sa correction d'inventaire
+> n'est pas perdue : elle a été enregistrée plus tôt, dans l'ERP, avant la
+> campagne. Et aucun écart ni indicateur d'avancement n'apparaît tant que le
+> stock ERP n'est pas gelé, même si des comptages avancés ont eu lieu.
+
 > **Correctif de séquencement.** Une version suivante ouvre l'écran des
 > comptages avancés dès le référentiel articles chargé, au lieu d'attendre le
 > stock ERP général — qui arrive le jour J, donc après. Le correctif est

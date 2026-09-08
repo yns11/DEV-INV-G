@@ -59,12 +59,11 @@ CAMPAIGN = Campaign(
 # 1. Les dérives nulles ne sont pas une information
 # --------------------------------------------------------------------------- #
 
-def drift(item: str, erp_j: str, physical: str) -> EarlyCountDrift:
+def drift(item: str, erp_j: str, counted: str) -> EarlyCountDrift:
     return EarlyCountDrift(
         id=f"d-{item}", campaign_id="camp-1", warehouse_id="ATP",
         location_id="SOL", item_number=item,
-        qty_erp_t0=Decimal(physical), qty_physical_t0=Decimal(physical),
-        qty_erp_j=Decimal(erp_j),
+        qty_counted_t0=Decimal(counted), qty_erp_j=Decimal(erp_j),
     )
 
 

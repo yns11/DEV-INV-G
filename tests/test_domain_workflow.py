@@ -60,17 +60,35 @@ class TestFreezeMatrix:
         assert editable.book_stock
         assert editable.early_counts
 
-    def test_the_early_count_opens_and_closes_with_the_counting_phase(self):
-        """Même fenêtre que les journaux généraux, prérequis différent.
+    def test_the_early_count_opens_in_preparation(self):
+        """Un précomptage se fait **avant** le jour J, donc avant le comptage.
 
-        Le comptage avancé est une sous-phase de `COUNTING`, pas un statut de
-        plus : les droits de la phase sont déjà les bons. Ce qui le distingue
-        est l'ordre — voir :mod:`inventory.domain.sequence` —, pas la fenêtre.
+        La fenêtre s'ouvrait avec la phase de comptage. Compter deux
+        emplacements obligeait alors à y passer la campagne, c'est-à-dire à
+        geler le référentiel des semaines avant qu'il ne soit prêt : le
+        dispositif exigeait, pour être utilisé, exactement ce qu'il permet
+        d'éviter.
+
+        Elle reste ouverte en comptage — un précomptage se charge encore au
+        petit matin du jour J, et se descelle tant que le stock n'est pas gelé —
+        et se ferme avec lui.
         """
-        assert not mutability_of(CampaignStatus.PREPARATION).early_counts
+        assert mutability_of(CampaignStatus.PREPARATION).early_counts
         assert mutability_of(CampaignStatus.COUNTING).early_counts
         assert not mutability_of(CampaignStatus.ANALYSIS).early_counts
         assert not mutability_of(CampaignStatus.CLOSED).early_counts
+
+    def test_but_it_does_not_open_the_reference_with_it(self):
+        """Ce que la préparation n'ouvre pas, et c'est le cœur de la décision.
+
+        Un précomptage ne pose plus aucune référence : la référence de la
+        campagne est unique — le stock ERP du jour J — et elle arrive au jour J.
+        Ouvrir `book_stock` en préparation laisserait poser une seconde
+        référence, antérieure, par la porte d'à côté.
+        """
+        editable = mutability_of(CampaignStatus.PREPARATION)
+        assert not editable.book_stock
+        assert not editable.count_journals
 
     def test_analysis_freezes_counting_and_opens_adjustments(self):
         editable = mutability_of(CampaignStatus.ANALYSIS)

@@ -25,6 +25,7 @@ __all__ = [
     "LocationStatus",
     "JournalKind",
     "JournalStatus",
+    "SealStatus",
     "SheetPass",
     "ZoneStatus",
     "CountSection",
@@ -32,8 +33,6 @@ __all__ = [
     "DataSource",
     "AdjustmentKind",
     "CountingStage",
-    "DriftResolution",
-    "LabelResolution",
     "FlowKind",
     "FlowSource",
     "StockBasis",
@@ -147,6 +146,29 @@ class JournalStatus(StrEnum):
     BOOK_ENFORCED = "BOOK_ENFORCED"
 
 
+class SealStatus(StrEnum):
+    """Ce qu'un emplacement a vécu avant le jour J, en trois valeurs.
+
+    La grille des journaux de comptage montrait le statut de comptage — en
+    attente, en cours, posté — et rien d'autre. Un emplacement précompté et
+    scellé y ressemblait donc à tous les autres, alors que son comptage est déjà
+    fait, daté et figé : c'est exactement ce qu'on cherche à savoir le jour J,
+    quand on répartit les équipes.
+
+    Trois valeurs, parce qu'une dérive change ce qu'on fait de l'emplacement
+    sans changer ce qu'on lui demande : rien n'est requis, mais quelqu'un
+    voudra peut-être aller voir avant de clore.
+    """
+
+    #: Comptage général : personne n'est passé avant.
+    UNSEALED = "UNSEALED"
+    #: Précompté et scellé, et l'ERP du jour J dit la même chose.
+    SEALED_CLEAN = "SEALED_CLEAN"
+    #: Précompté et scellé, mais quelque chose a bougé depuis. À regarder, pas
+    #: à trancher : voir :class:`EarlyCountDrift`.
+    SEALED_DRIFTING = "SEALED_DRIFTING"
+
+
 class SheetPass(StrEnum):
     """Which of the two independent counts a sheet materialises."""
 
@@ -256,55 +278,6 @@ class CountingStage(StrEnum):
     EARLY = "EARLY"
     #: Après : le stock ERP général est chargé, le reste se compte.
     GENERAL = "GENERAL"
-
-
-class DriftResolution(StrEnum):
-    """Ce qu'un exploitant décide d'une dérive matérielle.
-
-    Une dérive est l'écart entre le stock ERP du jour J et le physique posté au
-    précomptage, sur un emplacement scellé. Elle est attendue nulle ; quand elle
-    ne l'est pas, **une seule question se pose** : quelle quantité fait foi au
-    jour J ?
-
-    Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une : un
-    journal de précomptage se charge une fois posté et validé dans l'ERP, si
-    bien que le réalignement est acquis en pratique plutôt que diagnostiqué
-    après coup. « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
-    d'ajustement, qui a déjà son sens, sa table et sa place dans le calcul —
-    en faire une issue de la dérive aurait dupliqué une fonction et forcé à
-    choisir entre deux gestes qui ne s'excluent pas.
-    """
-
-    #: Le comptage avancé fait foi. Cause et commentaire obligatoires : la
-    #: campagne et l'ERP restent alors en désaccord de la valeur de la dérive,
-    #: et personne ne doit le découvrir plus tard.
-    KEEP_EARLY = "KEEP_EARLY"
-    #: L'emplacement est descellé et rejoint le comptage général ; sa référence
-    #: redevient le stock ERP du jour J.
-    RECOUNT = "RECOUNT"
-
-
-class LabelResolution(StrEnum):
-    """Où est la pièce, quand une étiquette scellée reparaît ailleurs.
-
-    Le contrôle par étiquette est le seul du dispositif qui descende sous le
-    grain « emplacement + article », et le seul qui rattrape une pièce sortie
-    d'un emplacement scellé **sans aucune transaction ERP** : la dérive, elle,
-    reste nulle dans ce cas, faute d'avoir quoi que ce soit à comparer.
-
-    La question n'a pas de réponse calculable. Deux journaux affirment chacun
-    détenir la même étiquette ; seul quelqu'un qui va voir peut trancher.
-    """
-
-    #: Elle est au nouvel emplacement : l'étiquette sort de l'agrégation de
-    #: l'emplacement scellé, qui perd la quantité correspondante.
-    KEEP_NEW = "KEEP_NEW"
-    #: Elle n'a pas bougé : c'est la ligne de l'autre journal qui est l'erreur,
-    #: et c'est elle qui sort.
-    KEEP_SEALED = "KEEP_SEALED"
-    #: On ne tranche pas sur pièce. Rien n'est exclu, et l'emplacement scellé
-    #: rejoint la liste de ceux à desceller et rescanner.
-    RECOUNT = "RECOUNT"
 
 
 class FlowKind(StrEnum):

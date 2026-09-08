@@ -854,25 +854,11 @@ class ImportService:
             # fois qu'il a de palettes.
             grouped: dict[tuple[LocationKey, str], dict[str, Any]] = {}
             posted_flags: dict[str, list[bool]] = {}
-            # Une étiquette qu'un humain a rendue à son emplacement scellé ne
-            # compte pas là où elle a reparu : quelqu'un est allé voir, et la
-            # ligne de l'autre journal est l'erreur. Sans cette exclusion, la
-            # décision serait une opinion consignée plutôt qu'un effet.
-            elsewhere = {
-                (d.label_id, d.item_number, d.other_warehouse_id, d.other_location_id)
-                for d in ctx.label_decisions.list(campaign.id, conn=conn)
-                if d.excluded_from_other
-            }
             for line in imported:
                 key = LocationKey(
                     warehouse_id=line.warehouse_id, location_id=line.location_id
                 )
                 if not counts(line):
-                    continue
-                if (
-                    line.label_id, line.item_number,
-                    line.warehouse_id, line.location_id,
-                ) in elsewhere:
                     continue
                 journal = journals.get(key)
                 if journal is None:  # pragma: no cover - defensive

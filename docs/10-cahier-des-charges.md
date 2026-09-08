@@ -586,6 +586,16 @@ posée explicitement et à trois reprises (`guide §1.6`, `§2.1`, `§2.9`).
 - **L'ordre des lignes est une donnée de la feuille** et doit être respecté partout : impression, saisie, lecture de scan. **[EC]**
 - **Statut** : **[EC]** — demandes explicites, citations de résumé de session et transcript direct.
 
+### EX-ZON-3b — La feuille nomme les pièces comme l'atelier les nomme
+- **Besoin exprimé** : *« uniquement pour les zones et feuilles B06VRAC, écraser la désignation de la base article par celle importée ou collée lors de la conception de la zone »*.
+- **Déclencheur** : les listes qui alimentent les feuilles viennent des ateliers et portent leurs propres désignations. Le compteur cherche sur le papier le nom qu'il connaît ; lui imprimer celui de l'ERP revient à lui faire traduire quatre-vingts lignes à six heures du matin.
+- **Résultat attendu** : la désignation apportée à la conception de la zone — par fichier, par collage ou saisie dans la grille — **remplace** celle du référentiel partout où la feuille se montre : écran de saisie, grille des lignes, feuille imprimée, arbitrage, classeur de repli.
+- **Limite, et elle fait partie de la demande** : l'écrasement **ne sort pas des feuilles**. Le référentiel n'est pas modifié, et les écarts, la consolidation, les analyses et les exports continuent de nommer l'article comme l'ERP le nomme — sans quoi un rapprochement avec l'ERP deviendrait illisible et une même référence porterait deux noms selon la zone où elle a été comptée.
+- **Règles** : une désignation absente laisse la ligne prendre celle du référentiel ; une désignation **identique** à celle du référentiel n'est pas un écrasement — la redonner l'efface, et la retenir figerait le nom du jour sur toute la feuille au premier enregistrement.
+- **Exception connue** : recharger un fichier corrigé **complète** la feuille sans réécrire les lignes déjà posées (règle générale de l'import, EX-ZON-1). Corriger une désignation déjà en place se fait donc dans la grille.
+- **Critère d'acceptation** : une ligne dont la désignation a été importée s'imprime avec cette désignation ; l'écart du même article, lui, porte celle du référentiel.
+- **Statut** : **[EC]** — demande explicite ; réalisé, `test_designation_de_feuille.py`.
+
 ### EX-ZON-4 — Le même document sur les deux passages
 - **Besoin exprimé** : *« les feuilles du 1er et du 2ème comptage (si zone à deux comptages) doivent être exactement les mêmes … s'assurer que toute modification d'une zone (conception de la feuille avec les réf, les intertitres, les entêtes, l'ordre des lignes, etc.) s'applique également à la feuille de comptage n°2 si elle existe »*.
 - **Exigence complémentaire dérivée** : la propagation ne doit **pas** détruire les quantités déjà relevées au second passage. *(Interprétation nécessaire : la demande porte sur la structure ; effacer les mesures serait cesser de compter deux fois.)* **[HV]** — à confirmer (Q-9).

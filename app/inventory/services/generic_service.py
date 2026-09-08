@@ -7,7 +7,7 @@ This is the module that replaces ``Compil GENERIQUE.xlsx`` end to end — the
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -24,7 +24,9 @@ from ..domain.models import (
     Campaign,
     CountSheet,
     CountSheetLine,
+    Item,
     Zone,
+    sheet_designation,
 )
 from ..domain.printing import available_print_modes
 from ..domain.sheet_layout import subsections_of
@@ -151,8 +153,7 @@ class GenericService:
                     # Ce qui reste vrai de l'ancien booléen : quelqu'un a-t-il
                     # touché cette ligne. Sert à l'avancement, jamais au stock.
                     "hasEntry": line.has_entry,
-                    "name": items[line.item_number].name
-                    if line.item_number in items else "",
+                    "name": sheet_designation(line, items),
                     "known": line.item_number in items,
                     "qtyPass1": pass_1.get((line.item_number, line.section)),
                 }
@@ -576,6 +577,13 @@ class GenericService:
         existing = {l.id: l for l in ctx.sheets.list_sheet_lines(sheet_id)}
         if _touches_quantities(rows, existing):
             ctx.guard(campaign, "count_entries")
+        # Le référentiel n'est relu que si quelqu'un parle de désignation.
+        # Une saisie de quantités n'en dit rien, et le jour J elle arrive par
+        # centaines : lui imposer la lecture du référentiel serait payer, à
+        # chaque case remplie, le prix d'une règle qui ne la concerne pas.
+        items: Mapping[str, Item] = {}
+        if any(row.get("name") is not None for row in rows):
+            items = ctx.referentials.items_by_number(campaign.id)
 
         # La sous-section se **dérive** des séparateurs quand la feuille entière
         # est réécrite : l'écran envoie l'ordre des lignes, et l'intertitre sous
@@ -658,6 +666,7 @@ class GenericService:
                     qty_formula=previous.qty_formula if untouched and previous else formula,
                     comment=comment,
                     display_order=int(row.get("display_order") or order),
+                    name=_designation(row, previous=previous, items=items),
                     subsection=(
                         derived[order] if replace
                         else str(
@@ -773,8 +782,14 @@ class GenericService:
                     "zoneId": sheet.zone_id,
                     "zoneCode": zone.code if zone else "",
                     "zoneLabel": zone.label if zone else "",
-                    "name": items[line.item_number].name
-                    if line.item_number in items else "",
+                    "name": sheet_designation(line, items),
+                    # Celle du référentiel, à côté : c'est elle qui dit si la
+                    # ligne porte un écrasement, et c'est ce que la grille doit
+                    # pouvoir montrer sans avoir à le deviner.
+                    "itemName": (
+                        items[line.item_number].name
+                        if line.item_number in items else ""
+                    ),
                     "known": line.item_number in items,
                 })
         out.sort(key=lambda r: (r["zoneCode"], r["display_order"]))
@@ -911,6 +926,7 @@ class GenericService:
                 line_kind=line.line_kind,
                 label=line.label,
                 subsection=line.subsection,
+                name=line.name,
                 unit=line.unit,
                 display_order=line.display_order,
                 # Ce que le second passage a relevé, et rien d'autre.
@@ -991,6 +1007,35 @@ def _quantity_of(
             itemNumber=row.get("item_number"),
             qty=str(raw),
         ) from exc
+
+
+def _designation(
+    row: dict[str, Any],
+    *,
+    previous: CountSheetLine | None,
+    items: Mapping[str, Item],
+) -> str:
+    """La désignation que la ligne va porter, à partir de ce que l'écran envoie.
+
+    Trois cas, et le premier est celui qui protège tout le reste.
+
+    **Le champ absent laisse la désignation en place.** L'aperçu de mise en page
+    renvoie l'ordre des lignes et les intertitres, jamais les noms : réordonner
+    une feuille ne doit pas décider de la façon dont elle nomme ses articles.
+
+    **Un texte égal à celui du référentiel n'est pas un écrasement.** L'écran
+    reçoit la désignation *résolue* et la renvoie telle quelle ; la prendre au
+    mot figerait le nom du jour sur les quatre-vingts lignes de la feuille au
+    premier enregistrement, et le référentiel corrigé la semaine suivante ne
+    descendrait plus jusqu'au papier.
+
+    **Une chaîne vide retire l'écrasement**, et la ligne reprend le référentiel.
+    """
+    if "name" not in row or row.get("name") is None:
+        return previous.name if previous else ""
+    text = str(row.get("name") or "").strip()
+    item = items.get(str(row.get("item_number") or ""))
+    return "" if item is not None and text == item.name else text
 
 
 def _touches_quantities(

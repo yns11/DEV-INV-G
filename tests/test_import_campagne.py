@@ -145,7 +145,7 @@ class TestLesColonnesSontCellesDuContrat:
         [
             ("items", 12),
             ("book_stock", 6),
-            ("count_sheets", 5),
+            ("count_sheets", 6),
             ("count_journal_lines", 17),
         ],
     )

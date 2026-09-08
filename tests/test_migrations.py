@@ -53,6 +53,7 @@ SHIPPED = {
     "025_comptages_avances": "914deaeedee8",
     "026_le_journal_est_le_precomptage": "b2d501a6d6b7",
     "027_feuille_mise_en_page": "ad8ffe2f1340",
+    "028_designation_de_feuille": "fbef81b41ec4",
 }
 
 

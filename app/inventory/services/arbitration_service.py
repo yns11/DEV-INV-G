@@ -164,6 +164,11 @@ class ArbitrationService:
         ctx = self.ctx
         items = ctx.referentials.items_by_number(campaign.id)
         zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
+        # L'écran d'arbitrage montre le même document que la feuille : il doit
+        # nommer les articles comme elle les nomme. Une requête, et seulement
+        # les lignes qui portent un écrasement — sur une campagne qui n'en a
+        # aucun, elle ne ramène rien.
+        designations = ctx.sheets.sheet_designations(campaign.id)
         tolerance = campaign.config.arbitration_tolerance
         out: list[dict[str, Any]] = []
         for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id):
@@ -178,7 +183,9 @@ class ArbitrationService:
             item = items.get(line.item_number)
             out.append({
                 **line.model_dump(mode="json"),
-                "name": item.name if item else "",
+                "name": designations.get(
+                    (line.zone_id, line.item_number, str(line.section))
+                ) or (item.name if item else ""),
                 "zoneCode": zone.code if zone else "",
                 "zoneLabel": zone.label if zone else "",
                 "gap": float(line.gap),

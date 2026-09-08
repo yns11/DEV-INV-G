@@ -219,6 +219,12 @@ class ZonePassLine:
     qty_pass_2: Decimal | None
     #: La quantité tranchée, et seulement si elle l'a été.
     qty_arbitrated: Decimal | None
+    #: La désignation que la feuille impose, vide quand elle suit le référentiel.
+    #:
+    #: Portée jusqu'ici parce que le classeur de repli montre **le document**,
+    #: pas le référentiel : la feuille de zone qu'il écrit doit nommer les
+    #: articles comme le papier les nomme.
+    designation: str = ""
 
 
 def zone_pass_lines(zone: ZoneCounts) -> list[ZonePassLine]:
@@ -229,6 +235,7 @@ def zone_pass_lines(zone: ZoneCounts) -> list[ZonePassLine]:
     """
     p1, p2 = _pass_totals(zone)
     decisions = _resolved_decisions(zone)
+    names = _sheet_designations(zone)
     keys = set(p1) | set(p2) | set(decisions)
     return [
         ZonePassLine(
@@ -237,9 +244,24 @@ def zone_pass_lines(zone: ZoneCounts) -> list[ZonePassLine]:
             qty_pass_1=p1.get((item_number, section)),
             qty_pass_2=p2.get((item_number, section)),
             qty_arbitrated=decisions.get((item_number, section)),
+            designation=names.get((item_number, section), ""),
         )
         for item_number, section in sorted(keys, key=lambda k: (k[0], str(k[1])))
     ]
+
+
+def _sheet_designations(zone: ZoneCounts) -> dict[tuple[str, CountSection], str]:
+    """Les désignations que les feuilles de la zone imposent.
+
+    Le passage 1 tranche quand les deux en portent une : c'est lui qui porte le
+    document, et le passage 2 en est la copie.
+    """
+    out: dict[tuple[str, CountSection], str] = {}
+    for sheet in sorted(zone.sheets, key=lambda s: str(s.pass_no)):
+        for line in zone.lines_by_sheet.get(sheet.id, ()):
+            if line.name and (line.item_number, line.section) not in out:
+                out[(line.item_number, line.section)] = line.name
+    return out
 
 
 def _resolved_decisions(

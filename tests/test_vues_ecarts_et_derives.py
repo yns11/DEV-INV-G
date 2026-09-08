@@ -137,6 +137,9 @@ def arbitration_service(lines, decided: list[tuple[str, Decimal, str]]):
         sheets=SimpleNamespace(
             list_zones=lambda cid, **kw: [zone],
             list_arbitrations=lambda cid, **kw: list(lines),
+            # Aucune feuille n'impose de désignation ici : la vue reprend donc
+            # celle du référentiel, ce que le contrôle voisin vérifie.
+            sheet_designations=lambda cid, **kw: {},
             decide_arbitration=lambda aid, qty, *, actor, comment="": decided.append(
                 (aid, qty, comment)
             ),

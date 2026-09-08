@@ -325,7 +325,7 @@ class SheetRepository(_Base):
 
     _SHEET_LINE_COLUMNS = (
         "id, sheet_id, campaign_id, item_number, section, line_kind, label, "
-        "subsection, qty_imported, qty_manual, unit, source, confidence, "
+        "subsection, name, qty_imported, qty_manual, unit, source, confidence, "
         "qty_formula, comment, display_order, row_version"
     )
 
@@ -405,19 +405,49 @@ class SheetRepository(_Base):
             out.setdefault(str(r["sheet_id"]), []).append(self._sheet_line(r))
         return out
 
+    def sheet_designations(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> dict[tuple[str, str, str], str]:
+        """Les désignations que les feuilles imposent, par (zone, article, section).
+
+        Une requête, et seulement les lignes qui portent réellement un
+        écrasement : sur une campagne où personne n'en a posé, elle ne ramène
+        rien. C'est ce qui permet à l'arbitrage — qui lit des lignes
+        d'arbitrage, pas des lignes de feuille — de nommer les articles comme la
+        feuille les nomme sans relire toutes les feuilles de la campagne.
+
+        Le passage 1 tranche quand les deux diffèrent : c'est lui qui porte le
+        document, et le passage 2 en est la copie.
+        """
+        rows = self._fetch_all(
+            "SELECT DISTINCT ON (s.zone_id, l.item_number, l.section) "
+            "s.zone_id, l.item_number, l.section, l.name "
+            "FROM count_sheet_line l "
+            "JOIN count_sheet s ON s.id = l.sheet_id "
+            "WHERE l.campaign_id = %s AND l.deleted_at IS NULL AND l.name <> '' "
+            "ORDER BY s.zone_id, l.item_number, l.section, s.pass_no",
+            (campaign_id,),
+            conn=conn,
+        )
+        return {
+            (str(r["zone_id"]), r["item_number"], r["section"]): r["name"]
+            for r in rows
+        }
+
     def upsert_sheet_lines(
         self, lines: Sequence[CountSheetLine], *, actor: str,
         conn: psycopg.Connection | None = None,
     ) -> int:
         return self._execute_many(
             "INSERT INTO count_sheet_line (id, sheet_id, campaign_id, item_number, "
-            "section, line_kind, label, subsection, qty_imported, qty_manual, "
+            "section, line_kind, label, subsection, name, qty_imported, qty_manual, "
             "unit, source, confidence, "
             "qty_formula, comment, display_order, updated_by, updated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
             "ON CONFLICT (id) DO UPDATE SET item_number = EXCLUDED.item_number, "
             "section = EXCLUDED.section, line_kind = EXCLUDED.line_kind, "
             "label = EXCLUDED.label, subsection = EXCLUDED.subsection, "
+            "name = EXCLUDED.name, "
             "qty_imported = EXCLUDED.qty_imported, "
             "qty_manual = EXCLUDED.qty_manual, unit = EXCLUDED.unit, "
             "source = EXCLUDED.source, confidence = EXCLUDED.confidence, "
@@ -427,7 +457,7 @@ class SheetRepository(_Base):
             "row_version = count_sheet_line.row_version + 1, deleted_at = NULL",
             [
                 (l.id, l.sheet_id, l.campaign_id, l.item_number, str(l.section),
-                 str(l.line_kind), l.label, l.subsection,
+                 str(l.line_kind), l.label, l.subsection, l.name,
                  l.qty_imported, l.qty_manual, l.unit, str(l.source), l.confidence,
                  l.qty_formula, l.comment, l.display_order, actor)
                 for l in lines
@@ -697,6 +727,7 @@ class SheetRepository(_Base):
             line_kind=CountLineKind(row.get("line_kind") or "ARTICLE"),
             label=row.get("label") or "",
             subsection=row.get("subsection") or "",
+            name=row.get("name") or "",
             qty_imported=row["qty_imported"],
             qty_manual=row["qty_manual"], unit=row["unit"],
             source=DataSource(row["source"]), confidence=row["confidence"],

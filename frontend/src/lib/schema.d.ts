@@ -4677,6 +4677,8 @@ export interface components {
             label: string;
             /** @default ARTICLE */
             lineKind: components["schemas"]["CountLineKind"];
+            /** Name */
+            name?: string | null;
             /** Qty */
             qty?: number | string | null;
             /** @default LINE_SIDE */

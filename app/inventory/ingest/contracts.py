@@ -473,6 +473,17 @@ COUNT_SHEETS = GridContract(
                       "plusieurs."
                   ),
                   width=200),
+        FieldSpec("name", "Désignation",
+                  aliases=("designation", "designation article", "libelle",
+                           "libelle article", "nom", "description", "intitule"),
+                  help=(
+                      "Facultative. Renseignée, elle **remplace** la désignation "
+                      "du référentiel sur les feuilles de cette zone — et là "
+                      "seulement : les écarts et les exports continuent de nommer "
+                      "l'article comme l'ERP le nomme. Vide, la ligne prend celle "
+                      "du référentiel."
+                  ),
+                  width=240),
         FieldSpec("unit", "Unité de comptage", default="PCE",
                   aliases=("unite de comptage", "unite", "unit"), width=140),
     ),

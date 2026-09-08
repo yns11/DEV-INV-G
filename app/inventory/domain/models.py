@@ -65,6 +65,7 @@ __all__ = [
     "CountJournal",
     "CountJournalLine",
     "erp_journal_numbers",
+    "sheet_designation",
     "ErpJournal",
     "ErpJournalLine",
     "LabelDecision",
@@ -797,6 +798,25 @@ def erp_journal_numbers(lines: Sequence[CountJournalLine]) -> list[str]:
     return sorted({line.erp_journal_number for line in lines if line.erp_journal_number})
 
 
+def sheet_designation(line: CountSheetLine, items: Mapping[str, Item]) -> str:
+    """Le nom qu'une ligne de feuille porte, et d'où il vient.
+
+    Une seule règle, écrite une seule fois : **ce que la feuille dit, sinon ce
+    que le référentiel dit.** Elle est lue par l'écran de saisie, la grille des
+    lignes, la feuille imprimée, l'arbitrage et le classeur de repli — cinq
+    endroits qui montrent le même document et qui, chacun avec sa copie de la
+    règle, auraient fini par ne plus le montrer pareil.
+
+    Un article que le référentiel ne connaît pas et qu'aucune feuille ne nomme
+    rend une chaîne vide : c'est un manque, pas une désignation, et l'écran le
+    signale déjà par ailleurs.
+    """
+    if line.name:
+        return line.name
+    item = items.get(line.item_number)
+    return item.name if item else ""
+
+
 # --------------------------------------------------------------------------- #
 #
 # Un objet **à côté** de :class:`CountJournal`, pas à sa place. ``CountJournal``
@@ -1195,6 +1215,26 @@ class CountSheetLine(DomainModel):
     #: clé d'unicité doit se calculer sur une ligne **seule** — à l'import, où
     #: l'ordre du fichier ne veut encore rien dire.
     subsection: str = ""
+    #: La désignation que **la feuille** porte, quand elle diffère du référentiel.
+    #:
+    #: Les listes qui alimentent les feuilles viennent des ateliers, et elles
+    #: nomment les pièces comme l'atelier les nomme. Le compteur cherche sur le
+    #: papier le nom qu'il connaît ; lui imprimer celui de l'ERP, c'est lui
+    #: demander de traduire quatre-vingts lignes à six heures du matin.
+    #:
+    #: **Portée par la ligne, jamais par l'article.** Le référentiel n'est pas
+    #: touché, et l'écrasement ne sort pas des feuilles : les écarts, la
+    #: consolidation, les analyses et les exports continuent de nommer l'article
+    #: comme l'ERP le nomme, sans quoi un rapprochement avec l'ERP deviendrait
+    #: illisible.
+    #:
+    #: Vide est l'état normal — la ligne prend alors la désignation du
+    #: référentiel, voir :func:`sheet_designation`. Elle **cesse** de porter un
+    #: écrasement dès qu'on lui redonne le texte du référentiel : une valeur
+    #: identique à celle qu'on remplace n'est pas un remplacement, et la garder
+    #: figerait la désignation d'aujourd'hui sur toutes les lignes d'une feuille
+    #: au premier enregistrement.
+    name: str = ""
     #: Pre-printed / imported value.
     qty_imported: Decimal | None = None
     #: Value typed by the encoder, or corrected after an AI extraction.

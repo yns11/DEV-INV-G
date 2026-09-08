@@ -604,6 +604,8 @@ class PreparedSheetRow:
     unit: str = "PCE"
     #: L'intertitre sous lequel la ligne se trouve — « Stock physique B15 ».
     subsection: str = ""
+    #: La désignation que la feuille impose, vide quand elle suit le référentiel.
+    name: str = ""
 
     @property
     def key(self) -> tuple[str, CountSection, str]:
@@ -684,9 +686,23 @@ def map_count_sheets(
                 # code. « Stock physique chez Maldaner » doit rester lisible sur
                 # la feuille, minuscules et accents compris.
                 subsection=str(row.get("subsection") or "").strip(),
+                # Une désignation identique à celle du référentiel n'est pas un
+                # remplacement : la garder figerait le nom du jour sur toutes
+                # les lignes d'un fichier qui ne fait que le recopier, et le
+                # référentiel corrigé la semaine suivante ne descendrait plus
+                # jusqu'à la feuille.
+                name=_sheet_name(row.get("name"), items.get(item_number)),
             )
         )
     return out, errors
+
+
+def _sheet_name(value: Any, item: Item | None) -> str:
+    """La désignation portée par la feuille, ou rien quand elle n'apporte rien."""
+    text = str(value or "").strip()
+    if not text or (item is not None and text == item.name):
+        return ""
+    return text
 
 
 def sheet_lines_from_rows(
@@ -740,7 +756,7 @@ def sheet_lines_from_rows(
         lines.append(CountSheetLine(
             id=id_factory(), sheet_id=sheet_id, campaign_id=campaign_id,
             item_number=row.item_number, section=row.section,
-            subsection=row.subsection,
+            subsection=row.subsection, name=row.name,
             # Both quantities left unset: a prepared line is a line nobody has
             # written on yet. It already weighs zero in every stock computation;
             # what stays open is whether somebody has been to look.

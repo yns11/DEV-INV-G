@@ -302,6 +302,7 @@ function SheetLinesView({
             id: row.id,
             itemNumber: String(row.item_number ?? ''),
             section: String(row.section ?? 'LINE_SIDE'),
+            name: String(row.name ?? ''),
             // La quantité repart telle quelle : ne pas la renvoyer l'effacerait,
             // et la modifier ici serait refusé par le serveur de toute façon.
             qty: row.qty ?? null,
@@ -329,7 +330,11 @@ function SheetLinesView({
   const columns: Column[] = [
     { key: 'zoneCode', label: 'Zone', width: 160, editable: false },
     { key: 'item_number', label: 'Article', width: 170 },
-    { key: 'name', label: 'Désignation', width: 240, editable: false },
+    // Éditable, et c'est la demande : les listes des ateliers nomment les
+    // pièces comme l'atelier les nomme, et c'est ce nom-là que le compteur
+    // cherche des yeux sur le papier. Le serveur ne retient l'écrasement que
+    // s'il diffère du référentiel — redonner le nom de l'ERP l'efface.
+    { key: 'name', label: 'Désignation', width: 240 },
     sectionColumn({ width: 150 }),
     { key: 'unit', label: 'Unité', width: 90 },
     { key: 'comment', label: 'Commentaire', width: 220 },

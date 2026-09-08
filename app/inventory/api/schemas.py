@@ -461,6 +461,14 @@ class SheetLineRow(ApiModel):
     )
     #: Le texte d'un intertitre. Ignoré sur toute autre ligne.
     label: str = ""
+    #: La désignation que la feuille impose, sur les seules feuilles B06VRAC.
+    #:
+    #: ``None`` — le champ absent — veut dire « je ne parle pas de la
+    #: désignation, laisse-la ». C'est ce qui protège l'aperçu de mise en page :
+    #: il renvoie l'ordre des lignes et les intertitres, jamais les noms, et
+    #: réordonner une feuille ne doit pas décider de la façon dont elle nomme
+    #: ses articles. Une chaîne vide, elle, **retire** l'écrasement.
+    name: str | None = None
     #: Un nombre, ou l'opération que le compteur a écrite (« 3*48+7 »).
     #:
     #: Le type accepte le texte pour que l'expression **arrive jusqu'au

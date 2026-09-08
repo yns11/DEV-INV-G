@@ -8,7 +8,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..domain.enums import AuditAction, CountLineKind, SheetPass
-from ..domain.models import Campaign, CountSheetLine, Item, erp_journal_numbers
+from ..domain.models import (
+    Campaign,
+    CountSheetLine,
+    Item,
+    erp_journal_numbers,
+    sheet_designation,
+)
 from ..domain.printing import PrintMode, print_refusal
 from ..domain.variance import at_standard_price
 from ..errors import NotFoundError, ValidationError
@@ -862,7 +868,10 @@ def _printable_lines(
             continue
         out.append({
             "item_number": line.item_number,
-            "name": items[line.item_number].name if line.item_number in items else "",
+            # Le nom que la feuille porte, sinon celui du référentiel. C'est
+            # celui-là qui s'imprime : le compteur cherche sur le papier le nom
+            # que l'atelier emploie.
+            "name": sheet_designation(line, items),
             "section": str(line.section),
             "line_kind": str(line.line_kind),
             "label": "",

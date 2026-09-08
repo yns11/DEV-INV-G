@@ -34,7 +34,12 @@ from ..domain.enums import (
     legacy_section_alias,
 )
 from ..domain.formula import FormulaError, evaluate, looks_like_formula
-from ..domain.models import CountSheetLine, Item, normalise_key
+from ..domain.models import (
+    CountSheetLine,
+    Item,
+    normalise_key,
+    sheet_designation,
+)
 from ..domain.quantities import to_decimal
 from ..errors import ValidationError
 from .client import LlmClient, get_scan_client
@@ -268,6 +273,14 @@ class ExpectedLine:
     #: la clé d'unicité le porte, et une feuille relue sans lui verrait ses
     #: lignes se dédoublonner entre deux emplacements.
     subsection: str = ""
+    #: La désignation que la feuille impose, quand elle en impose une.
+    #:
+    #: Distincte de :attr:`name`, qui est ce que le modèle doit **lire** sur le
+    #: papier — donc la désignation résolue. Celle-ci est l'écrasement lui-même,
+    #: et elle voyage pour être **réécrite** : sans elle, lire un scan rendait à
+    #: la feuille les noms du référentiel, et le nom de l'atelier disparaissait
+    #: de la réimpression suivante.
+    sheet_name: str = ""
 
 
 @dataclass(slots=True)
@@ -511,6 +524,7 @@ class SheetExtractor:
                     qty_imported=qty,
                     qty_manual=None,
                     unit=expected_line.unit,
+                    name=expected_line.sheet_name,
                     source=DataSource.SCAN_AI,
                     confidence=confidence,
                     qty_formula=formula,
@@ -556,6 +570,7 @@ class SheetExtractor:
                     item_number=expected_line.item_number,
                     section=expected_line.section,
                     unit=expected_line.unit,
+                    name=expected_line.sheet_name,
                     source=DataSource.SCAN_AI,
                     confidence=0.0,
                     comment="Non lue sur le scan — à saisir manuellement.",
@@ -851,11 +866,14 @@ class SheetExtractor:
         return [
             ExpectedLine(
                 item_number=line.item_number,
-                name=(items[line.item_number].name if line.item_number in items else ""),
+                # Ce que le modèle va chercher des yeux sur le papier : la
+                # désignation telle qu'elle y est imprimée, pas celle de l'ERP.
+                name=sheet_designation(line, items),
                 section=line.section,
                 unit=line.unit,
                 display_order=line.display_order,
                 subsection=line.subsection,
+                sheet_name=line.name,
             )
             for line in lines
             if line.line_kind is CountLineKind.ARTICLE and line.item_number

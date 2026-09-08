@@ -499,7 +499,11 @@ def _write_zone(
             line = page.lines[r - 1]
             item = items.get(line.item_number)
             sheet.write_string(r, 0, line.item_number)
-            sheet.write_string(r, 1, item.name if item else "")
+            # Le nom que la feuille porte, sinon celui du référentiel : le
+            # classeur de repli montre le document, pas la base articles.
+            sheet.write_string(
+                r, 1, line.designation or (item.name if item else "")
+            )
             sheet.write_string(r, 2, str(line.section))
             sheet.write_string(r, 3, item.unit if item else "")
             for col, qty in (

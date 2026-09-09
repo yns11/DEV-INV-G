@@ -248,8 +248,11 @@ def build_counting_sheet_pdf(
             _side_margin, A4[1] - 19 * mm, A4[0] - _side_margin, A4[1] - 19 * mm
         )
 
-        canvas.setFont("Helvetica", 7.5)
-        canvas.setFillColor(colors.HexColor("#64748B"))
+        # Gras, un demi-point de plus, et un gris plus dense : le pied de page
+        # est ce qui permet de reclasser une page tombée d'une liasse de deux
+        # cents. En 7,5 gris clair, il fallait la chercher.
+        canvas.setFont("Helvetica-Bold", _FOOTER_FONT_SIZE)
+        canvas.setFillColor(colors.HexColor("#475569"))
         canvas.drawString(_side_margin, 8 * mm, footer_text)
         canvas.drawRightString(A4[0] - _side_margin, 8 * mm, f"Page {doc.page}")
         canvas.restoreState()
@@ -303,6 +306,12 @@ def build_counting_sheet_pdf(
     subsection_style = ParagraphStyle(
         "subsection", parent=styles["BodyText"], fontSize=9, leading=11,
         textColor=colors.HexColor("#0F172A"), spaceBefore=0, spaceAfter=0,
+    )
+    # La référence se distingue du reste de la ligne : c'est la seule chose qui
+    # dit *quelle pièce* on tient. Voir :data:`_REF_FONT_SIZE`.
+    ref_style = ParagraphStyle(
+        "ref", parent=cell_style, fontName="Helvetica-Bold",
+        fontSize=_REF_FONT_SIZE, leading=_REF_FONT_SIZE + 2,
     )
 
     # Le texte de la zone quand elle en a un, celui par défaut sinon. Résolu
@@ -367,8 +376,8 @@ def build_counting_sheet_pdf(
             else:
                 data.append(_body_row(
                     line, filled=filled, with_sources=with_sources,
-                    cell=cell_style, quiet=quiet_style, paragraph=Paragraph,
-                    name_width=name_width,
+                    cell=cell_style, quiet=quiet_style, reference=ref_style,
+                    paragraph=Paragraph, name_width=name_width,
                 ))
         data.extend([[""] * len(columns) for _ in range(extras)])
 
@@ -442,6 +451,7 @@ def _body_row(
     with_sources: bool,
     cell: Any,
     quiet: Any,
+    reference: Any,
     paragraph: Any,
     name_width: int,
 ) -> list[Any]:
@@ -456,7 +466,9 @@ def _body_row(
         quantity = _fr_number(line.get("qty") or 0)
 
     row: list[Any] = [
-        paragraph(str(line.get("item_number", "")), cell),
+        # En gras et un demi-point plus grande que le reste de la ligne : c'est
+        # la seule colonne qui identifie la pièce.
+        paragraph(str(line.get("item_number", "")), reference),
         # Sur la mise en page à hauteur imposée, la troncature tient compte de
         # la largeur réelle de la case ; sur celle du relevé, les lignes
         # s'agrandissent et le texte peut s'enrouler sans rien pousser.
@@ -502,13 +514,24 @@ _BANNER_ROW_HEIGHT = 14.0
 
 #: Column widths in millimetres, summing to the 186 mm of usable page.
 #:
-#: La désignation, le comptage et l'unité rendent 10 %, 5 % et 20 % de leur
-#: largeur, et tout va à la référence. C'est elle qu'on lit pour identifier la
-#: pièce — « MASS-00049952 » tenait tout juste, et un préfixe d'atelier de plus
-#: la coupait. La désignation, elle, est déjà tronquée par construction : elle
-#: perd trois caractères, pas une information.
+#: **Deux arbitrages successifs, et ils vont en sens inverse.** Le premier
+#: donnait de la place à la référence : « MASS-00049952 » tenait tout juste, et
+#: un préfixe d'atelier de plus la coupait. Le second, une fois des feuilles
+#: réelles sorties de l'imprimante, rend à la désignation ce que les trois
+#: autres colonnes avaient de trop — la référence 3 %, le comptage 2 %,
+#: l'unité 15 %.
+#:
+#: Ce n'est pas un retour en arrière : la référence garde l'essentiel de ce
+#: qu'elle avait gagné, et l'unité est la colonne dont la marge était la plus
+#: large — « PCE », « KG », « M » n'ont jamais eu besoin de dix-neuf
+#: millimètres. La désignation, elle, est tronquée par construction, et chaque
+#: millimètre y est un mot de plus que le compteur lit sans avoir à deviner.
+#:
+#: Le repreneur doit retenir l'ordre de grandeur — la désignation prime, tant
+#: que la référence tient en entier — et non ces quatre nombres, qui dépendent
+#: de la police et de la marge retenues.
 _PLAIN_COLUMNS = ("Référence", "Désignation", "Comptage", "Unité")
-_WIDTHS_PLAIN = (48.34, 84.33, 34.29, 19.04)
+_WIDTHS_PLAIN = (46.89, 89.33, 33.60, 16.18)
 
 #: With provenance, the designation gives back what the two extra columns need.
 _SOURCE_COLUMNS = (*_PLAIN_COLUMNS, "Source", "Commentaire")
@@ -531,16 +554,37 @@ _SOURCE_LABELS = {
 #: prose, elle s'enroule sur plusieurs lignes, et la hauteur de la ligne suit.
 _COMMENT_MAX_CHARS = 180
 
-#: Quarante et un, et non vingt-neuf : les désignations d'atelier que la feuille
+#: Quarante-cinq, et non vingt-neuf : les désignations d'atelier que la feuille
 #: porte désormais (voir ``CountSheetLine.name``) sont plus longues que celles de
-#: l'ERP, et se faisaient couper au milieu d'un mot. :func:`_fit` garde le
-#: chiffre sûr en le bornant aussi à la largeur réelle de la colonne.
-_NAME_MAX_CHARS = 41
+#: l'ERP, et se faisaient couper au milieu d'un mot. Le chiffre a suivi la
+#: colonne, qui vient de s'élargir de cinq millimètres. :func:`_fit` le garde sûr
+#: en le bornant aussi à la largeur réelle de la case : quarante-cinq caractères
+#: d'une désignation réelle occupent 230 des 241 points disponibles, quarante-cinq
+#: « M » en occuperaient 319, et c'est la seconde borne qui les coupe.
+_NAME_MAX_CHARS = 45
 _NAME_MAX_CHARS_WITH_SOURCES = 18
 
 #: Le corps du texte des lignes, en points. Nommé parce que deux endroits en
 #: dépendent : la mise en page du tableau et la mesure de :func:`_fit`.
 _BODY_FONT_SIZE = 8.5
+
+#: La référence, en points — un demi-point de plus que le corps, et en gras.
+#:
+#: C'est la seule chose que le compteur lit pour savoir *quelle pièce* il tient ;
+#: tout le reste de la ligne l'aide, mais ne l'identifie pas. À bout de bras
+#: au-dessus d'un bac, sous l'éclairage d'un atelier, la distinguer du reste de
+#: la ligne coûte un demi-point et fait gagner une hésitation par ligne.
+#:
+#: La colonne le supporte largement malgré son rétrécissement : la plus longue
+#: référence réelle occupe 74 des 121 points de la case.
+_REF_FONT_SIZE = 9.0
+
+#: Le pied de page, en points — gras également, et un demi-point de plus.
+#:
+#: Il porte l'identité de la feuille et le numéro de page, c'est-à-dire ce qui
+#: permet de reclasser une page tombée d'une liasse de deux cents. En gris clair
+#: et en 7,5, il fallait la chercher.
+_FOOTER_FONT_SIZE = 8.0
 
 #: Ce que la colonne « Désignation » peut réellement afficher, en points : sa
 #: largeur moins les marges internes gauche et droite de la cellule.

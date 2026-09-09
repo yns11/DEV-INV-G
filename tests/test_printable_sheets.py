@@ -55,6 +55,56 @@ def render(lines, **kwargs) -> list[str]:
         document.close()
 
 
+def fonts(lines, **kwargs) -> list[tuple[str, float, str]]:
+    """Les suites de caractères du PDF, avec leur police et leur corps.
+
+    Ce que le lecteur voit de loin n'est pas dans le texte extrait : c'est dans
+    la police. Un contrôle qui ne lirait que les caractères passerait aussi bien
+    sur une feuille où la référence est en corps 6 gris clair.
+    """
+    import ctypes
+
+    import pypdfium2
+    import pypdfium2.raw as raw
+
+    payload = build_counting_sheet_pdf(
+        campaign_label="INV-2026-06 — Inventaire",
+        campaign_code="INV-2026-06",
+        count_date=dt.date(2026, 6, 30),
+        zone_code="FI ASSY",
+        zone_label="Assemblage final",
+        pass_no=1,
+        lines=lines,
+        sheet_id="abcdef12-3456",
+        **kwargs,
+    )
+    document = pypdfium2.PdfDocument(payload)
+    try:
+        page = document[0].get_textpage()
+        runs: list[tuple[str, float, list[str]]] = []
+        for index in range(raw.FPDFText_CountChars(page.raw)):
+            buffer = ctypes.create_string_buffer(64)
+            raw.FPDFText_GetFontInfo(
+                page.raw, index, buffer, 64, ctypes.byref(ctypes.c_int())
+            )
+            key = (
+                buffer.value.decode("utf8", "replace"),
+                round(raw.FPDFText_GetFontSize(page.raw, index), 2),
+            )
+            character = chr(raw.FPDFText_GetUnicode(page.raw, index))
+            if runs and (runs[-1][0], runs[-1][1]) == key:
+                runs[-1][2].append(character)
+            else:
+                runs.append((key[0], key[1], [character]))
+        return [
+            (font, size, "".join(chars).strip())
+            for font, size, chars in runs
+            if "".join(chars).strip()
+        ]
+    finally:
+        document.close()
+
+
 class TestSheetWithoutQuantities:
     """``mode=list`` — the article list, handed to a counter."""
 
@@ -643,9 +693,18 @@ class TestLaReferenceALaPlaceQuIlLuiFaut:
     """Ce que la largeur des colonnes décide vraiment.
 
     Une référence coupée ne s'identifie plus : « MASS-000499… » désigne autant
-    de pièces qu'il y a de suffixes. Une désignation coupée, si — elle l'est
-    déjà par construction, et le compteur reconnaît la pièce à sa référence.
-    Les trois autres colonnes rendent donc de la place à la première.
+    de pièces qu'il y a de suffixes — c'est ce qui lui a valu, d'abord, la place
+    des trois autres colonnes.
+
+    Le second passage va en sens inverse et ne l'annule pas : une fois des
+    feuilles réelles sorties de l'imprimante, la référence tenait avec de la
+    marge, et l'unité — « PCE », « KG » — en avait de reste. Ce qu'elles avaient
+    de trop revient à la désignation, qui est la seule à être tronquée par
+    construction.
+
+    Ce que ces contrôles tiennent n'est donc pas le chiffre de chaque colonne,
+    qui a bougé deux fois, mais l'ordre : la page reste pleine, la désignation
+    prime, et la référence tient toujours en entier.
     """
 
     def test_la_page_reste_pleine(self):
@@ -718,3 +777,109 @@ class TestLeCommentaireTientDansSaCase:
         le relevé archivé, et lui seul, qui laisse la hauteur au contenu."""
         many = render([line(f"P-{i:03d}") for i in range(24)])
         assert len(many) >= 1
+
+
+class TestCeQuiSeLitDeLoin:
+    """Trois choses doivent sauter aux yeux sur une feuille tenue à bout de bras.
+
+    La feuille se lit debout, au-dessus d'un bac, sous l'éclairage d'un atelier —
+    pas assis devant un écran. Trois éléments décident à eux seuls si elle se lit
+    ou se déchiffre :
+
+    * **la référence**, seule chose qui dit *quelle pièce* on tient ;
+    * **le pied de page**, seule chose qui permet de reclasser une page tombée
+      d'une liasse de deux cents ;
+    * **le numéro de page**, pour la même raison.
+
+    Les trois étaient au corps du texte ou en dessous, et le pied de page en gris
+    clair par-dessus. Ces contrôles lisent la **police** dans le PDF et non le
+    texte extrait : un contrôle qui ne lirait que les caractères passerait aussi
+    bien sur une feuille où la référence est en corps 6.
+    """
+
+    @staticmethod
+    def _run(runs, text: str) -> tuple[str, float]:
+        for font, size, chars in runs:
+            if chars == text:
+                return font, size
+        raise AssertionError(f"« {text} » absent de la page : {runs}")
+
+    def test_la_reference_est_en_gras_et_plus_grande_que_sa_ligne(self):
+        runs = fonts([line("MASS-00049952", name="CARTER ARRIERE")])
+        police, corps = self._run(runs, "MASS-00049952")
+        _, corps_ligne = self._run(runs, "CARTER ARRIERE")
+        assert police.endswith("Bold")
+        assert corps > corps_ligne
+
+    def test_le_pied_de_page_est_en_gras_et_plus_grand_qu_avant(self):
+        """Sept et demi en gris clair : il fallait la chercher."""
+        runs = fonts([line("P-001")])
+        police, corps = self._run(
+            runs, "INV-2026-06 · zone FI ASSY · comptage n°1 · feuille abcdef12"
+        )
+        assert police.endswith("Bold")
+        assert corps > 7.5
+
+    def test_le_numero_de_page_suit_le_pied_de_page(self):
+        runs = fonts([line("P-001")])
+        assert self._run(runs, "Page 1") == self._run(
+            runs, "INV-2026-06 · zone FI ASSY · comptage n°1 · feuille abcdef12"
+        )
+
+    def test_la_designation_reste_au_corps_du_texte(self):
+        """Le contrôle du contrôle : tout n'est pas passé en gras.
+
+        Une feuille entièrement en gras ne distingue plus rien — c'est la même
+        panne que celle qu'on répare, dans l'autre sens.
+        """
+        runs = fonts([line("P-001", name="CARTER ARRIERE")])
+        police, _ = self._run(runs, "CARTER ARRIERE")
+        assert not police.endswith("Bold")
+
+    def test_la_reference_tient_dans_sa_colonne_malgre_le_gras(self):
+        """La colonne a rétréci de 3 % le jour où la référence a grossi.
+
+        Les deux vont en sens inverse, et c'est le genre de rencontre qui ne se
+        voit qu'à l'impression : une référence qui ne tient plus s'enroule, la
+        hauteur de ligne étant imposée elle déborde sur la ligne suivante, et la
+        feuille se termine par-dessus son pied de page.
+        """
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        from inventory.reporting.exports import _REF_FONT_SIZE, _WIDTHS_PLAIN
+
+        # La largeur utile de la case : sa largeur moins les marges internes.
+        disponible = _WIDTHS_PLAIN[0] * 72 / 25.4 - 12
+        for reference in ("MASS-00049952", "mass-00040707", "B06-MASS-00049952"):
+            largeur = stringWidth(reference, "Helvetica-Bold", _REF_FONT_SIZE)
+            assert largeur <= disponible, (reference, largeur, disponible)
+
+
+class TestLaDesignationVaJusquAQuaranteCinq:
+    """La colonne s'est élargie ; le nombre de caractères a suivi.
+
+    Deux bornes, et il en faut deux. Le compte de caractères est ce que le métier
+    demande. La largeur est ce qui le rend sûr : quarante-cinq caractères d'une
+    désignation réelle tiennent dans la case, quarante-cinq « M » n'y tiendraient
+    pas — et, la hauteur de ligne étant imposée, ils déborderaient sur les lignes
+    suivantes jusqu'au pied de page.
+    """
+
+    REELLE = "VIS TETE HEXAGONALE M6X40 INOX A2 DIN933 LONG"
+
+    def test_une_designation_de_quarante_cinq_caracteres_s_imprime_entiere(self):
+        assert len(self.REELLE) == 45
+        pages = render([line("P-001", name=self.REELLE)])
+        assert self.REELLE in pages[0]
+
+    def test_le_quarante_sixieme_caractere_est_coupe(self):
+        """Sinon la borne ne borne rien."""
+        pages = render([line("P-001", name=self.REELLE + "X")])
+        assert self.REELLE + "X" not in pages[0]
+        assert "…" in pages[0]
+
+    def test_une_suite_de_lettres_larges_est_coupee_avant_quarante_cinq(self):
+        """La seconde borne, celle qui rend la première sûre."""
+        pages = render([line("P-001", name="M" * 45)])
+        assert "M" * 45 not in pages[0]
+        assert "…" in pages[0]

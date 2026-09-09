@@ -142,28 +142,36 @@ class TestLesSectionsVides:
 # --------------------------------------------------------------------------- #
 
 class TestLaDesignationImprimee:
-    def test_quarante_et_un_caracteres(self):
-        assert _NAME_MAX_CHARS == 41
+    """Deux bornes, et il en faut deux.
 
-    def test_une_designation_reelle_de_41_passe_en_entier(self):
-        name = "CARTER ARRIERE M3 GEN2 REF LONGUE ALU 41x"
-        assert len(name) == 41
-        assert _fit(name, chars=41, points=_NAME_COLUMN_POINTS) == name
+    Le compte de caractères est ce que le métier demande — quarante-cinq depuis
+    que la colonne s'est élargie. La largeur est ce qui rend ce chiffre sûr :
+    les contrôles ci-dessous prennent la borne **du module** et non un nombre
+    recopié, pour qu'un élargissement futur les emmène avec lui.
+    """
+
+    def test_quarante_cinq_caracteres(self):
+        assert _NAME_MAX_CHARS == 45
+
+    def test_une_designation_reelle_de_la_borne_passe_en_entier(self):
+        name = "VIS TETE HEXAGONALE M6X40 INOX A2 DIN933 LONG"
+        assert len(name) == _NAME_MAX_CHARS
+        assert _fit(name, chars=_NAME_MAX_CHARS, points=_NAME_COLUMN_POINTS) == name
 
     def test_au_dela_elle_est_coupee_et_le_dit(self):
-        out = _fit("A" * 60, chars=41, points=_NAME_COLUMN_POINTS)
+        out = _fit("A" * 60, chars=_NAME_MAX_CHARS, points=_NAME_COLUMN_POINTS)
         assert out.endswith("…")
-        assert len(out) <= 41
+        assert len(out) <= _NAME_MAX_CHARS
 
     def test_une_chaine_large_est_rognee_plutot_que_de_deborder(self):
-        """Quarante et un « M » occuperaient 290 points dans une colonne qui en
-        offre 227. La hauteur de rang étant imposée, le texte passerait à la
+        """Quarante-cinq « M » occuperaient 319 points dans une colonne qui en
+        offre 241. La hauteur de rang étant imposée, le texte passerait à la
         ligne et déborderait sur les lignes suivantes jusqu'au pied de page.
         """
         from reportlab.pdfbase.pdfmetrics import stringWidth
 
-        for sample in ("M" * 41, "W" * 60, "Ø" * 45):
-            out = _fit(sample, chars=41, points=_NAME_COLUMN_POINTS)
+        for sample in ("M" * _NAME_MAX_CHARS, "W" * 60, "Ø" * 50):
+            out = _fit(sample, chars=_NAME_MAX_CHARS, points=_NAME_COLUMN_POINTS)
             assert stringWidth(out, "Helvetica", 8.5) <= _NAME_COLUMN_POINTS, sample
 
     def test_le_releve_avec_provenance_garde_sa_borne_etroite(self):

@@ -265,20 +265,16 @@ def upsert_sheet_lines(
     payload: SheetLinesRequest,
     service: Service,
 ) -> dict[str, int]:
-    rows = [
-        {
-            "id": line.id,
-            "item_number": line.item_number,
-            "section": str(line.section),
-            "line_kind": str(line.line_kind),
-            "label": line.label,
-            "qty": line.qty,
-            "unit": line.unit,
-            "comment": line.comment,
-            "display_order": line.display_order,
-        }
-        for line in payload.lines
-    ]
+    # Le schéma est recopié **par lui-même**, et non champ par champ à la main.
+    #
+    # Il l'était à la main, et la désignation de feuille y a été oubliée : le
+    # schéma l'acceptait, le service la lisait, et entre les deux personne ne la
+    # transmettait. L'écran annonçait « ligne enregistrée » — tout le reste
+    # l'était — et le nom restait celui d'avant, à l'écran comme sur le papier.
+    #
+    # Une liste de champs recopiée ne tient que ce qu'on a pensé à y mettre,
+    # c'est-à-dire jamais celui qu'on vient d'ajouter.
+    rows = [line.model_dump() for line in payload.lines]
     written = service.upsert_sheet_lines(
             campaign,
             sheet_id,

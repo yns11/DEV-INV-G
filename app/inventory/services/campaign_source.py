@@ -90,7 +90,13 @@ def grid_rows(
             return [
                 [l.parent_item,
                  items[l.parent_item].name if l.parent_item in items else "",
-                 l.child_item, float(l.qty_per), l.unit]
+                 l.child_item, float(l.qty_per), l.unit,
+                 # Le statut, dernière colonne du contrat. Omis, il faisait
+                 # revenir toute nomenclature retirée comme active : une
+                 # cellule vide vaut « en vigueur », et c'est bien ce qu'il
+                 # faut pour un fichier antérieur à la colonne — mais pas pour
+                 # une reprise, qui sait de quoi elle parle.
+                 "Actif" if l.active else "Retiré"]
                 for l in ctx.referentials.list_bom_links(campaign.id)
             ]
         case "book_stock":
@@ -120,7 +126,15 @@ def grid_rows(
             # dédoublerait au rechargement.
             return [
                 [zones[sheet.zone_id].code, line.item_number, str(line.section),
-                 line.subsection, line.unit]
+                 # La désignation que la feuille impose, entre la sous-section
+                 # et l'unité — l'ordre du contrat, et il compte : omise, c'est
+                 # l'unité qui tombait dans sa colonne et toute campagne reprise
+                 # d'une autre affichait « désignation = PCE ».
+                 #
+                 # L'écrasement, et non la désignation résolue : recopier le nom
+                 # du référentiel source le figerait sur les lignes de la
+                 # campagne cible, qui a le sien.
+                 line.subsection, line.name, line.unit]
                 for sheet in ctx.sheets.list_sheets(campaign.id)
                 if sheet.pass_no is SheetPass.PASS_1 and sheet.zone_id in zones
                 for line in lines_by_sheet.get(sheet.id, ())

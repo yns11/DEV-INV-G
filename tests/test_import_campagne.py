@@ -32,12 +32,113 @@ from pathlib import Path
 import pytest
 from early_count_db import disposable_database
 
+from inventory.services.campaign_source import SUPPORTED
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
 # --------------------------------------------------------------------------- #
 # Une seule définition, deux lecteurs
 # --------------------------------------------------------------------------- #
+
+
+def _une_campagne_qui_porte_tout():
+    """Une campagne minimale portant **une ligne de chaque grille**.
+
+    Des doublures plutôt qu'une base : ce qui est en question est la forme des
+    lignes que la reprise émet, pas leur stockage. Une ligne par grille suffit,
+    et il en faut une partout — une grille vide passerait le contrôle de
+    largeur sans rien vérifier, ce que l'assertion « le banc porte des lignes »
+    refuse.
+    """
+    import datetime as dt
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from inventory.domain.enums import (
+        AdjustmentKind,
+        CampaignStatus,
+        CountLineKind,
+        CountSection,
+        JournalKind,
+        SheetPass,
+    )
+    from inventory.domain.models import (
+        AdjustmentLine,
+        BomLink,
+        BookStockLine,
+        Campaign,
+        CountSheetLine,
+        ErpJournalLine,
+        Item,
+        Location,
+        Zone,
+    )
+
+    campaign = Campaign(
+        id="camp-1", code="INV-2026-06", label="Inventaire",
+        count_date=dt.date(2026, 6, 30), status=CampaignStatus.PREPARATION,
+        created_by="chef@usine",
+        created_at=dt.datetime(2026, 6, 1, tzinfo=dt.UTC),
+    )
+    item = Item(campaign_id="camp-1", item_number="P-1", name="HOUSING REAR",
+                std_price="10", unit="PCE")
+    zone = Zone(id="z-1", campaign_id="camp-1", code="B06VRAC", passes=2)
+    sheet = SimpleNamespace(id="s-1", zone_id="z-1", pass_no=SheetPass.PASS_1)
+    line = CountSheetLine(
+        id="l-1", sheet_id="s-1", campaign_id="camp-1", item_number="P-1",
+        section=CountSection.LINE_SIDE, line_kind=CountLineKind.ARTICLE,
+        subsection="Stock physique B15", unit="PCE",
+        # L'écrasement de désignation : ce qui doit atterrir dans sa colonne.
+        name="CARTER ARRIÈRE M3 GEN2",
+    )
+    journal = SimpleNamespace(
+        id="j-1", journal_number="NPEM-1", kind=JournalKind.INVE,
+        counting_date=dt.date(2026, 6, 11), erp_posted=True,
+        erp_posted_at=dt.datetime(2026, 6, 11, 9, tzinfo=dt.UTC),
+        description="Inventaire par étiquette",
+    )
+    erp_line = ErpJournalLine(
+        id="el-1", erp_journal_id="j-1", campaign_id="camp-1",
+        erp_line_number=1, warehouse_id="ATP", location_id="SOL",
+        item_number="P-1", qty_on_hand=10, qty_counted=12,
+    )
+
+    ctx = cast(Any, SimpleNamespace(
+        referentials=SimpleNamespace(
+            list_items=lambda cid: [item],
+            items_by_number=lambda cid: {"P-1": item},
+            list_bom_links=lambda cid: [
+                BomLink(campaign_id="camp-1", parent_item="P-1",
+                        child_item="P-2", qty_per=2, unit="PCE")
+            ],
+            list_locations=lambda cid: [
+                Location(campaign_id="camp-1", warehouse_id="ATP",
+                         location_id="SOL", zone="A")
+            ],
+        ),
+        book_stock=SimpleNamespace(list=lambda cid: [
+            BookStockLine(campaign_id="camp-1", item_number="P-1",
+                          warehouse_id="ATP", location_id="SOL", qty=10,
+                          unit_cost="10")
+        ]),
+        sheets=SimpleNamespace(
+            list_zones=lambda cid: [zone],
+            list_sheets=lambda cid: [sheet],
+            lines_by_sheet=lambda cid: {"s-1": [line]},
+        ),
+        erp_journals=SimpleNamespace(
+            list=lambda cid: [journal],
+            lines=lambda cid, jid: [erp_line],
+        ),
+        adjustments=SimpleNamespace(list=lambda cid: [
+            AdjustmentLine(id="a-1", campaign_id="camp-1", item_number="P-1",
+                           warehouse_id="ATP", location_id="SOL", qty=1,
+                           kind=AdjustmentKind.ADJUSTMENT)
+        ]),
+    ))
+    return ctx, campaign
+
 
 class TestLesDeuxLecturesPartagentLeurDefinition:
     def test_le_rapport_ne_recopie_pas_la_liste(self):
@@ -149,14 +250,67 @@ class TestLesColonnesSontCellesDuContrat:
             ("count_journal_lines", 17),
         ],
     )
-    def test_chaque_ligne_porte_autant_de_valeurs_que_le_contrat_a_de_colonnes(
+    def test_le_contrat_a_le_nombre_de_colonnes_attendu(
         self, key: str, expected: int
     ):
-        """Sans cela, `zip` tronque en silence et les dernières colonnes
-        disparaissent — l'exclusion d'un article, le type d'un journal."""
+        """Le garde-fou d'un contrat qui bougerait sans qu'on l'ait voulu.
+
+        Il ne dit **rien** de ce que la reprise émet : voir le contrôle voisin,
+        qui compte les valeurs des lignes et non les colonnes du contrat.
+        """
         from inventory.ingest import get_contract
 
         assert len(get_contract(key).fields) == expected
+
+    @pytest.mark.parametrize("key", sorted(SUPPORTED))
+    def test_chaque_ligne_porte_autant_de_valeurs_que_le_contrat_a_de_colonnes(
+        self, key: str
+    ):
+        """Le contrôle que l'autre avait l'air d'être, et qu'il n'était pas.
+
+        ``grid_dicts`` nomme les valeurs par ``zip(fields, row,
+        strict=False)`` : une ligne plus courte que le contrat **glisse**. Les
+        valeurs manquantes ne sont pas absentes à la fin, elles décalent tout ce
+        qui suit la colonne oubliée.
+
+        C'est arrivé sur les feuilles de comptage. La désignation a été ajoutée
+        au contrat entre la sous-section et l'unité ; la reprise a continué
+        d'émettre cinq valeurs. L'unité tombait donc dans la colonne
+        désignation, et une campagne reprise d'une autre affichait
+        **« désignation = PCE » sur toutes ses lignes**.
+
+        Le contrôle d'à côté comptait les colonnes du contrat — que la
+        modification avait, elle, bien mises à jour. Il ne pouvait pas voir la
+        faute : elle était de l'autre côté du ``zip``.
+        """
+        from inventory.ingest import get_contract
+        from inventory.services.campaign_source import grid_rows
+
+        ctx, campaign = _une_campagne_qui_porte_tout()
+        rows = grid_rows(ctx, campaign, key)
+        assert rows, f"le banc ne porte aucune ligne de {key}"
+
+        width = len(get_contract(key).fields)
+        wrong = [row for row in rows if len(row) != width]
+        assert wrong == [], (
+            f"{key} : le contrat a {width} colonnes, la reprise en émet "
+            f"{len(wrong[0])} — les colonnes qui suivent la manquante glissent"
+        )
+
+    def test_et_la_designation_de_feuille_arrive_dans_sa_colonne(self):
+        """Le symptôme, nommé : « désignation = PCE » sur toutes les lignes.
+
+        Le contrôle de largeur au-dessus suffit à faire échouer le décalage ;
+        celui-ci dit ce qu'on lisait à l'écran, pour que la prochaine lecture de
+        ce fichier n'ait pas à le reconstituer.
+        """
+        from inventory.services.campaign_source import grid_dicts
+
+        ctx, campaign = _une_campagne_qui_porte_tout()
+        [row] = grid_dicts(ctx, campaign, "count_sheets")
+
+        assert row["name"] == "CARTER ARRIÈRE M3 GEN2"
+        assert row["unit"] == "PCE"
 
 
 # --------------------------------------------------------------------------- #

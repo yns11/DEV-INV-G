@@ -922,6 +922,17 @@ que la section est illisible, la ligne est **signalée plutôt que posée au
 hasard** : se tromper de tableau fausse deux quantités d'un coup, et rien en
 aval ne peut le rattraper.
 
+**Retrouver un scan.** Chaque scan déposé est conservé *avant* d'être lu, et
+l'onglet **Audit ▸ Scans archivés** les liste tous : la date du dépôt, le nom du
+fichier, son poids, son empreinte, et les feuilles que chacun justifie. Le nom
+du fichier est le lien de téléchargement. Une pile déposée d'un coup apparaît
+**une fois** — c'est un seul document, et c'est lui qui justifie toutes les
+feuilles qu'on y a lues.
+
+C'est ce qui permet de défendre une quantité contestée six mois plus tard :
+l'image que le modèle a lue est là, et son empreinte dit que c'est bien
+celle-là. Une feuille comptée à la main n'y figure pas, faute de scan.
+
 Une feuille de **saisie libre** se scanne aussi, bien qu'elle n'ait aucune liste
 à confronter : le modèle recopie alors la référence telle qu'elle est écrite, et
 la garde se déplace d'un cran — c'est le **référentiel articles** qui tranche.

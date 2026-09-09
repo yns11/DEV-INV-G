@@ -102,7 +102,7 @@ class CampaignService:
 
         zones = ctx.sheets.list_zones(campaign_id)
         sheets = ctx.sheets.list_sheets(campaign_id)
-        arbitrations = ctx.sheets.list_arbitrations(campaign_id)
+        arbitrations = ctx.arbitrations.list_arbitrations(campaign_id)
         lines_by_sheet = ctx.sheets.lines_by_sheet(campaign_id)
         sheets_by_zone: dict[str, list] = {}
         for sheet in sheets:

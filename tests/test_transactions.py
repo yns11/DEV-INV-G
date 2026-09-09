@@ -92,6 +92,11 @@ def counting_service() -> tuple[CountingService, Any, Any]:
         delete_line=delete_line,
         set_status=set_status,
     )
+    # Le recalcul de l'arbitrage écrit dans sa propre transaction.
+    ctx.arbitrations = SimpleNamespace(
+        list_arbitrations=lambda cid, **kw: [],
+        upsert_arbitrations=lambda lines, **kw: len(lines),
+    )
     ctx.record = lambda **kw: ledger.note("audit") or "evt"
     ctx.forget_progress = lambda cid=None: None
     ctx.progress = lambda c: SimpleNamespace(
@@ -193,9 +198,6 @@ def _zones_and_sheets() -> tuple[Any, Any]:
         create_zone=create_zone,
         ensure_sheets=ensure_sheets,
         set_zone_closed=set_zone_closed,
-        list_arbitrations=lambda cid, **kw: [],
-        # Le recalcul de l'arbitrage écrit dans sa propre transaction.
-        upsert_arbitrations=lambda lines, **kw: len(lines),
         get_sheet=lambda sid: sheet,
         # Le service relit les feuilles pour savoir de quelles zones les lignes
         # supprimées viennent : le document se décide sur le passage 1 et vaut
@@ -206,6 +208,11 @@ def _zones_and_sheets() -> tuple[Any, Any]:
         delete_sheet_line=delete_sheet_line,
         replace_sheet_lines=replace_sheet_lines,
         upsert_sheet_lines=upsert_sheet_lines,
+    )
+    # Le recalcul de l'arbitrage écrit dans sa propre transaction.
+    ctx.arbitrations = SimpleNamespace(
+        list_arbitrations=lambda cid, **kw: [],
+        upsert_arbitrations=lambda lines, **kw: len(lines),
     )
     ctx.record = lambda **kw: ledger.note("audit") or "evt"
     ctx.forget_progress = lambda cid=None: None

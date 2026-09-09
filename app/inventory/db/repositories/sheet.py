@@ -1,14 +1,17 @@
-"""Les zones GENERIQUE, leurs feuilles de comptage et les arbitrages entre deux passages.
+"""Les zones GENERIQUE et leurs feuilles de comptage.
 
 Voir :mod:`inventory.db.repositories` pour les trois règles que
 tous les dépôts appliquent.
+
+L'arbitrage a quitté ce module pour :mod:`~inventory.db.repositories.arbitration`
+— il porte sur la zone et non sur une feuille, la couche au-dessus le disait déjà
+par son propre service, et ce module était plein.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Mapping, Sequence
-from decimal import Decimal
+from collections.abc import Sequence
 from typing import Any
 
 import psycopg
@@ -20,7 +23,6 @@ from ...domain.enums import (
     SheetPass,
 )
 from ...domain.models import (
-    ArbitrationLine,
     CountSheet,
     CountSheetLine,
     Zone,
@@ -222,6 +224,56 @@ class SheetRepository(_Base):
             "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
             (code, label, sector, actor, campaign_id, zone_id),
             conn=conn,
+        )
+
+    def list_evidence(self, campaign_id: str) -> list[dict[str, Any]]:
+        """Les scans archivés de la campagne, **un par document déposé**.
+
+        Lu sur ``count_sheet`` et non sur la table des pièces, et c'est la seule
+        lecture qui vaille pour les deux archives : le volume Unity Catalog ne
+        tient aucune table, et une liste bâtie sur celle de la base rendrait
+        « aucun scan » sur une installation qui archive au volume — c'est-à-dire
+        mentirait exactement là où l'on vient contrôler. L'empreinte, le poids
+        et le type, eux, sont posés sur la feuille dans les deux cas.
+
+        **Une pile est un document.** Déposée d'un coup, elle justifie toutes
+        les feuilles qu'on y a lues, et chacune pointe sur elle ; les lister une
+        par une rendrait dix fois le même PDF sous dix noms, et laisserait
+        croire à dix originaux.
+
+        L'identifiant de feuille rendu sert à construire l'adresse de
+        téléchargement, qui passe par la feuille et donc par la barrière de
+        campagne déjà en place. N'importe laquelle des feuilles couvertes fait
+        l'affaire — c'est le même fichier — et c'est la première dans l'ordre du
+        document qui est retenue, pour que deux appels rendent la même adresse.
+        """
+        return self._fetch_all(
+            "SELECT s.evidence_path, "
+            "       MIN(s.evidence_sha256) AS sha256, "
+            "       MIN(s.evidence_bytes)  AS size_bytes, "
+            "       MIN(s.evidence_mime)   AS mime, "
+            "       MIN(s.id::text)        AS sheet_id, "
+            "       COUNT(*)               AS sheet_count, "
+            "       ARRAY_AGG(COALESCE(z.code, '') || ' — n°' || "
+            "                 CASE s.pass_no WHEN 'PASS_1' THEN '1' ELSE '2' END "
+            "                 ORDER BY z.display_order, z.code, s.pass_no) AS sheets "
+            "FROM count_sheet s "
+            # La zone peut avoir été retirée depuis : la pièce reste, et la
+            # colonne des feuilles qu'elle justifie le dit plutôt que de nommer
+            # une zone disparue.
+            "LEFT JOIN zone z ON z.id = s.zone_id AND z.deleted_at IS NULL "
+            "WHERE s.campaign_id = %s "
+            "  AND s.evidence_path IS NOT NULL AND s.evidence_path <> '' "
+            "GROUP BY s.evidence_path "
+            # Le chemin commence par l'instant du dépôt (voir
+            # `EvidenceStore.path_for`), et toutes les pièces d'une campagne
+            # partagent le préfixe qui le précède : trier le chemin à l'envers
+            # revient donc à trier par date décroissante — ce qu'on cherche dans
+            # une archive est presque toujours le dernier dépôt. Sans cela il
+            # faudrait relire la date en Python pour trier, c'est-à-dire trier
+            # une page après l'avoir choisie.
+            "ORDER BY s.evidence_path DESC",
+            (campaign_id,),
         )
 
     def list_sheets(
@@ -618,133 +670,6 @@ class SheetRepository(_Base):
             if owned:
                 self.upsert_sheet_lines(owned, actor=actor, conn=connection)
         return len(owned)
-
-    # -- arbitration ---------------------------------------------------------
-
-    def list_arbitrations(
-        self,
-        campaign_id: str,
-        *,
-        zone_id: str | None = None,
-        conn: psycopg.Connection | None = None,
-    ) -> list[ArbitrationLine]:
-        clauses = ["campaign_id = %s"]
-        params: list[Any] = [campaign_id]
-        if zone_id:
-            clauses.append("zone_id = %s")
-            params.append(zone_id)
-        rows = self._fetch_all(
-            "SELECT id, campaign_id, zone_id, item_number, section, qty_pass_1, "
-            "qty_pass_2, qty_arbitrated, decided_by, decided_at, comment "
-            f"FROM arbitration WHERE {' AND '.join(clauses)} ORDER BY item_number",
-            params,
-            conn=conn,
-        )
-        return [
-            ArbitrationLine(
-                id=str(r["id"]), campaign_id=str(r["campaign_id"]),
-                zone_id=str(r["zone_id"]), item_number=r["item_number"],
-                section=CountSection(r["section"]), qty_pass_1=r["qty_pass_1"],
-                qty_pass_2=r["qty_pass_2"], qty_arbitrated=r["qty_arbitrated"],
-                decided_by=r["decided_by"], decided_at=r["decided_at"],
-                comment=r["comment"],
-            )
-            for r in rows
-        ]
-
-    def upsert_arbitrations(
-        self, lines: Sequence[ArbitrationLine], *,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        return self._execute_many(
-            "INSERT INTO arbitration (id, campaign_id, zone_id, item_number, section, "
-            "qty_pass_1, qty_pass_2, qty_arbitrated, decided_by, decided_at, comment, "
-            "updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
-            # **Ce que le domaine écrit fait foi, y compris quand il écrit
-            # NULL.** Ces trois colonnes ont porté un ``COALESCE(EXCLUDED.…,
-            # arbitration.…)`` — une prudence qui gardait la décision existante
-            # quand la ligne n'en apportait pas. Elle défaisait la seule règle
-            # qui compte ici : un arbitrage dont l'un des deux comptages a bougé
-            # perd sa signature. ``build_arbitration_lines`` posait bien
-            # ``decided_by = None`` ; ``COALESCE(NULL, l'ancien)`` rendait
-            # l'ancien, et la décision périmée survivait — visible nulle part,
-            # puisque le domaine, lui, était juste, et que les contrôles le
-            # vérifiaient sur le domaine.
-            #
-            # La fonction du domaine recopie déjà la décision antérieure quand
-            # elle reste valable : l'affectation directe la préserve donc dans
-            # ce cas, et l'efface dans l'autre. C'est exactement ce qui est
-            # voulu, et il n'y a qu'un seul endroit qui en décide.
-            "ON CONFLICT (zone_id, item_number, section) DO UPDATE SET "
-            "qty_pass_1 = EXCLUDED.qty_pass_1, qty_pass_2 = EXCLUDED.qty_pass_2, "
-            "qty_arbitrated = EXCLUDED.qty_arbitrated, "
-            "decided_by = EXCLUDED.decided_by, "
-            "decided_at = EXCLUDED.decided_at, "
-            "comment = EXCLUDED.comment, updated_at = now()",
-            [
-                (l.id, l.campaign_id, l.zone_id, l.item_number, str(l.section),
-                 l.qty_pass_1, l.qty_pass_2, l.qty_arbitrated, l.decided_by,
-                 l.decided_at, l.comment)
-                for l in lines
-            ],
-            conn=conn,
-        )
-
-    def delete_arbitrations(
-        self, campaign_id: str, zone_ids: Sequence[str],
-        *, conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Drop a zone's pass-1/pass-2 comparison.
-
-        Called when a zone drops to a single count: the comparison no longer has
-        two sides, and leaving the rows behind would keep the zone showing
-        "arbitrages en attente" for a decision that cannot be made.
-        """
-        if not zone_ids:
-            return 0
-        return self._execute(
-            "DELETE FROM arbitration WHERE campaign_id = %s "
-            "AND zone_id = ANY(%s::uuid[])",
-            (campaign_id, list(zone_ids)),
-            conn=conn,
-        )
-
-    def propose_arbitrations(
-        self,
-        campaign_id: str,
-        proposals: Mapping[str, Decimal],
-        *,
-        comment: str = "",
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Pre-fill quantities without deciding anything.
-
-        ``decided_at`` is deliberately left NULL — and cleared if a previous
-        proposal set it, which it never does. The value lands in the field the
-        user is about to look at; confirming it is still a separate gesture, and
-        the consolidation ignores it until then.
-        """
-        if not proposals:
-            return 0
-        return self._execute_many(
-            "UPDATE arbitration SET qty_arbitrated = %s, comment = %s, "
-            "decided_by = NULL, decided_at = NULL, updated_at = now() "
-            "WHERE id = %s AND campaign_id = %s",
-            [(qty, comment, arbitration_id, campaign_id)
-             for arbitration_id, qty in proposals.items()],
-            conn=conn,
-        )
-
-    def decide_arbitration(
-        self, arbitration_id: str, qty: Decimal, *, actor: str, comment: str = ""
-    ) -> None:
-        n = self._execute(
-            "UPDATE arbitration SET qty_arbitrated = %s, decided_by = %s, "
-            "decided_at = now(), comment = %s, updated_at = now() WHERE id = %s",
-            (qty, actor, comment, arbitration_id),
-        )
-        if n == 0:
-            raise NotFoundError("Arbitrage introuvable.", arbitrationId=arbitration_id)
 
     @staticmethod
     def _zone(row: dict[str, Any]) -> Zone:

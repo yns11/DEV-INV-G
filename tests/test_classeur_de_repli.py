@@ -879,6 +879,8 @@ class TestLeServiceLeProduitPourDeVrai:
                 list_zones=lambda cid: [z.zone for z in payload.zones],
                 list_sheets=lambda cid: sheets,
                 lines_by_sheet=lambda cid: lines,
+            ),
+            arbitrations=SimpleNamespace(
                 list_arbitrations=lambda cid: [
                     a for zone in payload.zones for a in zone.arbitrations
                 ],

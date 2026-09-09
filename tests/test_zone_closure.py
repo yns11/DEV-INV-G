@@ -86,13 +86,15 @@ def service(
     written: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
 
+    arbitrage = SimpleNamespace(
+        list_arbitrations=lambda cid, **kw: list(arbitrations),
+        upsert_arbitrations=lambda lines, **kw: len(lines),
+    )
     sheets = SimpleNamespace(
         list_zones=lambda cid, **kw: [zone],
-        list_arbitrations=lambda cid, **kw: list(arbitrations),
         # Le recalcul relit les feuilles et leurs lignes dans sa transaction.
         list_sheets=lambda cid, **kw: [],
         lines_by_sheet=lambda cid, **kw: {},
-        upsert_arbitrations=lambda lines, **kw: len(lines),
         set_zone_closed=lambda cid, zid, *, closed, actor, conn=None: written.append(
             {"campaign": cid, "zone": zid, "closed": closed, "actor": actor}
         ),
@@ -101,6 +103,7 @@ def service(
         actor=actor,
         request_id="req-1",
         sheets=sheets,
+        arbitrations=arbitrage,
         record=lambda **kw: events.append(kw) or "evt",
         progress=lambda c: SimpleNamespace(
             items=10, zones=1, book_stock_lines=5, book_stock_frozen=True

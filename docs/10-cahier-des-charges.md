@@ -641,6 +641,7 @@ posée explicitement et à trois reprises (`guide §1.6`, `§2.1`, `§2.9`).
 ### EX-ZON-7 — Accepter une quantité écrite comme une opération
 - **Besoin** : devant trois palettes de quarante-huit et un fond de bac de sept, un compteur écrit `3*48+7` — *et c'est la bonne façon de compter : le calcul reste devant les yeux de qui relira, ce qu'un « 151 » nu ne permet plus.*
 - **Comportement** : la valeur est évaluée **et le texte d'origine conservé à côté du résultat**. C'est ce qui permet de recompter six mois plus tard et de s'apercevoir qu'une palette n'en contenait que quarante-six.
+- **L'archive des scans se consulte, et pas seulement s'alimente.** Chaque scan est conservé avant d'être lu ; il doit être possible de **savoir ce que l'archive contient** — date de dépôt, fichier, poids, empreinte, feuilles justifiées — et de télécharger chaque pièce depuis la vue Audit. *Le fichier se téléchargeait déjà, mais seulement pour qui connaissait l'identifiant de la feuille qui le porte : il fallait déjà savoir où regarder pour regarder. Une archive qu'on ne peut pas énumérer ne se contrôle pas, et c'est pourtant tout son objet.* **[EC]** — *« pour les pdf scannés lus dans une campagne, y a-t-il un moyen de les garder et les exposer au téléchargement à partir d'un onglet de la vue Audit ? »*. La liste est bâtie sur ce que porte la **feuille** — empreinte, poids, type — et non sur la table des pièces : le volume Unity Catalog ne tient aucune table, et une liste bâtie sur celle de la base annoncerait « aucun scan » sur une installation qui archive au volume.
 - **La règle vaut identiquement à la saisie et à la lecture d'un scan**, feuille par feuille **comme pile entière**. **[EC]** — *« Pourquoi l'évaluation de formules fonctionne bien pour une feuille scannée mais est ignorée si c'est un scan multi-feuilles ? »*
 - **Réglable, et désactivé par défaut** : une usine qui veut que ses feuilles portent un nombre et un seul a raison de l'exiger. **Le refus doit dire qu'un réglage existe.**
 - **Statut** : **[CO]** pour le principe, **[EC]** pour l'uniformité entre les deux voies de scan.
@@ -1149,6 +1150,7 @@ réimplémentation perd en premier.
 | **Analyse d'écart** | Cause humaine **et** proposition IA, **séparées**, acceptation explicite éventuelle avec commentaire |
 | **Dérive / étiquette comptée ailleurs** | L'emplacement, le constat, les deux quantités qui le composent. Aucune issue : ces listes se regardent |
 | **Provenance d'import** | Source, fichier, empreinte du contenu, **journée de la photographie**, volumes acceptés et rejetés, **pièce d'origine conservée** |
+| **Scan archivé** | Le fichier tel qu'il a été déposé, son empreinte, son poids, l'instant du dépôt, et **les feuilles qu'il justifie**. Une pile est **un** document, pas un par feuille |
 | **Audit** | Acteur, action, entité, horodatage, contenu du changement |
 
 ## G.2 Contraintes de qualité et d'identité

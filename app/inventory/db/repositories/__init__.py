@@ -27,6 +27,7 @@ sous les mêmes noms, si bien qu'aucun appelant n'a été touché.
 
 from ._base import new_id
 from .analysis import AdjustmentRepository, AnalysisRepository
+from .arbitration import ArbitrationRepository
 from .audit import AuditRepository, ImportBatchRepository
 from .backflush import BackflushRepository
 from .book_stock import BookStockRepository
@@ -54,6 +55,7 @@ __all__ = [
     "JournalRepository",
     "ErpJournalRepository",
     "EarlyCountDriftRepository",
+    "ArbitrationRepository",
     "SheetRepository",
     "ConsolidationRepository",
     "EvidenceBlobRepository",

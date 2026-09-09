@@ -166,8 +166,9 @@ def service(*, variances, analyses, batches, published: bool = True):
     ctx.drifts = SimpleNamespace(list=lambda cid: [])
     ctx.sheets = SimpleNamespace(
         list_zones=lambda cid: [], list_sheets=lambda cid: [],
-        list_arbitrations=lambda cid: [], lines_by_sheet=lambda cid: {},
+        lines_by_sheet=lambda cid: {},
     )
+    ctx.arbitrations = SimpleNamespace(list_arbitrations=lambda cid: [])
     ctx.analysis = SimpleNamespace(list_analyses=lambda cid: analyses)
     ctx.imports = SimpleNamespace(latest_per_target=lambda cid: batches)
     # La liste de contrôle lit deux dépôts de plus que le panneau « ce qui

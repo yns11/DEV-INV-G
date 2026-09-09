@@ -19,6 +19,7 @@ from ..config import Settings, get_settings
 from ..db import (
     AdjustmentRepository,
     AnalysisRepository,
+    ArbitrationRepository,
     AuditRepository,
     BackflushRepository,
     BookStockRepository,
@@ -99,6 +100,10 @@ class ServiceContext:
     @functools.cached_property
     def sheets(self) -> SheetRepository:
         return SheetRepository(self.db)
+
+    @functools.cached_property
+    def arbitrations(self) -> ArbitrationRepository:
+        return ArbitrationRepository(self.db)
 
     @functools.cached_property
     def consolidation(self) -> ConsolidationRepository:

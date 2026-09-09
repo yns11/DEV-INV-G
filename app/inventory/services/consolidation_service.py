@@ -105,7 +105,7 @@ class ConsolidationService:
         zones = ctx.sheets.list_zones(campaign.id)
         sheets = ctx.sheets.list_sheets(campaign.id)
         lines = ctx.sheets.lines_by_sheet(campaign.id)
-        arbitrations = ctx.sheets.list_arbitrations(campaign.id)
+        arbitrations = ctx.arbitrations.list_arbitrations(campaign.id)
 
         sheets_by_zone: dict[str, list[CountSheet]] = {}
         for sheet in sheets:

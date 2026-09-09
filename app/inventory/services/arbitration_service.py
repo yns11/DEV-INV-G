@@ -82,7 +82,7 @@ def refresh_zone_arbitrations(
             zone=zone,
             sheets=ctx.sheets.list_sheets(campaign.id, zone_id=zone_id, conn=conn),
             lines_by_sheet=ctx.sheets.lines_by_sheet(campaign.id, conn=conn),
-            arbitrations=ctx.sheets.list_arbitrations(
+            arbitrations=ctx.arbitrations.list_arbitrations(
                 campaign.id, zone_id=zone_id, conn=conn
             ),
         )
@@ -90,7 +90,7 @@ def refresh_zone_arbitrations(
             counts, campaign_id=campaign.id, id_factory=new_id
         )
         if lines:
-            ctx.sheets.upsert_arbitrations(lines, conn=conn)
+            ctx.arbitrations.upsert_arbitrations(lines, conn=conn)
     return len(lines)
 
 
@@ -171,7 +171,7 @@ class ArbitrationService:
         designations = ctx.sheets.sheet_designations(campaign.id)
         tolerance = campaign.config.arbitration_tolerance
         out: list[dict[str, Any]] = []
-        for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id):
+        for line in ctx.arbitrations.list_arbitrations(campaign.id, zone_id=zone_id):
             q1, q2 = line.qty_pass_1, line.qty_pass_2
             divergent = q1 != q2
             if divergent and tolerance > 0 and q1 is not None and q2 is not None:
@@ -212,7 +212,7 @@ class ArbitrationService:
         ctx.guard(campaign, "count_entries")
         if qty < 0:
             raise ValidationError("Une quantité arbitrée ne peut pas être négative.")
-        ctx.sheets.decide_arbitration(
+        ctx.arbitrations.decide_arbitration(
             arbitration_id, qty, actor=ctx.actor, comment=comment
         )
         ctx.record(
@@ -251,7 +251,7 @@ class ArbitrationService:
         ctx.guard(campaign, "count_entries")
         open_lines = {
             line.id: line
-            for line in ctx.sheets.list_arbitrations(campaign.id, zone_id=zone_id)
+            for line in ctx.arbitrations.list_arbitrations(campaign.id, zone_id=zone_id)
         }
         unknown = [i for i in decisions if i not in open_lines]
         if unknown:
@@ -268,7 +268,7 @@ class ArbitrationService:
             if qty is None or qty < 0:
                 skipped += 1
                 continue
-            ctx.sheets.decide_arbitration(
+            ctx.arbitrations.decide_arbitration(
                 arbitration_id, qty, actor=ctx.actor, comment=BULK_COMMENT
             )
             decided += 1

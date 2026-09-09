@@ -2384,6 +2384,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/scans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Les scans archivés de la campagne
+         * @description Ce que l'archive contient, pièce par pièce.
+         *
+         *     L'archive existait et se téléchargeait déjà, mais seulement pour qui
+         *     connaissait l'identifiant de la feuille qui la porte : impossible de savoir
+         *     ce qu'elle contient, ni si elle contient quelque chose. Une archive qu'on ne
+         *     peut pas énumérer ne se contrôle pas.
+         *
+         *     La liste ne porte pas les octets — une pile de deux cents pages en pèse
+         *     trente mégaoctets. Chaque ligne dit ce qu'il faut pour décider de l'ouvrir,
+         *     et le téléchargement passe ensuite par la feuille, donc par la barrière de
+         *     campagne déjà en place.
+         */
+        get: operations["archived_scans_api_campaigns__campaign_id__scans_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/settings": {
         parameters: {
             query?: never;
@@ -9124,6 +9154,41 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archived_scans_api_campaigns__campaign_id__scans_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>[];
                 };
             };
             /** @description Validation Error */

@@ -378,12 +378,14 @@ def multi_scan_service(monkeypatch, *, routing, results, sheets_count=2):
             items=10, zones=2, book_stock_lines=5, book_stock_frozen=True
         ),
         evidence=archive,
+        arbitrations=SimpleNamespace(
+            list_arbitrations=lambda cid, **kw: [],
+            upsert_arbitrations=lambda lines, **kw: len(lines),
+        ),
         sheets=SimpleNamespace(
             list_zones=lambda cid, **kw: zones,
             list_sheets=lambda cid, **kw: sheets,
             lines_by_sheet=lambda cid, **kw: lines_by_sheet,
-            list_arbitrations=lambda cid, **kw: [],
-            upsert_arbitrations=lambda lines, **kw: len(lines),
             replace_sheet_lines=lambda sid, lines, *, actor, conn=None, keep_layout=False: (
                 written.append(sid) or ctx.db.note(f"lignes:{sid}")
             ),
@@ -676,6 +678,10 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
             items=10, zones=2, book_stock_lines=5, book_stock_frozen=True
         ),
         evidence=archive,
+        arbitrations=SimpleNamespace(
+            list_arbitrations=lambda cid, **kw: [],
+            upsert_arbitrations=lambda lines, **kw: len(lines),
+        ),
         sheets=SimpleNamespace(
             get_sheet=lambda sid: sheet,
             list_zones=lambda cid, **kw: [zone],
@@ -683,8 +689,6 @@ def one_sheet_bench(monkeypatch, *, free_entry: bool = False, pages: int = 1):
             # relit donc les feuilles de la zone juste après.
             list_sheets=lambda cid, **kw: [sheet],
             lines_by_sheet=lambda cid, **kw: {},
-            list_arbitrations=lambda cid, **kw: [],
-            upsert_arbitrations=lambda lines, **kw: len(lines),
             list_sheet_lines=lambda sid: expected,
             replace_sheet_lines=lambda sid, lines, *, actor, conn=None, keep_layout=False: ctx.db.note(
                 f"lignes:{sid}"

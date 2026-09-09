@@ -280,6 +280,16 @@ export const api = {
     request<AuditEvent[]>(`/campaigns/${id}/audit${qs(params)}`),
   importHistory: (id: string) =>
     request<Array<Record<string, unknown>>>(`/campaigns/${id}/imports`),
+  /**
+   * Les scans archivés de la campagne — une ligne par document déposé.
+   *
+   * Une pile déposée d'un coup est un seul document, et les feuilles qu'on y a
+   * lues pointent toutes dessus : la liste les regroupe plutôt que de rendre
+   * dix fois le même PDF. Elle ne porte pas les octets ; le fichier se demande
+   * ensuite par `downloads.sheetEvidence`.
+   */
+  archivedScans: (id: string) =>
+    request<Array<Record<string, unknown>>>(`/campaigns/${id}/scans`),
 
   // ------------------------------------------------------------ referentials
   // `counted` keeps only what a GENERIQUE sheet or a counting journal names.

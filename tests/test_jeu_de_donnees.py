@@ -233,7 +233,7 @@ def _saisir_generique(ctx, campaign) -> None:
         article = r["Numéro d'article"]
         zone = zones[r["Feuille"]]
         pending = [
-            a for a in ctx.sheets.list_arbitrations(campaign.id)
+            a for a in ctx.arbitrations.list_arbitrations(campaign.id)
             if a.zone_id == zone.id and a.item_number == article
         ]
         assert pending, f"aucun arbitrage ouvert pour {article}"

@@ -9,6 +9,7 @@ from .engine import Database, get_database, reset_database
 from .repositories import (
     AdjustmentRepository,
     AnalysisRepository,
+    ArbitrationRepository,
     AuditRepository,
     BackflushRepository,
     BookStockRepository,
@@ -33,6 +34,7 @@ __all__ = [
     "new_id",
     "AdjustmentRepository",
     "AnalysisRepository",
+    "ArbitrationRepository",
     "AuditRepository",
     "BookStockRepository",
     "CampaignRepository",

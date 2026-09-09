@@ -71,7 +71,7 @@ class GenericService:
             zones = [z for z in zones if perimeter.covers_zone(z.id)]
         sheets = ctx.sheets.list_sheets(campaign.id)
         lines = ctx.sheets.lines_by_sheet(campaign.id)
-        arbitrations = ctx.sheets.list_arbitrations(campaign.id)
+        arbitrations = ctx.arbitrations.list_arbitrations(campaign.id)
 
         by_zone: dict[str, list[CountSheet]] = {}
         for sheet in sheets:
@@ -219,7 +219,7 @@ class GenericService:
             refresh_zone_arbitrations(ctx, campaign, zone_id)
             pending = sum(
                 1
-                for a in ctx.sheets.list_arbitrations(campaign.id)
+                for a in ctx.arbitrations.list_arbitrations(campaign.id)
                 if a.zone_id == zone_id
                 and not a.is_resolved
                 and a.qty_pass_1 != a.qty_pass_2

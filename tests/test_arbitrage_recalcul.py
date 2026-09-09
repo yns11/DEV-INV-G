@@ -46,7 +46,11 @@ from inventory.domain.models import ArbitrationLine, CountSheet, CountSheetLine,
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICES = ROOT / "app" / "inventory" / "services"
-SHEET_REPO = ROOT / "app" / "inventory" / "db" / "repositories" / "sheet.py"
+#: L'arbitrage a son propre dépôt : il porte sur la zone et non sur une
+#: feuille, et la couche au-dessus le disait déjà par son propre service.
+ARBITRATION_REPO = (
+    ROOT / "app" / "inventory" / "db" / "repositories" / "arbitration.py"
+)
 
 #: Les deux façons d'écrire des lignes de feuille dans un dépôt.
 WRITES = {"replace_sheet_lines", "upsert_sheet_lines"}
@@ -156,7 +160,7 @@ class TestLaCoucheSqlNeSurvitPasAuDomaine:
     """Ce que le domaine efface doit s'effacer en base."""
 
     def test_lupsert_nefface_pas_la_decision_avec_un_coalesce(self):
-        source = SHEET_REPO.read_text(encoding="utf-8")
+        source = ARBITRATION_REPO.read_text(encoding="utf-8")
         upsert = source[source.index("def upsert_arbitrations"):]
         upsert = upsert[: upsert.index("def delete_arbitrations")]
         offenders = [
@@ -171,7 +175,7 @@ class TestLaCoucheSqlNeSurvitPasAuDomaine:
         )
 
     def test_les_trois_colonnes_sont_bien_reprises_de_la_ligne_posee(self):
-        source = SHEET_REPO.read_text(encoding="utf-8")
+        source = ARBITRATION_REPO.read_text(encoding="utf-8")
         upsert = source[source.index("def upsert_arbitrations"):]
         upsert = upsert[: upsert.index("def delete_arbitrations")]
         flat = upsert.replace("\n", " ")

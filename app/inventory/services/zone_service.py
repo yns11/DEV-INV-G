@@ -412,7 +412,7 @@ class ZoneService:
                 removed = ctx.sheets.delete_sheets_for_pass(
                     campaign.id, targets, SheetPass.PASS_2, conn=conn
                 )
-                ctx.sheets.delete_arbitrations(campaign.id, targets, conn=conn)
+                ctx.arbitrations.delete_arbitrations(campaign.id, targets, conn=conn)
             else:
                 for zone_id in targets:
                     created += ctx.sheets.ensure_sheets(

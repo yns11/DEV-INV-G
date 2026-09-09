@@ -135,10 +135,12 @@ def arbitration_service(lines, decided: list[tuple[str, Decimal, str]]):
         }),
         sheets=SimpleNamespace(
             list_zones=lambda cid, **kw: [zone],
-            list_arbitrations=lambda cid, **kw: list(lines),
             # Aucune feuille n'impose de désignation ici : la vue reprend donc
             # celle du référentiel, ce que le contrôle voisin vérifie.
             sheet_designations=lambda cid, **kw: {},
+        ),
+        arbitrations=SimpleNamespace(
+            list_arbitrations=lambda cid, **kw: list(lines),
             decide_arbitration=lambda aid, qty, *, actor, comment="": decided.append(
                 (aid, qty, comment)
             ),
@@ -271,8 +273,8 @@ def analysis_service(*, zone_lines, items=None, wip_rows=()):
             list_zones=lambda cid, **kw: [zone],
             list_sheets=lambda cid, **kw: sheets,
             lines_by_sheet=lambda cid, **kw: zone_lines,
-            list_arbitrations=lambda cid, **kw: [],
         ),
+        arbitrations=SimpleNamespace(list_arbitrations=lambda cid, **kw: []),
         consolidation=SimpleNamespace(
             wip_breakdown=lambda cid, child_item=None: list(wip_rows)
         ),

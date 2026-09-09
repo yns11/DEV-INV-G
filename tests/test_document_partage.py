@@ -26,7 +26,7 @@ from tests.early_count_db import disposable_database, make_campaign
 
 from inventory.config import get_settings
 from inventory.db import new_id
-from inventory.db.repositories import SheetRepository
+from inventory.db.repositories import ArbitrationRepository, SheetRepository
 from inventory.domain.enums import (
     CountLineKind,
     CountSection,
@@ -389,9 +389,10 @@ class TestArbitrerEnLot:
         from inventory.domain.models import ArbitrationLine
 
         service, campaign, zone, sheets, *_ = bench
+        arbitrations = ArbitrationRepository(db)
         start_counting(db, campaign.id)
         campaign = service.ctx.campaigns.get(campaign.id)
-        sheets.upsert_arbitrations([
+        arbitrations.upsert_arbitrations([
             ArbitrationLine(
                 id=new_id(), campaign_id=campaign.id, zone_id=zone.id,
                 item_number=number, section=CountSection.LINE_SIDE,
@@ -404,7 +405,9 @@ class TestArbitrerEnLot:
     def retained(self, sheets, campaign, zone):
         return {
             a.item_number: (a.qty_arbitrated, a.is_resolved)
-            for a in sheets.list_arbitrations(campaign.id, zone_id=zone.id)
+            for a in ArbitrationRepository(sheets.db).list_arbitrations(
+                campaign.id, zone_id=zone.id
+            )
         }
 
     def arbitration_service(self, service):
@@ -421,7 +424,9 @@ class TestArbitrerEnLot:
     def ids(self, sheets, campaign, zone):
         return {
             a.item_number: a.id
-            for a in sheets.list_arbitrations(campaign.id, zone_id=zone.id)
+            for a in ArbitrationRepository(sheets.db).list_arbitrations(
+                campaign.id, zone_id=zone.id
+            )
         }
 
     def test_tout_le_comptage_1(self, zone_arbitree):

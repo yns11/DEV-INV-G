@@ -278,10 +278,12 @@ class TestLArbitrage:
                 list_zones=lambda cid: [
                     SimpleNamespace(id="z1", code="B15", label="Zone B15")
                 ],
-                list_arbitrations=lambda cid, zone_id=None: [arb],
                 sheet_designations=lambda cid: {
                     ("z1", "P-1", "LINE_SIDE"): SHOP_NAME
                 },
+            ),
+            arbitrations=SimpleNamespace(
+                list_arbitrations=lambda cid, zone_id=None: [arb],
             ),
         ))
         campaign = SimpleNamespace(
@@ -304,8 +306,10 @@ class TestLArbitrage:
                 list_zones=lambda cid: [
                     SimpleNamespace(id="z1", code="B15", label="Zone B15")
                 ],
-                list_arbitrations=lambda cid, zone_id=None: [arb],
                 sheet_designations=lambda cid: {},
+            ),
+            arbitrations=SimpleNamespace(
+                list_arbitrations=lambda cid, zone_id=None: [arb],
             ),
         ))
         campaign = SimpleNamespace(

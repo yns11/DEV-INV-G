@@ -289,7 +289,7 @@ class TestOnARealDatabase:
 
         # Aucune zone n'a été fermée : c'est tout l'objet du contrôle.
         pending = [
-            a for a in ctx.sheets.list_arbitrations(campaign.id)
+            a for a in ctx.arbitrations.list_arbitrations(campaign.id)
             if a.zone_id == zone["id"] and not a.is_resolved
             and a.qty_pass_1 != a.qty_pass_2
         ]

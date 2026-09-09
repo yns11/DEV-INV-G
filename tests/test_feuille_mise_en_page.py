@@ -655,7 +655,7 @@ class TestLEcranPoseLesEnTetes:
         from inventory.config import get_settings
         from inventory.domain.models import Item
         from inventory.services.context import ServiceContext
-        from inventory.services.generic_service import GenericService
+        from inventory.services.zone_service import ZoneService
 
         campaign_id, zone, _sh = sheet
         ctx = ServiceContext(actor="test", db=db, settings=get_settings())
@@ -663,7 +663,9 @@ class TestLEcranPoseLesEnTetes:
             [Item(campaign_id=campaign_id, item_number="P-1", name="VIS")],
             actor="test",
         )
-        return GenericService(ctx), ctx.campaigns.get(campaign_id), zone
+        # Les en-têtes appartiennent à la zone : c'est une propriété du document
+        # qu'on prépare, pas une saisie de comptage.
+        return ZoneService(ctx), ctx.campaigns.get(campaign_id), zone
 
     def test_un_texte_se_pose_et_se_relit(self, service, sheets):
         generic, campaign, zone = service

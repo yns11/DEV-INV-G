@@ -324,7 +324,17 @@ def upsert_sheet_lines(
     #
     # Une liste de champs recopiée ne tient que ce qu'on a pensé à y mettre,
     # c'est-à-dire jamais celui qu'on vient d'ajouter.
-    rows = [line.model_dump() for line in payload.lines]
+    #
+    # ``exclude_unset`` transmet **ce que l'écran a dit**, et non ce que le
+    # contrat aurait mis à sa place. Un champ absent reste absent jusqu'au
+    # service, qui sait alors que cette écriture n'en parle pas et laisse en
+    # place ce que la ligne portait. Sans cela, l'aperçu de mise en page — qui
+    # envoie l'ordre des lignes et les intertitres, jamais les quantités —
+    # écrivait la valeur par défaut du contrat sur chaque ligne, c'est-à-dire
+    # effaçait les comptages relevés en atelier. La valeur par défaut d'un champ
+    # rend par ailleurs exactement ce que son absence rend : le contrat a été
+    # écrit pour, et `test_ecriture_partielle_de_feuille.py` le tient.
+    rows = [line.model_dump(exclude_unset=True) for line in payload.lines]
     written = service.upsert_sheet_lines(
             campaign,
             sheet_id,

@@ -130,22 +130,27 @@ class TestUneSaisieEtSaTrace:
 # --------------------------------------------------------------------------- #
 
 def generic_service() -> tuple[GenericService, Any, Any]:
-    service, ledger, ctx = _zones_and_sheets()
-    return GenericService(ctx), ledger, ctx
+    ledger, ctx = _zones_and_sheets()
+    service = GenericService(ctx)
+    service.refresh_arbitrations = (  # type: ignore[method-assign]
+        lambda campaign, zone_id=None: 0
+    )
+    return service, ledger, ctx
 
 
 def zone_service() -> tuple[ZoneService, Any, Any]:
     """Le même contexte, vu par le service qui administre les zones.
 
-    Les deux services écrivent dans la même base et par la même
-    transaction ; ce qui les sépare est le moment où l'on s'en sert, pas
-    la discipline d'écriture, et c'est cette discipline qu'on contrôle ici.
+    Les deux écrivent dans la même base et par la même transaction ; ce qui les
+    sépare est le moment où l'on s'en sert, pas la discipline d'écriture — et
+    c'est cette discipline que ce module contrôle.
     """
-    _service, ledger, ctx = _zones_and_sheets()
+    ledger, ctx = _zones_and_sheets()
     return ZoneService(ctx), ledger, ctx
 
 
-def _zones_and_sheets() -> tuple[GenericService, Any, Any]:
+def _zones_and_sheets() -> tuple[Any, Any]:
+    """Le contexte que les deux services partagent, et son journal d'écritures."""
     ctx = cast(Any, SimpleNamespace(actor="chef@usine"))
     ledger = with_transactions(ctx)
 
@@ -208,9 +213,7 @@ def _zones_and_sheets() -> tuple[GenericService, Any, Any]:
         items=10, zones=1, book_stock_lines=5, book_stock_frozen=True
     )
     with_access(ctx)
-    service = GenericService(ctx)
-    service.refresh_arbitrations = lambda campaign, zone_id=None: 0  # type: ignore[method-assign]
-    return service, ledger, ctx
+    return ledger, ctx
 
 
 class TestUneZoneEtSesFeuilles:

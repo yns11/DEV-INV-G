@@ -53,6 +53,37 @@ export interface LayoutLine extends Record<string, unknown> {
 const kindOf = (line: LayoutLine) => String(line.line_kind ?? 'ARTICLE')
 
 /**
+ * Ce que l'aperçu envoie pour une ligne — et, tout autant, ce qu'il n'envoie pas.
+ *
+ * **L'omission est la règle, pas un oubli.** Cet écran montre le *document* :
+ * l'ordre, les intertitres, les sections. Il n'affiche ni les quantités
+ * comptées, ni les commentaires, ni la désignation de feuille ; il n'en parle
+ * donc pas, et le serveur laisse en place ce que la ligne portait. Un champ
+ * absent de cette charge utile veut dire « je ne parle pas de ce champ ».
+ *
+ * C'est ce qui a manqué : le contrat complétait l'absence par sa valeur par
+ * défaut, et réordonner une feuille effaçait les comptages relevés en atelier
+ * sous un message annonçant « lignes enregistrées ». Réintroduire ici un
+ * `qty: …` ou un `comment: …` pris sur ce que l'écran a lu à l'ouverture
+ * recréerait la perte autrement — en réécrivant, au moment d'enregistrer, ce
+ * qu'un autre poste a saisi depuis.
+ *
+ * Extrait du composant pour être vérifiable : `generic.layout.test.ts` tient
+ * la liste des champs, dans les deux sens.
+ */
+export function layoutLinePayload(line: LayoutLine, index: number) {
+  return {
+    id: line.id ?? null,
+    itemNumber: String(line.item_number ?? ''),
+    section: String(line.section ?? 'LINE_SIDE'),
+    lineKind: kindOf(line),
+    label: String(line.label ?? ''),
+    unit: String(line.unit ?? 'PCE'),
+    displayOrder: index,
+  }
+}
+
+/**
  * Réinsère une ligne ailleurs dans la liste.
  *
  * Séparé du composant pour être vérifiable : c'est le seul endroit où l'ordre
@@ -104,15 +135,7 @@ export function SheetLayoutModal({
       return api.saveSheetLines(
         campaignId,
         sheet.id,
-        lines.map((line, index) => ({
-          id: line.id ?? null,
-          itemNumber: String(line.item_number ?? ''),
-          section: String(line.section ?? 'LINE_SIDE'),
-          lineKind: kindOf(line),
-          label: String(line.label ?? ''),
-          unit: String(line.unit ?? 'PCE'),
-          displayOrder: index,
-        })),
+        lines.map(layoutLinePayload),
         true,
         Number(query.data?.sheet?.row_version) || undefined,
       )

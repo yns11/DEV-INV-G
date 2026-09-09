@@ -4499,13 +4499,31 @@ export interface components {
             /** Lineids */
             lineIds: string[];
         };
-        /** SheetLineRow */
+        /**
+         * SheetLineRow
+         * @description Une ligne de feuille, telle qu'un écran la renvoie.
+         *
+         *     **Un champ absent veut dire « je ne parle pas de ce champ ».** Ce n'est pas
+         *     une commodité : c'est ce qui permet à deux écrans d'écrire la même feuille
+         *     sans se marcher dessus. La fenêtre de saisie montre les quantités et les
+         *     commentaires, donc elle en parle ; l'aperçu de mise en page montre le
+         *     document — l'ordre des lignes, les intertitres, les sections — et n'en parle
+         *     pas. Réordonner une feuille ne doit pas décider de ce qui a été compté
+         *     dedans.
+         *
+         *     **Un champ présent et vide veut dire « efface ».** L'autre moitié de la
+         *     règle, et elle compte autant : sans elle, une case qu'on vide dans la
+         *     fenêtre de saisie se remplirait de nouveau au rechargement.
+         *
+         *     Le routeur transmet donc la charge utile telle qu'elle est arrivée
+         *     (``model_dump(exclude_unset=True)``) et non complétée par les valeurs par
+         *     défaut. Ces valeurs par défaut restent celles que l'absence produit côté
+         *     service, pour tout champ dont l'absence n'a pas de sens propre : elles
+         *     documentent le contrat sans le contredire.
+         */
         SheetLineRow: {
-            /**
-             * Comment
-             * @default
-             */
-            comment: string;
+            /** Comment */
+            comment?: string | null;
             /** Displayorder */
             displayOrder?: number | null;
             /** Id */

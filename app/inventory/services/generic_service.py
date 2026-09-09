@@ -325,11 +325,28 @@ class GenericService:
                     display_order=int(row.get("display_order") or order),
                 ))
                 continue
+            # **Ce dont cette écriture ne parle pas, la ligne le garde.**
+            #
+            # L'aperçu de mise en page renvoie l'ordre des lignes, les
+            # intertitres et les sections — le document — et n'affiche ni
+            # quantité ni commentaire. Il n'en envoie donc aucun, et la valeur
+            # par défaut du contrat s'écrivait à leur place : réordonner une
+            # feuille effaçait les comptages relevés en atelier et les
+            # commentaires qui les expliquent, sous un message annonçant
+            # « lignes enregistrées ».
+            #
+            # La désignation portait déjà cette règle et c'est ce qui l'a
+            # protégée ; elle vaut maintenant pour les trois champs que la mise
+            # en page ne montre pas.
+            mentions_qty = "qty" in row
+            mentions_comment = "comment" in row
             # « 3*48+7 » plutôt que « 151 » : trois palettes de quarante-huit et
             # un fond de bac. La conversion a lieu ici et non dans le contrat
             # d'entrée parce que c'est ici qu'on connaît la campagne — donc le
             # réglage — et que le refus doit pouvoir nommer ce réglage.
-            qty, formula = _quantity_of(row, campaign=campaign)
+            qty, formula = (
+                _quantity_of(row, campaign=campaign) if mentions_qty else (None, "")
+            )
             if not allow_negative and qty is not None and qty < 0:
                 # One does not find minus twenty screws in a bin: a negative is
                 # a typo until a human says otherwise, zone by zone. Catching it
@@ -351,13 +368,24 @@ class GenericService:
             # toute la feuille dès qu'une seule cellule était corrigée. On ne
             # peut plus alors dire quelle valeur a été relue par un humain — ce
             # qui est justement ce que la colonne existe pour dire.
-            comment = str(row.get("comment") or "")
+            comment = (
+                str(row.get("comment") or "")
+                if mentions_comment or previous is None
+                else previous.comment
+            )
             untouched = (
                 previous is not None
                 and previous.qty_manual is None
                 and qty == (previous.qty if previous.has_entry else None)
                 and comment == previous.comment
             )
+            # Une écriture muette sur la quantité laisse en place les quatre
+            # colonnes qui la décrivent : ce qu'un humain a tapé, ce qu'un
+            # fichier ou une lecture IA avait apporté, l'opération écrite sur le
+            # papier, et d'où tout cela vient. `untouched` ne suffisait pas : il
+            # exige `qty_manual is None`, donc laissait tomber précisément les
+            # lignes qu'un compteur avait remplies.
+            keeps_qty = not mentions_qty and previous is not None
             lines.append(
                 CountSheetLine(
                     id=line_id,
@@ -368,14 +396,20 @@ class GenericService:
                     # A value typed by a human always lands in qty_manual so the
                     # AI reading it replaced stays visible next to it.
                     qty_imported=previous.qty_imported if previous else None,
-                    qty_manual=None if untouched else qty,
+                    qty_manual=(
+                        previous.qty_manual if keeps_qty and previous
+                        else (None if untouched else qty)
+                    ),
                     unit=str(row.get("unit") or "PCE"),
                     source=(
-                        previous.source if untouched and previous
+                        previous.source if (untouched or keeps_qty) and previous
                         else DataSource.MANUAL
                     ),
                     confidence=previous.confidence if previous else None,
-                    qty_formula=previous.qty_formula if untouched and previous else formula,
+                    qty_formula=(
+                        previous.qty_formula
+                        if (untouched or keeps_qty) and previous else formula
+                    ),
                     comment=comment,
                     display_order=int(row.get("display_order") or order),
                     name=_designation(row, previous=previous, items=items),
@@ -757,8 +791,16 @@ def _touches_quantities(
     Une ligne **sans entrée** ne porte aucune quantité, et c'est différent d'en
     porter une qui vaut zéro. Lui en écrire une — fût-elle zéro — reste un
     comptage : « bac vide » est un constat, pas une mise en page.
+
+    **Une ligne qui ne mentionne pas de quantité n'en change aucune.** Sans
+    cette règle, l'aperçu de mise en page — qui n'envoie pas de quantités — se
+    lisait comme l'effacement de toutes celles de la feuille : réordonner une
+    feuille aux quantités importées se heurtait au gel des comptages, avec un
+    message parlant de saisie sur un geste qui n'en est pas une.
     """
     for row in rows:
+        if "qty" not in row:
+            continue
         qty = row.get("qty")
         previous = existing.get(str(row.get("id") or ""))
         before = previous.qty if previous is not None and previous.has_entry else None

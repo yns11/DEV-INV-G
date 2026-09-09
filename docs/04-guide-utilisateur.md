@@ -321,6 +321,15 @@ et la vider ligne à ligne sur quatre-vingts références est le genre de travai
 qui fait renoncer, donc garder une feuille fausse. Rien n'est écrit avant
 « Enregistrer ».
 
+**Réordonner ne touche pas ce qui a été compté.** L'aperçu montre le document —
+l'ordre des lignes, les intertitres, les sections — et n'affiche ni les
+quantités, ni les commentaires, ni les désignations. Il ne les modifie donc pas
+non plus : déplacer une ligne, renommer un intertitre ou insérer une
+respiration en pleine phase de comptage laisse intacts les relevés de terrain,
+y compris sur la ligne déplacée. La règle vaut dans les deux sens — un écran
+qui **affiche** la colonne comptage en dispose : y vider une case la vide bien
+en base.
+
 **Nombre de comptages.** Sélectionnez des zones dans la grille et choisissez
 « Un seul comptage » ou « Double comptage ». Le double comptage est la règle ;
 le comptage unique s'assume zone par zone, pour une aire où une seconde équipe

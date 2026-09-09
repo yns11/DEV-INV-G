@@ -116,9 +116,11 @@ def charge(db):
 
     from inventory.services.zone_service import ZoneService
 
-    generic = ZoneService(ctx)
+    # Deux services, parce que la campagne fait deux gestes : administrer les
+    # zones en préparation, saisir leurs feuilles au comptage.
+    zones = ZoneService(ctx)
     for r in _rows("07-zones-generique.csv"):
-        generic.create_zone(
+        zones.create_zone(
             campaign, code=r["Code zone"], label=r["Libellé"],
             sector=r["Secteur"], display_order=int(r["Ordre"]),
         )
@@ -158,7 +160,7 @@ def charge(db):
     )
 
     # --- GENERIQUE : les deux passages, puis l'arbitrage ------------------
-    _saisir_generique(ctx, campaign, generic)
+    _saisir_generique(ctx, campaign)
 
     # --- Analyse : les mouvements postés après le comptage ------------------
     # Un ajustement est un mouvement réel enregistré pendant l'analyse ; il
@@ -181,9 +183,12 @@ def charge(db):
     return ctx, campaign
 
 
-def _saisir_generique(ctx, campaign, generic) -> None:
+def _saisir_generique(ctx, campaign) -> None:
     """Reporter les quantités des deux passages, puis l'arbitrage décidé."""
     from inventory.services.arbitration_service import ArbitrationService
+    from inventory.services.generic_service import GenericService
+
+    generic = GenericService(ctx)
 
     zones = {z.code: z for z in ctx.sheets.list_zones(campaign.id)}
     sheets = ctx.sheets.list_sheets(campaign.id)

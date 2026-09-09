@@ -1145,11 +1145,21 @@ def _touches_quantities(
     les comptages sont gelés doit répondre « c'est gelé » plutôt que de discuter
     la syntaxe de ce qu'on tente d'y écrire. Une opération y est donc comparée
     telle qu'écrite, à celle que la ligne portait déjà.
+
+    **Ce que la ligne portait, et non ce qu'un humain y avait tapé.** La
+    comparaison se faisait contre ``qty_manual`` seul, alors que les écrans
+    affichent — et renvoient — la quantité *effective* : le renvoi d'une
+    quantité venue de l'import se lisait donc comme une saisie neuve, sur une
+    ligne où personne n'avait rien touché.
+
+    Une ligne **sans entrée** ne porte aucune quantité, et c'est différent d'en
+    porter une qui vaut zéro. Lui en écrire une — fût-elle zéro — reste un
+    comptage : « bac vide » est un constat, pas une mise en page.
     """
     for row in rows:
         qty = row.get("qty")
         previous = existing.get(str(row.get("id") or ""))
-        before = previous.qty_manual if previous else None
+        before = previous.qty if previous is not None and previous.has_entry else None
         if qty in (None, ""):
             if before is not None:
                 return True

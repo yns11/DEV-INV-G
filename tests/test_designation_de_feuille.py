@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from conftest import with_transactions
 
 from inventory.domain.enums import CountSection
 from inventory.domain.models import (
@@ -386,3 +387,139 @@ class TestLeDocumentSurvit:
         source = inspect.getsource(sheet_extraction)
         assert source.count("name=expected_line.sheet_name") == 2
         assert "name=sheet_designation(line, items)" in source
+
+
+# --------------------------------------------------------------------------- #
+# 6. Renommer se fait en préparation, et la garde de phase le permet
+# --------------------------------------------------------------------------- #
+
+class TestRenommerEnPreparation:
+    """Le geste en préparation, contre la **vraie** garde.
+
+    Ce que ce contrôle ajoute, et ce qu'il n'ajoute pas — les deux méritent
+    d'être dits, parce que le défaut qui a mené ici s'est glissé entre des
+    contrôles qui avaient tous raison.
+
+    **Ce qu'il tient** : renommer une désignation est un acte de *préparation*,
+    et y écrire une quantité n'en est pas un. Les deux faces contre la garde de
+    l'application, sur une campagne en préparation — dimension qu'aucun contrôle
+    ne couvrait : ceux de la désignation prennent les fonctions pures, ceux de
+    la garde neutralisent ``guard`` pour parler d'autre chose.
+
+    **Ce qu'il ne tient pas** : le défaut lui-même, qui était dans la charge
+    utile. La grille à plat renvoyait la quantité *effective* de chaque ligne —
+    zéro, puisqu'« une case vide vaut zéro » — et demandait donc littéralement
+    l'écriture d'un comptage sur chaque ligne de la feuille. La garde avait
+    raison de refuser ; c'est l'écran qui mentait. Le contrôle vit là où la
+    faute était, dans ``preparation.sheets.test.ts``.
+    """
+
+    def _service(self, previous: CountSheetLine):
+        from inventory.config import get_settings
+        from inventory.services.context import ServiceContext
+        from inventory.services.generic_service import GenericService
+
+        written: list[CountSheetLine] = []
+        sheet = SimpleNamespace(
+            id="sheet-1", campaign_id="camp-1", zone_id="zone-1", version=1,
+        )
+        zone = SimpleNamespace(
+            id="zone-1", code="B06VRAC", allow_negative=False, passes=1,
+        )
+        ctx = ServiceContext(actor="chef@usine", db=cast(Any, None),
+                             settings=get_settings())
+        # Les dépôts que la garde et l'écriture consultent, et rien de plus :
+        # ce qui est en cause est la garde, pas le stockage.
+        ctx.__dict__["referentials"] = SimpleNamespace(
+            items_by_number=lambda cid: ITEMS,
+            count_items=lambda cid: len(ITEMS),
+        )
+        ctx.__dict__["sheets"] = SimpleNamespace(
+            get_sheet=lambda sid: sheet,
+            list_zones=lambda cid: [zone],
+            list_sheet_lines=lambda sid: [previous],
+            upsert_sheet_lines=lambda lines, actor, conn=None: (
+                written.extend(lines) or len(lines)
+            ),
+        )
+        ctx.__dict__["book_stock"] = SimpleNamespace(count=lambda cid: 0)
+        ctx.__dict__["journals"] = SimpleNamespace(count_lines=lambda cid: 0)
+        ctx.record = lambda **kw: None  # type: ignore[method-assign]
+        ctx.require_write = lambda campaign: None  # type: ignore[method-assign]
+        with_transactions(cast(Any, ctx))
+
+        instance = GenericService(ctx)
+        instance.refresh_arbitrations = (  # type: ignore[method-assign]
+            lambda campaign, zone_id: None
+        )
+        return instance, written
+
+    def _campaign(self):
+        import datetime as dt
+
+        from inventory.domain.enums import CampaignStatus
+        from inventory.domain.models import Campaign
+
+        return Campaign(
+            id="camp-1", code="INV-2026", label="Inventaire",
+            count_date=dt.date(2026, 9, 1), status=CampaignStatus.PREPARATION,
+            created_by="chef@usine",
+            created_at=dt.datetime(2026, 9, 1, tzinfo=dt.UTC),
+        )
+
+    def _row(self, **over: Any) -> dict[str, Any]:
+        """La charge utile de la grille à plat, telle qu'elle part.
+
+        Le champ ``qty`` est ce que ``sheetLinePayload`` produit : rien sur une
+        ligne que personne n'a comptée.
+        """
+        return {
+            "id": "ligne-1", "item_number": "P-1", "section": "LINE_SIDE",
+            "name": SHOP_NAME, "qty": None, "unit": "PCE", "comment": "",
+            **over,
+        }
+
+    def test_la_designation_s_enregistre(self):
+        instance, written = self._service(line())
+
+        assert instance.upsert_sheet_lines(
+            self._campaign(), "sheet-1", [self._row()]
+        ) == 1
+        assert written[0].name == SHOP_NAME
+
+    def test_et_la_garde_des_comptages_ne_s_en_mele_pas(self):
+        """Ce n'est pas un comptage : aucune quantité n'est écrite."""
+        instance, written = self._service(line())
+
+        instance.upsert_sheet_lines(self._campaign(), "sheet-1", [self._row()])
+
+        assert written[0].qty_manual is None
+
+    def test_mais_y_ecrire_une_quantite_reste_refuse(self):
+        """La garde n'a pas bougé, et c'est la moitié qui compte.
+
+        Le correctif fait taire l'écran, pas la garde : un correctif qui aurait
+        laissé passer un comptage en préparation aurait échangé un écran gelé
+        contre une preuve qui ne vaut rien.
+        """
+        from inventory.errors import FrozenError
+
+        instance, _ = self._service(line())
+
+        with pytest.raises(FrozenError) as refus:
+            instance.upsert_sheet_lines(
+                self._campaign(), "sheet-1", [self._row(qty=12)]
+            )
+
+        assert "saisie des comptages" in str(refus.value)
+
+    def test_y_compris_une_quantite_nulle(self):
+        """« Bac vide » est un constat de comptage, pas une mise en page."""
+        from inventory.errors import FrozenError
+
+        instance, _ = self._service(line())
+
+        with pytest.raises(FrozenError):
+            instance.upsert_sheet_lines(
+                self._campaign(), "sheet-1", [self._row(qty=0)]
+            )

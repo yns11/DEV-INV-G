@@ -197,6 +197,36 @@ export function CountSheetsTab({
  * c'est le serveur qui le décide. Ce qui se règle ici, c'est *ce qu'il y a à
  * compter*, pas ce qui a été trouvé.
  */
+/**
+ * Ce qu'une ligne de la grille renvoie au serveur.
+ *
+ * Sorti de la mutation pour être vérifiable : la règle qui suit est une règle,
+ * pas un détail de câblage, et elle a coûté un écran entier.
+ *
+ * **La quantité ne repart que si la ligne en porte une.** La colonne affiche
+ * zéro sur une ligne que personne n'a comptée — « une case vide vaut zéro » —
+ * et ce zéro est un affichage, pas une valeur. Le renvoyer revenait à demander
+ * l'écriture d'un comptage sur chaque ligne de la feuille : en préparation, où
+ * aucune ligne n'a de quantité, la garde des comptages refusait alors **tout**
+ * enregistrement depuis cet écran — renommer une désignation, corriger une
+ * section, changer une unité — par « la saisie des comptages est gelée ».
+ *
+ * Quand la ligne en porte une, elle repart telle quelle : ne pas la renvoyer
+ * l'effacerait. La colonne reste en lecture seule ici — les quantités se
+ * saisissent au comptage.
+ */
+export function sheetLinePayload(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    itemNumber: String(row.item_number ?? ''),
+    section: String(row.section ?? 'LINE_SIDE'),
+    name: String(row.name ?? ''),
+    qty: row.hasEntry ? (row.qty ?? null) : null,
+    unit: String(row.unit ?? 'PCE'),
+    comment: String(row.comment ?? ''),
+  }
+}
+
 function SheetLinesView({
   campaignId,
   zones,
@@ -298,17 +328,7 @@ function SheetLinesView({
         const result = await api.saveSheetLines(
           campaignId,
           sheetId,
-          sheetRows.map((row) => ({
-            id: row.id,
-            itemNumber: String(row.item_number ?? ''),
-            section: String(row.section ?? 'LINE_SIDE'),
-            name: String(row.name ?? ''),
-            // La quantité repart telle quelle : ne pas la renvoyer l'effacerait,
-            // et la modifier ici serait refusé par le serveur de toute façon.
-            qty: row.qty ?? null,
-            unit: String(row.unit ?? 'PCE'),
-            comment: String(row.comment ?? ''),
-          })),
+          sheetRows.map(sheetLinePayload),
         )
         written += result.written
       }

@@ -599,18 +599,31 @@ posée explicitement et à trois reprises (`guide §1.6`, `§2.1`, `§2.9`).
 - **Conséquence à annoncer** : l'import des feuilles reconnaît une zone à son **code**. Recharger ensuite un fichier qui porte encore l'ancien crée une seconde zone. *L'interdire reviendrait à refuser un renommage légitime pour un fichier que personne ne rechargera peut-être ; l'écran le dit donc au moment du geste.*
 - **Statut** : **[EC]** — demande explicite ; réalisé, `test_feuille_et_zone.py`.
 
+### EX-ZON-4c — Créer un lot de zones par collage
+- **Besoin exprimé** : *« rajouter un bouton “créer un lot de zones” à côté du bouton “créer une zone”. Cette fonctionnalité permet de créer à la volée autant de zones que de lignes avec Copier / Coller dans un champ de texte (fonctionnalité dispo sur d'autres vues). La colonne obligatoire est le nom (code de la zone), et parmi les colonnes qui peuvent être renseignées il y a “lignes BDL” (nombre de lignes vierges BDL), “lignes WIP” et “lignes WOP OK” »*.
+- **Déclencheur** : une campagne réelle compte quarante à soixante zones, et la liste existe déjà — dans un tableur, dans le compte rendu de la campagne précédente, sur le plan de l'atelier. Les recréer une par une dans une fenêtre modale, c'est quarante allers-retours pour recopier ce qu'on a sous les yeux.
+- **Résultat attendu** : autant de zones que de lignes collées, chacune avec ses feuilles de comptage, exactement comme une zone créée à l'unité.
+- **Règles** :
+  - **Une seule colonne est obligatoire : le code.** C'est la seule chose qu'une liste d'atelier porte à coup sûr.
+  - **L'en-tête décide, pas la position.** Les blocs collés n'ont pas deux fois le même ordre de colonnes, et exiger un ordre reviendrait à demander de retravailler le tableau avant de le coller, c'est-à-dire à ne rien faire gagner. Sans en-tête reconnaissable, les colonnes sont lues dans l'ordre code, BDL, WIP, WIP OK — celui de la feuille imprimée. *Un seul mot connu ne suffit pas à faire un en-tête : « BDL » seul est un nom de zone plausible, et le consommer ferait disparaître une zone en silence.*
+  - **Tout ou rien.** Les zones sont validées avant la première écriture — code manquant, doublon dans le collage, doublon avec une zone existante, nombre de lignes hors bornes — et le refus les nomme. *Un lot à moitié créé laisserait un état que personne n'a voulu et que rien ne dit comment défaire.*
+  - **Une ligne dont aucun code n'est tiré est signalée, jamais ignorée.** Une zone perdue entre le tableur et l'application est exactement le silence que cette application existe pour supprimer.
+  - **Un plafond au collage** : au-delà de deux cents zones d'un coup, le refus est immédiat. Un tableur entier collé par mégarde deviendrait sinon deux mille zones et quatre mille feuilles à supprimer une par une.
+- **Statut** : **[EC]** — demande explicite ; réalisé, `test_lot_de_zones.py` et `frontend/src/lib/pasteZones.test.ts`.
+
 ### EX-ZON-5 — Imprimer les feuilles
 - **Trois documents possibles, et l'écran n'offre que ceux qui existent** :
 
 | Document | Pour quelle zone | Quand |
 |---|---|---|
 | **Sans quantités** — la liste, colonne de comptage vide | zone avec liste pré-imprimée | dès la préparation |
-| **Sans références** — une grille vide de *n* lignes | zone en saisie libre | dès la préparation |
+| **Sans références** — une grille vide, du nombre de lignes que la zone déclare par section | zone en saisie libre | dès la préparation |
 | **Avec quantités** — le relevé de ce qui est revenu | les deux | à partir du comptage |
 
 - **Une zone dont la liste est connue ne se voit jamais proposer la grille vide** — elle ferait réécrire à la main une liste que l'application détient. Symétriquement pour l'inverse.
 - **La feuille à compter reçoit quelques lignes libres par section** ; **le relevé rempli n'en reçoit aucune** — inviter à écrire sur un relevé le rendrait discutable. Leur nombre est réglé sur ce qu'on y écrit réellement : **quatre au bord de ligne, deux en en-cours**. **[EC]** — *« réduire le nombre de lignes vides imprimées à la fin de chaque section à 4 pour le BDL et 2 pour le WIP »*. *Le repreneur doit retenir l'intention — peu de lignes, davantage là où les surprises arrivent — et non ces deux nombres, qui dépendent de la hauteur de ligne retenue.*
 - **Une section d'en-cours qui ne porte aucun article ne s'imprime pas du tout** : ni son bandeau, ni ses lignes libres. **[EC]** — *« ne pas imprimer les sections WIP et WIP_OK si elles ne contiennent aucun article »*. Beaucoup de zones n'ont ni WIP ni WIP assemblé, et leur feuille sortait avec un tiers de page consacré à des sections que la zone n'a pas. **Le bord de ligne, lui, s'imprime toujours** : ses lignes libres sont l'endroit où l'on note une référence que personne n'avait listée, et c'est sur une feuille courte qu'on en a le plus besoin.
+- **La zone dit combien de lignes vierges chaque section imprime, de 0 à 120, et une section à 0 ne s'imprime pas.** **[EC]** — *« pour les zones vierges : actuellement, seule la section bord de ligne s'affiche. À corriger pour permettre d'indiquer le nombre de lignes vides par section (entre 0 et 120). Si le nombre est égal à 0, la section n'est pas à imprimer dans le pdf »*. Le réglage appartient à la **zone** et non à l'impression : c'est une propriété de ce qu'on va compter là-bas, pas une décision qu'on reprend à chaque sortie d'imprimante — et c'est ce qui permet de le renseigner en créant les zones, à l'unité ou par lot collé. **Zéro et absent sont le même état** : les distinguer donnerait deux écritures pour une seule réalité, et deux lectures qui divergent. Une zone qui ne déclare **rien** garde le comportement d'avant — le nombre demandé au moment d'imprimer va tout entier au bord de ligne — car sans cette porte de sortie les zones créées avant ce réglage sortiraient une page blanche à en-tête.
 - **Exigences de lisibilité terrain** : sections séparées visuellement, colonne de comptage large, bloc signature, **identité de la feuille rappelée en pied de chaque page** (une page séparée de sa liasse reste traçable), marges serrées et lignes hautes (*un chiffre écrit avec des gants a besoin de place*), désignations **tronquées plutôt que repliées** (une cellule sur deux lignes diviserait par deux le nombre de lignes par page).
 - **Répartition des largeurs** : la référence doit primer sur la désignation, le comptage et l'unité. **[EC]** — demande chiffrée : *« diminuer la taille des colonnes désignation, comptage et unité de 10 %, 5 % et 20 % respectivement pour augmenter la taille de la colonne Référence »*. **Le repreneur doit retenir l'intention — priorité à la référence — et non ces pourcentages, qui étaient relatifs à une mise en page donnée.**
 - **Les commentaires doivent tenir dans leur case** sur le relevé imprimé. **[EC]**
@@ -1126,7 +1139,7 @@ réimplémentation perd en premier.
 | **Ligne de journal ERP** | Numéro de ligne, date de comptage, emplacement, **étiquette**, **numéro de série**, article, **stock ERP avant comptage**, quantité comptée, unité, statut qualité, postage |
 | **Journal de comptage** | Un par (campagne, entrepôt, emplacement), statut, avancement |
 | **Ligne de comptage** | Article, **quantité importée et quantité corrigée conservées séparément**, référence ERP (absente ≠ nulle), provenance |
-| **Zone** | Code, libellé, nombre de comptages, saisie libre ou non, gestionnaire, **textes d'en-tête de section**, décision de clôture (date, auteur) |
+| **Zone** | Code, libellé, nombre de comptages, saisie libre ou non, gestionnaire, **textes d'en-tête de section**, **nombre de lignes vierges par section**, décision de clôture (date, auteur) |
 | **Ligne de feuille** | **Nature** (article / sous-section / ligne vide), article, section, sous-section, libellé, unité, **ordre d'affichage**, quantité, **texte de formule d'origine**, commentaire, confiance, **provenance de la ligne** |
 | **Arbitrage** | Article, section, quantités des deux passages, quantité retenue, auteur, date, **et de quoi savoir si les chiffres ont bougé depuis** |
 | **Consolidation** | Exécution horodatée, lignes produites, **décomposition parent → composant → zone** |

@@ -491,6 +491,15 @@ export interface Zone {
    * recopier les deux autres, et de revenir au défaut en vidant le champ.
    */
   section_labels: Record<string, string>
+  /**
+   * Combien de lignes vierges chaque section imprime, par code de section.
+   *
+   * Une section absente n'imprime rien — zéro et absent sont le même état, et
+   * en garder deux écritures ferait diverger deux lectures. Un objet vide, qui
+   * est celui des zones créées avant ce réglage, rend le comportement d'avant :
+   * le nombre demandé à l'impression va tout entier au bord de ligne.
+   */
+  blank_rows: Record<string, number>
   status: ZoneStatus
   /** Quand la zone a été déclarée terminée, et par qui. Null = encore ouverte. */
   closed_at: string | null

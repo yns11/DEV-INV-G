@@ -32,6 +32,7 @@ from .scan_jobs import (
 )
 from .scan_service import ScanService
 from .stock_flow_service import StockFlowService
+from .zone_service import MAX_BULK_ZONES, ZoneService
 
 __all__ = [
     "AnalysisService",
@@ -51,6 +52,8 @@ __all__ = [
     "ENGINE_VERSION",
     "ConsolidationService",
     "GenericService",
+    "ZoneService",
+    "MAX_BULK_ZONES",
     "ScanService",
     "ImportOutcome",
     "ImportService",

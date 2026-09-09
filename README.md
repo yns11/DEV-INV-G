@@ -183,7 +183,7 @@ frontend/                   React + TypeScript + Vite
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
 fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
-tests/                      3037 contrôles ; 287 exigent un PostgreSQL, ignorés sinon
+tests/                      3107 contrôles ; 290 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur

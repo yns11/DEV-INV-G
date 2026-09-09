@@ -24,6 +24,7 @@ from ..domain.enums import (
     LocationStatus,
 )
 from ..services.campaign_service import MAX_BULK_DELETE
+from ..services.zone_service import MAX_BULK_ZONES
 
 __all__ = [
     "ApiModel",
@@ -50,6 +51,8 @@ __all__ = [
     "JournalScopeRequest",
     "UnsealRequest",
     "ZoneRequest",
+    "ZoneBulkRequest",
+    "ZoneBlankRowsRequest",
     "ZoneRenameRequest",
     "ZonePassesRequest",
     "ZoneNegativeRequest",
@@ -358,6 +361,37 @@ class ZoneRequest(ApiModel):
     #: right after.
     free_entry: bool = Field(default=True, alias="freeEntry")
     manager_code: str = Field(default="", alias="managerCode")
+    #: Combien de lignes vierges chaque section imprime, par code de section.
+    #:
+    #: Ne concerne que la feuille vierge. Une section absente — ou à zéro — ne
+    #: s'imprime pas : c'est ce qui permet à une zone de ne sortir que le bord
+    #: de ligne, ou au contraire de sortir ses deux sections d'en-cours.
+    #:
+    #: Les bornes sont celles du domaine, qui refuse plutôt que de rogner :
+    #: « 500 » tapé pour « 50 » coûte une rame avant que quiconque ne le voie.
+    blank_rows: dict[str, int] | None = Field(default=None, alias="blankRows")
+
+
+class ZoneBulkRequest(ApiModel):
+    """Un lot de zones, tel qu'un bloc collé le décrit.
+
+    L'écran analyse le collage — c'est lui qui connaît le vocabulaire des
+    en-têtes — et envoie des zones déjà nommées. Le serveur les valide toutes
+    avant d'en écrire une seule : trente zones créées et un refus sur la
+    trente et unième laisserait un état que personne n'a voulu.
+    """
+
+    zones: list[ZoneRequest] = Field(min_length=1, max_length=MAX_BULK_ZONES)
+
+
+class ZoneBlankRowsRequest(ApiModel):
+    """Les lignes vierges d'une zone, section par section.
+
+    Le dictionnaire est posé **en entier** : une section absente vaut zéro, et
+    c'est bien ainsi qu'on retire une section de la page.
+    """
+
+    blank_rows: dict[str, int] = Field(default_factory=dict, alias="blankRows")
 
 
 class ZoneRenameRequest(ApiModel):

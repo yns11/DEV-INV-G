@@ -37,7 +37,8 @@ class SheetRepository(_Base):
 
     _ZONE_COLUMNS = (
         "id, campaign_id, code, label, sector, display_order, passes, free_entry, "
-        "manager_code, allow_negative, closed_at, closed_by, section_labels"
+        "manager_code, allow_negative, closed_at, closed_by, section_labels, "
+        "blank_rows"
     )
 
     def list_zones(
@@ -55,16 +56,44 @@ class SheetRepository(_Base):
     def create_zone(
         self, zone: Zone, *, actor: str, conn: psycopg.Connection | None = None
     ) -> Zone:
+        from psycopg.types.json import Jsonb
+
         self._execute(
             "INSERT INTO zone (id, campaign_id, code, label, sector, display_order, "
-            "passes, free_entry, manager_code, allow_negative, updated_by, updated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())",
+            "passes, free_entry, manager_code, allow_negative, blank_rows, "
+            "updated_by, updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())",
             (zone.id, zone.campaign_id, zone.code, zone.label, zone.sector,
              zone.display_order, zone.passes, zone.free_entry, zone.manager_code,
-             zone.allow_negative, actor),
+             zone.allow_negative, Jsonb(zone.blank_rows), actor),
             conn=conn,
         )
         return zone
+
+    def set_blank_rows(
+        self,
+        campaign_id: str,
+        zone_id: str,
+        rows: dict[str, int],
+        *,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Combien de lignes vierges chaque section de cette zone imprime.
+
+        Écrit en entier plutôt que fusionné : le formulaire montre les trois
+        sections à la fois, et une fusion ferait qu'une section ramenée à zéro
+        garderait son ancien nombre — c'est-à-dire que le geste le plus utile du
+        réglage, retirer une section de la page, serait le seul sans effet.
+        """
+        from psycopg.types.json import Jsonb
+
+        self._execute(
+            "UPDATE zone SET blank_rows = %s, updated_by = %s, updated_at = now() "
+            "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
+            (Jsonb(rows), actor, campaign_id, zone_id),
+            conn=conn,
+        )
 
     def set_section_labels(
         self,
@@ -727,6 +756,7 @@ class SheetRepository(_Base):
             allow_negative=row["allow_negative"],
             closed_at=row["closed_at"], closed_by=row["closed_by"] or "",
             section_labels=row.get("section_labels") or {},
+            blank_rows=row.get("blank_rows") or {},
         )
 
     @staticmethod

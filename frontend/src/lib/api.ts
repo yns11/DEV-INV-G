@@ -597,10 +597,36 @@ export const api = {
     passes?: 1 | 2
     freeEntry?: boolean
     managerCode?: string
+    blankRows?: Record<string, number>
   }) =>
     request<Zone>(`/campaigns/${id}/generic/zones`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+  /**
+   * Créer d'un coup toutes les zones d'un bloc collé.
+   *
+   * Tout ou rien côté serveur : un lot à moitié créé laisserait un état que
+   * personne n'a voulu, et dont rien ne dit comment le défaire.
+   */
+  createZones: (id: string, zones: Array<{
+    code: string
+    label?: string
+    blankRows?: Record<string, number>
+  }>) =>
+    request<{ created: number; zones: Zone[] }>(
+      `/campaigns/${id}/generic/zones/bulk`,
+      { method: 'POST', body: JSON.stringify({ zones }) },
+    ),
+  /** Combien de lignes vierges chaque section de cette zone imprime. */
+  setZoneBlankRows: (
+    id: string,
+    zoneId: string,
+    blankRows: Record<string, number>,
+  ) =>
+    request<Zone>(`/campaigns/${id}/generic/zones/${zoneId}/blank-rows`, {
+      method: 'POST',
+      body: JSON.stringify({ blankRows }),
     }),
   setZonePasses: (id: string, zoneIds: string[], passes: 1 | 2) =>
     request<{ updated: number; sheetsRemoved: number; sheetsCreated: number }>(

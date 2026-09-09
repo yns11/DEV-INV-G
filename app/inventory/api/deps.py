@@ -28,6 +28,7 @@ from ..services import (
     ReportService,
     ScanJobService,
     ServiceContext,
+    ZoneService,
 )
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ __all__ = [
     "evidence_service",
     "arbitration_service",
     "generic_service",
+    "zone_service",
     "analysis_service",
     "import_service",
     "manager_service",
@@ -151,6 +153,10 @@ def arbitration_service(ctx: Ctx) -> ArbitrationService:
 
 def generic_service(ctx: Ctx) -> GenericService:
     return GenericService(ctx)
+
+
+def zone_service(ctx: Ctx) -> ZoneService:
+    return ZoneService(ctx)
 
 
 def consolidation_service(ctx: Ctx) -> ConsolidationService:

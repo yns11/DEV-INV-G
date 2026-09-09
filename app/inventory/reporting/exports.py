@@ -169,6 +169,7 @@ def build_counting_sheet_pdf(
     mode: PrintMode = PrintMode.LIST,
     with_sources: bool = False,
     blank_lines: int = 0,
+    blank_rows: Mapping[str, int] | None = None,
     section_titles: Mapping[str, str] | None = None,
 ) -> bytes:
     """Render a printable counting sheet in one of its three modes.
@@ -201,8 +202,11 @@ def build_counting_sheet_pdf(
         empty rows and nothing else — the free-entry sheet.
     :param with_sources: add the provenance and comment columns. Only meaningful
         in :attr:`~inventory.domain.printing.PrintMode.FILLED`.
-    :param blank_lines: number of rows on a free-entry sheet. Exactly what was
-        asked for: somebody who says forty lines gets forty.
+    :param blank_lines: number of rows on a free-entry sheet, used only when the
+        zone declares none. Exactly what was asked for: somebody who says forty
+        lines gets forty.
+    :param blank_rows: combien de lignes vierges chaque section imprime, tel que
+        la zone le déclare. Une section à zéro — ou absente — ne s'imprime pas.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -326,7 +330,7 @@ def build_counting_sheet_pdf(
     filled = mode is PrintMode.FILLED
     printed_a_section = False
     for section, section_lines, extras in printed_sections(
-        by_section, mode=mode, blank_lines=blank_lines
+        by_section, mode=mode, blank_lines=blank_lines, declared_rows=blank_rows
     ):
 
         # The section title travels *inside* the table as a repeated row rather
@@ -543,19 +547,34 @@ _BODY_FONT_SIZE = 8.5
 _NAME_COLUMN_POINTS = _WIDTHS_PLAIN[1] * 72 / 25.4 - 12
 
 
-def _blank_rows_for(section: str, *, mode: PrintMode, requested: int) -> int:
+def _blank_rows_for(
+    section: str,
+    *,
+    mode: PrintMode,
+    requested: int,
+    declared: Mapping[str, int] | None = None,
+) -> int:
     """How many empty rows a section gets.
 
-    A record of what was counted gets none. A free-entry sheet is nothing *but*
-    empty rows, all in one table — the counter writes both the reference and the
-    quantity, so splitting a requested total across three sections would only
-    make the number they asked for come out wrong. The sheet handed to a counter
-    keeps a small allowance per section, so an article nobody listed has
+    A record of what was counted gets none. The sheet handed to a counter keeps
+    a small fixed allowance per section, so an article nobody listed has
     somewhere to go.
+
+    La feuille vierge, elle, **n'est** que des lignes vides, et c'est la zone
+    qui dit combien par section : une aire qui compte des en-cours sur papier
+    vierge n'avait aucun moyen de le demander, et les trois bandeaux sortaient
+    de toute façon sur les zones qui n'en ont pas.
+
+    Une section absente du réglage vaut zéro, et zéro ne s'imprime pas. Une zone
+    qui ne déclare **rien** est une zone créée avant ce réglage : le nombre
+    demandé à l'impression va alors au bord de ligne, comme avant, plutôt que de
+    sortir une feuille sans une seule ligne.
     """
     if mode is PrintMode.FILLED:
         return 0
     if mode is PrintMode.BLANK:
+        if declared:
+            return declared.get(section, 0)
         return requested if section == "LINE_SIDE" else 0
     return BLANK_ROWS_PER_SECTION.get(section, 0)
 
@@ -569,6 +588,7 @@ def printed_sections(
     *,
     mode: PrintMode,
     blank_lines: int,
+    declared_rows: Mapping[str, int] | None = None,
 ) -> list[tuple[str, list[dict[str, Any]], int]]:
     """Quelles sections sortent de l'imprimante, avec leurs lignes libres.
 
@@ -581,15 +601,25 @@ def printed_sections(
     tiers de la page, et une invitation à écrire dans une section que la zone
     n'a pas.
 
-    **Le bord de ligne, lui, s'imprime toujours.** Ses lignes libres sont
-    l'endroit où l'on note une référence que personne n'avait listée, et c'est
-    précisément sur une feuille courte qu'on en a le plus besoin.
+    **Le bord de ligne, lui, s'imprime toujours** — sauf sur une feuille vierge
+    dont la zone lui donne zéro ligne. Ses lignes libres sont l'endroit où l'on
+    note une référence que personne n'avait listée, et c'est précisément sur une
+    feuille courte qu'on en a le plus besoin ; mais une zone en saisie libre qui
+    ne compte que des en-cours a le droit de le dire, et lui imposer un bandeau
+    « bord de ligne » vide serait lui refuser le réglage qu'on vient de lui
+    donner.
     """
     out: list[tuple[str, list[dict[str, Any]], int]] = []
     for section in PRINTED_SECTIONS:
         lines = [] if mode is PrintMode.BLANK else list(by_section.get(section, ()))
-        extras = _blank_rows_for(section, mode=mode, requested=blank_lines)
-        if section != "LINE_SIDE" and not _has_articles(lines):
+        extras = _blank_rows_for(
+            section, mode=mode, requested=blank_lines, declared=declared_rows
+        )
+        if (
+            section != "LINE_SIDE"
+            and mode is not PrintMode.BLANK
+            and not _has_articles(lines)
+        ):
             continue
         if not lines and not extras:
             continue

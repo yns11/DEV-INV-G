@@ -42,6 +42,7 @@ from inventory.domain.models import CountSheetLine, Zone
 from inventory.services.consolidation_service import ConsolidationService
 from inventory.services.counting_service import CountingService
 from inventory.services.generic_service import GenericService
+from inventory.services.zone_service import ZoneService
 
 CAMPAIGN_ID = "camp-1"
 
@@ -129,6 +130,22 @@ class TestUneSaisieEtSaTrace:
 # --------------------------------------------------------------------------- #
 
 def generic_service() -> tuple[GenericService, Any, Any]:
+    service, ledger, ctx = _zones_and_sheets()
+    return GenericService(ctx), ledger, ctx
+
+
+def zone_service() -> tuple[ZoneService, Any, Any]:
+    """Le même contexte, vu par le service qui administre les zones.
+
+    Les deux services écrivent dans la même base et par la même
+    transaction ; ce qui les sépare est le moment où l'on s'en sert, pas
+    la discipline d'écriture, et c'est cette discipline qu'on contrôle ici.
+    """
+    _service, ledger, ctx = _zones_and_sheets()
+    return ZoneService(ctx), ledger, ctx
+
+
+def _zones_and_sheets() -> tuple[GenericService, Any, Any]:
     ctx = cast(Any, SimpleNamespace(actor="chef@usine"))
     ledger = with_transactions(ctx)
 
@@ -200,7 +217,7 @@ class TestUneZoneEtSesFeuilles:
     """Une zone sans feuilles est une zone que rien ne permet de compter."""
 
     def test_zone_feuilles_et_audit_partagent_la_transaction(self):
-        service, ledger, _ = generic_service()
+        service, ledger, _ = zone_service()
         service.create_zone(campaign(CampaignStatus.PREPARATION), code="Z9")
         assert list(ledger.writes) == ["zone", "feuilles", "audit"]
         assert ledger.all_writes_inside_one_transaction(), ledger.writes

@@ -1074,6 +1074,21 @@ class Zone(DomainModel):
     #: donc l'état normal, pas un manque.
     section_labels: dict[str, str] = Field(default_factory=dict)
     display_order: int = 0
+    #: Combien de lignes vierges chaque section imprime, par code de section.
+    #:
+    #: Ne concerne que les zones **en saisie libre** : sur une feuille qui porte
+    #: une liste d'articles, les lignes libres sont une petite réserve fixe, pas
+    #: une décision de zone.
+    #:
+    #: Une section absente vaut zéro, et **zéro ne s'imprime pas**. C'est là
+    #: tout l'intérêt : la feuille vierge n'offrait que le bord de ligne, et une
+    #: zone qui compte des en-cours n'avait aucun moyen de le dire ; à l'inverse,
+    #: sortir systématiquement les trois bandeaux invite à écrire sous un titre
+    #: que la zone n'a pas.
+    #:
+    #: Un dictionnaire vide est l'état des zones créées avant ce réglage : le
+    #: nombre demandé à l'impression va alors au bord de ligne, comme avant.
+    blank_rows: dict[str, int] = Field(default_factory=dict)
     #: Number of independent counts this zone requires. Two is the rule; one is
     #: the assumed exception for an area where a second team adds nothing.
     passes: int = Field(default=2, ge=1, le=2)
@@ -1091,6 +1106,42 @@ class Zone(DomainModel):
     #: cheaper than explaining it at the variance meeting. Correction sheets are
     #: the legitimate exception, and they say so.
     allow_negative: bool = False
+
+    @field_validator("blank_rows", mode="before")
+    @classmethod
+    def _blank_rows(cls, v: Any) -> dict[str, int]:
+        """Des sections connues, des entiers dans les bornes, et rien d'autre.
+
+        Refusé plutôt que rogné : « 500 » tapé pour « 50 » est une faute de
+        frappe, et l'imprimer sur cent vingt lignes en silence coûte une rame de
+        papier avant que quiconque ne s'en aperçoive.
+        """
+        from .printing import MAX_BLANK_ROWS_PER_SECTION
+
+        if not v:
+            return {}
+        out: dict[str, int] = {}
+        for section, count in dict(v).items():
+            key = str(section).strip().upper()
+            if key not in CountSection.__members__:
+                raise ValueError(f"section inconnue : {section!r}")
+            try:
+                number = int(count)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"nombre de lignes invalide sur {key} : {count!r}"
+                ) from exc
+            if not 0 <= number <= MAX_BLANK_ROWS_PER_SECTION:
+                raise ValueError(
+                    f"nombre de lignes hors bornes sur {key} : {number} "
+                    f"(attendu 0 à {MAX_BLANK_ROWS_PER_SECTION})"
+                )
+            # Zéro ne se stocke pas : « cette section ne s'imprime pas » et
+            # « cette section n'a rien de déclaré » sont le même état, et en
+            # garder deux écritures ferait diverger deux lectures.
+            if number:
+                out[key] = number
+        return out
 
     @field_validator("code", mode="before")
     @classmethod

@@ -235,6 +235,109 @@ class TestLEnTeteDeLaZoneAtteintLePapier:
         assert "Composants en bord de ligne" not in text
 
 
+class TestLesLignesViergesDeLaZoneAtteignentLePapier:
+    """Même défaut, même contrôle : une colonne posée et personne pour la lire.
+
+    Le réglage part de la zone, traverse le dépôt, le service et le générateur
+    de PDF. Chacun de ces trois passages a déjà été l'endroit où un champ s'est
+    perdu ; le contrôle lit donc la page, et non un appel.
+    """
+
+    @staticmethod
+    def _text(payload: bytes) -> str:
+        import pypdfium2
+
+        assert payload[:4] == b"%PDF"
+        document = pypdfium2.PdfDocument(payload)
+        try:
+            return "\n".join(
+                page.get_textpage().get_text_bounded() for page in document
+            )
+        finally:
+            document.close()
+
+    @pytest.fixture
+    def vierge(self, db, sheets):
+        """Une zone en saisie libre qui ne compte que des en-cours."""
+        from inventory.config import get_settings
+        from inventory.services.context import ServiceContext
+        from inventory.services.report_service import ReportService
+
+        campaign_id = make_campaign(db, f"LV-{uuid.uuid4().hex[:8]}")
+        zone = sheets.create_zone(
+            Zone(
+                id=new_id(), campaign_id=campaign_id, code="ZONE-WIP",
+                free_entry=True,
+            ),
+            actor="alice",
+        )
+        sheets.ensure_sheets(campaign_id, zone.id, [SheetPass.PASS_1], actor="alice")
+        sheets.set_blank_rows(
+            campaign_id, zone.id, {"WIP": 6, "WIP_OK": 4}, actor="alice"
+        )
+        ctx = ServiceContext(actor="test", db=db, settings=get_settings())
+        return ReportService(ctx), ctx.campaigns.get(campaign_id)
+
+    def test_a_l_impression_d_une_feuille(self, vierge):
+        from inventory.domain.printing import PrintMode
+
+        reports, campaign = vierge
+        sheet_id = reports.ctx.sheets.list_sheets(campaign.id)[0].id
+        payload, _name = reports.counting_sheet_pdf(
+            campaign, sheet_id, mode=PrintMode.BLANK, blank_lines=40
+        )
+
+        text = self._text(payload)
+        assert "en-cours non déclaré" in text
+        assert "MOM OK" in text
+        # Le bord de ligne n'est pas déclaré : quarante cases vides sous
+        # lesquelles cette zone n'a rien à compter ne sortent pas.
+        assert "Composants en bord de ligne" not in text
+
+    def test_et_a_l_impression_groupee(self, vierge):
+        """La pile imprimée la veille est le vrai usage : c'est elle qu'on plie."""
+        from inventory.domain.printing import PrintMode
+
+        reports, campaign = vierge
+        payload, _name = reports.all_counting_sheets_pdf(
+            campaign, mode=PrintMode.BLANK, blank_lines=40
+        )
+
+        text = self._text(payload)
+        assert "en-cours non déclaré" in text
+        assert "Composants en bord de ligne" not in text
+
+    def test_une_zone_qui_ne_declare_rien_imprime_comme_avant(self, db, sheets):
+        """Le contrôle du contrôle : sans réglage, la page n'est pas vide.
+
+        Sans lui, les deux assertions ci-dessus passeraient aussi bien sur un
+        générateur qui n'imprimerait plus jamais le bord de ligne.
+        """
+        from inventory.config import get_settings
+        from inventory.domain.printing import PrintMode
+        from inventory.services.context import ServiceContext
+        from inventory.services.report_service import ReportService
+
+        campaign_id = make_campaign(db, f"LV-{uuid.uuid4().hex[:8]}")
+        zone = sheets.create_zone(
+            Zone(
+                id=new_id(), campaign_id=campaign_id, code="ZONE-BDL",
+                free_entry=True,
+            ),
+            actor="alice",
+        )
+        sheets.ensure_sheets(campaign_id, zone.id, [SheetPass.PASS_1], actor="alice")
+        ctx = ServiceContext(actor="test", db=db, settings=get_settings())
+        reports = ReportService(ctx)
+        campaign = ctx.campaigns.get(campaign_id)
+
+        payload, _name = reports.counting_sheet_pdf(
+            campaign, ctx.sheets.list_sheets(campaign_id)[0].id,
+            mode=PrintMode.BLANK, blank_lines=10,
+        )
+        assert "Composants en bord de ligne" in self._text(payload)
+
+
 class TestLImportPoseLesIntertitres:
     """Le fichier est plat ; la feuille est un document.
 

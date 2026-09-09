@@ -55,6 +55,7 @@ SHIPPED = {
     "027_feuille_mise_en_page": "ad8ffe2f1340",
     "028_designation_de_feuille": "fbef81b41ec4",
     "029_une_seule_reference": "990fd7f3016c",
+    "030_zone_lignes_vierges": "089e21c83682",
 }
 
 

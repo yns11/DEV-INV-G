@@ -332,6 +332,28 @@ vide : le compteur écrit ce qu'il trouve. Elle est marquée comme telle, ce qui
 évite que les contrôles ne la signalent comme une préparation oubliée. Charger
 une liste d'articles lève automatiquement la mention.
 
+**Lignes vierges, section par section.** La colonne *Lignes vierges* de la
+grille dit combien de lignes chaque section imprimera sur la feuille vierge, et
+s'ouvre d'un clic pour les régler — de 0 à 120 par section. **Une section à 0
+n'est pas imprimée du tout** : une zone qui ne compte que des en-cours ne sort
+plus avec un bandeau « bord de ligne » et quarante cases vides sous lesquelles
+elle n'a rien à compter, et une zone qui compte des en-cours peut enfin le
+demander. Les mêmes trois champs sont proposés à la création. Une zone qui ne
+déclare rien — c'est le cas de toutes celles créées avant ce réglage — se
+comporte comme avant : le nombre demandé au moment d'imprimer va tout entier au
+bord de ligne.
+
+**Créer un lot de zones.** À côté de *Créer une zone*, *Créer un lot de zones*
+ouvre un champ où l'on colle la liste venue d'un tableur : autant de zones que
+de lignes collées. **Seul le code est obligatoire.** Les autres colonnes se
+reconnaissent à leur en-tête — *Libellé*, *Lignes BDL*, *Lignes WIP*, *Lignes
+WOP OK* — dans n'importe quel ordre ; sans en-tête reconnaissable, les colonnes
+sont lues dans l'ordre code, BDL, WIP, WIP OK, celui de la feuille imprimée.
+L'écran annonce avant d'écrire combien de zones seront créées, quelles lignes
+n'ont donné aucun code, et ce qui dépasse les bornes. La création est **tout ou
+rien** : un code en double avec une zone existante ou avec une autre ligne du
+collage arrête le lot entier, en nommant les codes fautifs.
+
 **Supprimer une zone.** La corbeille en bout de ligne retire une zone ; cochez
 plusieurs lignes et *Supprimer* les retire d'un coup. Les feuilles de comptage de
 la zone partent avec elle, et le message de confirmation dit combien : une zone
@@ -391,7 +413,7 @@ Une feuille est **trois documents**, et l'écran n'offre que ceux qui existent :
 | Document | Pour quelle zone | Quand |
 |---|---|---|
 | **Sans quantités** — la liste d'articles, colonne de comptage vide | zone avec liste pré-imprimée | dès la préparation |
-| **Sans références** — une grille vide, *n* lignes (10 à 180) | zone en saisie libre | dès la préparation |
+| **Sans références** — une grille vide, *n* lignes (10 à 180), ou le nombre déclaré par la zone section par section | zone en saisie libre | dès la préparation |
 | **Avec quantités** — le relevé de ce qui est revenu | les deux | à partir du comptage |
 
 Une zone dont la liste est connue ne se voit jamais proposer la grille vide :
@@ -402,6 +424,11 @@ La feuille à compter reçoit quelques lignes libres par section — **5** en bo
 de ligne, **3** en WIP, **2** en WIP terminé : une pièce trouvée dans un coin
 doit avoir où être écrite. Le relevé rempli n'en reçoit aucune : inviter à
 écrire sur un relevé le rendrait discutable.
+
+La grille vide, elle, suit ce que la zone a déclaré section par section (2.4) :
+seules les sections dont le nombre de lignes est supérieur à zéro s'impriment.
+Le nombre demandé dans la fenêtre d'impression ne sert que pour une zone qui n'a
+rien déclaré, et va alors au bord de ligne.
 
 La feuille porte les sections séparées visuellement, une colonne de comptage
 large, un bloc signature, et l'identité de la feuille rappelée en pied de

@@ -1570,6 +1570,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/generic/zones/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Créer un lot de zones
+         * @description Créer d'un coup toutes les zones d'un bloc collé.
+         *
+         *     Une campagne réelle en compte quarante à soixante, chacune avec son nombre
+         *     de lignes par section. Les créer une par une, c'est autant d'allers-retours
+         *     dans une fenêtre modale, alors que la liste existe déjà dans un tableur.
+         *
+         *     **Tout ou rien** : les zones sont validées avant la première écriture, et le
+         *     refus les nomme. Un lot à moitié créé laisserait un état que personne n'a
+         *     voulu et que rien ne dit comment défaire.
+         */
+        post: operations["create_zones_api_campaigns__campaign_id__generic_zones_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/generic/zones/delete": {
         parameters: {
             query?: never;
@@ -1682,6 +1710,30 @@ export interface paths {
         put?: never;
         /** Recalculer les écarts */
         post: operations["refresh_arbitrations_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/blank-rows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Lignes vierges d'une zone
+         * @description Combien de lignes vierges chaque section de cette zone imprime.
+         *
+         *     Une section absente — ou à zéro — ne s'imprime pas. C'est le geste qui
+         *     retire de la page un bandeau sous lequel la zone n'a rien à faire compter,
+         *     et celui qui donne enfin des lignes d'en-cours à une zone qui en compte.
+         */
+        post: operations["set_zone_blank_rows_api_campaigns__campaign_id__generic_zones__zone_id__blank_rows_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4648,6 +4700,32 @@ export interface components {
             zoneIds: string[];
         };
         /**
+         * ZoneBlankRowsRequest
+         * @description Les lignes vierges d'une zone, section par section.
+         *
+         *     Le dictionnaire est posé **en entier** : une section absente vaut zéro, et
+         *     c'est bien ainsi qu'on retire une section de la page.
+         */
+        ZoneBlankRowsRequest: {
+            /** Blankrows */
+            blankRows?: {
+                [key: string]: number;
+            };
+        };
+        /**
+         * ZoneBulkRequest
+         * @description Un lot de zones, tel qu'un bloc collé le décrit.
+         *
+         *     L'écran analyse le collage — c'est lui qui connaît le vocabulaire des
+         *     en-têtes — et envoie des zones déjà nommées. Le serveur les valide toutes
+         *     avant d'en écrire une seule : trente zones créées et un refus sur la
+         *     trente et unième laisserait un état que personne n'a voulu.
+         */
+        ZoneBulkRequest: {
+            /** Zones */
+            zones: components["schemas"]["ZoneRequest"][];
+        };
+        /**
          * ZoneClosureRequest
          * @description Déclarer une zone terminée, ou la rouvrir. La seule décision d'état
          *     qui reste au parcours de comptage.
@@ -4705,6 +4783,10 @@ export interface components {
         };
         /** ZoneRequest */
         ZoneRequest: {
+            /** Blankrows */
+            blankRows?: {
+                [key: string]: number;
+            } | null;
             /** Code */
             code: string;
             /**
@@ -7587,6 +7669,45 @@ export interface operations {
             };
         };
     };
+    create_zones_api_campaigns__campaign_id__generic_zones_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneBulkRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     delete_zones_api_campaigns__campaign_id__generic_zones_delete_post: {
         parameters: {
             query?: never;
@@ -7773,6 +7894,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_zone_blank_rows_api_campaigns__campaign_id__generic_zones__zone_id__blank_rows_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                zone_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneBlankRowsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */

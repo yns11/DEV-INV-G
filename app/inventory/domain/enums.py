@@ -39,6 +39,7 @@ __all__ = [
     "ControlSeverity",
     "AuditAction",
     "legacy_section_alias",
+    "section_of",
 ]
 
 
@@ -407,3 +408,34 @@ def legacy_section_alias(label: str | None) -> CountSection | None:
         return None
     key = " ".join(label.strip().upper().split())
     return _LEGACY_SECTIONS.get(key)
+
+
+def section_of(value: Any) -> CountSection:
+    """Resolve anything a file or a form calls a section onto the enum.
+
+    Le pendant strict de :func:`legacy_section_alias` : là où l'alias rend
+    ``None`` pour laisser l'appelant décider, celui-ci refuse. C'est ce qu'il
+    faut partout où la section vient d'un humain ou d'un fichier — un libellé
+    mal lu n'y devient jamais silencieusement du bord de ligne.
+
+    Vide vaut le bord de ligne, qui est la section par défaut d'une feuille.
+
+    >>> section_of("")
+    <CountSection.LINE_SIDE: 'LINE_SIDE'>
+    >>> section_of("wip ok")
+    <CountSection.WIP_OK: 'WIP_OK'>
+    """
+    from ..errors import ValidationError
+
+    if value in (None, ""):
+        return CountSection.LINE_SIDE
+    text = str(value).strip().upper().replace(" ", "_").replace("-", "_")
+    if text in CountSection.__members__:
+        return CountSection[text]
+    resolved = legacy_section_alias(str(value))
+    if resolved is None:
+        raise ValidationError(
+            f"Section inconnue : {value!r}. Attendu LINE_SIDE, WIP ou WIP_OK.",
+            section=str(value),
+        )
+    return resolved

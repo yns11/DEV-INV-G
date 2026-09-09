@@ -187,7 +187,7 @@ def _zone(zone_id: str, code: str, **kw: Any):
 def _service(zones: list[Any]):
     from contextlib import contextmanager
 
-    from inventory.services.generic_service import GenericService
+    from inventory.services.zone_service import ZoneService
 
     written: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
@@ -207,7 +207,7 @@ def _service(zones: list[Any]):
         ),
     ))
     campaign = SimpleNamespace(id="c", code="INV-1")
-    return GenericService(ctx), campaign, written, events
+    return ZoneService(ctx), campaign, written, events
 
 
 class TestRenommerUneZone:
@@ -281,9 +281,9 @@ class TestRenommerUneZone:
         """
         import inspect
 
-        from inventory.services import generic_service
+        from inventory.services import zone_service
 
-        body = inspect.getsource(generic_service.GenericService.rename_zone)
+        body = inspect.getsource(zone_service.ZoneService.rename_zone)
         for forbidden in ("replace_sheet_lines", "ensure_sheets", "delete_zones"):
             assert forbidden not in body
 

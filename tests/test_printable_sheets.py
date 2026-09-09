@@ -195,6 +195,100 @@ class TestFreeEntrySheet:
         assert render([], mode=PrintMode.BLANK, blank_lines=count)
 
 
+class TestLignesViergesParSection:
+    """La zone dit combien de lignes vierges chaque section imprime.
+
+    Avant ce réglage, une feuille vierge n'offrait que le bord de ligne : le
+    nombre demandé à l'impression y allait tout entier, et les deux sections
+    d'en-cours n'étaient pas imprimées du tout. Une zone qui compte des en-cours
+    sur papier vierge n'avait donc aucun moyen de le dire.
+
+    Les assertions portent sur :func:`printed_sections` et non sur le texte du
+    PDF : c'est là qu'est la décision, et une section imprimée avec zéro ligne
+    ne se distingue d'une section absente par aucun caractère extrait.
+    """
+
+    @staticmethod
+    def _sections(declared, *, blank_lines=40):
+        from inventory.reporting.exports import printed_sections
+
+        return {
+            section: extras
+            for section, _, extras in printed_sections(
+                {}, mode=PrintMode.BLANK, blank_lines=blank_lines,
+                declared_rows=declared,
+            )
+        }
+
+    def test_chaque_section_prend_le_nombre_que_la_zone_lui_donne(self):
+        assert self._sections({"LINE_SIDE": 40, "WIP": 10, "WIP_OK": 5}) == {
+            "LINE_SIDE": 40, "WIP": 10, "WIP_OK": 5,
+        }
+
+    def test_une_section_a_zero_ne_s_imprime_pas(self):
+        """Ce que l'utilisateur a demandé, dit exactement : « si le nombre est
+        égal à 0, la section n'est pas à imprimer dans le pdf »."""
+        assert self._sections({"LINE_SIDE": 0, "WIP": 10}) == {"WIP": 10}
+
+    def test_une_section_absente_du_reglage_ne_s_imprime_pas_non_plus(self):
+        # Zéro et absent sont le même état : c'est ce qui autorise le domaine à
+        # ne pas stocker les zéros sans que deux lectures divergent.
+        assert self._sections({"WIP": 10}) == {"WIP": 10}
+
+    def test_une_zone_qui_ne_compte_que_des_en_cours_a_sa_feuille(self):
+        """Le bord de ligne s'imprime toujours — sauf quand la zone le retire.
+
+        C'est le cas qui justifie le réglage : sans lui, cette feuille sortait
+        avec un bandeau « bord de ligne » et quarante cases vides sous lesquelles
+        il n'y a rien à compter, et sans une seule ligne d'en-cours.
+        """
+        assert self._sections({"WIP": 12, "WIP_OK": 8}) == {"WIP": 12, "WIP_OK": 8}
+
+    def test_une_zone_qui_ne_declare_rien_garde_le_comportement_d_avant(self):
+        """Les zones créées avant ce réglage : le nombre demandé, en bord de ligne.
+
+        Sans cette porte de sortie, elles sortiraient une feuille vierge sans une
+        seule ligne — c'est-à-dire une page blanche à en-tête.
+        """
+        assert self._sections({}, blank_lines=40) == {"LINE_SIDE": 40}
+        assert self._sections(None, blank_lines=40) == {"LINE_SIDE": 40}
+
+    def test_le_reglage_ne_touche_ni_la_liste_ni_le_releve(self):
+        """Il ne concerne que l'impression vierge.
+
+        La feuille à compter garde son allocation fixe par section — l'endroit où
+        noter une référence que personne n'avait listée — et le relevé n'a
+        toujours aucune ligne libre : un enregistrement ne porte pas
+        d'invitations à écrire davantage.
+        """
+        from inventory.reporting.exports import printed_sections
+
+        by_section = {"LINE_SIDE": [line("P-001", qty=1)]}
+        declared = {"LINE_SIDE": 3, "WIP": 7}
+        for mode, expected in (
+            (PrintMode.LIST, BLANK_ROWS_PER_SECTION["LINE_SIDE"]),
+            (PrintMode.FILLED, 0),
+        ):
+            sections = printed_sections(
+                by_section, mode=mode, blank_lines=40, declared_rows=declared,
+            )
+            assert [extras for _, _, extras in sections] == [expected], mode
+
+    def test_les_lignes_declarees_arrivent_sur_le_papier(self):
+        """Le chemin complet, jusqu'au PDF : la section demandée est imprimée.
+
+        Les trois contrôles ci-dessus jugent la décision ; celui-ci vérifie
+        qu'elle est bien celle que suit le rendu — c'est-à-dire que
+        ``blank_rows`` est branché, et pas seulement accepté.
+        """
+        text = "\n".join(render(
+            [], mode=PrintMode.BLANK, blank_lines=40,
+            blank_rows={"WIP": 12},
+        ))
+        assert "en-cours non déclaré" in text
+        assert "Composants en bord de ligne" not in text
+
+
 class TestWhichModesAreOffered:
     """The matrix: what a zone can be printed as, and when.
 

@@ -114,9 +114,9 @@ def charge(db):
     charger(imports.import_locations, "03-emplacements.csv")
     ctx.forget_progress(campaign_id)
 
-    from inventory.services.generic_service import GenericService
+    from inventory.services.zone_service import ZoneService
 
-    generic = GenericService(ctx)
+    generic = ZoneService(ctx)
     for r in _rows("07-zones-generique.csv"):
         generic.create_zone(
             campaign, code=r["Code zone"], label=r["Libellé"],

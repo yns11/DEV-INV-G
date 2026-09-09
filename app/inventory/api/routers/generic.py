@@ -12,6 +12,7 @@ from ...services import (
     ConsolidationService,
     GenericService,
     ScanJobService,
+    ZoneService,
 )
 from ..deps import (
     CampaignDep,
@@ -21,6 +22,7 @@ from ..deps import (
     generic_service,
     resolve_perimeter,
     scan_job_service,
+    zone_service,
 )
 from ..paging import MAX_PAGE, page
 from ..responses import BulkArbitrationResponse, SectionLabelsResponse
@@ -30,6 +32,8 @@ from ..schemas import (
     ReclassifyRequest,
     SheetLineDeleteRequest,
     SheetLinesRequest,
+    ZoneBlankRowsRequest,
+    ZoneBulkRequest,
     ZoneClosureRequest,
     ZoneDeleteRequest,
     ZoneNegativeRequest,
@@ -43,6 +47,11 @@ from ..uploads import offload, read_upload
 router = APIRouter(prefix="/campaigns/{campaign_id}/generic", tags=["GENERIQUE"])
 
 Service = Annotated[GenericService, Depends(generic_service)]
+
+#: L'administration des zones a son propre service : décider *ce qu'on va
+#: compter* se fait en préparation, saisir une quantité relevée se fait le
+#: jour J, et les deux n'ont jamais lieu par les mêmes personnes.
+Zones = Annotated[ZoneService, Depends(zone_service)]
 Arbitration = Annotated[ArbitrationService, Depends(arbitration_service)]
 
 #: La consolidation a son propre service : elle lit les feuilles, elle ne les
@@ -79,7 +88,7 @@ def list_zones(
 
 @router.post("/zones", status_code=201, summary="Créer une zone")
 def create_zone(
-    campaign: CampaignDep, payload: ZoneRequest, service: Service
+    campaign: CampaignDep, payload: ZoneRequest, service: Zones
 ) -> dict[str, Any]:
     """Create a zone and its counting sheets.
 
@@ -99,7 +108,48 @@ def create_zone(
         passes=payload.passes,
         free_entry=payload.free_entry,
         manager_code=payload.manager_code,
+        blank_rows=payload.blank_rows,
     )
+    return zone.model_dump(mode="json")
+
+
+@router.post("/zones/bulk", status_code=201, summary="Créer un lot de zones")
+def create_zones(
+    campaign: CampaignDep, payload: ZoneBulkRequest, service: Zones
+) -> dict[str, Any]:
+    """Créer d'un coup toutes les zones d'un bloc collé.
+
+    Une campagne réelle en compte quarante à soixante, chacune avec son nombre
+    de lignes par section. Les créer une par une, c'est autant d'allers-retours
+    dans une fenêtre modale, alors que la liste existe déjà dans un tableur.
+
+    **Tout ou rien** : les zones sont validées avant la première écriture, et le
+    refus les nomme. Un lot à moitié créé laisserait un état que personne n'a
+    voulu et que rien ne dit comment défaire.
+    """
+    zones = service.create_zones(
+        campaign, [z.model_dump() for z in payload.zones]
+    )
+    return {
+        "created": len(zones),
+        "zones": [z.model_dump(mode="json") for z in zones],
+    }
+
+
+@router.post("/zones/{zone_id}/blank-rows", summary="Lignes vierges d'une zone")
+def set_zone_blank_rows(
+    campaign: CampaignDep,
+    zone_id: str,
+    payload: ZoneBlankRowsRequest,
+    service: Zones,
+) -> dict[str, Any]:
+    """Combien de lignes vierges chaque section de cette zone imprime.
+
+    Une section absente — ou à zéro — ne s'imprime pas. C'est le geste qui
+    retire de la page un bandeau sous lequel la zone n'a rien à faire compter,
+    et celui qui donne enfin des lignes d'en-cours à une zone qui en compte.
+    """
+    zone = service.set_blank_rows(campaign, zone_id, payload.blank_rows)
     return zone.model_dump(mode="json")
 
 
@@ -108,7 +158,7 @@ def rename_zone(
     campaign: CampaignDep,
     zone_id: str,
     payload: ZoneRenameRequest,
-    service: Service,
+    service: Zones,
 ) -> dict[str, Any]:
     """Changer le code d'une zone — et, s'il le faut, son libellé et son secteur.
 
@@ -128,7 +178,7 @@ def rename_zone(
 
 @router.post("/zones/passes", summary="Changer le nombre de comptages de zones")
 def set_zone_passes(
-    campaign: CampaignDep, payload: ZonePassesRequest, service: Service
+    campaign: CampaignDep, payload: ZonePassesRequest, service: Zones
 ) -> dict[str, int]:
     """Bulk switch between one and two independent counts.
 
@@ -141,7 +191,7 @@ def set_zone_passes(
 
 @router.post("/zones/negative", summary="Autoriser les quantités négatives")
 def set_zone_negative(
-    campaign: CampaignDep, payload: ZoneNegativeRequest, service: Service
+    campaign: CampaignDep, payload: ZoneNegativeRequest, service: Zones
 ) -> dict[str, int]:
     """Lift the no-negative rule on the zones that legitimately need it.
 
@@ -165,7 +215,7 @@ def set_section_labels(
     campaign: CampaignDep,
     zone_id: str,
     payload: ZoneSectionLabelsRequest,
-    service: Service,
+    service: Zones,
 ) -> dict[str, str]:
     """Remplacer le texte par défaut d'une ou plusieurs sections.
 
@@ -180,7 +230,7 @@ def set_section_labels(
 
 @router.post("/zones/delete", summary="Supprimer des zones et leurs feuilles")
 def delete_zones(
-    campaign: CampaignDep, payload: ZoneDeleteRequest, service: Service
+    campaign: CampaignDep, payload: ZoneDeleteRequest, service: Zones
 ) -> dict[str, int]:
     """Retirer une zone, ou toute une sélection, pendant la préparation.
 

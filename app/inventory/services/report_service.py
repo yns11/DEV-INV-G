@@ -108,6 +108,7 @@ class ReportService:
             mode=mode,
             with_sources=with_sources,
             blank_lines=blank_lines,
+            blank_rows=zone.blank_rows,
             section_titles=zone.section_labels,
         )
         filename = (
@@ -198,6 +199,7 @@ class ReportService:
                 mode=mode,
                 with_sources=with_sources,
                 blank_lines=blank_lines,
+                blank_rows=zone.blank_rows,
                 section_titles=zone.section_labels,
             ))
 

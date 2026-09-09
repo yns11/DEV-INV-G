@@ -11,34 +11,29 @@ from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
-from pydantic import ValidationError as PydanticValidationError
-
 from ..db import new_id
 from ..domain.enums import (
     AuditAction,
-    CampaignStatus,
     CountLineKind,
     CountSection,
     DataSource,
     SheetPass,
+    section_of,
 )
 from ..domain.models import (
     Campaign,
     CountSheet,
     CountSheetLine,
     Item,
-    Zone,
     sheet_designation,
 )
 from ..domain.printing import available_print_modes
 from ..domain.sheet_layout import subsections_of
 from ..domain.workflow import (
     derive_zone_status,
-    passes_for,
     zone_closure_blockers,
 )
 from ..errors import (
-    ConflictError,
     NotFoundError,
     ValidationError,
     WorkflowError,
@@ -50,6 +45,7 @@ from .manager_service import Perimeter
 log = logging.getLogger(__name__)
 
 __all__ = ["GenericService"]
+
 
 class GenericService:
     """Use cases for the multi-zone GENERIQUE location."""
@@ -190,383 +186,6 @@ class GenericService:
             totals[key] = totals.get(key, 0.0) + float(line.qty)
         return totals
 
-    # ----------------------------------------------------------------- zones
-
-    def create_zone(
-        self,
-        campaign: Campaign,
-        *,
-        code: str,
-        label: str = "",
-        sector: str = "",
-        display_order: int = 0,
-        passes: int | None = None,
-        free_entry: bool = True,
-        manager_code: str = "",
-    ) -> Zone:
-        """Create a zone and its counting sheets.
-
-        Allowed in both PREPARATION and COUNTING: preparation is precisely when
-        one decides what to count, and a physical area nobody had listed is
-        routinely discovered on the day of the inventory.
-
-        :param free_entry: this endpoint creates a zone with **no** pre-printed
-            article list, which is the definition of a free-entry sheet — the
-            counter writes down what they find. Defaulting to ``True`` is what
-            keeps the interface from presenting a deliberate blank sheet as an
-            unprepared one. Loading a list through the ``count_sheets`` import
-            clears the flag.
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "zones")
-        existing = {z.code for z in ctx.sheets.list_zones(campaign.id)}
-        zone = Zone(
-            id=new_id(),
-            campaign_id=campaign.id,
-            code=code,
-            label=label,
-            sector=sector,
-            display_order=display_order,
-            passes=campaign.config.generic_passes if passes is None else passes,
-            free_entry=free_entry,
-            manager_code=manager_code,
-        )
-        if zone.code in existing:
-            raise ConflictError(
-                f"Une zone « {zone.code} » existe déjà dans cette campagne.",
-                code=zone.code,
-            )
-        # Une zone sans ses feuilles n'est pas une demi-zone : c'est une zone
-        # que rien ne permet de compter, et que l'écran présente pourtant comme
-        # prête. Les trois écritures tiennent ou tombent ensemble.
-        with ctx.db.transaction() as conn:
-            ctx.sheets.create_zone(zone, actor=ctx.actor, conn=conn)
-            ctx.sheets.ensure_sheets(
-                campaign.id, zone.id, passes_for(zone.passes),
-                actor=ctx.actor, conn=conn,
-            )
-            ctx.record(
-                campaign_id=campaign.id,
-                action=AuditAction.CREATE,
-                entity_type="zone",
-                entity_id=zone.id,
-                summary=f"Création de la zone {zone.code}",
-                after=zone.model_dump(mode="json"),
-                conn=conn,
-            )
-        # A zone is what unlocks the pilotage steps; the counts move with it.
-        ctx.forget_progress(campaign.id)
-        return zone
-
-    def rename_zone(
-        self,
-        campaign: Campaign,
-        zone_id: str,
-        *,
-        code: str,
-        label: str | None = None,
-        sector: str | None = None,
-    ) -> Zone:
-        """Renommer une zone : son code, son libellé, son secteur.
-
-        Le code d'une zone se décide avant de connaître le terrain, et il se
-        révèle faux une fois sur place — « B15 » qui désigne en réalité deux
-        aires, un code recopié d'une campagne où l'atelier s'appelait
-        autrement. Le seul recours était de supprimer la zone et de la
-        recréer, ce qui emporte ses feuilles, donc sa liste d'articles et ses
-        quantités.
-
-        **Ce que le renommage ne fait pas** : il ne touche à rien d'autre. Les
-        feuilles, les lignes, les comptages et les arbitrages sont rattachés à
-        l'identifiant de la zone, jamais à son code — c'est ce qui rend
-        l'opération sûre.
-
-        **Ce qu'il faut savoir** : le code est la clé sur laquelle l'import des
-        feuilles reconnaît une zone. Recharger ensuite un fichier qui porte
-        encore l'ancien code **créera une seconde zone**, au lieu de compléter
-        celle-ci. L'écran le dit ; le refuser serait interdire un renommage
-        légitime pour un fichier que personne ne rechargera peut-être jamais.
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "zones")
-        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
-        zone = zones.get(zone_id)
-        if zone is None:
-            raise NotFoundError("Zone introuvable.", zoneId=zone_id)
-
-        renamed = zone.model_copy(update={
-            "code": code,
-            "label": zone.label if label is None else label,
-            "sector": zone.sector if sector is None else sector,
-        })
-        # Validé par le modèle, donc normalisé comme à la création : un code
-        # saisi en minuscules devient le même code, et deux zones ne peuvent
-        # pas se retrouver distinctes par leur seule casse.
-        #
-        # Le refus du modèle est retraduit : brut, c'est une erreur de contrat
-        # Pydantic — « value error, zone code is required » — qui remonterait en
-        # 500 à qui appelle le service autrement que par la route, et qui ne dit
-        # rien à qui vient d'effacer une case.
-        try:
-            renamed = Zone.model_validate(renamed.model_dump())
-        except PydanticValidationError as error:
-            raise ValidationError(
-                "Une zone sans code ne se retrouve pas : donnez-lui un nom.",
-                code=code,
-            ) from error
-        taken = {z.code for z in zones.values() if z.id != zone_id}
-        if renamed.code in taken:
-            raise ConflictError(
-                f"Une zone « {renamed.code} » existe déjà dans cette campagne.",
-                code=renamed.code,
-            )
-        if (renamed.code, renamed.label, renamed.sector) == (
-            zone.code, zone.label, zone.sector
-        ):
-            return zone
-
-        with ctx.db.transaction() as conn:
-            ctx.sheets.rename_zone(
-                campaign.id, zone_id,
-                code=renamed.code, label=renamed.label, sector=renamed.sector,
-                actor=ctx.actor, conn=conn,
-            )
-            ctx.record(
-                campaign_id=campaign.id,
-                action=AuditAction.UPDATE,
-                entity_type="zone",
-                entity_id=zone_id,
-                summary=(
-                    f"Zone {zone.code} renommée en {renamed.code}"
-                    if renamed.code != zone.code
-                    else f"Zone {zone.code} : libellé ou secteur modifié"
-                ),
-                before={"code": zone.code, "label": zone.label,
-                        "sector": zone.sector},
-                after={"code": renamed.code, "label": renamed.label,
-                       "sector": renamed.sector},
-                conn=conn,
-            )
-        return renamed
-
-    def set_zone_passes(
-        self, campaign: Campaign, zone_ids: Sequence[str], passes: int
-    ) -> dict[str, Any]:
-        """Set how many independent counts a selection of zones requires.
-
-        Dropping to one count **deletes** the second sheet, so the operation is
-        refused when that sheet already carries a quantity: bringing a zone back
-        to a single count after the fact would erase a real count. The refusal
-        names the zones concerned, because "some zone somewhere" is not
-        actionable on inventory day.
-
-        Raising back to two recreates the second sheet, empty.
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "zones")
-        if passes not in (1, 2):
-            raise ValidationError(
-                "Le nombre de comptages doit être 1 ou 2.", passes=passes
-            )
-        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
-        unknown = [z for z in zone_ids if z not in zones]
-        if unknown:
-            raise NotFoundError("Zone(s) introuvable(s).", zoneIds=unknown)
-        targets = [z for z in zone_ids if zones[z].passes != passes]
-        if not targets:
-            return {"updated": 0, "sheetsRemoved": 0, "sheetsCreated": 0}
-
-        removed = created = 0
-        if passes == 1:
-            counted = ctx.sheets.zones_with_counted_pass(
-                campaign.id, targets, SheetPass.PASS_2
-            )
-            if counted:
-                codes = sorted(zones[z].code for z in counted)
-                raise ConflictError(
-                    "Impossible de ramener à un seul comptage : le comptage n°2 "
-                    f"porte déjà des quantités saisies sur {', '.join(codes)}. "
-                    "Effacez ces quantités si le second comptage doit être "
-                    "abandonné.",
-                    zones=codes,
-                )
-
-        with ctx.db.transaction() as conn:
-            updated = ctx.sheets.update_zones(
-                campaign.id, targets, actor=ctx.actor, passes=passes, conn=conn
-            )
-            if passes == 1:
-                removed = ctx.sheets.delete_sheets_for_pass(
-                    campaign.id, targets, SheetPass.PASS_2, conn=conn
-                )
-                ctx.sheets.delete_arbitrations(campaign.id, targets, conn=conn)
-            else:
-                for zone_id in targets:
-                    created += ctx.sheets.ensure_sheets(
-                        campaign.id, zone_id, passes_for(2),
-                        actor=ctx.actor, conn=conn,
-                    )
-                    self._mirror_document(campaign, zone_id, conn=conn)
-            ctx.record(
-                campaign_id=campaign.id,
-                action=AuditAction.UPDATE,
-                entity_type="zone",
-                summary=(
-                    f"{updated} zone(s) passée(s) à {passes} comptage(s) "
-                    f"({removed} feuille(s) supprimée(s), {created} créée(s))."
-                ),
-                after={
-                    "passes": passes,
-                    "zones": sorted(zones[z].code for z in targets),
-                },
-                conn=conn,
-            )
-        return {"updated": updated, "sheetsRemoved": removed, "sheetsCreated": created}
-
-    def set_zone_negative(
-        self, campaign: Campaign, zone_ids: Sequence[str], allowed: bool
-    ) -> int:
-        """Allow — or forbid again — negative counted quantities on a selection.
-
-        Carried by the zone rather than the sheet: both passes of one area must
-        obey the same rule, otherwise the arbitration compares two counts that
-        were not allowed the same values.
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "zones")
-        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
-        unknown = [z for z in zone_ids if z not in zones]
-        if unknown:
-            raise NotFoundError("Zone(s) introuvable(s).", zoneIds=unknown)
-
-        with ctx.db.transaction() as conn:
-            updated = ctx.sheets.update_zones(
-                campaign.id, list(zone_ids), actor=ctx.actor,
-                allow_negative=allowed, conn=conn,
-            )
-            ctx.record(
-                campaign_id=campaign.id,
-                action=AuditAction.UPDATE,
-                entity_type="zone",
-                summary=(
-                    f"{updated} zone(s) : quantités négatives "
-                    f"{'autorisées' if allowed else 'interdites'}"
-                ),
-                after={
-                    "allowNegative": allowed,
-                    "zones": sorted(zones[z].code for z in zone_ids),
-                },
-                conn=conn,
-            )
-        return updated
-
-    def set_section_labels(
-        self, campaign: Campaign, zone_id: str, labels: dict[str, str]
-    ) -> dict[str, str]:
-        """Le texte imprimé en tête de chaque section d'une zone.
-
-        Un texte vide **efface** la personnalisation au lieu d'imprimer une
-        bannière vide : c'est ce que veut dire un champ qu'on vide, et une
-        section sans titre laisserait le compteur sans la règle sous laquelle il
-        compte.
-
-        Posé sur la zone et non sur la feuille : les deux passages sont le même
-        document imprimé deux fois, et les voir diverger n'aurait aucun sens.
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "count_sheets")
-        zone = next(
-            (z for z in ctx.sheets.list_zones(campaign.id) if z.id == zone_id), None
-        )
-        if zone is None:
-            raise NotFoundError("Zone introuvable.", zoneId=zone_id)
-
-        kept = {
-            str(_section(code)): text.strip()
-            for code, text in labels.items()
-            if text.strip()
-        }
-        ctx.sheets.set_section_labels(
-            campaign.id, zone_id, kept, actor=ctx.actor
-        )
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.UPDATE,
-            entity_type="zone",
-            entity_id=zone_id,
-            summary=(
-                f"En-têtes de section de la zone {zone.code} : "
-                f"{len(kept)} personnalisé(s)"
-            ),
-            before={"sectionLabels": zone.section_labels},
-            after={"sectionLabels": kept},
-        )
-        return kept
-
-    def delete_zones(
-        self, campaign: Campaign, zone_ids: Sequence[str]
-    ) -> dict[str, int]:
-        """Retire des zones et leurs feuilles de comptage, une ou tout un lot.
-
-        **Réservé à la préparation**, et c'est plus strict que la matrice de gel
-        ne l'exige : les zones restent modifiables en phase de comptage, mais
-        leurs feuilles y portent alors des quantités relevées sur le terrain, et
-        une feuille supprimée emporte ses lignes — donc un comptage que personne
-        ne refera. Préparer du papier est une activité de préparation ; en jeter
-        le jour J n'en est pas une.
-
-        **Les feuilles partent avec la zone.** La zone est retirée
-        logiquement — son histoire reste au dossier — mais ses feuilles sont
-        supprimées pour de bon. Les laisser produirait des feuilles orphelines :
-        les listes par zone ne les montreraient plus, la liste à plat de toutes
-        les lignes si, et la campagne compterait des articles rattachés à une
-        zone qui n'existe plus.
-        """
-        ctx = self.ctx
-        ctx.guard(campaign, "zones")
-        if campaign.status is not CampaignStatus.PREPARATION:
-            raise ValidationError(
-                "Les zones ne se suppriment qu'en préparation. Depuis le passage "
-                "en comptage, leurs feuilles portent des quantités relevées.",
-                status=str(campaign.status),
-            )
-
-        unique = list(dict.fromkeys(i for i in zone_ids if i))
-        if not unique:
-            raise ValidationError("Aucune zone transmise.")
-
-        known = {zone.id: zone for zone in ctx.sheets.list_zones(campaign.id)}
-        missing = [i for i in unique if i not in known]
-        if missing:
-            raise ValidationError(
-                f"{len(missing)} zone(s) introuvables dans cette campagne, dont "
-                f"{missing[0]}.",
-                missing=missing[:20],
-            )
-
-        doomed = [
-            sheet.id
-            for sheet in ctx.sheets.list_sheets(campaign.id)
-            if sheet.zone_id in known and sheet.zone_id in set(unique)
-        ]
-        with ctx.db.transaction() as conn:
-            sheets = ctx.sheets.delete_sheets(campaign.id, doomed, conn=conn)
-            for zone_id in unique:
-                ctx.sheets.delete_zone(campaign.id, zone_id, actor=ctx.actor, conn=conn)
-            ctx.record(
-                campaign_id=campaign.id,
-                action=AuditAction.DELETE,
-                entity_type="zone",
-                summary=(
-                    f"Suppression de {len(unique)} zone(s) et de leurs "
-                    f"{sheets} feuille(s) de comptage"
-                ),
-                before={"codes": [known[i].code for i in unique][:50]},
-                conn=conn,
-            )
-        ctx.forget_progress(campaign.id)
-        return {"zones": len(unique), "sheets": sheets}
-
     # ---------------------------------------------------------------- sheets
 
     def set_zone_closed(
@@ -698,7 +317,7 @@ class GenericService:
                 # tout le propos.
                 lines.append(CountSheetLine(
                     id=line_id, sheet_id=sheet_id, campaign_id=campaign.id,
-                    item_number="", section=_section(row.get("section")),
+                    item_number="", section=section_of(row.get("section")),
                     line_kind=kind,
                     label=str(row.get("label") or "")
                     if kind is CountLineKind.SUBSECTION else "",
@@ -745,7 +364,7 @@ class GenericService:
                     sheet_id=sheet_id,
                     campaign_id=campaign.id,
                     item_number=str(row.get("item_number") or ""),
-                    section=_section(row.get("section")),
+                    section=section_of(row.get("section")),
                     # A value typed by a human always lands in qty_manual so the
                     # AI reading it replaced stays visible next to it.
                     qty_imported=previous.qty_imported if previous else None,
@@ -1051,23 +670,6 @@ def _line_kind(value: Any) -> CountLineKind:
             lineKind=str(value),
         )
     return CountLineKind.ARTICLE
-
-
-def _section(value: Any) -> CountSection:
-    from ..domain.enums import legacy_section_alias
-
-    if value in (None, ""):
-        return CountSection.LINE_SIDE
-    text = str(value).strip().upper().replace(" ", "_").replace("-", "_")
-    if text in CountSection.__members__:
-        return CountSection[text]
-    resolved = legacy_section_alias(str(value))
-    if resolved is None:
-        raise ValidationError(
-            f"Section inconnue : {value!r}. Attendu LINE_SIDE, WIP ou WIP_OK.",
-            section=str(value),
-        )
-    return resolved
 
 
 def _quantity_of(

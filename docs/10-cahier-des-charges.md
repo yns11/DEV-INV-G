@@ -911,6 +911,7 @@ articles identiques. **[CO]**
 |---|:---:|:---:|:---:|:---:|
 | Seuils de matérialité | ✅ | ❌ | ❌ | ❌ |
 | Réglages de saisie (formules) | ✅ | ✅ | ❌ | ❌ |
+| **Gestionnaires et leurs périmètres** | ✅ | ✅ | **✅** | ❌ |
 | Articles, nomenclatures | ✅ | ❌ | ❌ | ❌ |
 | Emplacements (activation) | ✅ | ✅ | ❌ | ❌ |
 | Stock ERP | ❌ | ✅ | ❌ | ❌ |
@@ -924,7 +925,7 @@ articles identiques. **[CO]**
 | Écart backflush | ✅ | ✅ | ✅ | ❌ |
 | Comparaison inter-campagnes | ✅ | ✅ | ✅ | **✅** |
 
-**Quatre points méritent attention, chacun avec sa justification retrouvée :**
+**Cinq points méritent attention, chacun avec sa justification retrouvée :**
 
 1. **Les zones GENERIQUE restent créables pendant le comptage** — *une aire
    physique que personne n'avait listée est découverte à chaque campagne.*
@@ -939,6 +940,18 @@ articles identiques. **[CO]**
    est quelque chose qu'on fait une fois les deux finis ; la geler à la clôture
    interdisait l'usage principal de la fonction.* Elle n'écrit rien qui entre
    dans un chiffre validé.
+5. **Les gestionnaires et leurs périmètres restent modifiables jusqu'à la
+   clôture, analyse comprise** — *un périmètre n'est pas une habilitation mais
+   un filtre : chacun garde le droit d'agir partout, et le figer ne protégeait
+   donc aucun chiffre. Ce qu'il coûtait est concret : le cycle de vie étant
+   strictement en avant, corriger une adresse e-mail fautive — celle qui résout
+   « mon périmètre » — demandait de recréer la campagne. Or le seul moment où le
+   personnel bouge vraiment est le jour J, et l'analyse qui suit dure des
+   semaines et se répartit de la même façon.* Ils se ferment à la clôture comme
+   tout le reste : le dossier est immuable, et qui a compté quoi en fait partie.
+   **L'affectation d'une zone suit cette ligne, pas celle des zones** : la zone
+   se fige à l'analyse parce qu'elle porte des quantités relevées sur le
+   terrain, son gestionnaire non.
 
 ### RG-PHA-2 — Les préconditions de passage
 

@@ -93,8 +93,15 @@ PREREQUISITES: dict[str, tuple[_Requirement, ...]] = {
     "boms": (_ITEMS,),
     "zones": (_ITEMS,),
     "count_sheets": (_ITEMS,),
-    # Managers, perimeters and thresholds all ride on this aspect: they assign
-    # people to zones and money to article types, so both must already exist.
+    # Les seuils attribuent de l'argent à des types d'article : sans référentiel,
+    # il n'y a rien à quoi attribuer.
+    #
+    # Les gestionnaires ont longtemps voyagé avec eux, et n'y sont plus : ils
+    # n'ont aucun prérequis, et pas par oubli. Nommer qui pilote la campagne est
+    # le premier geste qu'on pose, avant le moindre article ; les deux grilles
+    # d'affectation sont simplement vides tant qu'il n'y a rien à affecter, ce
+    # qui se lit tout seul. Exiger les zones fermait le premier geste au nom du
+    # troisième.
     "thresholds": (_ITEMS, _ZONES),
     # --- Comptage ---------------------------------------------------------
     # Le snapshot est validé ligne à ligne contre le référentiel articles : sans

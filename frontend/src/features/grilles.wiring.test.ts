@@ -22,6 +22,9 @@ const EARLY_LINES = read('./earlyCounts.journalLines.tsx')
 const LAYOUT = read('./generic.layout.tsx')
 const SHEET = read('./generic.sheet.tsx')
 const CONSOLIDATION = read('./generic.consolidation.tsx')
+const ZONES = read('./zones.tsx')
+const GESTION = read('./preparation.gestion.tsx')
+const SHEETS_TAB = read('./preparation.sheets.tsx')
 const IMPORT_PANEL = read('../components/ImportPanel.tsx')
 const PICKER = read('../components/CampaignSourcePicker.tsx')
 const BASE_CSS = read('../design/base.css')
@@ -232,5 +235,69 @@ describe('les articles hors référentiel ont leur pastille', () => {
   it('et elle dit pourquoi la quantité est écartée', () => {
     const pill = CONSOLIDATION.slice(CONSOLIDATION.indexOf("code: 'UNKNOWN_ITEM'"))
     expect(pill.slice(0, 500)).toContain('écartés du journal')
+  })
+})
+
+
+// --------------------------------------------------------------------------- //
+// 6. Affecter une zone n'est pas la modifier
+// --------------------------------------------------------------------------- //
+
+describe('la grille des zones sépare la structure de l’affectation', () => {
+  /* Deux gardes, parce que ce sont deux choses. `editable` décide du sort de la
+     zone — la créer, la renommer, changer son nombre de comptages — et cela se
+     fige à l'analyse, où elle porte des quantités relevées sur le terrain. Le
+     gestionnaire n'est qu'un filtre, « mon périmètre », et le réaffecter est
+     précisément ce qu'on fait quand l'analyse se répartit.
+
+     Les deux ont longtemps tenu au même drapeau, et le voyage de retour est
+     facile : il suffit qu'un jour quelqu'un trouve le second inutile. */
+
+  it('le sélecteur d’affectation a son propre drapeau', () => {
+    expect(ZONES).toContain('assignable?: boolean')
+    expect(ZONES).toContain('{assignable && managers.length > 0 && (')
+  })
+
+  it('et il n’est plus enfermé dans celui de la structure', () => {
+    const toolbar = ZONES.slice(ZONES.indexOf('Refuser les négatifs'))
+    const select = toolbar.indexOf('{assignable && managers.length > 0 && (')
+    const ferme = toolbar.indexOf('</>')
+    expect(ferme).toBeGreaterThan(-1)
+    expect(ferme).toBeLessThan(select)
+  })
+
+  it('on peut encore sélectionner des zones quand seule l’affectation est ouverte', () => {
+    /* Sans quoi le sélecteur existerait sans que rien ne puisse l'atteindre :
+       la barre d'outils ne s'ouvre qu'avec une sélection. */
+    expect(ZONES).toContain('selectable={editable || assignable || Boolean(onPrint)}')
+  })
+
+  it('l’onglet Affectation zones passe bien deux drapeaux différents', () => {
+    expect(GESTION).toContain('const structural = overview.permissions.zones')
+    expect(GESTION).toContain('const assignable = overview.permissions.managers')
+    expect(GESTION).toContain('editable={structural}')
+    expect(GESTION).toContain('assignable={assignable}')
+  })
+
+  it('et l’écran des feuilles aussi, pour ne pas perdre le sélecteur en route', () => {
+    expect(SHEETS_TAB).toContain('assignable={overview.permissions.managers}')
+  })
+})
+
+// --------------------------------------------------------------------------- //
+// 7. La vue Gestion ne gèle plus avec les seuils
+// --------------------------------------------------------------------------- //
+
+describe('les trois onglets de Gestion lisent le drapeau des gestionnaires', () => {
+  it('Gestionnaires et Affectation journaux', () => {
+    const lectures = GESTION.match(/overview\.permissions\.managers/g) ?? []
+    expect(lectures.length).toBe(3)
+  })
+
+  it('et plus celui des seuils', () => {
+    /* Il n'en reste qu'une lecture : l'onglet Paramètres, où les seuils sont
+       chez eux. « Sauf les seuils », précisément. */
+    const lectures = GESTION.match(/overview\.permissions\.thresholds/g) ?? []
+    expect(lectures.length).toBe(1)
   })
 })

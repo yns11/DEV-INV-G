@@ -404,6 +404,18 @@ J commence à six heures, et le créateur n'est pas toujours devant son écran.
   nouvel import de stock ERP ne tombe pas hors de tout périmètre.
 - *Affectation zones* rattache les feuilles GENERIQUE, sur une sélection.
 
+**Ces trois onglets restent ouverts jusqu'à la clôture**, comptage et analyse
+compris — et c'est le seul endroit de la configuration qui le soit. Quelqu'un
+tombe malade le matin du jour J, un renfort arrive à midi, un entrepôt apparaît
+dans un import de l'après-midi : c'est précisément là que la répartition bouge.
+Les **seuils**, eux, gèlent à l'entrée en comptage, parce qu'ils décident de ce
+qui sera signalé comme exception et que les changer en cours de route
+changerait la liste sous les yeux de qui la traite.
+
+Sur une campagne en analyse, une zone est figée — elle porte des quantités
+relevées sur le terrain — mais son gestionnaire se change encore : dans
+*Affectation zones*, seule la barre « Affecter à… » reste active.
+
 > **Un périmètre n'est pas un cloisonnement.** L'interrupteur « Mon périmètre »
 > de l'en-tête réduit le bruit ; un gestionnaire garde le droit d'agir hors du
 > sien — indispensable quand il faut couvrir un collègue à 6 h du matin. Ce qui

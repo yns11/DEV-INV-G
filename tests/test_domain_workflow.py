@@ -142,6 +142,57 @@ class TestFreezeMatrix:
         assert mutability_of(CampaignStatus.CLOSED).settings is False
 
 
+class TestLesGestionnairesRestentModifiablesJusquALaCloture:
+    """Ils ont longtemps partagé la garde des seuils. La règle n'était pas la leur.
+
+    Un seuil décide de ce qui sera signalé comme exception, et le changer en
+    cours de route changerait la liste sous les yeux de qui la traite : il gèle
+    à l'entrée en comptage, et c'est juste.
+
+    Un gestionnaire ne décide de rien. Ce n'est pas une habilitation mais un
+    filtre — « mon périmètre » — et chacun garde le droit d'agir partout. Le
+    figer ne protégeait aucun chiffre, et coûtait le seul moment où le personnel
+    bouge vraiment : quelqu'un tombe malade le matin du jour J, un renfort
+    arrive à midi, un entrepôt apparaît dans un import de l'après-midi. Le cycle
+    de vie étant strictement en avant, corriger une adresse e-mail demandait de
+    recréer la campagne.
+    """
+
+    def test_ils_sont_ouverts_pendant_le_comptage(self):
+        assert mutability_of(CampaignStatus.COUNTING).managers is True
+
+    def test_et_pendant_l_analyse_qui_dure_des_semaines(self):
+        assert mutability_of(CampaignStatus.ANALYSIS).managers is True
+
+    def test_des_la_preparation_evidemment(self):
+        assert mutability_of(CampaignStatus.PREPARATION).managers is True
+
+    def test_mais_plus_une_fois_la_campagne_close(self):
+        """Le dossier est immuable, et qui a compté quoi en fait partie."""
+        assert mutability_of(CampaignStatus.CLOSED).managers is False
+
+    def test_ils_ne_gelent_plus_avec_les_seuils(self):
+        """Le fond du changement. S'ils reconvergent, ce contrôle le dit."""
+        for status in (CampaignStatus.COUNTING, CampaignStatus.ANALYSIS):
+            editable = mutability_of(status)
+            assert editable.managers is True
+            assert editable.thresholds is False, (
+                f"au statut {status}, les deux aspects ont de nouveau la même "
+                "valeur : la séparation n'a plus rien à garantir"
+            )
+
+    def test_ils_ne_gelent_pas_non_plus_avec_les_zones(self):
+        """L'affectation d'une zone est portée par cet aspect, pas par `zones`.
+
+        La zone se fige à l'analyse — elle porte des quantités relevées sur le
+        terrain. Son gestionnaire n'est qu'un filtre, et le réaffecter est
+        précisément ce qu'on fait quand l'analyse se répartit.
+        """
+        analysis = mutability_of(CampaignStatus.ANALYSIS)
+        assert analysis.managers is True
+        assert analysis.zones is False
+
+
 class TestTransitionBlockers:
     def test_counting_has_no_structural_prerequisite(self):
         assert campaign_transition_blockers(

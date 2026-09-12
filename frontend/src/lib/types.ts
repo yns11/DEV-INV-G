@@ -50,24 +50,15 @@ export interface CampaignConfig {
   currency: string
 }
 
-/** What the current phase still allows to be modified. */
-export interface Permissions {
-  thresholds: boolean
-  items: boolean
-  boms: boolean
-  locations: boolean
-  bookStock: boolean
-  zones: boolean
-  countJournals: boolean
-  /** Les comptages avancés, qui n'attendent que le référentiel articles. */
-  earlyCounts: boolean
-  countSheets: boolean
-  adjustments: boolean
-  analysis: boolean
-  /** Ouverts tant que la campagne l'est ; la clôture les fige. */
-  backflush: boolean
-  stockFlow: boolean
-}
+/**
+ * Ce que la phase en cours laisse encore modifier.
+ *
+ * Repris du schéma généré, et non recopié. Cette forme-là l'était, et avait
+ * déjà pris deux aspects de retard — `countEntries` et `settings` manquaient,
+ * si bien que le seul écran qui lit `settings` le lisait sur un autre type. Un
+ * alias ne peut plus dériver.
+ */
+export type Permissions = Schemas['Permissions']
 
 /**
  * What the signed-in user owns, as resolved by the server.

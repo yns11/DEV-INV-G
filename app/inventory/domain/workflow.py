@@ -129,6 +129,31 @@ class Editable:
     #: un calcul. Le geler avec les seuils l'aurait rendu inatteignable au seul
     #: moment où il sert.
     settings: bool = False
+    #: Les gestionnaires de la campagne et leurs deux périmètres — l'affectation
+    #: des entrepôts, donc de leurs journaux, et celle des zones GENERIQUE.
+    #:
+    #: Ouvert jusqu'à la clôture, y compris pendant le comptage et l'analyse, et
+    #: c'est le seul aspect de la configuration qui le soit. Il partageait la
+    #: règle des seuils, qui gèlent à l'entrée en comptage ; la règle était bonne
+    #: pour eux et fausse ici.
+    #:
+    #: Un seuil décide de ce qui sera signalé comme exception : le changer en
+    #: cours de route changerait la liste sous les yeux de qui la traite, et deux
+    #: campagnes comparables ne le seraient plus. Un gestionnaire, lui, ne décide
+    #: de rien — ce n'est pas une habilitation mais un filtre, « mon périmètre »,
+    #: et chacun garde le droit d'agir partout. Le figer ne protégeait donc aucun
+    #: chiffre.
+    #:
+    #: Ce qu'il coûtait, en revanche, est concret : quelqu'un tombe malade le
+    #: matin du jour J, un renfort arrive à midi, un entrepôt apparaît dans un
+    #: import de l'après-midi. Le seul moment où le personnel bouge vraiment est
+    #: précisément celui où l'écran se fermait, et il fallait rouvrir une
+    #: campagne — ce que le cycle de vie interdit — pour corriger une adresse
+    #: e-mail. L'analyse dure des semaines et se répartit de la même façon.
+    #:
+    #: Fermé à la clôture comme tout le reste : le dossier est immuable, et qui
+    #: a compté quoi en fait partie.
+    managers: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -147,6 +172,7 @@ class Editable:
             "backflush": self.backflush,
             "stockFlow": self.stock_flow,
             "settings": self.settings,
+            "managers": self.managers,
         }
 
 
@@ -163,6 +189,7 @@ class Editable:
 _EDITABILITY: dict[CampaignStatus, Editable] = {
     CampaignStatus.PREPARATION: Editable(
         settings=True,
+        managers=True,
         thresholds=True,
         items=True,
         boms=True,
@@ -187,6 +214,9 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
     ),
     CampaignStatus.COUNTING: Editable(
         settings=True,
+        # Voir le champ : le personnel bouge le jour J, et c'est précisément là
+        # que l'écran se fermait.
+        managers=True,
         thresholds=False,
         items=False,
         boms=False,
@@ -201,6 +231,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         analysis=False,
     ),
     CampaignStatus.ANALYSIS: Editable(
+        managers=True,
         thresholds=False,
         items=False,
         boms=False,
@@ -215,6 +246,8 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         analysis=True,
     ),
     CampaignStatus.CLOSED: Editable(
+        # Le dossier est immuable, et qui a compté quoi en fait partie.
+        managers=False,
         thresholds=False,
         items=False,
         boms=False,

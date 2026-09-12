@@ -4327,6 +4327,8 @@ export interface components {
             items: boolean;
             /** Locations */
             locations: boolean;
+            /** Managers */
+            managers: boolean;
             /** Settings */
             settings: boolean;
             /** Stockflow */

@@ -294,6 +294,10 @@ class Permissions(Payload):
     #: réglage « Accepter des formules dans les comptages ». Ouvert plus
     #: longtemps que ``thresholds``, et délibérément : voir ``Editable``.
     settings: bool
+    #: Les gestionnaires et leurs deux périmètres. Ouverts jusqu'à la clôture —
+    #: comptage et analyse compris — parce qu'un périmètre n'est pas une
+    #: habilitation et ne fige aucun chiffre : voir ``Editable``.
+    managers: bool
 
 
 class Access(Payload):

@@ -333,6 +333,8 @@ _ASPECT_LABELS = {
     "analysis": "L'analyse des écarts",
     "backflush": "L'écart backflush",
     "stock_flow": "La réconciliation entre campagnes",
+    "settings": "Les paramètres de la campagne",
+    "managers": "Les gestionnaires et leurs périmètres",
 }
 
 _STATUS_LABELS = {

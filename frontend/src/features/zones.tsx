@@ -468,6 +468,7 @@ function BlankRowsModal({
 export function ZonesAdminGrid({
   campaignId,
   editable,
+  assignable = false,
   deletable = false,
   managers = [],
   onPrint,
@@ -475,6 +476,18 @@ export function ZonesAdminGrid({
 }: {
   campaignId: string
   editable: boolean
+  /**
+   * Si le gestionnaire d'une zone peut encore changer.
+   *
+   * Séparé d'`editable`, et pas par goût de la granularité : ce que l'un et
+   * l'autre gouvernent n'est pas de même nature. `editable` décide du sort de
+   * la zone — la créer, la renommer, changer son nombre de comptages — et cela
+   * se fige à l'analyse, parce qu'une zone porte alors des quantités relevées
+   * sur le terrain. Le gestionnaire n'est qu'un filtre, « mon périmètre » ; il
+   * ne fige aucun chiffre, et le réaffecter reste précisément ce qu'on fait
+   * quand l'analyse se répartit entre plusieurs personnes.
+   */
+  assignable?: boolean
   /**
    * Si la suppression est offerte — c'est-à-dire en préparation.
    *
@@ -823,7 +836,7 @@ export function ZonesAdminGrid({
               exportTitle="Zones"
               campaignId={campaignId}
               getRowId={(row) => row.id}
-              selectable={editable || Boolean(onPrint)}
+              selectable={editable || assignable || Boolean(onPrint)}
               selected={selected}
               onSelectedChange={setSelected}
               searchPlaceholder="Filtrer par zone, libellé, secteur…"
@@ -888,7 +901,9 @@ export function ZonesAdminGrid({
                     >
                       Refuser les négatifs
                     </Button>
-                    {managers.length > 0 && (
+                    </>
+                    )}
+                    {assignable && managers.length > 0 && (
                       <select
                         className="input"
                         style={{ width: 210 }}
@@ -912,8 +927,6 @@ export function ZonesAdminGrid({
                           </option>
                         ))}
                       </select>
-                    )}
-                    </>
                     )}
                   </div>
                 ) : null

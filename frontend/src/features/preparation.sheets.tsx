@@ -137,6 +137,9 @@ export function CountSheetsTab({
         <ZonesAdminGrid
           campaignId={campaignId}
           editable={overview.permissions.zones}
+          // L'affectation à un gestionnaire suit sa propre garde : elle reste
+          // ouverte quand la zone, elle, est figée. Voir `ZonesAdminGrid`.
+          assignable={overview.permissions.managers}
           // La suppression s'arrête au passage en comptage, où les feuilles
           // portent des quantités relevées. Le serveur applique la même règle.
           deletable={

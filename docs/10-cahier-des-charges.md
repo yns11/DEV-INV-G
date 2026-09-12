@@ -1139,7 +1139,7 @@ réimplémentation perd en premier.
 | **Entrepôt / emplacement** | Couple identifiant **non concaténé**, type (à étiquettes / vrac), état d'activation |
 | **Référence de stock** | Article × entrepôt × emplacement, quantité, unité, coût porté, **date de référence**, origine (snapshot général ou journal de précomptage) |
 | **Journal ERP** | Numéro, entrepôt, type, dates, **périmètre déclaré**, scellement (date, auteur, motif de descellement) |
-| **Ligne de journal ERP** | Numéro de ligne, date de comptage, emplacement, **étiquette**, **numéro de série**, article, **stock ERP avant comptage**, quantité comptée, unité, statut qualité, postage |
+| **Ligne de journal ERP** | Date de comptage, emplacement, **étiquette**, **numéro de série**, article, **stock ERP avant comptage**, quantité comptée, unité, statut qualité, postage |
 | **Journal de comptage** | Un par (campagne, entrepôt, emplacement), statut, avancement |
 | **Ligne de comptage** | Article, **quantité importée et quantité corrigée conservées séparément**, référence ERP (absente ≠ nulle), provenance |
 | **Zone** | Code, libellé, nombre de comptages, saisie libre ou non, gestionnaire, **textes d'en-tête de section**, **nombre de lignes vierges par section**, décision de clôture (date, auteur) |
@@ -1173,7 +1173,7 @@ un choix de l'application. Les noms cités sont ceux de l'export réel.
 
 | Flux | Ce qui est imposé |
 |---|---|
-| **Lignes de journaux de comptage** | Un numéro de journal, un numéro de ligne, une date de comptage, site/entrepôt/emplacement, **étiquette** et **numéro de série**, l'article, `OnHandQuantity` (**le stock ERP avant comptage**), `CountedQuantity`, l'unité, le statut qualité, l'indicateur de postage, le **type de journal** (par étiquette / vrac) |
+| **Lignes de journaux de comptage** | Un numéro de journal, une date de comptage, site/entrepôt/emplacement, **étiquette** et **numéro de série**, l'article, `OnHandQuantity` (**le stock ERP avant comptage**), `CountedQuantity`, l'unité, le statut qualité, l'indicateur de postage, le **type de journal** (par étiquette / vrac) |
 | **Photographie de stock** | Article × entrepôt × emplacement, quantité, unité, coût unitaire |
 | **Référentiel articles** | Référence, désignations multiples, groupe d'articles, programme, prix standard **et son unité de prix** (le prix doit être ramené à *une* unité) |
 | **Nomenclatures** | Parent, composant, quantité par assemblage |

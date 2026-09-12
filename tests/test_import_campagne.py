@@ -100,7 +100,7 @@ def _une_campagne_qui_porte_tout():
     )
     erp_line = ErpJournalLine(
         id="el-1", erp_journal_id="j-1", campaign_id="camp-1",
-        erp_line_number=1, warehouse_id="ATP", location_id="SOL",
+        warehouse_id="ATP", location_id="SOL",
         item_number="P-1", qty_on_hand=10, qty_counted=12,
     )
 
@@ -247,7 +247,7 @@ class TestLesColonnesSontCellesDuContrat:
             ("items", 12),
             ("book_stock", 6),
             ("count_sheets", 6),
-            ("count_journal_lines", 17),
+            ("count_journal_lines", 16),
         ],
     )
     def test_le_contrat_a_le_nombre_de_colonnes_attendu(

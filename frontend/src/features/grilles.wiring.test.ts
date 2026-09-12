@@ -121,7 +121,7 @@ describe('un journal ERP s’ouvre sur ses lignes', () => {
 
   it('porte toutes les colonnes de la ligne ERP', () => {
     for (const key of [
-      'erp_line_number', 'site_id', 'warehouse_id', 'location_id',
+      'site_id', 'warehouse_id', 'location_id',
       'label_id', 'serial_number', 'item_number', 'qtyOnHand',
       'qtyCounted', 'varianceQty', 'unit', 'inventory_status_id',
     ]) {
@@ -138,9 +138,15 @@ describe('un journal ERP s’ouvre sur ses lignes', () => {
     expect(EARLY_LINES).toContain('Hors périmètre')
   })
 
-  it('un numéro de ligne ne s’additionne pas au pied de la grille', () => {
-    const column = EARLY_LINES.slice(EARLY_LINES.indexOf("key: 'erp_line_number'"))
-    expect(column.slice(0, 300)).toContain('total: false')
+  it('n’affiche aucun numéro de ligne ERP', () => {
+    /* L'ERP n'en donne pas sur les journaux comptés par étiquette, et la chaîne
+       d'extraction en inventait pour départager des lignes qu'il numérote
+       pareil — « 1, -1, -2, … -79 ». Les afficher invitait à s'y fier ; ils ne
+       désignent rien dans l'ERP. */
+    // La déclaration de colonne, pas la prose : le commentaire qui explique
+    // pourquoi elle n'est plus là cite forcément son nom.
+    expect(EARLY_LINES).not.toContain("key: 'erp_line_number'")
+    expect(EARLY_LINES).not.toContain("label: 'N° ligne'")
   })
 })
 

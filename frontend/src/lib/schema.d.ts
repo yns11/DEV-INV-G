@@ -3705,8 +3705,6 @@ export interface components {
         ErpJournalLineResponse: {
             /** Erpjournalid */
             erpJournalId: string;
-            /** Erplinenumber */
-            erpLineNumber: number | null;
             /** Id */
             id: string;
             /** Inscope */

@@ -519,8 +519,8 @@ Le déroulé, pour chaque journal de précomptage :
    *Périmètre* en affiche le nombre et les deux premiers. La liste entière
    s'obtient au survol, et part telle quelle dans le filtre et l'export Excel.
 3 bis. **Ouvrir un journal** montre ses lignes brutes, telles que l'ERP les a
-   produites : numéro de ligne, emplacement, étiquette, numéro de série, stock
-   ERP, quantité comptée, écart. La colonne **Périmètre** dit lesquelles
+   produites : emplacement, étiquette, numéro de série, stock ERP, quantité
+   comptée, écart. La colonne **Périmètre** dit lesquelles
    comptent — un journal porte des lignes sur des emplacements qu'il ne couvre
    pas, et celles-là sont la trace d'un déplacement. La grille se filtre, se
    trie et s'exporte comme les autres.

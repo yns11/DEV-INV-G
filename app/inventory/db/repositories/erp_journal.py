@@ -96,7 +96,7 @@ class ErpJournalRepository(_Base):
     )
 
     _LINE_COLUMNS = (
-        "id, erp_journal_id, campaign_id, erp_line_number, site_id, warehouse_id, "
+        "id, erp_journal_id, campaign_id, site_id, warehouse_id, "
         "location_id, label_id, serial_number, item_number, qty_on_hand, "
         "qty_counted, unit, inventory_status_id"
     )
@@ -156,7 +156,11 @@ class ErpJournalRepository(_Base):
         rows = self._fetch_all(
             f"SELECT {self._LINE_COLUMNS} FROM erp_journal_line "
             "WHERE campaign_id = %s AND erp_journal_id = %s "
-            "ORDER BY erp_line_number NULLS LAST, item_number",
+            # Le numéro de ligne ne trie plus rien : il était inventé par la
+            # chaîne d'extraction pour les journaux par étiquette, donc sans
+            # rapport avec l'ordre de quoi que ce soit. Les coordonnées de ce
+            # qu'on compte, elles, rangent la page comme on la lit.
+            "ORDER BY location_id, item_number, label_id",
             (campaign_id, erp_journal_id),
             conn=conn,
         )
@@ -237,13 +241,13 @@ class ErpJournalRepository(_Base):
                 return 0
             cur.executemany(
                 "INSERT INTO erp_journal_line (id, erp_journal_id, campaign_id, "
-                "erp_line_number, site_id, warehouse_id, location_id, label_id, "
+                "site_id, warehouse_id, location_id, label_id, "
                 "serial_number, item_number, qty_on_hand, qty_counted, unit, "
                 "inventory_status_id) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [
                     (line.id or new_id(), erp_journal_id, campaign_id,
-                     line.erp_line_number, line.site_id, line.warehouse_id,
+                     line.site_id, line.warehouse_id,
                      line.location_id, line.label_id, line.serial_number,
                      line.item_number, line.qty_on_hand, line.qty_counted,
                      line.unit, line.inventory_status_id)
@@ -579,7 +583,6 @@ class ErpJournalRepository(_Base):
             id=str(row["id"]),
             erp_journal_id=str(row["erp_journal_id"]),
             campaign_id=str(row["campaign_id"]),
-            erp_line_number=row["erp_line_number"],
             site_id=row["site_id"],
             warehouse_id=row["warehouse_id"],
             location_id=row["location_id"],

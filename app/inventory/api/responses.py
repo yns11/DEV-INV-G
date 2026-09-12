@@ -439,7 +439,6 @@ class ErpJournalLineResponse(Payload):
 
     id: str
     erp_journal_id: str = Field(alias="erpJournalId")
-    erp_line_number: int | None = Field(default=None, alias="erpLineNumber")
     site_id: str = Field(default="", alias="siteId")
     warehouse_id: str = Field(alias="warehouseId")
     location_id: str = Field(default="", alias="locationId")

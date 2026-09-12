@@ -112,8 +112,7 @@ def _journal(ctx, campaign, *, number="NPEM-1", posted=True, lines=None,
     ctx.erp_journals.replace_lines(
         campaign.id, journal_id,
         lines if lines is not None else [
-            _erp_line(campaign.id, journal_id, erp_line_number=1,
-                      qty_on_hand=10, qty_counted=12),
+            _erp_line(campaign.id, journal_id, qty_on_hand=10, qty_counted=12),
         ],
     )
     ctx.journals.ensure_journals(campaign.id, list(scope))
@@ -206,8 +205,7 @@ class TestDeclaringSeals:
         journal = _journal(ctx, campaign, scope=())
         service.declare_scope(campaign, journal, [SOL])
         ctx.erp_journals.replace_lines(campaign.id, journal, [
-            _erp_line(campaign.id, journal, erp_line_number=1,
-                      qty_on_hand=99, qty_counted=99),
+            _erp_line(campaign.id, journal, qty_on_hand=99, qty_counted=99),
         ])
         service.declare_scope(campaign, journal, [SOL])
 
@@ -508,17 +506,16 @@ class TestTheLabelAlerts:
             erp_posted=True, counted_on=dt.date(2026, 6, 11),
         )
         ctx.erp_journals.replace_lines(campaign.id, sealed, [
-            _erp_line(campaign.id, sealed, erp_line_number=1,
+            _erp_line(campaign.id, sealed,
                       label_id="001609233", qty_on_hand=8, qty_counted=8),
-            _erp_line(campaign.id, sealed, erp_line_number=2,
+            _erp_line(campaign.id, sealed,
                       label_id="001609234", qty_on_hand=8, qty_counted=8),
         ])
         other = ctx.erp_journals.upsert_journal(
             campaign.id, journal_number="NPEM-2", kind=JournalKind.INVE,
         )
         ctx.erp_journals.replace_lines(campaign.id, other, [
-            _erp_line(campaign.id, other, erp_line_number=1,
-                      warehouse_id="ATP", location_id="QUAI EXP",
+            _erp_line(campaign.id, other, warehouse_id="ATP", location_id="QUAI EXP",
                       label_id="001609233", qty_on_hand=0, qty_counted=8),
         ])
         ctx.journals.ensure_journals(campaign.id, [SOL])
@@ -537,14 +534,14 @@ class TestTheLabelAlerts:
             erp_posted=True, counted_on=dt.date(2026, 6, 11),
         )
         ctx.erp_journals.replace_lines(campaign.id, sealed, [
-            _erp_line(campaign.id, sealed, erp_line_number=1,
+            _erp_line(campaign.id, sealed,
                       label_id="000235471", qty_on_hand=104, qty_counted=104),
         ])
         other = ctx.erp_journals.upsert_journal(
             campaign.id, journal_number="NPEM-2", kind=JournalKind.INVE,
         )
         ctx.erp_journals.replace_lines(campaign.id, other, [
-            _erp_line(campaign.id, other, erp_line_number=1,
+            _erp_line(campaign.id, other,
                       label_id="000235471", qty_on_hand=93, qty_counted=93),
         ])
         ctx.journals.ensure_journals(campaign.id, [SOL])
@@ -599,7 +596,7 @@ class TestTheLabelAlerts:
             campaign.id, journal_number="NPEM-3", kind=JournalKind.INVE,
         )
         ctx.erp_journals.replace_lines(campaign.id, passing, [
-            _erp_line(campaign.id, passing, erp_line_number=1,
+            _erp_line(campaign.id, passing,
                       label_id="001609233", qty_on_hand=8, qty_counted=8),
         ])
         service.declare_scope(campaign, journal, [SOL])
@@ -625,15 +622,14 @@ class TestTheLabelAlerts:
             erp_posted=True, counted_on=dt.date(2026, 6, 11),
         )
         ctx.erp_journals.replace_lines(campaign.id, sealed, [
-            _erp_line(campaign.id, sealed, erp_line_number=1,
+            _erp_line(campaign.id, sealed,
                       label_id="VRAC", qty_on_hand=8, qty_counted=8),
         ])
         other = ctx.erp_journals.upsert_journal(
             campaign.id, journal_number="NPEM-VRAC-2", kind=JournalKind.INVV,
         )
         ctx.erp_journals.replace_lines(campaign.id, other, [
-            _erp_line(campaign.id, other, erp_line_number=1,
-                      warehouse_id="ATP", location_id="QUAI EXP",
+            _erp_line(campaign.id, other, warehouse_id="ATP", location_id="QUAI EXP",
                       label_id="VRAC", qty_on_hand=0, qty_counted=3),
         ])
         ctx.journals.ensure_journals(campaign.id, [SOL])
@@ -736,12 +732,10 @@ class TestPassThroughLinesDoNotCount:
             erp_posted=True, counted_on=dt.date(2026, 6, 11),
         )
         ctx.erp_journals.replace_lines(campaign.id, journal, [
-            _erp_line(campaign.id, journal, erp_line_number=1,
-                      qty_on_hand=10, qty_counted=10),
+            _erp_line(campaign.id, journal, qty_on_hand=10, qty_counted=10),
             # La ligne de passage : un autre emplacement, que ce journal ne
             # couvre pas.
-            _erp_line(campaign.id, journal, erp_line_number=2,
-                      warehouse_id="ATP", location_id="STK P FI",
+            _erp_line(campaign.id, journal, warehouse_id="ATP", location_id="STK P FI",
                       qty_on_hand=4, qty_counted=4),
         ])
         # Ce que l'import avait fait : un journal de comptage par emplacement
@@ -811,14 +805,14 @@ class TestPassThroughLinesDoNotCount:
         imports.batches.archive = lambda *a, **k: None
         rows = [
             {
-                "journal_number": "NPEM-1", "erp_line_number": 1,
+                "journal_number": "NPEM-1",
                 "warehouse_id": "ATP", "location_id": "SOL",
                 "item_number": "MASS-1", "counted_quantity": 10,
                 "qty_on_hand": 10, "journal_name_id": "INVE",
                 "is_posted": True, "unit": "PCE",
             },
             {
-                "journal_number": "NPEM-1", "erp_line_number": 2,
+                "journal_number": "NPEM-1",
                 "warehouse_id": "ATP", "location_id": "STK P FI",
                 "item_number": "MASS-1", "counted_quantity": 4,
                 "qty_on_hand": 4, "journal_name_id": "INVE",
@@ -865,7 +859,7 @@ class TestAnLocationBelongsToOneJournal:
             erp_posted=True, counted_on=dt.date(2026, 6, 11),
         )
         ctx.erp_journals.replace_lines(campaign.id, journal_id, [
-            _erp_line(campaign.id, journal_id, erp_line_number=1,
+            _erp_line(campaign.id, journal_id,
                       label_id=f"ET-{number}", qty_on_hand=qty, qty_counted=qty),
         ])
         return journal_id
@@ -916,7 +910,7 @@ class TestAnLocationBelongsToOneJournal:
         imports.parser.parse = lambda contract, **kw: (None, ParseResult(
             contract_key=contract,
             rows=[{
-                "journal_number": "NPEM-B", "erp_line_number": 1,
+                "journal_number": "NPEM-B",
                 "warehouse_id": "ATP", "location_id": "SOL",
                 "item_number": "MASS-1", "counted_quantity": 99,
                 "qty_on_hand": 99, "journal_name_id": "INVE",

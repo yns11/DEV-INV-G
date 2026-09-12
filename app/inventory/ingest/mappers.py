@@ -392,7 +392,6 @@ class ImportedJournalLine:
     __slots__ = (
         "counting_date",
         "description",
-        "erp_line_number",
         "inventory_status_id",
         "is_posted",
         "item_number",
@@ -423,7 +422,6 @@ class ImportedJournalLine:
         posted_at: dt.datetime | None = None,
         description: str = "",
         counting_date: dt.datetime | None = None,
-        erp_line_number: int | None = None,
         site_id: str = "",
         label_id: str = "",
         serial_number: str = "",
@@ -441,7 +439,6 @@ class ImportedJournalLine:
         self.posted_at = posted_at
         self.description = description
         self.counting_date = counting_date
-        self.erp_line_number = erp_line_number
         self.site_id = site_id
         self.label_id = label_id
         self.serial_number = serial_number
@@ -552,7 +549,6 @@ def map_journal_lines(
                 posted_at=row.get("posted_date_time"),
                 description=str(row.get("description") or "").strip(),
                 counting_date=row.get("counting_date"),
-                erp_line_number=row.get("erp_line_number"),
                 site_id=normalise_key(str(row.get("site_id") or "")),
                 label_id=_identifier(row.get("label_id")),
                 serial_number=_identifier(row.get("serial_number")),

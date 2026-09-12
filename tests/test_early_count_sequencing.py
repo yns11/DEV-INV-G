@@ -116,7 +116,6 @@ def _import_service(ctx, monkeypatch, rows: list[dict[str, Any]]):
 def _row(**kwargs) -> dict[str, Any]:
     base = {
         "journal_number": "NPEM-1",
-        "erp_line_number": 1,
         "warehouse_id": SOL.warehouse_id,
         "location_id": SOL.location_id,
         "item_number": "MASS-1",

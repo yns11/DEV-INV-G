@@ -916,7 +916,6 @@ class ErpJournalLine(DomainModel):
     #: Numéro de ligne ERP. Absent de certains exports, et ce n'est pas une
     #: raison de refuser la ligne : ce serait perdre une quantité comptée pour
     #: une colonne technique.
-    erp_line_number: int | None = None
     site_id: str = ""
     warehouse_id: str
     location_id: str = ""

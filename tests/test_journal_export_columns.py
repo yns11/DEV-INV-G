@@ -41,9 +41,12 @@ EXPORT_HEADERS = (
 
 #: Le champ que chaque en-tête doit désigner. « Journal ERP Source » est le
 #: numéro de journal repris depuis l'en-tête ERP : il tombe sur le même champ.
+#:
+#: « Numéro de ligne » ne figure pas ici, et c'est le changement : la colonne
+#: reste dans l'export, l'application ne la lit plus. Voir
+#: `TestTheLineNumberIsIgnored`.
 EXPECTED_FIELD = {
     "Journal ERP": "journal_number",
-    "Numéro de ligne": "erp_line_number",
     "Site": "site_id",
     "Entrepôt": "warehouse_id",
     "Emplacement": "location_id",
@@ -157,55 +160,108 @@ class TestIdentifiersArriveIntact:
         assert _identifier(None) == ""
 
 
-class TestTheDuplicateIsJournalPlusLine:
-    def _rows(self, *pairs: tuple[str, int | None]) -> list[dict]:
+class TestTheLineNumberIsIgnored:
+    """La colonne reste dans l'export ; l'application ne la lit plus.
+
+    Quatre extractions réelles du même jour ont montré que ce numéro n'est pas
+    celui de l'ERP : sur les journaux comptés par étiquette, l'export descend
+    « 1, -1, -2, … -79 », et un autre journal porte un « 13,5 » que le lecteur
+    refusait en entier. Le rejeter, c'était perdre une ligne comptée pour une
+    colonne technique ; le lire, c'était accepter une clé qui dépend de l'ordre
+    des lignes.
+    """
+
+    def test_no_field_claims_it(self):
+        spec = _alias_map(CONTRACT).get(normalise_header("Numéro de ligne"))
+        assert spec is None
+
+    def test_it_is_reported_as_unused_rather_than_refused(self):
+        """L'écran dit « ces colonnes ne sont pas utilisées », et c'est exact."""
+        result = parse_clipboard(CONTRACT, _paste(MOVED_PALLET[0]))
+        assert result.errors == []
+        assert "Numéro de ligne" in result.unknown_columns
+
+    @pytest.mark.parametrize("value", ["7", "-79", "13,5", "13.5", "", "abc"])
+    def test_whatever_it_holds_the_row_still_arrives(self, value):
+        """« Peu importe son format et sa valeur. »"""
+        row = MOVED_PALLET[0].split("\t")
+        row[1] = value
+        result = parse_clipboard(CONTRACT, _paste("\t".join(row)))
+        assert result.errors == []
+        lines, errors, _ = map_journal_lines(result.rows)
+        assert errors == []
+        assert [line.item_number for line in lines] == ["MASS-00049094"]
+
+
+class TestTheDuplicateIsWhatTheLineDesignates:
+    """La clé, ce sont les coordonnées de ce qui est compté.
+
+    Journal, site, entrepôt, emplacement, étiquette, article — rien qui dépende
+    de l'ordre des lignes, donc rien qui change quand l'extraction suivante
+    intercale une étiquette.
+    """
+
+    def _rows(self, *labels: str, journal: str = "NPEM-1") -> list[dict]:
         return [
             {
                 "journal_number": journal,
-                "erp_line_number": line,
+                "site_id": "TRE",
                 "warehouse_id": "ATP",
                 "location_id": "SOL",
+                "label_id": label,
                 "item_number": "MASS-1",
                 "counted_quantity": 1,
             }
-            for journal, line in pairs
+            for label in labels
         ]
 
-    def test_the_same_line_number_twice_is_a_duplicate(self):
-        result = parse_rows(CONTRACT, self._rows(("NPEM-1", 7), ("NPEM-1", 7)))
+    def test_the_same_coordinates_twice_are_a_duplicate(self):
+        result = parse_rows(CONTRACT, self._rows("001609231", "001609231"))
         assert len(result.duplicate_keys) == 1
 
-    def test_the_same_number_in_two_journals_is_not(self):
-        result = parse_rows(CONTRACT, self._rows(("NPEM-1", 7), ("NPEM-2", 7)))
+    def test_the_same_label_in_two_journals_is_not(self):
+        rows = [
+            *self._rows("001609231", journal="NPEM-1"),
+            *self._rows("001609231", journal="NPEM-2"),
+        ]
+        result = parse_rows(CONTRACT, rows)
         assert result.duplicate_keys == []
 
     def test_ten_labels_of_one_article_in_one_place_are_not_duplicates(self):
         """Le cœur du changement de clé.
 
-        Un journal INVE porte une ligne **par étiquette**. Sous l'ancienne clé —
+        Un journal INVE porte une ligne **par étiquette**. Sous une clé —
         journal, article, entrepôt, emplacement — dix palettes du même article au
-        même endroit produisaient neuf doublons signalés, sur un export qui n'a
+        même endroit produiraient neuf doublons signalés, sur un export qui n'a
         rien d'anormal : 57 936 des 58 345 lignes du 13 juin sont des lignes
         d'étiquettes.
         """
-        rows = [
-            {
-                "journal_number": "NPEM-1",
-                "erp_line_number": number,
-                "warehouse_id": "ATP",
-                "location_id": "SOL",
-                "item_number": "MASS-1",
-                "label_id": f"0016092{number:02d}",
-                "counted_quantity": 1,
-            }
-            for number in range(1, 11)
-        ]
-        result = parse_rows(CONTRACT, rows)
+        result = parse_rows(
+            CONTRACT, self._rows(*(f"0016092{n:02d}" for n in range(1, 11)))
+        )
         assert result.duplicate_keys == []
         assert len(result.rows) == 10
 
-    def test_lines_without_a_number_are_not_duplicates_of_each_other(self):
-        """Même règle que l'index de la migration 025 : deux absences sont distinctes."""
-        result = parse_rows(CONTRACT, self._rows(("NPEM-1", None), ("NPEM-1", None)))
+    def test_two_articles_without_a_label_are_not_duplicates(self):
+        """Un journal en quantité (INVV) ne porte pas d'étiquette.
+
+        Sa clé devient « une ligne par article et par emplacement », ce qui est
+        exactement son grain : deux articles au même endroit sont deux lignes.
+        """
+        rows = self._rows("", "")
+        rows[1]["item_number"] = "MASS-2"
+        result = parse_rows(CONTRACT, rows)
         assert result.duplicate_keys == []
         assert len(result.rows) == 2
+
+    def test_the_same_article_twice_without_a_label_is_a_duplicate(self):
+        """Le revers, et il est voulu : ce n'est pas deux palettes, c'est un doublon."""
+        result = parse_rows(CONTRACT, self._rows("", ""))
+        assert len(result.duplicate_keys) == 1
+
+    def test_the_site_belongs_to_the_key(self):
+        """Deux sites peuvent numéroter leurs emplacements pareil."""
+        rows = self._rows("001609231", "001609231")
+        rows[1]["site_id"] = "AUTRE"
+        result = parse_rows(CONTRACT, rows)
+        assert result.duplicate_keys == []

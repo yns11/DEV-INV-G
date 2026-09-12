@@ -1155,7 +1155,6 @@ export type ErpJournal = Schemas['ErpJournalResponse']
  */
 export interface ErpJournalLine {
   id: string
-  erp_line_number: number | null
   site_id: string
   warehouse_id: string
   location_id: string

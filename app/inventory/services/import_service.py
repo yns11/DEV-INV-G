@@ -1037,7 +1037,6 @@ class ImportService:
                         id=new_id(),
                         erp_journal_id=erp_journal_id,
                         campaign_id=campaign.id,
-                        erp_line_number=line.erp_line_number,
                         site_id=line.site_id,
                         warehouse_id=line.warehouse_id,
                         location_id=line.location_id,

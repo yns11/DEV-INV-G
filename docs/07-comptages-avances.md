@@ -579,7 +579,7 @@ mais il vaut mieux l'écrire ici que le découvrir.
 
 | Code | Sévérité | Règle |
 |---|---|---|
-| `JOURNAL_LINE_DUPLICATE` | **Bloquant** | Doublon `Journal ERP` + `Numéro de ligne` |
+| `JOURNAL_LINE_DUPLICATE` | **Bloquant** | Doublon sur les coordonnées de la ligne : `Journal ERP` + `Site` + `Entrepôt` + `Emplacement` + `Etiquette` + `Numéro d'article` |
 | `IMPORT_STALE` | À regarder | Fraîcheur du dernier import : son heure et son âge |
 | `IMPORT_INCOMPLETE` | À regarder | Complétude : journaux attendus absents de la photographie |
 | `JOURNAL_MULTI_WAREHOUSE` | À regarder | Un journal dont le périmètre couvrirait plus d'un entrepôt |
@@ -616,7 +616,7 @@ count_journal_scope          journal_id, campaign_id, warehouse_id, location_id
                              -- les emplacements que le journal couvre réellement
 
 -- Les dimensions fines, en texte, pour la traçabilité et le contrôle étiquette
-count_journal_line         + erp_line_number, label_id TEXT, serial_number TEXT,
+count_journal_line         + label_id TEXT, serial_number TEXT,
                              inventory_status_id TEXT, qty_on_hand
                              -- qty_on_hand = « Stock ERP », la référence de la ligne
 

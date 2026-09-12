@@ -115,7 +115,7 @@ def _sealed_location(ctx, campaign, *, counted: int, on_hand: int,
     ctx.erp_journals.replace_lines(campaign.id, journal_id, [
         ErpJournalLine(
             id="", erp_journal_id=journal_id, campaign_id=campaign.id,
-            erp_line_number=1, warehouse_id=SOL.warehouse_id,
+            warehouse_id=SOL.warehouse_id,
             location_id=SOL.location_id, item_number=item,
             qty_on_hand=on_hand, qty_counted=counted,
         ),

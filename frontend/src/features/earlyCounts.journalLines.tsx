@@ -43,16 +43,12 @@ export function ErpJournalLinesModal({
   })
 
   const columns: Column<ErpJournalLine>[] = [
-    {
-      key: 'erp_line_number',
-      label: 'N° ligne',
-      width: 90,
-      numeric: true,
-      // Un numéro de ligne ne s'additionne pas : le pied de grille annoncerait
-      // un total qui ne veut rien dire.
-      total: false,
-      render: (row) => (row.erp_line_number === null ? DASH : row.erp_line_number),
-    },
+    // Pas de colonne « N° ligne ». L'ERP n'en donne pas sur les journaux
+    // comptés par étiquette, et la chaîne d'extraction en inventait — « 1, -1,
+    // -2, … -79 » — pour départager des lignes qu'il numérote pareil. Afficher
+    // ces numéros invitait à leur faire confiance ; ce qui identifie une ligne
+    // est désormais ce qu'elle désigne : site, entrepôt, emplacement,
+    // étiquette, article.
     { key: 'site_id', label: 'Site', width: 90, filter: 'choice' },
     { key: 'warehouse_id', label: 'Entrepôt', width: 110, filter: 'choice' },
     { key: 'location_id', label: 'Emplacement', width: 150, filter: 'choice' },

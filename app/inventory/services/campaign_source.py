@@ -147,7 +147,7 @@ def grid_rows(
             # campagne annulée, plutôt que réexporté de l'ERP et rechargé.
             journals = {j.id: j for j in ctx.erp_journals.list(campaign.id)}
             return [
-                [journal.journal_number, line.erp_line_number,
+                [journal.journal_number,
                  journal.counting_date.isoformat() if journal.counting_date else "",
                  line.site_id, line.warehouse_id, line.location_id,
                  line.label_id, line.serial_number, line.item_number,

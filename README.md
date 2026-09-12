@@ -17,7 +17,7 @@ PRÉPARATION ──────► COMPTAGE ──────► ANALYSE & AJUS
 
 | Fichier actuel | Remplacé par |
 |---|---|
-| `Compil GENERIQUE.xlsx` — 54 onglets, 9 requêtes Power Query | Le moteur de consolidation GENERIQUE, avec éclatement BOM tracé et arbitrage outillé |
+| `Compil GENERIQUE.xlsx` — 54 onglets, 9 requêtes Power Query | Le moteur de consolidation GENERIQUE, avec éclatement BOM tracé et arbitrage outillé — et, pour le jour où l'application ne répond pas, un classeur de repli engendré qui refait le même calcul par formules |
 | `BILAN INVENTAIRE.xlsx` — 13 onglets, 17,6 Mo, `#REF!` en production | Le module d'analyse : écarts recalculés, contrôles, analytics, causes |
 | `STOCK AVANT INVENTAIRE.xlsx` | Le snapshot gelé, horodaté et opposable |
 | Les copier/coller vers l'ERP | Des exports au format d'import ERP |
@@ -32,20 +32,58 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   journaux et analyses sont versionnés ensemble et restent recalculables à
   l'identique des mois plus tard.
 - **Rien ne disparaît en silence.** Un assemblage sans nomenclature, une ligne
-  d'export corrompue, une case vide : chacun produit un message explicite et une
-  résolution, jamais une quantité perdue.
+  d'export corrompue : chacun produit un message explicite et une résolution,
+  jamais une quantité perdue. Et une ligne de feuille laissée vide compte
+  **zéro** : elle figure sur le papier parce qu'on s'attend à trouver la
+  référence dans la zone, et n'y avoir rien trouvé est un écart à expliquer.
 - **Les feuilles se préparent, elles ne s'improvisent pas.** Un fichier
   `[feuille, article, section]` crée les zones et pré-imprime leur liste, sur les
   deux passages. Un article absent du référentiel est une erreur de ligne, jamais
   un article créé par effet de bord — et la règle vaut pour le stock ERP comme
   pour les feuilles, dans les trois modes d'import.
+- **La feuille se conçoit comme une page.** On y pose ses intertitres, ses
+  lignes vides **et ses références** — prises dans le référentiel, à l'endroit
+  choisi, dans la section choisie. Ce qui n'a rien à compter ne s'imprime pas :
+  une zone sans en-cours ne sort plus avec un tiers de page consacré à deux
+  sections qu'elle n'a pas. Et une zone mal nommée se renomme, au lieu de se
+  supprimer et se refaire — ses feuilles, ses comptages et ses arbitrages
+  tiennent à son identité, jamais à son code.
+- **La feuille nomme les pièces comme l'atelier les nomme.** Les listes qui
+  l'alimentent viennent des ateliers, et elles portent leurs désignations. Celle
+  qu'on importe ou colle en conception de zone **remplace** celle du référentiel
+  — sur la feuille, à l'écran, au papier, à l'arbitrage — et nulle part
+  ailleurs : l'écart et l'export continuent de nommer l'article comme l'ERP le
+  nomme, faute de quoi plus aucun rapprochement ne serait lisible.
+- **La feuille est un document, pas une liste.** Intertitres — « Stock physique
+  B6EST », « Stock physique B15 » — et lignes vides se posent en préparation, se
+  voient dans l'aperçu avant impression, et se retrouvent à l'identique sur le
+  papier et dans le formulaire de saisie. Un même article sous deux intertitres
+  est deux comptages, à deux endroits : ce n'est plus refusé comme un doublon.
+- **Une grille se reprend d'une campagne à l'autre.** Le référentiel d'un
+  trimestre est celui du suivant à quelques lignes près, et les journaux de
+  précomptage d'une campagne annulée n'ont aucune raison d'être ressaisis. La
+  fenêtre de choix dit ce que chaque campagne porte sur la grille demandée —
+  c'est le chiffre qui fait choisir. Les lignes rentrent **au même point** qu'un
+  fichier : mêmes refus, même essai à blanc, même grille modifiable ensuite.
 - **La photo du stock se désigne.** Le snapshot ERP est publié chaque jour ;
   c'est celui de la journée de comptage qui fait foi, pas celui du jour où on le
   charge. La campagne dit lequel elle a chargé, et l'historique le garde.
-- **Deux comptages, un arbitrage outillé.** Valorisé en euros, couvrant aussi les
-  articles comptés par une seule équipe. Le nombre de comptages appartient à la
-  zone : le double comptage est la règle, le comptage unique l'exception qu'on
-  assume, zone par zone.
+- **Deux comptages, un arbitrage outillé.** Les deux passages portent le **même
+  document** : une référence retirée, un intertitre renommé, deux lignes
+  échangées descendent sur la seconde feuille — sans toucher aux quantités
+  qu'elle porte déjà. L'arbitrage est valorisé en euros, couvre les articles
+  comptés par une seule équipe, se tranche en lot quand on sait laquelle des
+  deux fait foi, et **se refait dès qu'un des deux comptages change** : une
+  décision porte sur deux chiffres, et meurt avec eux.
+- **Un classeur de repli, et il se recalcule.** L'export du dossier est une
+  photo : on la classe, on ne la corrige pas. Un second classeur part avec lui,
+  qui porte les *données* — le référentiel, les nomenclatures, une feuille par
+  zone — et refait la consolidation GENERIQUE **par formules**. Corriger un
+  comptage met à jour le relevé et le journal, sans ressaisie et sans
+  l'application. C'est ce qu'était `Compil GENERIQUE.xlsx`, mais engendré à
+  chaque export au lieu d'être maintenu à la main — et la recette le fait
+  **recalculer pour de vrai** avant de le livrer, puis compare chaque ligne avec
+  ce que le moteur produit.
 - **Lecture pour tous, écriture pour ceux qui la portent.** Une campagne se
   consulte et s'exporte par tout le monde ; elle ne se modifie que par son
   créateur et les neuf gestionnaires qu'il a déclarés. Le contrôle est posé au
@@ -57,11 +95,15 @@ réels de juin 2026 — est dans [`docs/01-analyse-existant.md`](docs/01-analyse
   une habilitation : un gestionnaire garde le droit d'agir hors du sien, ce
   qu'exige la couverture d'un collègue à six heures du matin.
 - **Compter avant le jour J, sans éclater le dossier.** Certains emplacements se
-  précomptent à J-1 ou J-2, leur comptage se scelle, et le jour J l'application
-  confronte ce que l'ERP en dit au physique qui y a été posté. La référence
-  d'un emplacement scellé reste celle de son précomptage : sans cela, poster
-  son journal ayant réaligné l'ERP sur le physique, son écart tomberait à zéro
-  et le résultat de son inventaire disparaîtrait.
+  précomptent à J-1 ou J-2, en phase de préparation, et leur comptage se scelle.
+  **La référence de la campagne reste unique** — le stock ERP du jour J, gelé,
+  pour tout emplacement : un journal de précomptage est posté dans l'ERP avant
+  que la photo ne soit prise, donc elle l'a déjà intégré, et lui opposer une
+  seconde référence antérieure compterait deux fois la même correction. Un
+  emplacement précompté montre alors un écart voisin de zéro, et c'est exact :
+  sa correction a été enregistrée plus tôt, dans l'ERP, avant la campagne. Ce
+  qui a bougé entre les deux dates se lit dans les Contrôles — sans action
+  requise, et sans rien qui bloque.
 - **Un transfert entre bacs n'est pas une perte.** L'analyse s'ouvre sur l'écart
   par référence et chiffre explicitement la part qui n'est qu'un déplacement.
 - **Le WIP est explorable.** Chaque quantité éclatée est traçable jusqu'à
@@ -140,7 +182,8 @@ frontend/                   React + TypeScript + Vite
 
 sql/00_unity_catalog.sql    Schéma, volume, tables Delta et vues analytiques
 jobs/                       Job Lakeflow de publication vers Delta
-tests/                      2557 contrôles ; 138 exigent un PostgreSQL, ignorés sinon
+fixtures/jeu-de-donnees/    Campagne de contrôle + calcul théorique indépendant
+tests/                      3168 contrôles ; 310 exigent un PostgreSQL, ignorés sinon
 docs/                       Analyse, architecture, déploiement, guide, Top 20
 databricks.yml              Asset Bundle (app + job)
 Makefile                    Points d'entrée développeur
@@ -160,6 +203,8 @@ Makefile                    Points d'entrée développeur
 | [`06-top20-ameliorations.md`](docs/06-top20-ameliorations.md) | Revue critique : 20 améliorations priorisées, séquencées |
 | [`07-comptages-avances.md`](docs/07-comptages-avances.md) | Comptages avancés : la logique, le modèle et le processus |
 | [`08-algorigrammes.md`](docs/08-algorigrammes.md) | Algorigrammes du processus actuel et du processus avec comptages avancés |
+| [`09-jeu-de-donnees-de-controle.md`](docs/09-jeu-de-donnees-de-controle.md) | Le jeu de données de contrôle, son arithmétique posée, et comment confronter l'application |
+| [`10-cahier-des-charges.md`](docs/10-cahier-des-charges.md) | Le besoin, indépendamment de cette implémentation : exigences, règles métier, recette, et ce qui reste à décider |
 
 ---
 
@@ -167,15 +212,20 @@ Makefile                    Points d'entrée développeur
 
 ```bash
 make help            # tous les points d'entrée
-make test            # 2400 contrôles, ~45 s ; 69 ignorés sans PostgreSQL
+make test            # 3168 contrôles ; 310 ignorés sans PostgreSQL
 make lint            # ruff + tsc
 make check           # les deux
 make dev-api         # API avec rechargement, port 8000
 make dev-ui          # Vite avec proxy vers l'API, port 5173
 
-npm --prefix frontend run test   # 383 contrôles navigateur (vitest + jsdom)
+npm --prefix frontend run test   # 579 contrôles navigateur (vitest + jsdom)
 npm --prefix frontend run e2e    # le parcours complet, Playwright, app démarrée
 ```
+
+Une poignée de contrôles font **recalculer** le classeur de repli par
+LibreOffice Calc et comparent son journal à celui du moteur. Ils s'ignorent
+quand il n'est pas installé — comme ceux qui exigent un PostgreSQL — et les
+contrôles de structure du même fichier, eux, tournent partout.
 
 Trois bancs, trois portées. Les contrôles Python tiennent les règles et l'API ;
 `vitest` tient le TypeScript — grille, formats, collage — sans démarrer quoi

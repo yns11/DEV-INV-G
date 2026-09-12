@@ -75,6 +75,21 @@ class TestCounting:
     def test_and_goes_through_once_it_has(self):
         assert blocking_reason("post_journal", STOCK_FROZEN) is None
 
+    def test_the_early_count_does_not_wait_for_a_stock_it_precedes(self):
+        """C'est la seule étape du comptage qui passe avant le chargement.
+
+        Un lot avancé se compte des jours avant le jour J et porte sa propre
+        référence : la colonne « Stock ERP » des lignes de son journal. Lui
+        donner le prérequis des journaux généraux fermait l'écran jusqu'au
+        chargement général — donc jusqu'après le moment où il sert.
+        """
+        assert blocking_reason("early_counts", READY_TO_COUNT) is None
+        assert blocking_reason("early_counts", ITEMS_ONLY) is None
+
+    def test_but_it_waits_for_the_articles_it_values_against(self):
+        """Ses lignes se rattachent à des articles, et sceller les valorise."""
+        assert "articles" in (blocking_reason("early_counts", EMPTY) or "")
+
     def test_posting_without_any_stock_names_the_first_gap_not_the_last(self):
         """Deux prérequis manquent ; celui à combler est le premier."""
         assert "Chargez" in (blocking_reason("post_journal", READY_TO_COUNT) or "")

@@ -343,24 +343,41 @@ COUNT_JOURNAL_LINES = GridContract(
         "emplacements est créé automatiquement, sauf si l'emplacement est "
         "désactivé."
     ),
-    # Le doublon d'un export de journaux, c'est « Journal ERP + Numéro de
-    # ligne ». Ce ne peut pas être (journal, article, entrepôt, emplacement)
-    # comme avant : un journal INVE porte une ligne **par étiquette**, si bien
-    # que dix palettes du même article au même endroit sont dix lignes
-    # légitimes — et l'ancienne clé en signalait neuf comme des doublons.
-    natural_key=("journal_number", "erp_line_number"),
-    # Un export omet parfois le numéro de ligne. Ces lignes-là sont chargées
-    # comme les autres, elles ne sont simplement pas soumises au contrôle
-    # d'unicité — exactement ce que fait l'index de la migration 025, où deux
-    # NULL sont distincts.
-    duplicate_scope=lambda row: row.get("erp_line_number") is not None,
+    # **Ce qui identifie une ligne, ce sont les coordonnées de ce qu'elle
+    # compte** : le journal, le site, l'entrepôt, l'emplacement, l'étiquette et
+    # l'article. Rien d'autre, et surtout pas le numéro de ligne.
+    #
+    # Il l'a été. C'était une erreur, et quatre extractions réelles du même
+    # jour l'ont montrée : l'export porte des numéros que l'ERP n'a pas donnés —
+    # un journal par étiquette y descend « 1, -1, -2, … -79 », un autre porte un
+    # « 13,5 » — parce que la chaîne d'extraction les invente pour départager
+    # des lignes que l'ERP numérote pareil. Ils dépendent donc de l'ordre des
+    # lignes : une étiquette saisie entre deux extractions décale tout ce qui
+    # suit, et la même palette physique change de clé d'un quart d'heure à
+    # l'autre. Une clé qui bouge ne désigne rien.
+    #
+    # Comme clé d'unicité, ce numéro manquait des deux côtés à la fois. Trop
+    # strict : « 13,5 » ne se lit pas en entier, et le lecteur refusait la ligne
+    # — une quantité comptée perdue pour une colonne technique. Trop lâche : la
+    # colonne est facultative, le contrôle de doublon exemptait les lignes qui
+    # ne la portent pas, et l'index unique de la migration 025 tenait deux NULL
+    # pour distincts. Un vrai doublon passait donc sans un mot.
+    #
+    # Les coordonnées, elles, ne dépendent de rien et sont toutes renseignées.
+    # Vérifiées uniques sur les quatre extractions — 614, 637, 1 061 et 1 075
+    # lignes, aucun doublon — et stables d'une extraction à l'autre.
+    #
+    # Une ligne sans étiquette n'est pas une exception : un journal en quantité
+    # (INVV) n'en porte pas, et sa clé devient « une ligne par article et par
+    # emplacement », ce qui est exactement son grain.
+    natural_key=(
+        "journal_number", "site_id", "warehouse_id", "location_id",
+        "label_id", "item_number",
+    ),
     fields=(
         FieldSpec("journal_number", "Journal ERP",
                   aliases=("journalnumber", "numero", "journal",
                            "journal erp", "journal erp source"), width=150),
-        FieldSpec("erp_line_number", "Numéro de ligne", type="integer",
-                  aliases=("linenumber", "numero de ligne", "ligne"),
-                  help="Identifie la ligne dans son journal ERP.", width=140),
         FieldSpec("counting_date", "Date de comptage", type="datetime",
                   aliases=("countingdate", "date de comptage"), width=170),
         FieldSpec("site_id", "Site",
@@ -438,12 +455,21 @@ COUNT_SHEETS = GridContract(
         "référentiel. Sections : « Bord de ligne » (compté tel quel) · "
         "« WIP (à éclater) » (assemblage non déclaré, éclaté en nomenclature) · "
         "« WIP assemblé » (assemblage déclaré, compté tel quel). Les anciens "
-        "libellés « BDL », « MOM waiting » et « MOM OK » sont acceptés."
+        "libellés « BDL », « MOM waiting » et « MOM OK » sont acceptés. "
+        "La sous-section est l'intertitre imprimé au-dessus du groupe : un même "
+        "article sous deux intertitres est deux comptages, pas un doublon."
     ),
     # A same article legitimately appears twice on one sheet in two different
     # sections (line side *and* WIP): it is the trio that must be unique, not
     # the article.
-    natural_key=("sheet_code", "item_number", "section"),
+    #
+    # La sous-section entre dans la clé pour la même raison, une fois de plus :
+    # « Stock physique B6EST », « Stock physique B15 », « Stock physique chez
+    # Maldaner » portent les mêmes articles sur la même feuille, et ce sont
+    # trois comptages, à trois endroits. Sans elle, deux des trois étaient
+    # refusés comme doublons. Une sous-section vide laisse la clé exactement
+    # telle qu'elle était : les feuilles existantes ne bougent pas.
+    natural_key=("sheet_code", "item_number", "section", "subsection"),
     fields=(
         FieldSpec("sheet_code", "Feuille", required=True,
                   aliases=("feuille", "zone", "code feuille", "code zone",
@@ -455,14 +481,38 @@ COUNT_SHEETS = GridContract(
                   choice_labels=_SECTION_LABELS, default="LINE_SIDE",
                   aliases=("source", "statut", "statut mom", "type"),
                   help="Vide = bord de ligne.", width=150),
+        FieldSpec("subsection", "Sous-section",
+                  aliases=("sous section", "intertitre", "emplacement",
+                           "sous-titre", "groupe"),
+                  help=(
+                      "Intertitre imprimé au-dessus du groupe, comme « Stock "
+                      "physique B15 ». Le même article peut revenir sous "
+                      "plusieurs."
+                  ),
+                  width=200),
+        FieldSpec("name", "Désignation",
+                  aliases=("designation", "designation article", "libelle",
+                           "libelle article", "nom", "description", "intitule"),
+                  help=(
+                      "Facultative. Renseignée, elle **remplace** la désignation "
+                      "du référentiel sur les feuilles de cette zone — et là "
+                      "seulement : les écarts et les exports continuent de nommer "
+                      "l'article comme l'ERP le nomme. Vide, la ligne prend celle "
+                      "du référentiel."
+                  ),
+                  width=240),
         FieldSpec("unit", "Unité de comptage", default="PCE",
                   aliases=("unite de comptage", "unite", "unit"), width=140),
     ),
     examples=(
         {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
-         "section": "Bord de ligne", "unit": "PCE"},
+         "section": "Bord de ligne", "subsection": "Stock physique B6EST",
+         "unit": "PCE"},
         {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
-         "section": "WIP (à éclater)", "unit": "PCE"},
+         "section": "Bord de ligne", "subsection": "Stock physique B15",
+         "unit": "PCE"},
+        {"sheet_code": "FI ASSY M3.1", "item_number": "P-00324093",
+         "section": "WIP (à éclater)", "subsection": "", "unit": "PCE"},
     ),
 )
 

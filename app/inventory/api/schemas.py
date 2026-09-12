@@ -16,19 +16,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..domain.enums import (
     CampaignStatus,
+    CountLineKind,
     CountSection,
-    DriftResolution,
     ExclusionScope,
     ItemType,
     JournalStatus,
     LocationStatus,
 )
+from ..services.campaign_service import MAX_BULK_DELETE
+from ..services.zone_service import MAX_BULK_ZONES
 
 __all__ = [
     "ApiModel",
     "ErrorPayload",
     "CreateCampaignRequest",
     "CloneCampaignRequest",
+    "DeleteCampaignsRequest",
     "TransitionRequest",
     "ThresholdPayload",
     "UpdateThresholdsRequest",
@@ -46,12 +49,14 @@ __all__ = [
     "JournalStatusRequest",
     "JournalLineRequest",
     "JournalScopeRequest",
-    "EarlyBatchRequest",
     "UnsealRequest",
-    "DriftResolutionRequest",
     "ZoneRequest",
+    "ZoneBulkRequest",
+    "ZoneBlankRowsRequest",
+    "ZoneRenameRequest",
     "ZonePassesRequest",
     "ZoneNegativeRequest",
+    "ZoneSectionLabelsRequest",
     "ZoneAssignmentRequest",
     "ManagerRow",
     "ManagerRowsRequest",
@@ -62,6 +67,8 @@ __all__ = [
     "ZoneDeleteRequest",
     "SheetLineDeleteRequest",
     "ArbitrationDecisionRequest",
+    "BulkArbitrationDecision",
+    "BulkArbitrationRequest",
     "ReclassifyRequest",
     "AnalysisRequest",
     "AdjustmentRowRequest",
@@ -207,6 +214,17 @@ class CloneCampaignRequest(ApiModel):
     include_sheet_lines: bool = Field(default=True, alias="includeSheetLines")
 
 
+class DeleteCampaignsRequest(ApiModel):
+    """Le lot à retirer.
+
+    Borné par le contrat lui-même et non seulement par le service : une liste
+    sans borne est une requête qu'on peut envoyer, et refuser cent mille
+    identifiants après les avoir lus coûte déjà de les avoir lus.
+    """
+
+    ids: list[str] = Field(min_length=1, max_length=MAX_BULK_DELETE)
+
+
 class TransitionRequest(ApiModel):
     target: CampaignStatus
 
@@ -313,27 +331,10 @@ class JournalScopeRequest(ApiModel):
     locations: list[LocationKeyPayload] = Field(min_length=1)
 
 
-class EarlyBatchRequest(ApiModel):
-    code: str = Field(min_length=3, max_length=50)
-    label: str = ""
-    counted_on: dt.date | None = Field(default=None, alias="countedOn")
-    erp_journal_ids: list[str] = Field(min_length=1, alias="erpJournalIds")
-
-
 class UnsealRequest(ApiModel):
     """Le descellement annule une preuve datée : il se motive."""
 
     reason: str = Field(min_length=1)
-
-
-class DriftResolutionRequest(ApiModel):
-    drift_ids: list[str] = Field(min_length=1, alias="driftIds")
-    resolution: DriftResolution
-    #: Obligatoire pour ``KEEP_EARLY`` — le service le vérifie, parce que c'est
-    #: une règle métier et non une contrainte de forme : cette issue laisse la
-    #: campagne et l'ERP en désaccord, et il faut dire pourquoi.
-    cause_code: str = Field(default="", alias="causeCode")
-    comment: str = ""
 
 
 class JournalLineRequest(ApiModel):
@@ -360,6 +361,50 @@ class ZoneRequest(ApiModel):
     #: right after.
     free_entry: bool = Field(default=True, alias="freeEntry")
     manager_code: str = Field(default="", alias="managerCode")
+    #: Combien de lignes vierges chaque section imprime, par code de section.
+    #:
+    #: Ne concerne que la feuille vierge. Une section absente — ou à zéro — ne
+    #: s'imprime pas : c'est ce qui permet à une zone de ne sortir que le bord
+    #: de ligne, ou au contraire de sortir ses deux sections d'en-cours.
+    #:
+    #: Les bornes sont celles du domaine, qui refuse plutôt que de rogner :
+    #: « 500 » tapé pour « 50 » coûte une rame avant que quiconque ne le voie.
+    blank_rows: dict[str, int] | None = Field(default=None, alias="blankRows")
+
+
+class ZoneBulkRequest(ApiModel):
+    """Un lot de zones, tel qu'un bloc collé le décrit.
+
+    L'écran analyse le collage — c'est lui qui connaît le vocabulaire des
+    en-têtes — et envoie des zones déjà nommées. Le serveur les valide toutes
+    avant d'en écrire une seule : trente zones créées et un refus sur la
+    trente et unième laisserait un état que personne n'a voulu.
+    """
+
+    zones: list[ZoneRequest] = Field(min_length=1, max_length=MAX_BULK_ZONES)
+
+
+class ZoneBlankRowsRequest(ApiModel):
+    """Les lignes vierges d'une zone, section par section.
+
+    Le dictionnaire est posé **en entier** : une section absente vaut zéro, et
+    c'est bien ainsi qu'on retire une section de la page.
+    """
+
+    blank_rows: dict[str, int] = Field(default_factory=dict, alias="blankRows")
+
+
+class ZoneRenameRequest(ApiModel):
+    """Le nouveau nom d'une zone.
+
+    Le libellé et le secteur sont facultatifs et ``None`` les laisse en place :
+    renommer une zone est un geste sur son code, et l'écran qui ne propose que
+    lui ne doit pas effacer les deux autres en passant.
+    """
+
+    code: str = Field(min_length=1, max_length=100)
+    label: str | None = Field(default=None, max_length=200)
+    sector: str | None = Field(default=None, max_length=120)
 
 
 class ZonePassesRequest(ApiModel):
@@ -367,6 +412,17 @@ class ZonePassesRequest(ApiModel):
 
     zone_ids: list[str] = Field(min_length=1, alias="zoneIds")
     passes: int = Field(ge=1, le=2)
+
+
+class ZoneSectionLabelsRequest(ApiModel):
+    """Les en-têtes de section imprimés en tête de feuille, pour une zone.
+
+    Un code absent — ou dont le texte est vide — reprend le texte par défaut.
+    C'est ce qui permet d'en personnaliser un sans recopier les deux autres, et
+    d'annuler une personnalisation en vidant le champ.
+    """
+
+    labels: dict[CountSection, str] = Field(default_factory=dict)
 
 
 class ZoneNegativeRequest(ApiModel):
@@ -414,9 +470,47 @@ class ZoneClosureRequest(ApiModel):
 
 
 class SheetLineRow(ApiModel):
+    """Une ligne de feuille, telle qu'un écran la renvoie.
+
+    **Un champ absent veut dire « je ne parle pas de ce champ ».** Ce n'est pas
+    une commodité : c'est ce qui permet à deux écrans d'écrire la même feuille
+    sans se marcher dessus. La fenêtre de saisie montre les quantités et les
+    commentaires, donc elle en parle ; l'aperçu de mise en page montre le
+    document — l'ordre des lignes, les intertitres, les sections — et n'en parle
+    pas. Réordonner une feuille ne doit pas décider de ce qui a été compté
+    dedans.
+
+    **Un champ présent et vide veut dire « efface ».** L'autre moitié de la
+    règle, et elle compte autant : sans elle, une case qu'on vide dans la
+    fenêtre de saisie se remplirait de nouveau au rechargement.
+
+    Le routeur transmet donc la charge utile telle qu'elle est arrivée
+    (``model_dump(exclude_unset=True)``) et non complétée par les valeurs par
+    défaut. Ces valeurs par défaut restent celles que l'absence produit côté
+    service, pour tout champ dont l'absence n'a pas de sens propre : elles
+    documentent le contrat sans le contredire.
+    """
+
     id: str | None = None
     item_number: str = Field(alias="itemNumber")
     section: CountSection = CountSection.LINE_SIDE
+    #: Article, intertitre ou ligne vide.
+    #:
+    #: Le défaut est l'article : tout ce qui écrivait des lignes avant que la
+    #: mise en page existe continue de le faire sans rien dire de plus.
+    line_kind: CountLineKind = Field(
+        default=CountLineKind.ARTICLE, alias="lineKind"
+    )
+    #: Le texte d'un intertitre. Ignoré sur toute autre ligne.
+    label: str = ""
+    #: La désignation que la feuille impose, sur les seules feuilles B06VRAC.
+    #:
+    #: ``None`` — le champ absent — veut dire « je ne parle pas de la
+    #: désignation, laisse-la ». C'est ce qui protège l'aperçu de mise en page :
+    #: il renvoie l'ordre des lignes et les intertitres, jamais les noms, et
+    #: réordonner une feuille ne doit pas décider de la façon dont elle nomme
+    #: ses articles. Une chaîne vide, elle, **retire** l'écrasement.
+    name: str | None = None
     #: Un nombre, ou l'opération que le compteur a écrite (« 3*48+7 »).
     #:
     #: Le type accepte le texte pour que l'expression **arrive jusqu'au
@@ -428,9 +522,17 @@ class SheetLineRow(ApiModel):
     #:
     #: La conversion reste obligatoire, elle a seulement lieu un cran plus loin :
     #: voir :func:`inventory.domain.formula.resolve_quantity`.
+    #:
+    #: **Le champ absent laisse la quantité en place** ; ``None`` et la chaîne
+    #: vide, eux, l'effacent. Les deux se distinguent parce que les deux
+    #: existent : l'aperçu de mise en page ne parle pas de comptage, la fenêtre
+    #: de saisie si — et une case qu'on y vide doit se vider en base.
     qty: Decimal | str | None = None
     unit: str = "PCE"
-    comment: str = ""
+    #: **Le champ absent laisse le commentaire en place**, comme la quantité, et
+    #: pour la même raison : le commentaire est saisi dans la fenêtre de saisie,
+    #: à côté de la quantité qu'il explique. Une chaîne vide l'efface.
+    comment: str | None = None
     display_order: int | None = Field(default=None, alias="displayOrder")
 
 
@@ -456,6 +558,31 @@ class ZoneDeleteRequest(ApiModel):
     """Les zones à retirer, avec leurs feuilles — une ou tout un lot."""
 
     zone_ids: list[str] = Field(min_length=1, max_length=5_000, alias="zoneIds")
+
+
+class BulkArbitrationDecision(ApiModel):
+    """Une ligne d'arbitrage et la quantité que l'écran affiche pour elle."""
+
+    id: str
+    qty: Decimal
+
+
+class BulkArbitrationRequest(ApiModel):
+    """Valider d'un geste les quantités visibles à l'écran.
+
+    Le corps portait auparavant une *règle* — « le n°1 partout », « le n°2
+    partout », « les propositions » — et le serveur allait rechercher la
+    quantité lui-même. C'est ce qui cassait : une quantité tapée dans le champ,
+    ou posée là par un bouton de pré-remplissage local, n'existait pas côté
+    serveur, si bien que « Valider tout » comptait comme non tranchées des
+    lignes qui portaient un chiffre sous les yeux de l'utilisateur.
+
+    Le choix de la règle reste ce qu'il a toujours été — un geste de
+    remplissage — mais il se fait maintenant là où il se voit, dans les champs,
+    et c'est leur contenu qui remonte.
+    """
+
+    decisions: list[BulkArbitrationDecision] = Field(default_factory=list)
 
 
 class ArbitrationDecisionRequest(ApiModel):

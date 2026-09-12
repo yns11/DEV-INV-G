@@ -166,7 +166,19 @@ n'aurait aucun sens.
    besoin pour compléter une ligne à la main. Pour ressortir du champ au
    clavier : **Échap**, puis Tab (ou Maj+Tab, qui n'a jamais changé).
 
-Les trois passent par la **même vérification** : les lignes sont validées une à
+4. **Reprendre d'une autre campagne** — le référentiel d'un trimestre est celui
+   du suivant à quelques lignes près. La fenêtre de choix liste les campagnes
+   existantes **avec ce que chacune porte sur cette grille** : « INV-2026-06 ·
+   4 128 articles » se choisit d'un coup d'œil, et une campagne qui ne porte
+   rien se voit sans être ouverte. Le geste existe sur toutes les grilles qu'une
+   campagne sait redonner — articles, nomenclatures, stock ERP, emplacements,
+   zones, feuilles, **journaux de comptage avancés**, ajustements.
+
+   > À ne pas confondre avec la duplication de campagne (1.2), qui *crée* une
+   > campagne à partir d'une autre. Celle-ci remplit une grille d'une campagne
+   > qui existe déjà.
+
+Les quatre passent par la **même vérification** : les lignes sont validées une à
 une et le résultat s'affiche — acceptées, rejetées, pourquoi, à quelle ligne —
 **avant** que quoi que ce soit ne soit enregistré. Et dans les trois cas la
 grille reste modifiable ensuite : une désignation se corrige à la main, un prix
@@ -302,6 +314,22 @@ trio feuille + article + section qui doit être unique, pas l'article.
 Les lignes sont posées sur **les deux comptages**, quantités vides. Ne
 pré-remplir que le n°1 rendrait le n°2 aveugle et fausserait l'arbitrage.
 
+**Vider une section.** L'aperçu de la feuille, comme l'écran de saisie, permet
+de retirer d'un geste toutes les lignes d'une section. Une section se refait
+parfois de zéro — un bord de ligne réorganisé, un WIP qui a changé d'atelier —
+et la vider ligne à ligne sur quatre-vingts références est le genre de travail
+qui fait renoncer, donc garder une feuille fausse. Rien n'est écrit avant
+« Enregistrer ».
+
+**Réordonner ne touche pas ce qui a été compté.** L'aperçu montre le document —
+l'ordre des lignes, les intertitres, les sections — et n'affiche ni les
+quantités, ni les commentaires, ni les désignations. Il ne les modifie donc pas
+non plus : déplacer une ligne, renommer un intertitre ou insérer une
+respiration en pleine phase de comptage laisse intacts les relevés de terrain,
+y compris sur la ligne déplacée. La règle vaut dans les deux sens — un écran
+qui **affiche** la colonne comptage en dispose : y vider une case la vide bien
+en base.
+
 **Nombre de comptages.** Sélectionnez des zones dans la grille et choisissez
 « Un seul comptage » ou « Double comptage ». Le double comptage est la règle ;
 le comptage unique s'assume zone par zone, pour une aire où une seconde équipe
@@ -312,6 +340,28 @@ refusée, en nommant les zones, si cette feuille porte déjà une quantité sais
 vide : le compteur écrit ce qu'il trouve. Elle est marquée comme telle, ce qui
 évite que les contrôles ne la signalent comme une préparation oubliée. Charger
 une liste d'articles lève automatiquement la mention.
+
+**Lignes vierges, section par section.** La colonne *Lignes vierges* de la
+grille dit combien de lignes chaque section imprimera sur la feuille vierge, et
+s'ouvre d'un clic pour les régler — de 0 à 120 par section. **Une section à 0
+n'est pas imprimée du tout** : une zone qui ne compte que des en-cours ne sort
+plus avec un bandeau « bord de ligne » et quarante cases vides sous lesquelles
+elle n'a rien à compter, et une zone qui compte des en-cours peut enfin le
+demander. Les mêmes trois champs sont proposés à la création. Une zone qui ne
+déclare rien — c'est le cas de toutes celles créées avant ce réglage — se
+comporte comme avant : le nombre demandé au moment d'imprimer va tout entier au
+bord de ligne.
+
+**Créer un lot de zones.** À côté de *Créer une zone*, *Créer un lot de zones*
+ouvre un champ où l'on colle la liste venue d'un tableur : autant de zones que
+de lignes collées. **Seul le code est obligatoire.** Les autres colonnes se
+reconnaissent à leur en-tête — *Libellé*, *Lignes BDL*, *Lignes WIP*, *Lignes
+WOP OK* — dans n'importe quel ordre ; sans en-tête reconnaissable, les colonnes
+sont lues dans l'ordre code, BDL, WIP, WIP OK, celui de la feuille imprimée.
+L'écran annonce avant d'écrire combien de zones seront créées, quelles lignes
+n'ont donné aucun code, et ce qui dépasse les bornes. La création est **tout ou
+rien** : un code en double avec une zone existante ou avec une autre ligne du
+collage arrête le lot entier, en nommant les codes fautifs.
 
 **Supprimer une zone.** La corbeille en bout de ligne retire une zone ; cochez
 plusieurs lignes et *Supprimer* les retire d'un coup. Les feuilles de comptage de
@@ -354,6 +404,18 @@ J commence à six heures, et le créateur n'est pas toujours devant son écran.
   nouvel import de stock ERP ne tombe pas hors de tout périmètre.
 - *Affectation zones* rattache les feuilles GENERIQUE, sur une sélection.
 
+**Ces trois onglets restent ouverts jusqu'à la clôture**, comptage et analyse
+compris — et c'est le seul endroit de la configuration qui le soit. Quelqu'un
+tombe malade le matin du jour J, un renfort arrive à midi, un entrepôt apparaît
+dans un import de l'après-midi : c'est précisément là que la répartition bouge.
+Les **seuils**, eux, gèlent à l'entrée en comptage, parce qu'ils décident de ce
+qui sera signalé comme exception et que les changer en cours de route
+changerait la liste sous les yeux de qui la traite.
+
+Sur une campagne en analyse, une zone est figée — elle porte des quantités
+relevées sur le terrain — mais son gestionnaire se change encore : dans
+*Affectation zones*, seule la barre « Affecter à… » reste active.
+
 > **Un périmètre n'est pas un cloisonnement.** L'interrupteur « Mon périmètre »
 > de l'en-tête réduit le bruit ; un gestionnaire garde le droit d'agir hors du
 > sien — indispensable quand il faut couvrir un collègue à 6 h du matin. Ce qui
@@ -372,7 +434,7 @@ Une feuille est **trois documents**, et l'écran n'offre que ceux qui existent :
 | Document | Pour quelle zone | Quand |
 |---|---|---|
 | **Sans quantités** — la liste d'articles, colonne de comptage vide | zone avec liste pré-imprimée | dès la préparation |
-| **Sans références** — une grille vide, *n* lignes (10 à 180) | zone en saisie libre | dès la préparation |
+| **Sans références** — une grille vide, *n* lignes (10 à 180), ou le nombre déclaré par la zone section par section | zone en saisie libre | dès la préparation |
 | **Avec quantités** — le relevé de ce qui est revenu | les deux | à partir du comptage |
 
 Une zone dont la liste est connue ne se voit jamais proposer la grille vide :
@@ -383,6 +445,11 @@ La feuille à compter reçoit quelques lignes libres par section — **5** en bo
 de ligne, **3** en WIP, **2** en WIP terminé : une pièce trouvée dans un coin
 doit avoir où être écrite. Le relevé rempli n'en reçoit aucune : inviter à
 écrire sur un relevé le rendrait discutable.
+
+La grille vide, elle, suit ce que la zone a déclaré section par section (2.4) :
+seules les sections dont le nombre de lignes est supérieur à zéro s'impriment.
+Le nombre demandé dans la fenêtre d'impression ne sert que pour une zone qui n'a
+rien déclaré, et va alors au bord de ligne.
 
 La feuille porte les sections séparées visuellement, une colonne de comptage
 large, un bloc signature, et l'identité de la feuille rappelée en pied de
@@ -403,50 +470,197 @@ articles, nomenclatures, seuils. Les zones GENERIQUE, elles, restent créables.
 
 ## 2. Comptage
 
-La phase a deux temps. Avant le jour J, on peut **précompter** certains
-emplacements et sceller leur comptage. Le jour J, on charge le stock ERP
-général et on compte le reste. Le passage de l'un à l'autre est un jalon, pas
-un changement de phase : les droits sont les mêmes, seul l'écran change de
-libellé.
+Le jour J, on charge le stock ERP général et on compte. Ce qui a été
+**précompté** l'a été plus tôt, en phase de préparation : voir le § 2.0, qui a
+changé de place avec l'écran qu'il décrit.
 
 Si vous ne précomptez rien, sautez le § 2.0 — le reste est inchangé.
 
 ### 2.0 Comptages avancés — compter avant le jour J
 
-**Comptages avancés**, dans la barre latérale, juste avant les journaux.
+**Comptages avancés**, dans la barre latérale, en **fin de préparation**. Un
+emplacement précompté l'est des jours avant le jour J, avant même que le stock
+ERP n'existe : l'écran vivait dans la phase de comptage, ce qui obligeait à y
+passer la campagne — donc à geler le référentiel — pour compter deux
+emplacements.
 
 L'intérêt : alléger la charge du jour J sur des emplacements qui ne bougent pas
 — zones lentes, magasins extérieurs, stock immobilisé. Tout reste dans la même
 campagne : preuves, écarts et analyses ne se répartissent pas entre plusieurs
 dossiers.
 
-**Ce qu'il faut savoir avant de commencer.** Le journal de comptage porte sa
-propre référence : sa colonne « Stock ERP » donne le stock d'avant comptage. Il
-n'y a donc **aucun stock à charger séparément** pour un lot avancé — le fichier
-qui apporte le comptage apporte aussi ce contre quoi il se compare.
+**Ce qu'il faut savoir avant de commencer.** Un précomptage **apporte un
+comptage, et rien d'autre**. Il ne pose aucune référence : la référence de la
+campagne est unique — le stock ERP du jour J, gelé — et elle couvre tous les
+emplacements, précomptés compris.
 
-Le déroulé, pour chaque lot :
+La raison est dans l'ordre des faits. Votre journal de précomptage est **posté
+dans l'ERP** avant que la photo du jour J ne soit prise, donc cette photo l'a
+déjà intégré. **Conséquence à connaître : un emplacement précompté montrera un
+écart voisin de zéro.** Sa correction d'inventaire n'est pas perdue — elle a été
+enregistrée plus tôt, dans l'ERP, avant la campagne.
 
-1. **Comptez et postez le journal dans l'ERP.** C'est le postage qui réaligne
-   l'ERP sur le physique compté, et l'application l'exige pour sceller.
-2. **Exécutez le notebook** sur la fenêtre de dates du lot, puis chargez son
-   export comme n'importe quel journal.
-3. **Déclarez le périmètre** de chaque journal, onglet *Journaux ERP*.
-   L'application propose les emplacements candidats — ceux de ses lignes, moins
-   le tampon `INV / 01`, moins ceux déjà pris par un autre journal — le plus
-   probable en tête. Vous cochez. Cette étape est obligatoire : les emplacements
-   des lignes ne suffisent pas à dire lesquels le journal couvre, certaines
-   n'étant là que pour matérialiser un déplacement.
-4. **Ouvrez le lot** sur ces journaux, onglet *Lots avancés*, avec la date du
-   comptage physique.
-5. **Clôturez-le**, puis **scellez-le**. Le scellement pose la référence des
-   emplacements et interdit qu'on y touche. Il est refusé tant qu'un journal
-   n'est pas posté dans l'ERP.
-6. **Balisez physiquement** les emplacements. Cette étape n'est pas dans
+L'écran n'attend rien d'autre que le **référentiel articles** chargé. En
+particulier il n'attend ni la phase de comptage ni le stock ERP général :
+celui-là arrive le jour J, c'est-à-dire après les précomptages. C'est aussi
+pourquoi le panneau d'import des journaux se trouve ici et pas seulement sur
+l'écran des journaux de comptage.
+
+Le déroulé, pour chaque journal de précomptage :
+
+1. **Comptez et postez le journal dans l'ERP**, puis validez-le. Il y a peu de
+   journaux de précomptage et ils n'ont pas l'urgence du jour J : on a le temps
+   de ne charger que du définitif.
+2. **Exécutez le notebook** sur la fenêtre de dates du comptage, puis chargez son
+   export depuis le panneau d'import de l'onglet *Journaux ERP*. Chaque import
+   remplace les journaux qu'il rapporte et laisse les autres intacts ; l'heure du
+   dernier s'affiche en tête de l'écran.
+3. **Déclarez le périmètre**, onglet *Journaux ERP*. L'application propose les
+   emplacements candidats — ceux des lignes du journal, moins le tampon
+   `INV / 01`, moins ceux déjà pris par un autre journal — le plus probable en
+   tête. Vous cochez.
+
+   **Déclarer scelle.** Les deux gestes n'en font qu'un : dire quels
+   emplacements ce journal couvre, c'est dire lesquels sont comptés et ne
+   bougeront plus. Dans la foulée, l'application pose leur **comptage** — la
+   colonne « Qté Comptée » du journal, agrégée par emplacement et article — et
+   démarre leur journal de comptage. Aucune référence n'est posée : elle arrivera
+   avec le stock ERP du jour J.
+
+   Un journal réel couvre parfois cinquante emplacements ou plus : la colonne
+   *Périmètre* en affiche le nombre et les deux premiers. La liste entière
+   s'obtient au survol, et part telle quelle dans le filtre et l'export Excel.
+3 bis. **Ouvrir un journal** montre ses lignes brutes, telles que l'ERP les a
+   produites : emplacement, étiquette, numéro de série, stock ERP, quantité
+   comptée, écart. La colonne **Périmètre** dit lesquelles
+   comptent — un journal porte des lignes sur des emplacements qu'il ne couvre
+   pas, et celles-là sont la trace d'un déplacement. La grille se filtre, se
+   trie et s'exporte comme les autres.
+4. **Balisez physiquement** les emplacements. Cette étape n'est pas dans
    l'application, mais c'est elle qui rend tout le reste valable.
 
-**Desceller** est possible — c'est ce qui permet un recomptage — mais demande un
-motif : le descellement annule une preuve datée.
+**Les emplacements que vous ne cochez pas ne sont pas comptés par ce journal.**
+Un journal ERP porte des lignes sur des emplacements qu'il ne couvre pas : elles
+matérialisent un déplacement. Tant que le périmètre n'est pas déclaré,
+l'application ne sait pas les distinguer et crée un journal de comptage pour
+chacune ; **la déclaration fait le tri** et retire ceux que vous n'avez pas
+retenus. Deux exceptions, et elles protègent votre travail : un emplacement où
+quelqu'un a saisi une quantité à la main, ou qu'un autre journal touche aussi,
+est conservé. Les lignes brutes, elles, restent toutes dans le journal ERP —
+c'est la trace, et c'est ce que le contrôle par étiquette relit.
+
+**Recharger un journal déjà scellé est permis, et normal.** L'import remplace ses
+lignes, recalcule le comptage et rescelle : la dernière lecture de l'ERP est la
+plus juste. Le chargement du **stock ERP général**, lui, couvre tous les
+emplacements, scellés compris — c'est la référence unique de la campagne.
+
+**Desceller** est possible — c'est ce qui rend un emplacement au comptage du
+jour J — mais demande un motif : le descellement annule une preuve datée. Le
+périmètre part avec ; redéclarer est le geste qui rescelle. Le bouton est sur la
+ligne du journal, à côté de *Modifier*, sur les seuls journaux scellés.
+
+**Il n'y a pas de bouton *Supprimer* sur un journal ERP, et c'est délibéré.** Un
+journal n'est pas une saisie mais le reflet d'un document de l'ERP : le supprimer
+ne le ferait pas disparaître de l'ERP, et laisserait derrière lui un emplacement
+scellé sans le journal qui justifie sa référence — donc impossible à desceller,
+et impossible à donner à un autre journal. Ce qu'on veut vraiment faire dans ce
+cas se dit autrement :
+
+| Ce que vous vouliez | Le geste |
+|---|---|
+| Défaire un périmètre coché de travers | **Desceller**, puis redéclarer |
+| Remplacer des lignes fausses | **Réimporter** le journal : chaque import remplace les journaux qu'il rapporte |
+| Retirer de l'écran un journal chargé par erreur | Rien à faire : sans périmètre déclaré, il ne produit ni référence, ni comptage, ni écart |
+
+### Et le jour J ? On ne déclare rien
+
+**Le gel du stock ERP ferme la fenêtre du précomptage, et c'en est la
+définition** : précompter veut dire *avant* la référence générale. Une fois le
+stock gelé, les journaux ERP que vous importez sont ceux du jour J, et il n'y a
+ni périmètre à déclarer, ni emplacement à sceller :
+
+| | Précomptage (avant le gel) | Jour J (après le gel) |
+|---|---|---|
+| Sa référence | Le stock ERP gelé — la même que pour tout le monde | Le stock ERP gelé |
+| Son comptage | **Déclarer et sceller** son périmètre, ou l'import de ses lignes | L'import de ses lignes |
+| Le geste à faire | Déclarer, puis baliser physiquement | **Aucun** — importer suffit |
+
+L'écran le dit : une fois le stock gelé, la colonne *Périmètre* affiche
+« Comptage du jour J » au lieu de « À déclarer », le bouton *Déclarer et
+sceller* disparaît, et un bandeau rappelle pourquoi. Déclarer quand même est
+refusé — auparavant le geste écrivait une seconde référence sur un emplacement
+qui en avait déjà une, et l'écran remontait une erreur technique.
+
+**Desceller reste possible après le gel**, et c'est ce qui rend un emplacement
+précompté au comptage du jour J.
+
+**Où voir les emplacements comptés et leur journal ERP :** *Comptage →
+Journaux*. La colonne **N° ERP** porte le ou les journaux ERP dont viennent les
+lignes de chaque emplacement, avec le nombre de lignes, la quantité comptée et
+le statut. C'est la vue d'avancement du jour, et elle part telle quelle dans
+l'export Excel.
+
+**La colonne Scellement** y répond à la question du matin — lesquels
+reste-t-il à compter ? — en trois valeurs :
+
+| Valeur | Ce qu'elle dit |
+|---|---|
+| **Non scellé** | À compter le jour J, avec le reste |
+| **Scellé sans dérive** | Précompté : son comptage est fait, daté et figé, et l'ERP du jour J dit la même chose |
+| **Scellé avec dérives** | Précompté, mais quelque chose a bougé depuis. Rien n'est requis : vous voudrez peut-être aller voir avant de clore (§ 2.7) |
+
+Elle se filtre comme les autres colonnes, ce qui donne en un clic la liste de ce
+qui reste à faire.
+
+**Un emplacement n'appartient qu'à un journal.** Si un second comptage avancé
+passe par un emplacement déjà scellé, la liste proposée ne vous l'offre pas, et
+le déclarer quand même est refusé en nommant le journal propriétaire. Ses lignes
+sont conservées — c'est la trace du déplacement — mais **elles ne comptent pas** :
+seul le journal qui possède l'emplacement le compte, sans quoi la quantité d'un
+journal viendrait remplacer celle d'un autre. Pour changer de propriétaire,
+descellez le premier journal puis déclarez le second : le comptage bascule avec. Et l'ordre n'a pas d'importance — si les deux
+journaux sont entrés avant qu'aucun ne soit déclaré, déclarer recalcule le
+comptage sur le seul propriétaire.
+
+**Les écarts sont visibles tout de suite.** Dès qu'un précomptage est scellé, la
+vue **Écarts** s'ouvre et le carrousel affiche les planches *Stock et écarts* et
+*Couverture*, sans attendre le chargement ni le gel du stock ERP général : la
+référence et le comptage de ces emplacements sont déjà là, et ne bougeront plus.
+Un bandeau rappelle sur combien d'emplacements portent les chiffres, et les
+titres du carrousel le disent aussi. Le reste de la campagne s'y ajoute au
+chargement général. C'est le but même du précomptage : voir l'écart quand on
+peut encore aller voir sur le terrain.
+
+**Ce que le carrousel additionne alors.** Une fois les deux en place, chaque
+emplacement figure **une fois** dans le stock ERP, avec la référence contre
+laquelle il a réellement été compté — le snapshot du jour J pour un emplacement
+ordinaire, la colonne « Stock ERP » de son propre journal pour un emplacement
+précompté et scellé.
+
+| Indicateur | Ce qu'il additionne |
+|---|---|
+| **Stock ERP** | Les lignes de référence, une par (article, entrepôt, emplacement) |
+| **Stock physique** | Ce qui a été compté, plus les ajustements postés depuis |
+| **Écart net** | Stock physique − Stock ERP, signé : les surplus compensent les manques |
+| **Écart brut** | La même différence en valeur absolue : deux erreurs de sens contraire sont deux erreurs |
+
+Les emplacements **désactivés** (`INV / 01`) et les articles **exclus** ne sont
+dans aucun des deux, ni en quantités ni en valeurs. Côté compté, un emplacement
+n'entre que si son journal est démarré ou posté — un journal *En attente* est un
+emplacement qu'on n'a pas encore touché, et le compter à zéro inventerait un
+manquant. C'est pourquoi sceller un précomptage démarre aussi son journal de
+comptage : sans cela il apportait sa référence et rien d'autre.
+
+**Les valeurs se calculent toutes de la même façon : `prix standard × quantité`**,
+pour le stock ERP comme pour le stock compté. Un écart en euros mesure donc une
+différence de quantité, et rien d'autre. Corriger un prix dans la grille
+Articles met à jour toute la campagne, sans rien recharger.
+
+**Une seule chose à savoir sur ce total** : il est composite **en dates** — la
+plupart des lignes au jour J, les lignes scellées à leur date de précomptage. Un
+rapprochement avec un état ERP tiré à une date unique trouvera une différence,
+égale à la somme des écarts des précomptages. La date de référence de chaque
+ligne est affichée et exportée.
 
 ### 2.1 Charger le stock ERP
 
@@ -553,42 +767,76 @@ Le bandeau de campagne affiche deux jauges :
 
 ### 2.6 Corriger une ligne
 
-Ouvrez un journal, saisissez la quantité dans la colonne **Corrigé**. La valeur
+Ouvrez un journal : la grille se manœuvre comme les autres — filtres par
+colonne, choix des colonnes, totaux en pied, export. Saisissez la quantité dans
+la colonne **Corrigé**. La valeur
 importée reste visible à côté, et le badge de source passe à *Saisie manuelle*.
 
 L'écran affiche aussi les **articles du stock ERP que personne n'a comptés**
 sur cet emplacement, avec leur valeur : ce sont eux qui seront soldés à zéro à
 la clôture. Ils n'apparaissaient auparavant que trois semaines plus tard.
 
-### 2.7 Traiter les dérives des emplacements précomptés
+### 2.7 Regarder les dérives et les étiquettes des emplacements précomptés
 
-**Comptages avancés → Dérives.** À faire une fois le stock ERP général chargé,
-et avant le passage en analyse — qui l'attend.
+**Contrôles → Dérives** et **Contrôles → Étiquettes.** Les deux listes vivaient
+sur l'écran des comptages avancés, où elles portaient des décisions à prendre.
+Elles n'en portent plus, et c'est pourquoi elles sont ici : **aucune action
+n'est requise, et rien ne bloque.** Ce sont des indices sur ce qui a bougé entre
+le précomptage et le jour J, à l'usage de qui veut aller voir.
 
-Pour chaque emplacement scellé, l'application confronte ce que l'ERP en dit le
-jour J au physique qui y a été posté :
+#### Les dérives
 
 ```
-dérive = stock ERP du jour J − physique posté au précomptage
+dérive = stock ERP du jour J − ce que le précomptage avait compté
 ```
 
-Elle est **attendue nulle** : l'emplacement était balisé, et poster son journal
-a réaligné l'ERP sur le physique compté. Quand elle ne l'est pas, une seule
-question se pose — *quelle quantité fait foi au jour J ?* — et il y a deux
-réponses :
+**Attendue nulle**, et pour une raison précise : votre journal de précomptage a
+été posté dans l'ERP avant que la photo du jour J ne soit prise, donc cette
+photo l'a déjà intégré. **La liste ne montre que ce qui a dérivé** — une ligne à
+zéro est le cas normal, donc l'absence d'information. La confrontation, elle, a
+bien lieu sur chaque ligne et reste en base.
 
-| Issue | Quand | Ce qu'elle engage |
-|---|---|---|
-| **Conserver le comptage avancé** | Le mouvement est purement informatique, le physique n'a pas bougé | Le physique de T0 est retenu. **Une cause est obligatoire** : la campagne et l'ERP resteront en désaccord de la valeur de la dérive, et personne ne doit le découvrir plus tard |
-| **Recompter le jour J** | On ne fait plus confiance au comptage avancé | L'emplacement est descellé et rejoint le comptage général ; sa référence redevient le stock ERP du jour J |
+Ce qui reste après ce réalignement est ce qui a bougé entre les deux dates : une
+sortie, une réception, une correction saisie entre-temps. **Ce n'est pas un
+écart d'inventaire** — celui-là se mesure contre le stock ERP du jour J, qui est
+la référence unique de la campagne — et il n'y a donc rien à trancher.
+
+> L'écran proposait auparavant deux issues, *conserver le comptage avancé* ou
+> *recompter le jour J*, et le passage en analyse les attendait. Elles reposaient
+> sur une seconde référence, celle du précomptage, qui n'existe plus : la mesurer
+> revenait à compter deux fois la même correction. Si vous voulez malgré tout
+> recompter un emplacement, **descellez son journal** : il rejoint le comptage du
+> jour J.
 
 **Ce que la dérive ne voit pas.** Elle se calcule entre deux lectures de l'ERP :
 une pièce sortie d'un emplacement scellé sans aucune transaction laisse une
-dérive nulle. C'est l'onglet **Étiquettes** qui la rattrape — si la pièce est
+dérive nulle. C'est l'onglet **Étiquettes** qui la montre — si la pièce est
 re-scannée ailleurs, son étiquette apparaît dans un second journal, et
 l'application désigne les deux emplacements à aller voir. Reste le cas où elle
 n'est scannée nulle part : rien ne la voit, et seul le balisage physique
 l'évite.
+
+#### Les étiquettes comptées ailleurs
+
+Une étiquette scellée sur un emplacement, retrouvée comptée **à un autre
+emplacement**. La liste dit lesquelles, où, et dans quel journal. **Elle ne
+retire rien d'aucun comptage** : une pièce comptée deux fois se règle sur le
+terrain, pas en excluant une ligne d'une somme.
+
+**Les emplacements vrac n'ont pas d'étiquette.** Les lignes d'un journal `INVV`
+portent toutes la même valeur générique — littéralement « VRAC » : un
+emplacement vrac se compte en quantité, pas en lots identifiés. Ces lignes sont
+donc hors du contrôle par étiquette. Sans cela, deux emplacements vrac
+quelconques devenaient « la même étiquette comptée aux deux endroits », et la
+liste se remplissait de centaines de faux doublons qui noyaient les vrais
+déplacements.
+
+**Ce que la liste ne contient pas.** Une étiquette n'y figure que si elle a été
+comptée **à un autre emplacement**. Quand deux journaux ont compté le *même*
+emplacement scellé, la pièce n'a pas bougé : il n'y a pas de déplacement à
+montrer. Ces emplacements-là sont résumés dans un bandeau au-dessus de la liste,
+avec le journal retenu et celui qui ne l'est pas — c'est le seul renseignement
+utile, et sans lui les retirer de la liste les cacherait.
 
 ### 2.7 bis Emplacements inventoriés ailleurs
 
@@ -666,7 +914,9 @@ Le modèle lit la feuille **en s'appuyant sur la liste d'articles pré-imprimée
 
 - une référence qu'il croit lire mais qui n'est **pas** sur la feuille est
   signalée comme suspecte, jamais acceptée ;
-- une case vide reste vide — elle ne devient jamais 0 ;
+- une case vide reste vide : le modèle transcrit, il n'invente pas un 0
+  qu'il n'a pas lu — la ligne comptera zéro de toute façon, mais vous verrez
+  qu'il n'a rien lu dessus ;
 - chaque valeur porte une **confiance** ; celles sous 75 % sont mises en avant ;
 - les articles attendus mais non lus apparaissent en ligne vide, à saisir ;
 - une case qui porte une **opération** — `3*48+7` — est calculée, si le réglage
@@ -683,6 +933,17 @@ section lue ne sert à rien et n'est pas exigée ; quand elle figure deux fois e
 que la section est illisible, la ligne est **signalée plutôt que posée au
 hasard** : se tromper de tableau fausse deux quantités d'un coup, et rien en
 aval ne peut le rattraper.
+
+**Retrouver un scan.** Chaque scan déposé est conservé *avant* d'être lu, et
+l'onglet **Audit ▸ Scans archivés** les liste tous : la date du dépôt, le nom du
+fichier, son poids, son empreinte, et les feuilles que chacun justifie. Le nom
+du fichier est le lien de téléchargement. Une pile déposée d'un coup apparaît
+**une fois** — c'est un seul document, et c'est lui qui justifie toutes les
+feuilles qu'on y a lues.
+
+C'est ce qui permet de défendre une quantité contestée six mois plus tard :
+l'image que le modèle a lue est là, et son empreinte dit que c'est bien
+celle-là. Une feuille comptée à la main n'y figure pas, faute de scan.
 
 Une feuille de **saisie libre** se scanne aussi, bien qu'elle n'ait aucune liste
 à confronter : le modèle recopie alors la référence telle qu'elle est écrite, et
@@ -748,17 +1009,41 @@ elle passe désormais entière, au prix de quelques appels de plus.
 
 **GENERIQUE → Arbitrages.**
 
-Le tableau compare comptage n°1 et n°2 pour **chaque article présent dans l'un
-ou l'autre** — y compris ceux qu'une seule équipe a comptés, que l'ancien
-processus ne voyait pas.
+Le tableau ne liste que les **désaccords** — une ligne sur laquelle les deux
+équipes s'accordent n'appelle aucune décision, et sur une zone de quatre cents
+références elle enterrait les neuf qui en appellent une. Il couvre **chaque
+article présent dans l'un ou l'autre** passage, y compris ceux qu'une seule
+équipe a comptés, que l'ancien processus ne voyait pas.
+
+Une référence comptée dans un passage et pas dans l'autre affiche **0** de ce
+côté-là, pas un tiret : les deux passages portent le même document, donc ne pas
+trouver la ligne sur la feuille n°2 dit que l'équipe n'y a rien inscrit — et une
+case vide compte zéro partout ailleurs.
 
 Les lignes sont triées : décisions requises d'abord, puis par **impact en euros**.
-Le désaccord le plus coûteux est traité en premier.
+Le désaccord le plus coûteux est traité en premier. La grille se filtre comme
+toutes les autres, et porte la colonne **Zone** : la vue peut couvrir la
+campagne entière.
 
-Pour chaque écart : saisissez la quantité retenue, ou cliquez **n°2** pour
-préremplir avec le second comptage. Le bouton **Retenir le comptage n°2 partout**
-traite la zone entière — chaque ligne reste enregistrée comme une décision
-explicite, à votre nom.
+**Trois boutons, et deux d'entre eux n'écrivent rien.**
+
+| Bouton | Ce qu'il fait |
+|---|---|
+| **Tout le n°1** / **Tout le n°2** | Posent la quantité de ce passage dans **chaque champ**. Rien n'est enregistré : vous relisez, vous corrigez, puis vous validez |
+| **Valider tout** | Enregistre **les quantités affichées**, telles qu'elles sont à l'écran |
+
+Chaque champ est prérempli d'office avec le comptage n°2 — le plus tardif, donc
+le mieux informé. Ligne à ligne, les boutons **n°1** et **n°2** reprennent l'un
+ou l'autre, et **Valider** enregistre. Une ligne déjà tranchée à la main n'est
+jamais retouchée par un geste de lot.
+
+> **Un arbitrage meurt avec les chiffres qu'il tranche.** Si l'un des deux
+> comptages change après coup — une saisie, un scan, un import, un reclassement
+> de WIP —, la décision est rouverte : elle garde sa proposition, pour ne pas
+> faire retaper le chiffre, mais perd la signature qui la validait. Cela vaut
+> **quel que soit le statut de la zone**, y compris sur une zone déjà déclarée
+> terminée : c'est même le cas où l'oubli coûterait le plus cher, puisque plus
+> rien en aval ne reposerait la question.
 
 ### 2.11 Consolider
 
@@ -771,6 +1056,11 @@ manquent, et ce qui bloque. Le bouton **Consolider** :
 2. applique la règle de chaque section (tel quel / éclaté) ;
 3. exclut les articles hors périmètre GENERIQUE — **après** l'éclatement, pour
    ne pas perdre les composants d'un assemblage hors périmètre ;
+   **et écarte les articles absents du référentiel** : sans article, une ligne
+   n'a ni désignation, ni prix, ni type, donc rien pour la valoriser, et postée
+   dans l'ERP elle y désignerait une référence que la campagne ne connaît pas.
+   La quantité n'est pas perdue — la pastille **Hors référentiel** la nomme,
+   la chiffre et dit de quelles zones elle vient ;
 4. alimente le journal INVV de `B06VRAC / GENERIQUE` ;
 5. produit la **décomposition du WIP** : quel assemblage a produit quelle
    quantité de quel composant, dans quelle zone.
@@ -1058,9 +1348,15 @@ Non. Les corrections vivent dans une colonne distincte de la valeur importée.
 Rechargez autant que vous voulez.
 
 **Une case vide et un zéro, quelle différence ?**
-Une case vide signifie « non compté » : la ligne ne produit rien et reste à
-traiter. Un zéro explicite signifie « compté, il n'y a rien » : la ligne est
-soldée. C'est une distinction que l'ancien outil effaçait.
+Aucune sur la quantité : **une case vide compte pour zéro**. La ligne est sur
+la feuille parce qu'on s'attend à trouver la référence dans la zone ; n'y avoir
+rien trouvé est un écart à expliquer, pas une mesure manquante. L'écarter du
+total laissait l'article avec son stock ERP en face de rien — ni compté, ni
+manquant.
+
+La distinction subsiste ailleurs, et à un seul endroit : **l'avancement**. Une
+zone dont aucune ligne n'a été touchée est « à compter » ; dès qu'une valeur y
+est saisie — zéro compris — elle passe « en cours ».
 
 **Pourquoi mon écart apparaît-il en « par emplacement » mais pas « par référence » ?**
 Parce que c'est un transfert entre deux emplacements du même article : le stock

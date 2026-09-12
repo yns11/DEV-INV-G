@@ -72,6 +72,17 @@ class Editable:
     zones: bool
     #: Counting journals and their lines.
     count_journals: bool
+    #: Les comptages avancés : journaux ERP importés, périmètres déclarés, lots
+    #: ouverts, clos, scellés, et les dérives tranchées le jour J.
+    #:
+    #: Aspect distinct de ``count_journals``, et pas par goût de la granularité.
+    #: Les deux ouvrent et se ferment au même moment, mais ils n'attendent pas
+    #: la même chose : un journal de comptage général se mesure contre le stock
+    #: ERP chargé, un lot avancé porte sa propre référence dans la colonne
+    #: « Stock ERP » de son journal. Partager l'aspect revenait à imposer au
+    #: comptage avancé le prérequis de l'étape qu'il précède — voir
+    #: :mod:`inventory.domain.sequence`.
+    early_counts: bool
     #: The *structure* of a counting sheet: which articles it lists. Prepared
     #: before inventory day, which is the whole point of preparing paper.
     count_sheets: bool
@@ -118,6 +129,31 @@ class Editable:
     #: un calcul. Le geler avec les seuils l'aurait rendu inatteignable au seul
     #: moment où il sert.
     settings: bool = False
+    #: Les gestionnaires de la campagne et leurs deux périmètres — l'affectation
+    #: des entrepôts, donc de leurs journaux, et celle des zones GENERIQUE.
+    #:
+    #: Ouvert jusqu'à la clôture, y compris pendant le comptage et l'analyse, et
+    #: c'est le seul aspect de la configuration qui le soit. Il partageait la
+    #: règle des seuils, qui gèlent à l'entrée en comptage ; la règle était bonne
+    #: pour eux et fausse ici.
+    #:
+    #: Un seuil décide de ce qui sera signalé comme exception : le changer en
+    #: cours de route changerait la liste sous les yeux de qui la traite, et deux
+    #: campagnes comparables ne le seraient plus. Un gestionnaire, lui, ne décide
+    #: de rien — ce n'est pas une habilitation mais un filtre, « mon périmètre »,
+    #: et chacun garde le droit d'agir partout. Le figer ne protégeait donc aucun
+    #: chiffre.
+    #:
+    #: Ce qu'il coûtait, en revanche, est concret : quelqu'un tombe malade le
+    #: matin du jour J, un renfort arrive à midi, un entrepôt apparaît dans un
+    #: import de l'après-midi. Le seul moment où le personnel bouge vraiment est
+    #: précisément celui où l'écran se fermait, et il fallait rouvrir une
+    #: campagne — ce que le cycle de vie interdit — pour corriger une adresse
+    #: e-mail. L'analyse dure des semaines et se répartit de la même façon.
+    #:
+    #: Fermé à la clôture comme tout le reste : le dossier est immuable, et qui
+    #: a compté quoi en fait partie.
+    managers: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -128,6 +164,7 @@ class Editable:
             "bookStock": self.book_stock,
             "zones": self.zones,
             "countJournals": self.count_journals,
+            "earlyCounts": self.early_counts,
             "countSheets": self.count_sheets,
             "countEntries": self.count_entries,
             "adjustments": self.adjustments,
@@ -135,12 +172,14 @@ class Editable:
             "backflush": self.backflush,
             "stockFlow": self.stock_flow,
             "settings": self.settings,
+            "managers": self.managers,
         }
 
 
 #: Per-status permission matrix.
 #:
-#: PREPARATION  thresholds + referentials + printable sheets are being built.
+#: PREPARATION  thresholds + referentials + printable sheets are being built,
+#:              and the advance counts happen — days before the count itself.
 #: COUNTING     referentials are frozen, *except* that new GENERIQUE sheets may
 #:              still be created (explicit requirement); the book stock is
 #:              loaded then frozen; journals and sheets are the live objects.
@@ -150,6 +189,7 @@ class Editable:
 _EDITABILITY: dict[CampaignStatus, Editable] = {
     CampaignStatus.PREPARATION: Editable(
         settings=True,
+        managers=True,
         thresholds=True,
         items=True,
         boms=True,
@@ -157,6 +197,16 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         book_stock=False,
         zones=True,
         count_journals=False,
+        # Un précomptage se fait des jours avant le jour J, et donc pendant la
+        # préparation : charger ses journaux ERP, déclarer leur périmètre et les
+        # sceller sont des gestes de cette phase-là. Les refuser ici obligeait à
+        # passer la campagne en comptage pour compter deux emplacements, c'est-à-
+        # dire à geler le référentiel bien avant qu'il ne soit prêt.
+        #
+        # Ce que cela n'ouvre pas : le stock ERP (`book_stock=False`) et les
+        # journaux de comptage restent fermés. Un précomptage ne pose pas de
+        # référence — la référence est unique et elle arrive le jour J.
+        early_counts=True,
         count_sheets=True,
         count_entries=False,
         adjustments=False,
@@ -164,6 +214,9 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
     ),
     CampaignStatus.COUNTING: Editable(
         settings=True,
+        # Voir le champ : le personnel bouge le jour J, et c'est précisément là
+        # que l'écran se fermait.
+        managers=True,
         thresholds=False,
         items=False,
         boms=False,
@@ -171,12 +224,14 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         book_stock=True,
         zones=True,
         count_journals=True,
+        early_counts=True,
         count_sheets=True,
         count_entries=True,
         adjustments=False,
         analysis=False,
     ),
     CampaignStatus.ANALYSIS: Editable(
+        managers=True,
         thresholds=False,
         items=False,
         boms=False,
@@ -184,12 +239,15 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         book_stock=False,
         zones=False,
         count_journals=False,
+        early_counts=False,
         count_sheets=False,
         count_entries=False,
         adjustments=True,
         analysis=True,
     ),
     CampaignStatus.CLOSED: Editable(
+        # Le dossier est immuable, et qui a compté quoi en fait partie.
+        managers=False,
         thresholds=False,
         items=False,
         boms=False,
@@ -197,6 +255,7 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         book_stock=False,
         zones=False,
         count_journals=False,
+        early_counts=False,
         count_sheets=False,
         count_entries=False,
         adjustments=False,
@@ -241,7 +300,6 @@ def campaign_transition_blockers(
     book_stock_frozen: bool = False,
     blocking_controls: Sequence[ControlFinding] = (),
     unexplained_material: int = 0,
-    unresolved_drift: int = 0,
     publication_done: bool = True,
 ) -> list[ControlFinding]:
     """Business preconditions that must hold before *target* can be entered.
@@ -297,22 +355,6 @@ def campaign_transition_blockers(
                     ),
                     entity_type="count_journal",
                     context={"pending": len(pending)},
-                )
-            )
-        if unresolved_drift:
-            blockers.append(
-                ControlFinding(
-                    code="EARLY_COUNT_DRIFT_UNRESOLVED",
-                    severity=ControlSeverity.BLOCKER,
-                    message=(
-                        f"{unresolved_drift} dérive(s) matérielle(s) sur des "
-                        "emplacements scellés n'ont pas d'issue. Le stock ERP du "
-                        "jour J ne dit pas la même chose que le physique posté "
-                        "au précomptage : décidez, pour chacune, laquelle fait "
-                        "foi — conserver le comptage avancé, ou recompter."
-                    ),
-                    entity_type="early_count_drift",
-                    context={"unresolved": unresolved_drift},
                 )
             )
         open_zones = [z for z in zone_statuses if z is not ZoneStatus.DONE]

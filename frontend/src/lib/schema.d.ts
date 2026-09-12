@@ -31,6 +31,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/bulk-delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Supprimer un lot de campagnes
+         * @description Retirer plusieurs campagnes d'un geste, sous les règles de l'unitaire.
+         *
+         *     **Tout ou rien** : le lot est vérifié en entier avant qu'une ligne ne
+         *     bouge, et une seule campagne qui n'appartient pas à l'appelant l'arrête en
+         *     la nommant. Une suppression à moitié appliquée laisserait à relire la liste
+         *     pour savoir ce qui a disparu.
+         */
+        post: operations["delete_campaigns_api_campaigns_bulk_delete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/clone": {
         parameters: {
             query?: never;
@@ -927,82 +952,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/campaigns/{campaign_id}/early-counts/batches": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Lister les lots de comptage avancé */
-        get: operations["list_batches_api_campaigns__campaign_id__early_counts_batches_get"];
-        put?: never;
-        /** Ouvrir un lot de comptage avancé */
-        post: operations["create_batch_api_campaigns__campaign_id__early_counts_batches_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/batches/{batch_id}/close": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Clore un lot */
-        post: operations["close_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__close_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/batches/{batch_id}/seal": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Sceller un lot
-         * @description Poser la référence des emplacements du lot, et interdire qu'on y touche.
-         *
-         *     Refusé si l'un des journaux du périmètre n'est pas posté dans l'ERP : c'est
-         *     le postage qui réaligne l'ERP sur le physique compté, et le scellement tient
-         *     ce réalignement pour acquis.
-         */
-        post: operations["seal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__seal_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/batches/{batch_id}/unseal": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Desceller un lot */
-        post: operations["unseal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__unseal_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/campaigns/{campaign_id}/early-counts/drifts": {
         parameters: {
             query?: never;
@@ -1012,38 +961,16 @@ export interface paths {
         };
         /**
          * Lister les dérives des emplacements scellés
-         * @description ``ERP@J − physique@T0``, par article et emplacement scellé.
+         * @description ``ERP@J − compté@T0``, par article et emplacement scellé.
          *
-         *     Attendue nulle. ``blocksAnalysis`` marque celles qui arrêtent le passage en
-         *     analyse tant que personne n'a dit laquelle des deux quantités fait foi.
+         *     Attendue nulle, et seules les non nulles sont rendues. En affichage seul :
+         *     un précomptage est posté dans l'ERP avant la photo du jour J, donc ce qui
+         *     subsiste ici est ce qui a bougé entre les deux dates — rien à trancher, et
+         *     rien qui bloque.
          */
         get: operations["list_drifts_api_campaigns__campaign_id__early_counts_drifts_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/campaigns/{campaign_id}/early-counts/drifts/resolve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Trancher des dérives
-         * @description Quelle quantité fait foi au jour J ?
-         *
-         *     Deux réponses : conserver le comptage avancé — avec une cause, parce que la
-         *     campagne et l'ERP resteront alors en désaccord — ou recompter, ce qui rend
-         *     l'emplacement au comptage général.
-         */
-        post: operations["resolve_drifts_api_campaigns__campaign_id__early_counts_drifts_resolve_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1062,6 +989,31 @@ export interface paths {
          * @description Les journaux tels que l'ERP les tient, avec leur périmètre déclaré.
          */
         get: operations["list_erp_journals_api_campaigns__campaign_id__early_counts_journals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/journals/{erp_journal_id}/lines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lignes brutes d'un journal ERP
+         * @description Ce que l'ERP a réellement envoyé, ligne par ligne.
+         *
+         *     L'application agrège vers l'emplacement ; l'agrégat ne dit pas d'où il
+         *     vient. Chaque ligne porte donc son appartenance au périmètre déclaré —
+         *     hors périmètre, elle est conservée comme trace d'un déplacement et **ne
+         *     compte pas**.
+         */
+        get: operations["erp_journal_lines_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__lines_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1111,6 +1063,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/early-counts/journals/{erp_journal_id}/unseal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Desceller un journal de précomptage
+         * @description Rendre ses emplacements au comptage général.
+         *
+         *     Le périmètre part avec le scellement : sans périmètre, le journal n'a plus
+         *     d'emplacement à couvrir. Redéclarer est le geste qui rescelle.
+         */
+        post: operations["unseal_journal_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__unseal_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/early-counts/label-alerts": {
         parameters: {
             query?: never;
@@ -1120,13 +1095,43 @@ export interface paths {
         };
         /**
          * Étiquettes scellées comptées ailleurs
-         * @description Le seul contrôle qui descende au grain de l'étiquette.
+         * @description Le seul regard qui descende au grain de l'étiquette.
          *
-         *     Il rattrape ce que la dérive ne voit pas : une pièce sortie d'un emplacement
+         *     Il montre ce que la dérive ne voit pas : une pièce sortie d'un emplacement
          *     scellé sans aucune transaction ERP laisse une dérive nulle, mais si elle est
          *     re-scannée ailleurs, son étiquette apparaît dans un second journal.
+         *
+         *     En affichage seul. La liste n'exclut rien d'aucune agrégation et n'appelle
+         *     aucune décision : elle dit ce qui a bougé entre le précomptage et le jour J,
+         *     à qui veut aller voir.
          */
         get: operations["label_alerts_api_campaigns__campaign_id__early_counts_label_alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/early-counts/recounted-in-place": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Emplacements scellés recomptés par un second journal
+         * @description Le pendant des étiquettes comptées ailleurs, et ce qui les en sort.
+         *
+         *     Deux journaux sur le même emplacement scellé ne décrivent pas un
+         *     déplacement : l'étiquette est là où elle doit être. Ils remplissaient
+         *     pourtant la liste des étiquettes comptées ailleurs de lignes dont les deux
+         *     colonnes d'emplacement portaient la même valeur. Ils sont ici, résumés, avec
+         *     le journal retenu et celui qui ne l'est pas.
+         */
+        get: operations["recounted_in_place_api_campaigns__campaign_id__early_counts_recounted_in_place_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1148,6 +1153,10 @@ export interface paths {
          *
          *     Sorted with the decisions that still need a human first, then by the euro
          *     impact of the gap — so the most expensive disagreement is dealt with first.
+         *
+         *     ``divergentOnly`` ne garde que les lignes où les deux comptages ne disent
+         *     pas la même chose : c'est ce que l'écran demande, une ligne en accord
+         *     n'appelant aucune décision.
          */
         get: operations["list_arbitrations_api_campaigns__campaign_id__generic_arbitrations_get"];
         put?: never;
@@ -1561,6 +1570,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/generic/zones/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Créer un lot de zones
+         * @description Créer d'un coup toutes les zones d'un bloc collé.
+         *
+         *     Une campagne réelle en compte quarante à soixante, chacune avec son nombre
+         *     de lignes par section. Les créer une par une, c'est autant d'allers-retours
+         *     dans une fenêtre modale, alors que la liste existe déjà dans un tableur.
+         *
+         *     **Tout ou rien** : les zones sont validées avant la première écriture, et le
+         *     refus les nomme. Un lot à moitié créé laisserait un état que personne n'a
+         *     voulu et que rien ne dit comment défaire.
+         */
+        post: operations["create_zones_api_campaigns__campaign_id__generic_zones_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/generic/zones/delete": {
         parameters: {
             query?: never;
@@ -1635,7 +1672,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/arbitrations/prefill-pass-2": {
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/arbitrations/decide-all": {
         parameters: {
             query?: never;
             header?: never;
@@ -1645,14 +1682,17 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Pré-remplir les écarts d'une zone avec le comptage n°2
-         * @description Copy pass 2 into the open arbitrations — a shortcut, not a decision.
+         * Valider en lot les quantités affichées
+         * @description Valider d'un geste ce que l'écran affiche.
          *
-         *     The quantities land in the fields; each one still has to be validated (or
-         *     changed) before the consolidation will use it. Lines already decided are
-         *     left untouched.
+         *     Le corps porte les quantités visibles, ligne par ligne : c'est la seule
+         *     façon qu'un « Valider tout » valide ce que l'utilisateur a sous les yeux
+         *     plutôt que ce que le serveur recalculerait de son côté.
+         *
+         *     Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
+         *     jugement pris une par une.
          */
-        post: operations["prefill_with_pass_2_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_prefill_pass_2_post"];
+        post: operations["decide_arbitrations_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_decide_all_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1670,6 +1710,30 @@ export interface paths {
         put?: never;
         /** Recalculer les écarts */
         post: operations["refresh_arbitrations_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/blank-rows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Lignes vierges d'une zone
+         * @description Combien de lignes vierges chaque section de cette zone imprime.
+         *
+         *     Une section absente — ou à zéro — ne s'imprime pas. C'est le geste qui
+         *     retire de la page un bandeau sous lequel la zone n'a rien à faire compter,
+         *     et celui qui donne enfin des lignes d'en-cours à une zone qui en compte.
+         */
+        post: operations["set_zone_blank_rows_api_campaigns__campaign_id__generic_zones__zone_id__blank_rows_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1704,6 +1768,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Renommer une zone
+         * @description Changer le code d'une zone — et, s'il le faut, son libellé et son secteur.
+         *
+         *     Le code se décide avant de connaître le terrain et se révèle faux une fois
+         *     sur place. Le seul recours était de supprimer la zone et de la recréer, ce
+         *     qui emporte ses feuilles avec leur liste d'articles et leurs quantités.
+         *
+         *     Rien d'autre ne bouge : feuilles, lignes, comptages et arbitrages sont
+         *     rattachés à l'identifiant de la zone, jamais à son code.
+         */
+        post: operations["rename_zone_api_campaigns__campaign_id__generic_zones__zone_id__rename_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/generic/zones/{zone_id}/section-labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Textes imprimés en tête des sections d'une zone
+         * @description Remplacer le texte par défaut d'une ou plusieurs sections.
+         *
+         *     Un texte vide remet le défaut : c'est ce que veut dire un champ qu'on vide,
+         *     et une bannière vide laisserait le compteur sans la règle sous laquelle il
+         *     compte.
+         */
+        post: operations["set_section_labels_api_campaigns__campaign_id__generic_zones__zone_id__section_labels_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/import/{target}": {
         parameters: {
             query?: never;
@@ -1721,6 +1836,61 @@ export interface paths {
          *     *would* happen, which is how a user checks a file before committing to it.
          */
         post: operations["import_file_api_campaigns__campaign_id__import__target__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/import/{target}/campaign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reprendre une grille d'une autre campagne
+         * @description Relire une campagne existante à la forme de cette grille.
+         *
+         *     Le référentiel articles d'un trimestre est celui du suivant à quelques
+         *     lignes près, un stock ERP de contrôle se rejoue, et les journaux de
+         *     comptage avancés d'une campagne annulée n'ont aucune raison d'être
+         *     ressaisis. La duplication de campagne couvre le cas où l'on repart de
+         *     zéro ; celui-ci couvre le cas — bien plus fréquent — où la campagne existe
+         *     déjà et où il ne manque qu'une grille.
+         *
+         *     Comme la lecture ERP, les lignes rentrent **au même point** qu'un fichier :
+         *     mêmes validations, même essai à blanc, même grille modifiable ensuite. Ce
+         *     n'est pas une porte dérobée dans le référentiel.
+         */
+        post: operations["import_from_campaign_api_campaigns__campaign_id__import__target__campaign_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/import/{target}/campaign-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Campagnes dont cette grille peut être reprise
+         * @description Les campagnes candidates, **et ce que chacune porte sur cette grille**.
+         *
+         *     Le décompte est ce qui fait choisir : sans lui, l'écran offre une liste de
+         *     codes et de dates, on désigne au jugé, et on découvre après coup que la
+         *     campagne ne portait rien.
+         */
+        get: operations["campaign_sources_api_campaigns__campaign_id__import__target__campaign_sources_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2020,6 +2190,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/reports/consolidation-fallback.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Exporter le classeur de repli de la consolidation GENERIQUE
+         * @description Le second classeur : la consolidation GENERIQUE **refaite par formules**.
+         *
+         *     Le dossier de campagne est une photo ; celui-ci porte les données —
+         *     référentiel, nomenclatures, une feuille par zone — et recalcule le journal
+         *     consolidé à chaque correction. C'est le repli du jour où l'application n'est
+         *     pas joignable et où le journal doit partir quand même.
+         */
+        get: operations["consolidation_fallback_api_campaigns__campaign_id__reports_consolidation_fallback_xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/reports/counting-sheets.pdf": {
         parameters: {
             query?: never;
@@ -2181,6 +2376,36 @@ export interface paths {
          *     cells hold two figures cannot be summed or pivoted.
          */
         get: operations["variance_export_api_campaigns__campaign_id__reports_variances_xlsx_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/scans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Les scans archivés de la campagne
+         * @description Ce que l'archive contient, pièce par pièce.
+         *
+         *     L'archive existait et se téléchargeait déjà, mais seulement pour qui
+         *     connaissait l'identifiant de la feuille qui la porte : impossible de savoir
+         *     ce qu'elle contient, ni si elle contient quelque chose. Une archive qu'on ne
+         *     peut pas énumérer ne se contrôle pas.
+         *
+         *     La liste ne porte pas les octets — une pile de deux cents pages en pèse
+         *     trente mégaoctets. Chaque ligne dit ce qu'il faut pour décider de l'ouvrir,
+         *     et le téléchargement passe ensuite par la feuille, donc par la barrière de
+         *     campagne déjà en place.
+         */
+        get: operations["archived_scans_api_campaigns__campaign_id__scans_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3012,6 +3237,68 @@ export interface components {
             unit?: string | null;
         };
         /**
+         * BulkArbitrationDecision
+         * @description Une ligne d'arbitrage et la quantité que l'écran affiche pour elle.
+         */
+        BulkArbitrationDecision: {
+            /** Id */
+            id: string;
+            /** Qty */
+            qty: number | string;
+        };
+        /**
+         * BulkArbitrationRequest
+         * @description Valider d'un geste les quantités visibles à l'écran.
+         *
+         *     Le corps portait auparavant une *règle* — « le n°1 partout », « le n°2
+         *     partout », « les propositions » — et le serveur allait rechercher la
+         *     quantité lui-même. C'est ce qui cassait : une quantité tapée dans le champ,
+         *     ou posée là par un bouton de pré-remplissage local, n'existait pas côté
+         *     serveur, si bien que « Valider tout » comptait comme non tranchées des
+         *     lignes qui portaient un chiffre sous les yeux de l'utilisateur.
+         *
+         *     Le choix de la règle reste ce qu'il a toujours été — un geste de
+         *     remplissage — mais il se fait maintenant là où il se voit, dans les champs,
+         *     et c'est leur contenu qui remonte.
+         */
+        BulkArbitrationRequest: {
+            /** Decisions */
+            decisions?: components["schemas"]["BulkArbitrationDecision"][];
+        };
+        /**
+         * BulkArbitrationResponse
+         * @description Ce qu'un arbitrage en lot a tranché, et ce qu'il a laissé ouvert.
+         *
+         *     Les deux comptes, parce qu'ils ne disent pas la même chose : une ligne
+         *     laissée de côté — aucune des deux équipes n'a rien trouvé à retenir — reste
+         *     à traiter, et un écran qui n'annoncerait que les tranchées ferait croire la
+         *     zone finie.
+         */
+        BulkArbitrationResponse: {
+            /** Decided */
+            decided: number;
+            /** Skipped */
+            skipped: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * BulkDeletedResponse
+         * @description Ce qu'une suppression en lot a retiré.
+         *
+         *     Les codes et non seulement le compte : c'est ce qui permet au message de
+         *     dire *quoi*, et à qui vient d'en supprimer douze de reconnaître la
+         *     treizième qui n'y est pas.
+         */
+        BulkDeletedResponse: {
+            /** Codes */
+            codes: string[];
+            /** Deleted */
+            deleted: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * Campaign
          * @description An inventory campaign — the immutable dossier the whole app revolves around.
          */
@@ -3153,6 +3440,11 @@ export interface components {
             bookStockLines: number;
             /** Items */
             items: number;
+            /**
+             * Sealedlocations
+             * @default 0
+             */
+            sealedLocations: number;
         } & {
             [key: string]: unknown;
         };
@@ -3186,6 +3478,40 @@ export interface components {
         CampaignSettingsRequest: {
             /** Allowformulas */
             allowFormulas: boolean;
+        };
+        /**
+         * CampaignSourceResponse
+         * @description Une campagne dont on pourrait reprendre une grille, et ce qu'elle porte.
+         *
+         *     ``rows`` est l'information qui fait choisir : sans elle, l'écran offre une
+         *     liste de codes et de dates, on désigne au jugé, et on découvre après coup
+         *     que la campagne ne portait rien sur cette grille.
+         */
+        CampaignSourceResponse: {
+            /** Code */
+            code: string;
+            /** Countdate */
+            countDate: string;
+            /** Createdat */
+            createdAt: string | null;
+            /**
+             * Createdby
+             * @default
+             */
+            createdBy: string;
+            /** Id */
+            id: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Rows */
+            rows: number;
+            /** Status */
+            status: string;
+        } & {
+            [key: string]: unknown;
         };
         /**
          * CampaignStatus
@@ -3267,6 +3593,26 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * CountLineKind
+         * @description Ce qu'une ligne de feuille **est**, au-delà de ce qu'elle porte.
+         *
+         *     Une feuille de comptage n'est pas une liste, c'est un document : les
+         *     feuilles Excel qu'elle remplace alternent des intertitres — « Stock physique
+         *     B6EST », « Stock physique B15 », « Stock physique chez Maldaner » — et des
+         *     lignes vides qui aèrent la page. Ce découpage n'est pas décoratif : il dit
+         *     au compteur *où aller*, et c'est lui qui fait qu'un même article revient
+         *     trois fois sur la même feuille sans être un doublon.
+         *
+         *     * ``ARTICLE``    — une référence à compter, la seule qui porte une quantité.
+         *     * ``SUBSECTION`` — un intertitre, son texte dans ``label``. Les articles qui
+         *       le suivent lui appartiennent, et leur clé d'unicité le porte.
+         *     * ``SPACER``     — une ligne vide. **Pas** une sous-section : elle ne
+         *       regroupe rien, elle sépare. Deux articles identiques séparés par une
+         *       simple ligne vide restent un doublon.
+         * @enum {string}
+         */
+        CountLineKind: "ARTICLE" | "SUBSECTION" | "SPACER";
+        /**
          * CountSection
          * @description Section of a GENERIQUE counting sheet — drives the consolidation rule.
          *
@@ -3297,6 +3643,18 @@ export interface components {
             /** Thresholds */
             thresholds?: components["schemas"]["ThresholdPayload"][] | null;
         };
+        /**
+         * DeleteCampaignsRequest
+         * @description Le lot à retirer.
+         *
+         *     Borné par le contrat lui-même et non seulement par le service : une liste
+         *     sans borne est une requête qu'on peut envoyer, et refuser cent mille
+         *     identifiants après les avoir lus coûte déjà de les avoir lus.
+         */
+        DeleteCampaignsRequest: {
+            /** Ids */
+            ids: string[];
+        };
         /** DeletedResponse */
         DeletedResponse: {
             /** Deleted */
@@ -3305,159 +3663,92 @@ export interface components {
             [key: string]: unknown;
         };
         /**
-         * DriftResolution
-         * @description Ce qu'un exploitant décide d'une dérive matérielle.
-         *
-         *     Une dérive est l'écart entre le stock ERP du jour J et le physique posté au
-         *     précomptage, sur un emplacement scellé. Elle est attendue nulle ; quand elle
-         *     ne l'est pas, **une seule question se pose** : quelle quantité fait foi au
-         *     jour J ?
-         *
-         *     Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une :
-         *     on ne scelle qu'un journal déjà posté dans l'ERP, si bien que le
-         *     réalignement est acquis par construction plutôt que diagnostiqué après coup.
-         *     « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
-         *     d'ajustement, qui a déjà son sens, sa table et sa place dans le calcul —
-         *     en faire une issue de la dérive aurait dupliqué une fonction et forcé à
-         *     choisir entre deux gestes qui ne s'excluent pas.
-         * @enum {string}
-         */
-        DriftResolution: "KEEP_EARLY" | "RECOUNT";
-        /** DriftResolutionRequest */
-        DriftResolutionRequest: {
-            /**
-             * Causecode
-             * @default
-             */
-            causeCode: string;
-            /**
-             * Comment
-             * @default
-             */
-            comment: string;
-            /** Driftids */
-            driftIds: string[];
-            resolution: components["schemas"]["DriftResolution"];
-        };
-        /**
          * DriftResponse
-         * @description ``ERP@J − physique@T0`` sur un emplacement scellé, attendue nulle.
+         * @description ``ERP@J − compté@T0`` sur un emplacement scellé, attendue nulle.
+         *
+         *     Un indice, pas un écart : le précomptage a été posté dans l'ERP avant la
+         *     photo du jour J, donc ce qui subsiste est ce qui a bougé entre les deux
+         *     dates. Aucune décision ne s'y attache, et rien n'est bloqué.
          */
         DriftResponse: {
-            /** Batchid */
-            batchId: string | null;
-            /** Blocksanalysis */
-            blocksAnalysis: boolean;
             /** Campaignid */
             campaignId: string;
-            /**
-             * Causecode
-             * @default
-             */
-            causeCode: string;
-            /**
-             * Comment
-             * @default
-             */
-            comment: string;
             /** Driftqty */
             driftQty: number;
             /** Driftvalue */
             driftValue: number;
+            /** Erpjournalid */
+            erpJournalId: string | null;
             /** Id */
             id: string;
-            /** Ismaterial */
-            isMaterial: boolean;
-            /** Isresolved */
-            isResolved: boolean;
             /** Itemnumber */
             itemNumber: string;
             /** Locationid */
             locationId: string;
+            /** Qtycountedt0 */
+            qtyCountedT0: number;
             /** Qtyerpj */
             qtyErpJ: number;
-            /** Qtyerpt0 */
-            qtyErpT0: number;
-            /** Qtyphysicalt0 */
-            qtyPhysicalT0: number;
-            /** Resolution */
-            resolution: string | null;
-            /** Resolvedat */
-            resolvedAt: string | null;
-            /**
-             * Resolvedby
-             * @default
-             */
-            resolvedBy: string;
             /** Warehouseid */
             warehouseId: string;
         } & {
             [key: string]: unknown;
         };
-        /** DriftsResolved */
-        DriftsResolved: {
-            /** Resolved */
-            resolved: number;
-        } & {
-            [key: string]: unknown;
-        };
-        /** EarlyBatchRequest */
-        EarlyBatchRequest: {
-            /** Code */
-            code: string;
-            /** Countedon */
-            countedOn?: string | null;
-            /** Erpjournalids */
-            erpJournalIds: string[];
-            /**
-             * Label
-             * @default
-             */
-            label: string;
-        };
-        /** EarlyBatchResponse */
-        EarlyBatchResponse: {
-            /** Campaignid */
-            campaignId: string;
-            /** Closedat */
-            closedAt: string | null;
-            /** Code */
-            code: string;
-            /** Countedon */
-            countedOn: string | null;
+        /**
+         * ErpJournalLineResponse
+         * @description Une ligne de journal ERP, au grain où l'ERP la produit.
+         *
+         *     ``inScope`` est la seule chose que l'application ajoute, et c'est celle qui
+         *     décide de tout : hors périmètre, la ligne est conservée comme trace d'un
+         *     déplacement et **ne compte pas**.
+         */
+        ErpJournalLineResponse: {
+            /** Erpjournalid */
+            erpJournalId: string;
             /** Id */
             id: string;
+            /** Inscope */
+            inScope: boolean;
             /**
-             * Isclosed
-             * @default false
-             */
-            isClosed: boolean;
-            /**
-             * Issealed
-             * @default false
-             */
-            isSealed: boolean;
-            /**
-             * Label
+             * Inventorystatusid
              * @default
              */
-            label: string;
-            /** Locations */
-            locations: components["schemas"]["ScopeLocation"][];
-            /** Openedat */
-            openedAt: string | null;
+            inventoryStatusId: string;
+            /** Itemnumber */
+            itemNumber: string;
             /**
-             * Openedby
+             * Labelid
              * @default
              */
-            openedBy: string;
-            /** Sealedat */
-            sealedAt: string | null;
+            labelId: string;
             /**
-             * Sealedby
+             * Locationid
              * @default
              */
-            sealedBy: string;
+            locationId: string;
+            /** Qtycounted */
+            qtyCounted: number;
+            /** Qtyonhand */
+            qtyOnHand: number;
+            /**
+             * Serialnumber
+             * @default
+             */
+            serialNumber: string;
+            /**
+             * Siteid
+             * @default
+             */
+            siteId: string;
+            /**
+             * Unit
+             * @default PCE
+             */
+            unit: string;
+            /** Varianceqty */
+            varianceQty: number;
+            /** Warehouseid */
+            warehouseId: string;
         } & {
             [key: string]: unknown;
         };
@@ -3468,6 +3759,8 @@ export interface components {
         ErpJournalResponse: {
             /** Campaignid */
             campaignId: string;
+            /** Countedon */
+            countedOn: string | null;
             /**
              * Description
              * @default
@@ -3479,6 +3772,11 @@ export interface components {
             erpPostedAt: string | null;
             /** Id */
             id: string;
+            /**
+             * Issealed
+             * @default false
+             */
+            isSealed: boolean;
             /** Journalnumber */
             journalNumber: string;
             /** Kind */
@@ -3491,6 +3789,13 @@ export interface components {
             scope: components["schemas"]["ScopeLocation"][];
             /** Scopedeclared */
             scopeDeclared: boolean;
+            /** Sealedat */
+            sealedAt: string | null;
+            /**
+             * Sealedby
+             * @default
+             */
+            sealedBy: string;
             /**
              * Siteid
              * @default
@@ -3799,8 +4104,9 @@ export interface components {
          * LabelAlert
          * @description Une étiquette d'un emplacement scellé, comptée dans un autre journal.
          *
-         *     Le seul contrôle qui descende au grain de l'étiquette, et celui qui rattrape
-         *     ce que la dérive ne voit pas.
+         *     Le seul regard qui descende au grain de l'étiquette, et celui qui montre ce
+         *     que la dérive ne voit pas. En affichage seul : la ligne n'exclut rien
+         *     d'aucune agrégation et n'appelle aucune décision.
          */
         LabelAlert: {
             /** Itemnumber */
@@ -4015,10 +4321,14 @@ export interface components {
             countJournals: boolean;
             /** Countsheets */
             countSheets: boolean;
+            /** Earlycounts */
+            earlyCounts: boolean;
             /** Items */
             items: boolean;
             /** Locations */
             locations: boolean;
+            /** Managers */
+            managers: boolean;
             /** Settings */
             settings: boolean;
             /** Stockflow */
@@ -4057,6 +4367,29 @@ export interface components {
             lineIds: string[];
             /** @default WIP_OK */
             section: components["schemas"]["CountSection"];
+        };
+        /**
+         * RecountedInPlace
+         * @description Un emplacement scellé qu'un second journal a recompté **sur place**.
+         *
+         *     Distinct de :class:`LabelAlert`, et la distinction porte : là, l'étiquette
+         *     est où elle doit être, il n'y a pas de nouvel emplacement, et il n'y a donc
+         *     rien à signaler d'un déplacement. Ce qui se joue est un second comptage du
+         *     même emplacement — seul le journal qui le possède est retenu.
+         */
+        RecountedInPlace: {
+            /** Labelcount */
+            labelCount: number;
+            /** Otherjournalnumber */
+            otherJournalNumber: string;
+            /** Ownerjournalnumber */
+            ownerJournalNumber: string;
+            /** Sealedlocationid */
+            sealedLocationId: string;
+            /** Sealedwarehouseid */
+            sealedWarehouseId: string;
+        } & {
+            [key: string]: unknown;
         };
         /** RouteMetrics */
         RouteMetrics: {
@@ -4156,6 +4489,23 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * SectionLabelsResponse
+         * @description Les en-têtes de section retenus pour une zone, après nettoyage.
+         *
+         *     Ce que la route rend est ce qui est **enregistré**, pas ce qui a été
+         *     envoyé : un texte vide n'est pas stocké — il remet le défaut — et l'écran
+         *     doit voir cette différence tout de suite plutôt qu'au prochain
+         *     rechargement.
+         */
+        SectionLabelsResponse: {
+            /** Labels */
+            labels: {
+                [key: string]: string;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * Sequence
          * @description Ce que la phase courante autorise, et ce qui manque sinon.
          */
@@ -4179,19 +4529,46 @@ export interface components {
             /** Lineids */
             lineIds: string[];
         };
-        /** SheetLineRow */
+        /**
+         * SheetLineRow
+         * @description Une ligne de feuille, telle qu'un écran la renvoie.
+         *
+         *     **Un champ absent veut dire « je ne parle pas de ce champ ».** Ce n'est pas
+         *     une commodité : c'est ce qui permet à deux écrans d'écrire la même feuille
+         *     sans se marcher dessus. La fenêtre de saisie montre les quantités et les
+         *     commentaires, donc elle en parle ; l'aperçu de mise en page montre le
+         *     document — l'ordre des lignes, les intertitres, les sections — et n'en parle
+         *     pas. Réordonner une feuille ne doit pas décider de ce qui a été compté
+         *     dedans.
+         *
+         *     **Un champ présent et vide veut dire « efface ».** L'autre moitié de la
+         *     règle, et elle compte autant : sans elle, une case qu'on vide dans la
+         *     fenêtre de saisie se remplirait de nouveau au rechargement.
+         *
+         *     Le routeur transmet donc la charge utile telle qu'elle est arrivée
+         *     (``model_dump(exclude_unset=True)``) et non complétée par les valeurs par
+         *     défaut. Ces valeurs par défaut restent celles que l'absence produit côté
+         *     service, pour tout champ dont l'absence n'a pas de sens propre : elles
+         *     documentent le contrat sans le contredire.
+         */
         SheetLineRow: {
-            /**
-             * Comment
-             * @default
-             */
-            comment: string;
+            /** Comment */
+            comment?: string | null;
             /** Displayorder */
             displayOrder?: number | null;
             /** Id */
             id?: string | null;
             /** Itemnumber */
             itemNumber: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** @default ARTICLE */
+            lineKind: components["schemas"]["CountLineKind"];
+            /** Name */
+            name?: string | null;
             /** Qty */
             qty?: number | string | null;
             /** @default LINE_SIDE */
@@ -4371,6 +4748,32 @@ export interface components {
             zoneIds: string[];
         };
         /**
+         * ZoneBlankRowsRequest
+         * @description Les lignes vierges d'une zone, section par section.
+         *
+         *     Le dictionnaire est posé **en entier** : une section absente vaut zéro, et
+         *     c'est bien ainsi qu'on retire une section de la page.
+         */
+        ZoneBlankRowsRequest: {
+            /** Blankrows */
+            blankRows?: {
+                [key: string]: number;
+            };
+        };
+        /**
+         * ZoneBulkRequest
+         * @description Un lot de zones, tel qu'un bloc collé le décrit.
+         *
+         *     L'écran analyse le collage — c'est lui qui connaît le vocabulaire des
+         *     en-têtes — et envoie des zones déjà nommées. Le serveur les valide toutes
+         *     avant d'en écrire une seule : trente zones créées et un refus sur la
+         *     trente et unième laisserait un état que personne n'a voulu.
+         */
+        ZoneBulkRequest: {
+            /** Zones */
+            zones: components["schemas"]["ZoneRequest"][];
+        };
+        /**
          * ZoneClosureRequest
          * @description Déclarer une zone terminée, ou la rouvrir. La seule décision d'état
          *     qui reste au parcours de comptage.
@@ -4410,8 +4813,28 @@ export interface components {
             /** Zoneids */
             zoneIds: string[];
         };
+        /**
+         * ZoneRenameRequest
+         * @description Le nouveau nom d'une zone.
+         *
+         *     Le libellé et le secteur sont facultatifs et ``None`` les laisse en place :
+         *     renommer une zone est un geste sur son code, et l'écran qui ne propose que
+         *     lui ne doit pas effacer les deux autres en passant.
+         */
+        ZoneRenameRequest: {
+            /** Code */
+            code: string;
+            /** Label */
+            label?: string | null;
+            /** Sector */
+            sector?: string | null;
+        };
         /** ZoneRequest */
         ZoneRequest: {
+            /** Blankrows */
+            blankRows?: {
+                [key: string]: number;
+            } | null;
             /** Code */
             code: string;
             /**
@@ -4441,6 +4864,20 @@ export interface components {
              * @default
              */
             sector: string;
+        };
+        /**
+         * ZoneSectionLabelsRequest
+         * @description Les en-têtes de section imprimés en tête de feuille, pour une zone.
+         *
+         *     Un code absent — ou dont le texte est vide — reprend le texte par défaut.
+         *     C'est ce qui permet d'en personnaliser un sans recopier les deux autres, et
+         *     d'annuler une personnalisation en vidant le champ.
+         */
+        ZoneSectionLabelsRequest: {
+            /** Labels */
+            labels?: {
+                [key: string]: string;
+            };
         };
     };
     responses: never;
@@ -4512,6 +4949,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Campaign"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_campaigns_api_campaigns_bulk_delete_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteCampaignsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkDeletedResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6195,192 +6669,6 @@ export interface operations {
             };
         };
     };
-    list_batches_api_campaigns__campaign_id__early_counts_batches_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_batch_api_campaigns__campaign_id__early_counts_batches_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EarlyBatchRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    close_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__close_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                batch_id: string;
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    seal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__seal_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                batch_id: string;
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    unseal_batch_api_campaigns__campaign_id__early_counts_batches__batch_id__unseal_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                batch_id: string;
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UnsealRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EarlyBatchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     list_drifts_api_campaigns__campaign_id__early_counts_drifts_get: {
         parameters: {
             query?: never;
@@ -6416,45 +6704,6 @@ export interface operations {
             };
         };
     };
-    resolve_drifts_api_campaigns__campaign_id__early_counts_drifts_resolve_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                "x-forwarded-email"?: string | null;
-                "x-forwarded-preferred-username"?: string | null;
-                "x-forwarded-user"?: string | null;
-            };
-            path: {
-                campaign_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DriftResolutionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DriftsResolved"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     list_erp_journals_api_campaigns__campaign_id__early_counts_journals_get: {
         parameters: {
             query?: never;
@@ -6477,6 +6726,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErpJournalResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    erp_journal_lines_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__lines_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                erp_journal_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErpJournalLineResponse"][];
                 };
             };
             /** @description Validation Error */
@@ -6566,6 +6851,46 @@ export interface operations {
             };
         };
     };
+    unseal_journal_api_campaigns__campaign_id__early_counts_journals__erp_journal_id__unseal_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                erp_journal_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UnsealRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopeDeclared"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     label_alerts_api_campaigns__campaign_id__early_counts_label_alerts_get: {
         parameters: {
             query?: never;
@@ -6601,10 +6926,46 @@ export interface operations {
             };
         };
     };
+    recounted_in_place_api_campaigns__campaign_id__early_counts_recounted_in_place_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecountedInPlace"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_arbitrations_api_campaigns__campaign_id__generic_arbitrations_get: {
         parameters: {
             query?: {
                 zoneId?: string | null;
+                divergentOnly?: boolean;
             };
             header?: {
                 "x-forwarded-email"?: string | null;
@@ -7356,6 +7717,45 @@ export interface operations {
             };
         };
     };
+    create_zones_api_campaigns__campaign_id__generic_zones_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneBulkRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     delete_zones_api_campaigns__campaign_id__generic_zones_delete_post: {
         parameters: {
             query?: never;
@@ -7479,7 +7879,7 @@ export interface operations {
             };
         };
     };
-    prefill_with_pass_2_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_prefill_pass_2_post: {
+    decide_arbitrations_api_campaigns__campaign_id__generic_zones__zone_id__arbitrations_decide_all_post: {
         parameters: {
             query?: never;
             header?: {
@@ -7493,7 +7893,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkArbitrationRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -7501,9 +7905,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: number;
-                    };
+                    "application/json": components["schemas"]["BulkArbitrationResponse"];
                 };
             };
             /** @description Validation Error */
@@ -7540,6 +7942,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_zone_blank_rows_api_campaigns__campaign_id__generic_zones__zone_id__blank_rows_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                zone_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneBlankRowsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */
@@ -7593,6 +8035,86 @@ export interface operations {
             };
         };
     };
+    rename_zone_api_campaigns__campaign_id__generic_zones__zone_id__rename_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                zone_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneRenameRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_section_labels_api_campaigns__campaign_id__generic_zones__zone_id__section_labels_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                zone_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ZoneSectionLabelsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SectionLabelsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     import_file_api_campaigns__campaign_id__import__target__post: {
         parameters: {
             query?: {
@@ -7623,6 +8145,83 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_from_campaign_api_campaigns__campaign_id__import__target__campaign_post: {
+        parameters: {
+            query: {
+                sourceCampaignId: string;
+                dryRun?: boolean;
+                replace?: boolean;
+                allowPartial?: boolean;
+            };
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                target: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    campaign_sources_api_campaigns__campaign_id__import__target__campaign_sources_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                target: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignSourceResponse"][];
                 };
             };
             /** @description Validation Error */
@@ -8236,13 +8835,50 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Le dossier complet de la campagne */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    consolidation_fallback_api_campaigns__campaign_id__reports_consolidation_fallback_xlsx_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Le classeur de repli de la consolidation GENERIQUE */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
                 };
             };
             /** @description Validation Error */
@@ -8277,13 +8913,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Toutes les feuilles d’un passage, en un document */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "application/pdf": string;
                 };
             };
             /** @description Validation Error */
@@ -8317,13 +8954,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Une feuille de comptage imprimable */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "application/pdf": string;
                 };
             };
             /** @description Validation Error */
@@ -8353,13 +8991,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Une grille, ou son modèle quand elle est vide */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
                 };
             };
             /** @description Validation Error */
@@ -8389,13 +9028,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Un journal au format d’import ERP */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
                 };
             };
             /** @description Validation Error */
@@ -8428,13 +9068,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
+            /** @description Le tableau affiché, en classeur */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
                 };
             };
             /** @description Validation Error */
@@ -8466,13 +9107,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Les écarts, en document à remettre */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "application/pdf": string;
                 };
             };
             /** @description Validation Error */
@@ -8504,13 +9146,49 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Les écarts, une colonne par chiffre */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archived_scans_api_campaigns__campaign_id__scans_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>[];
                 };
             };
             /** @description Validation Error */

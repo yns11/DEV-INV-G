@@ -406,9 +406,28 @@ class TestTwoPassResolution:
         )
         lines = build_arbitration_lines(zone, campaign_id="c", id_factory=next_id)
         assert {l.item_number for l in lines} == {"VIS", "COLLE"}
+
+    def test_the_pass_that_did_not_list_the_article_counted_zero(self):
+        """Un tiret n'est pas une quantité, et il n'y avait rien à trancher.
+
+        Les deux passages portent le même document : une référence absente de la
+        feuille n°2 dit que l'équipe n'y a rien inscrit, et une case vide compte
+        zéro partout ailleurs. Tant que ce côté valait ``None``, la ligne
+        s'affichait « — », le bouton de validation restait grisé faute de
+        quantité à reprendre, et l'arbitrage de la zone ne pouvait pas se
+        terminer.
+        """
+        zone = zone_counts(
+            rows_1=[("VIS", CountSection.LINE_SIDE, 100)],
+            rows_2=[("COLLE", CountSection.LINE_SIDE, 4)],
+        )
+        lines = build_arbitration_lines(zone, campaign_id="c", id_factory=next_id)
         vis = next(l for l in lines if l.item_number == "VIS")
+        colle = next(l for l in lines if l.item_number == "COLLE")
         assert vis.qty_pass_1 == Decimal("100.000000")
-        assert vis.qty_pass_2 is None
+        assert vis.qty_pass_2 == Decimal("0")
+        assert colle.qty_pass_1 == Decimal("0")
+        assert colle.qty_pass_2 == Decimal("4.000000")
 
 
 class TestZoneCompleteness:
@@ -462,11 +481,45 @@ class TestDeterminism:
 
 
 class TestUnknownItem:
-    def test_counted_article_absent_from_the_referential_is_reported(self):
+    """Hors référentiel, hors journal — mais nommé, chiffré et rattaché.
+
+    La ligne partait dans le journal, au motif que perdre la quantité serait
+    pire. Elle y était pourtant la seule que rien ne pouvait valoriser : sans
+    article, ni désignation, ni prix, ni type, donc aucun écart calculable et
+    aucune règle de matérialité applicable. Postée dans l'ERP, elle y désigne un
+    article que le référentiel de la campagne ne connaît pas.
+
+    La quantité n'est pas perdue pour autant : elle est portée par le
+    signalement, avec ses zones et sa décomposition par section, et l'écran la
+    montre dans une pastille dédiée.
+    """
+
+    def test_it_is_reported(self):
         result = run(zone_counts(rows_1=[("NOUVEAU", CountSection.LINE_SIDE, 12)]))
         assert any(f.code == "UNKNOWN_ITEM" for f in result.findings)
-        # …but the quantity is still posted: losing it would be worse.
-        assert result.lines[0].item_number == "NOUVEAU"
+
+    def test_it_does_not_reach_the_journal(self):
+        result = run(zone_counts(rows_1=[("NOUVEAU", CountSection.LINE_SIDE, 12)]))
+        assert "NOUVEAU" not in {line.item_number for line in result.lines}
+
+    def test_the_quantity_survives_in_the_finding(self):
+        """Sans elle, la pastille dirait « une référence inconnue » et rien de
+        plus : ni combien, ni où aller voir."""
+        result = run(zone_counts(code="B15", rows_1=[
+            ("NOUVEAU", CountSection.LINE_SIDE, 12)
+        ]))
+        finding = next(f for f in result.findings if f.code == "UNKNOWN_ITEM")
+        assert finding.item_number == "NOUVEAU"
+        assert finding.context["qty"] == "12.000000"
+        assert finding.context["zone"] == "B15"
+
+    def test_the_known_articles_of_the_same_zone_are_untouched(self):
+        """Écarter l'inconnu ne doit pas écarter ses voisins de feuille."""
+        result = run(zone_counts(rows_1=[
+            ("VIS", CountSection.LINE_SIDE, 100),
+            ("NOUVEAU", CountSection.LINE_SIDE, 12),
+        ]))
+        assert {line.item_number for line in result.lines} == {"VIS"}
 
 
 class TestSinglePassZones:

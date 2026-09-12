@@ -431,9 +431,40 @@ class TestCountSheetMapping:
         )
         assert errors == []
         assert {r.key for r in rows} == {
-            ("P-1", CountSection.LINE_SIDE),
-            ("P-1", CountSection.WIP),
+            ("P-1", CountSection.LINE_SIDE, ""),
+            ("P-1", CountSection.WIP, ""),
         }
+
+    def test_one_article_twice_under_two_subsections_is_legitimate_too(self):
+        """Et pour la même raison : ce sont deux comptages, à deux endroits.
+
+        La feuille Excel qu'on remplace pose les mêmes articles sous « Stock
+        physique B6EST » puis sous « Stock physique B15 ». Sans la sous-section
+        dans la clé, le second bloc était refusé comme un doublon.
+        """
+        rows, errors = map_count_sheets(
+            [
+                {"sheet_code": "Z1", "item_number": "P-1",
+                 "subsection": "Stock physique B6EST"},
+                {"sheet_code": "Z1", "item_number": "P-1",
+                 "subsection": "Stock physique B15"},
+            ],
+            items=self.ITEMS,
+        )
+        assert errors == []
+        assert {r.key for r in rows} == {
+            ("P-1", CountSection.LINE_SIDE, "Stock physique B6EST"),
+            ("P-1", CountSection.LINE_SIDE, "Stock physique B15"),
+        }
+
+    def test_the_subsection_keeps_its_case_and_its_accents(self):
+        """C'est du texte imprimé, pas un code : « chez Maldaner » se lit."""
+        rows, _ = map_count_sheets(
+            [{"sheet_code": "Z1", "item_number": "P-1",
+              "subsection": "  Stock physique chez Maldaner  "}],
+            items=self.ITEMS,
+        )
+        assert rows[0].subsection == "Stock physique chez Maldaner"
 
 
 class TestAdjustmentMapping:

@@ -36,7 +36,7 @@ const FEATURES = join(process.cwd(), 'src', 'features')
  */
 const SCREENS = [
   { shell: 'Preparation.tsx', prefix: 'preparation.', tabs: 6 },
-  { shell: 'Generic.tsx', prefix: 'generic.', tabs: 5 },
+  { shell: 'Generic.tsx', prefix: 'generic.', tabs: 6 },
   { shell: 'Analysis.tsx', prefix: 'analysis.', tabs: 5 },
 ]
 
@@ -48,6 +48,21 @@ const SCREENS = [
  * deux mille lignes.
  */
 const TAB_CEILING = 750
+
+/**
+ * Les modules d'un écran que l'aiguillage n'importe pas, et pourquoi.
+ *
+ * Ce ne sont pas des onglets : ce sont des fenêtres et des vues ouvertes
+ * *depuis* un onglet. `generic.sheet` est la feuille qu'on ouvre pour saisir,
+ * `generic.scan` la lecture d'une pile, `generic.layout` l'aperçu de la feuille
+ * imprimée — les trois s'ouvrent depuis l'onglet Zones.
+ */
+const SHARED_MODULES: Record<string, string[]> = {
+  'generic.': ['generic.layout.tsx', 'generic.scan.tsx', 'generic.sheet.tsx'],
+  // Les blocs communs aux six onglets de la préparation — encarts d'import,
+  // bandeaux de gel — vivent à côté d'eux plutôt que recopiés six fois.
+  'preparation.': ['preparation.shared.tsx'],
+}
 
 /**
  * Un aiguillage tient en une centaine de lignes.
@@ -91,12 +106,14 @@ describe.each(SCREENS)('$shell', ({ shell, prefix, tabs }) => {
 
   it('importe chacun de ses onglets', () => {
     const source = read(shell)
-    const imported = tabsOf(prefix).filter((f) =>
-      source.includes(`'./${f.replace(/\.tsx$/, '')}'`),
+    const missing = tabsOf(prefix).filter(
+      (f) => !source.includes(`'./${f.replace(/\.tsx$/, '')}'`),
     )
-    // Les modules partagés ne sont pas importés par l'aiguillage : ils le sont
-    // par les onglets qui s'en servent.
-    expect(imported.length).toBeGreaterThanOrEqual(tabs - 2)
+    // Un module qui n'est pas dans l'aiguillage est ouvert **depuis** un onglet
+    // — une fenêtre, une grille partagée. Les nommer un par un plutôt que
+    // tolérer « deux ou trois » : le jour où un vrai onglet est oublié, la
+    // liste le dit, alors qu'un compte l'absorbe en silence.
+    expect(missing).toEqual(SHARED_MODULES[prefix] ?? [])
   })
 })
 

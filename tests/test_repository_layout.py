@@ -39,7 +39,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / "app" / "inventory" / "db" / "repositories"
 
-#: Les quatorze noms que la couche au-dessus connaît.
+#: Les quinze noms que la couche au-dessus connaît.
 #:
 #: Écrits ici plutôt que relus depuis le paquet : un contrôle qui lirait
 #: ``__all__`` pour le comparer à lui-même passerait toujours.
@@ -47,12 +47,12 @@ PUBLIC = (
     "new_id",
     "AdjustmentRepository",
     "AnalysisRepository",
+    "ArbitrationRepository",
     "AuditRepository",
     "BackflushRepository",
     "BookStockRepository",
     "CampaignRepository",
     "ConsolidationRepository",
-    "EarlyCountBatchRepository",
     "EarlyCountDriftRepository",
     "ErpJournalRepository",
     "EvidenceBlobRepository",

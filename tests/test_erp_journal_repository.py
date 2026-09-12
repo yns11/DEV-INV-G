@@ -107,11 +107,11 @@ class TestLinesAreReplacedByJournalNeverGlobally:
         general = repo.upsert_journal(
             campaign, journal_number="NPEM-JOURJ", kind=JournalKind.INVE
         )
-        repo.replace_lines(campaign, early, [_line(erp_line_number=1, qty_counted=7)])
-        repo.replace_lines(campaign, general, [_line(erp_line_number=1, qty_counted=3)])
+        repo.replace_lines(campaign, early, [_line(qty_counted=7)])
+        repo.replace_lines(campaign, general, [_line(qty_counted=3)])
 
         # La photographie du jour J ne rapporte que le journal du jour J.
-        repo.replace_lines(campaign, general, [_line(erp_line_number=1, qty_counted=4)])
+        repo.replace_lines(campaign, general, [_line(qty_counted=4)])
 
         assert [l.qty_counted for l in repo.lines(campaign, early)] == [7]
         assert [l.qty_counted for l in repo.lines(campaign, general)] == [4]
@@ -119,8 +119,8 @@ class TestLinesAreReplacedByJournalNeverGlobally:
     def test_replacing_with_nothing_empties_that_journal_only(self, repo, campaign):
         one = repo.upsert_journal(campaign, journal_number="NPEM-A", kind=JournalKind.INVV)
         two = repo.upsert_journal(campaign, journal_number="NPEM-B", kind=JournalKind.INVV)
-        repo.replace_lines(campaign, one, [_line(erp_line_number=1)])
-        repo.replace_lines(campaign, two, [_line(erp_line_number=1)])
+        repo.replace_lines(campaign, one, [_line()])
+        repo.replace_lines(campaign, two, [_line()])
         repo.replace_lines(campaign, one, [])
         assert repo.lines(campaign, one) == []
         assert len(repo.lines(campaign, two)) == 1
@@ -134,18 +134,21 @@ class TestTheCandidateLocations:
             campaign, journal_number=number, kind=JournalKind.INVE
         )
         repo.replace_lines(campaign, journal, [
-            # Le périmètre probable : trois lignes au même endroit.
-            _line(erp_line_number=1, warehouse_id="ATP", location_id="SOL",
+            # Le périmètre probable : trois lignes au même endroit. Trois
+            # palettes, donc trois étiquettes — c'est elle qui les distingue,
+            # et rien d'autre ne le pourrait sans dépendre de l'ordre de
+            # l'export.
+            _line(warehouse_id="ATP", location_id="SOL", label_id="001609231",
                   qty_on_hand=1, qty_counted=1),
-            _line(erp_line_number=2, warehouse_id="ATP", location_id="SOL",
+            _line(warehouse_id="ATP", location_id="SOL", label_id="001609232",
                   qty_on_hand=1, qty_counted=0),
-            _line(erp_line_number=3, warehouse_id="ATP", location_id="SOL",
+            _line(warehouse_id="ATP", location_id="SOL", label_id="001609233",
                   qty_on_hand=2, qty_counted=2),
             # Une ligne de passage : la palette a été retrouvée ailleurs.
-            _line(erp_line_number=4, warehouse_id="QUAL", location_id="APQP C0",
+            _line(warehouse_id="QUAL", location_id="APQP C0",
                   qty_on_hand=0, qty_counted=1),
             # Le tampon, qui n'est le périmètre de personne.
-            _line(erp_line_number=5, warehouse_id="INV", location_id="01",
+            _line(warehouse_id="INV", location_id="01",
                   qty_on_hand=0, qty_counted=1),
         ])
         return journal
@@ -186,10 +189,12 @@ class TestTheReferenceComesFromTheJournal:
             campaign, journal_number="NPEM-20", kind=JournalKind.INVE
         )
         repo.replace_lines(campaign, journal, [
-            _line(erp_line_number=1, location_id="SOL", qty_on_hand=1, qty_counted=1),
-            _line(erp_line_number=2, location_id="SOL", qty_on_hand=1, qty_counted=0),
+            _line(location_id="SOL", label_id="001609231",
+                  qty_on_hand=1, qty_counted=1),
+            _line(location_id="SOL", label_id="001609232",
+                  qty_on_hand=1, qty_counted=0),
             # Ligne de passage : hors périmètre, elle ne doit rien produire.
-            _line(erp_line_number=3, warehouse_id="QUAL", location_id="APQP C0",
+            _line(warehouse_id="QUAL", location_id="APQP C0",
                   qty_on_hand=0, qty_counted=1),
         ])
         repo.set_scope(
@@ -211,7 +216,7 @@ class TestTheReferenceComesFromTheJournal:
             campaign, journal_number="NPEM-21", kind=JournalKind.INVE
         )
         repo.replace_lines(campaign, journal, [
-            _line(erp_line_number=1, qty_on_hand=5, qty_counted=5)
+            _line(qty_on_hand=5, qty_counted=5)
         ])
         assert repo.aggregate_in_scope(campaign) == []
 
@@ -226,14 +231,20 @@ class TestTheLabelControl:
             campaign, journal_number="NPEM-AVANCE", kind=JournalKind.INVE
         )
         repo.replace_lines(campaign, sealed, [
-            _line(erp_line_number=1, location_id="SOL",
+            _line(location_id="SOL",
                   label_id="001609231", qty_on_hand=1, qty_counted=1),
         ])
+        # L'emplacement scellé appartient à ce journal : c'est ce qui fait de
+        # sa ligne une preuve plutôt qu'un passage.
+        repo.set_scope(
+            campaign, sealed,
+            [LocationKey(warehouse_id="ATP", location_id="SOL")], actor="test",
+        )
         elsewhere = repo.upsert_journal(
             campaign, journal_number="NPEM-JOURJ", kind=JournalKind.INVE
         )
         repo.replace_lines(campaign, elsewhere, [
-            _line(erp_line_number=1, warehouse_id="B06", location_id="STK P FI",
+            _line(warehouse_id="B06", location_id="STK P FI",
                   label_id="001609231", qty_on_hand=0, qty_counted=1),
         ])
 
@@ -254,11 +265,15 @@ class TestTheLabelControl:
             campaign, journal_number="NPEM-30", kind=JournalKind.INVE
         )
         repo.replace_lines(campaign, journal, [
-            _line(erp_line_number=1, location_id="SOL",
+            _line(location_id="SOL",
                   label_id="001609231", qty_on_hand=1, qty_counted=0),
-            _line(erp_line_number=2, warehouse_id="QUAL", location_id="APQP C0",
+            _line(warehouse_id="QUAL", location_id="APQP C0",
                   label_id="001609231", qty_on_hand=0, qty_counted=1),
         ])
+        repo.set_scope(
+            campaign, journal,
+            [LocationKey(warehouse_id="ATP", location_id="SOL")], actor="test",
+        )
         found = repo.labels_counted_elsewhere(
             campaign, [LocationKey(warehouse_id="ATP", location_id="SOL")]
         )
@@ -277,14 +292,18 @@ class TestTheLabelControl:
             campaign, journal_number="NPEM-31", kind=JournalKind.INVE
         )
         repo.replace_lines(campaign, sealed, [
-            _line(erp_line_number=1, location_id="SOL",
+            _line(location_id="SOL",
                   label_id="001609231", qty_on_hand=1, qty_counted=0),
         ])
+        repo.set_scope(
+            campaign, sealed,
+            [LocationKey(warehouse_id="ATP", location_id="SOL")], actor="test",
+        )
         other = repo.upsert_journal(
             campaign, journal_number="NPEM-32", kind=JournalKind.INVE
         )
         repo.replace_lines(campaign, other, [
-            _line(erp_line_number=1, warehouse_id="B06", location_id="STK P FI",
+            _line(warehouse_id="B06", location_id="STK P FI",
                   label_id="001609231", qty_on_hand=0, qty_counted=1),
         ])
         found = repo.labels_counted_elsewhere(

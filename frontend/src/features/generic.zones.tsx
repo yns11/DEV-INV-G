@@ -12,6 +12,7 @@ import { CreateZoneModal } from './zones'
 import { Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Skeleton, useErrorToast, useToast } from '../components/ui'
 import { MultiScanModal } from './generic.scan'
 import { SheetModal } from './generic.sheet'
+import { SheetLayoutModal } from './generic.layout'
 
 export const ZONE_TONE: Record<string, string> = {
   PENDING: 'neutral',
@@ -171,6 +172,11 @@ export function ZonesTab({ campaignId, overview }: { campaignId: string; overvie
   })
 
   const editable = overview.permissions.countSheets
+  // En préparation, « Ouvrir » montre la **feuille**, pas la saisie : à ce
+  // moment-là il n'y a rien à compter, et ce qui se décide est le document —
+  // l'ordre des articles, les intertitres, les respirations. La saisie prend le
+  // relais dès que le comptage commence, sur ce même bouton.
+  const preparing = overview.campaign.status === 'PREPARATION'
 
   return (
     <div className="stack">
@@ -289,6 +295,7 @@ export function ZonesTab({ campaignId, overview }: { campaignId: string; overvie
               <ZoneTable
                 zones={visible}
                 editable={editable}
+                preparing={preparing}
                 busy={closure.isPending}
                 onOpen={setOpenSheet}
                 onPrint={setPrintSheet}
@@ -381,9 +388,11 @@ export function ZonesTab({ campaignId, overview }: { campaignId: string; overvie
                             onClick={() => setOpenSheet({ zone, sheet })}
                             aria-label="Ouvrir la feuille"
                             title={
-                              editable
-                                ? 'Ouvrir la feuille pour saisir ou scanner'
-                                : 'Les quantités ne sont modifiables qu’en phase Comptage'
+                              preparing
+                                ? 'Ouvrir l’aperçu de la feuille imprimée'
+                                : editable
+                                  ? 'Ouvrir la feuille pour saisir ou scanner'
+                                  : 'Les quantités ne sont modifiables qu’en phase Comptage'
                             }
                           />
                           <Button
@@ -476,7 +485,15 @@ export function ZonesTab({ campaignId, overview }: { campaignId: string; overvie
           onClose={() => setMultiScan(null)}
         />
       )}
-      {openSheet && (
+      {openSheet && preparing && (
+        <SheetLayoutModal
+          campaignId={campaignId}
+          zone={openSheet.zone}
+          sheet={openSheet.sheet}
+          onClose={() => setOpenSheet(null)}
+        />
+      )}
+      {openSheet && !preparing && (
         <SheetModal
           campaignId={campaignId}
           zone={openSheet.zone}
@@ -492,6 +509,7 @@ export function ZonesTab({ campaignId, overview }: { campaignId: string; overvie
 export function ZoneTable({
   zones,
   editable,
+  preparing,
   busy,
   onOpen,
   onPrint,
@@ -499,6 +517,8 @@ export function ZoneTable({
 }: {
   zones: Zone[]
   editable: boolean
+  /** En préparation, « Ouvrir » montre l'aperçu de la feuille imprimée. */
+  preparing: boolean
   busy: boolean
   onOpen: (row: { zone: Zone; sheet: Sheet }) => void
   onPrint: (row: { sheetId: string; zone: Zone }) => void
@@ -615,9 +635,11 @@ export function ZoneTable({
               onClick={() => onOpen(row)}
               aria-label="Ouvrir la feuille"
               title={
-                editable
-                  ? 'Ouvrir la feuille pour saisir ou scanner'
-                  : 'Les quantités ne sont modifiables qu’en phase Comptage'
+                preparing
+                  ? 'Ouvrir l’aperçu de la feuille imprimée'
+                  : editable
+                    ? 'Ouvrir la feuille pour saisir ou scanner'
+                    : 'Les quantités ne sont modifiables qu’en phase Comptage'
               }
             />
             <Button

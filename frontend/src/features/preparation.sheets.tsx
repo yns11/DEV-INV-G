@@ -10,6 +10,7 @@ import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { PrintModal } from '../components/PrintModal'
 import { ZonesAdminGrid } from './zones'
+import { SheetLayoutModal } from './generic.layout'
 import { Alert, AsyncBoundary, Button, Card, ConfirmDelete, EmptyState, Icons, useErrorToast, useToast } from '../components/ui'
 import { DRAFT_PREFIX, rowKey } from './preparation.shared'
 
@@ -31,6 +32,10 @@ export function CountSheetsTab({
   const [printZones, setPrintZones] = useState<string[] | null>(null)
   const [sheetView, setSheetView] = useState<'zones' | 'lines'>('zones')
   const [zoneFilter, setZoneFilter] = useState('')
+  // La feuille ouverte en aperçu — ce qui sortira de l'imprimante, et qui
+  // s'édite ici. « Ouvrir » basculait vers « Toutes les lignes », c'est-à-dire
+  // vers la liste plate : on y voyait les articles d'une zone, jamais la page.
+  const [preview, setPreview] = useState<Zone | null>(null)
   const managers = useQuery({
     queryKey: ['managers', campaignId],
     queryFn: () => api.managers(campaignId),
@@ -132,6 +137,9 @@ export function CountSheetsTab({
         <ZonesAdminGrid
           campaignId={campaignId}
           editable={overview.permissions.zones}
+          // L'affectation à un gestionnaire suit sa propre garde : elle reste
+          // ouverte quand la zone, elle, est figée. Voir `ZonesAdminGrid`.
+          assignable={overview.permissions.managers}
           // La suppression s'arrête au passage en comptage, où les feuilles
           // portent des quantités relevées. Le serveur applique la même règle.
           deletable={
@@ -140,10 +148,7 @@ export function CountSheetsTab({
           }
           managers={managers.data?.managers ?? []}
           onPrint={(selection) => setPrintZones(selection.map((z) => z.id))}
-          onOpen={(zone) => {
-            setZoneFilter(zone.id)
-            setSheetView('lines')
-          }}
+          onOpen={setPreview}
         />
       ) : (
         <SheetLinesView
@@ -152,6 +157,17 @@ export function CountSheetsTab({
           zoneId={zoneFilter}
           onZoneChange={setZoneFilter}
           editable={overview.permissions.countSheets}
+        />
+      )}
+
+      {/* Le premier passage : les deux portent le même document, et c'est le
+          document qu'on prépare ici. Le second en hérite à la création. */}
+      {preview && preview.sheets[0] && (
+        <SheetLayoutModal
+          campaignId={campaignId}
+          zone={preview}
+          sheet={preview.sheets[0]}
+          onClose={() => setPreview(null)}
         />
       )}
 
@@ -184,6 +200,36 @@ export function CountSheetsTab({
  * c'est le serveur qui le décide. Ce qui se règle ici, c'est *ce qu'il y a à
  * compter*, pas ce qui a été trouvé.
  */
+/**
+ * Ce qu'une ligne de la grille renvoie au serveur.
+ *
+ * Sorti de la mutation pour être vérifiable : la règle qui suit est une règle,
+ * pas un détail de câblage, et elle a coûté un écran entier.
+ *
+ * **La quantité ne repart que si la ligne en porte une.** La colonne affiche
+ * zéro sur une ligne que personne n'a comptée — « une case vide vaut zéro » —
+ * et ce zéro est un affichage, pas une valeur. Le renvoyer revenait à demander
+ * l'écriture d'un comptage sur chaque ligne de la feuille : en préparation, où
+ * aucune ligne n'a de quantité, la garde des comptages refusait alors **tout**
+ * enregistrement depuis cet écran — renommer une désignation, corriger une
+ * section, changer une unité — par « la saisie des comptages est gelée ».
+ *
+ * Quand la ligne en porte une, elle repart telle quelle : ne pas la renvoyer
+ * l'effacerait. La colonne reste en lecture seule ici — les quantités se
+ * saisissent au comptage.
+ */
+export function sheetLinePayload(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    itemNumber: String(row.item_number ?? ''),
+    section: String(row.section ?? 'LINE_SIDE'),
+    name: String(row.name ?? ''),
+    qty: row.hasEntry ? (row.qty ?? null) : null,
+    unit: String(row.unit ?? 'PCE'),
+    comment: String(row.comment ?? ''),
+  }
+}
+
 function SheetLinesView({
   campaignId,
   zones,
@@ -285,16 +331,7 @@ function SheetLinesView({
         const result = await api.saveSheetLines(
           campaignId,
           sheetId,
-          sheetRows.map((row) => ({
-            id: row.id,
-            itemNumber: String(row.item_number ?? ''),
-            section: String(row.section ?? 'LINE_SIDE'),
-            // La quantité repart telle quelle : ne pas la renvoyer l'effacerait,
-            // et la modifier ici serait refusé par le serveur de toute façon.
-            qty: row.qty ?? null,
-            unit: String(row.unit ?? 'PCE'),
-            comment: String(row.comment ?? ''),
-          })),
+          sheetRows.map(sheetLinePayload),
         )
         written += result.written
       }
@@ -315,9 +352,12 @@ function SheetLinesView({
   const hidden = Math.max(0, (query.data?.total ?? loaded) - loaded)
   const columns: Column[] = [
     { key: 'zoneCode', label: 'Zone', width: 160, editable: false },
-    { key: 'passNo', label: 'Comptage', numeric: true, width: 100, editable: false },
     { key: 'item_number', label: 'Article', width: 170 },
-    { key: 'name', label: 'Désignation', width: 240, editable: false },
+    // Éditable, et c'est la demande : les listes des ateliers nomment les
+    // pièces comme l'atelier les nomme, et c'est ce nom-là que le compteur
+    // cherche des yeux sur le papier. Le serveur ne retient l'écrasement que
+    // s'il diffère du référentiel — redonner le nom de l'ERP l'efface.
+    { key: 'name', label: 'Désignation', width: 240 },
     sectionColumn({ width: 150 }),
     { key: 'unit', label: 'Unité', width: 90 },
     { key: 'comment', label: 'Commentaire', width: 220 },
@@ -327,13 +367,11 @@ function SheetLinesView({
       numeric: true,
       width: 120,
       editable: false,
-      render: (row) =>
-        row.qty === null || row.qty === undefined ? (
-          <span className="subtle">non compté</span>
-        ) : (
-          <span className="num">{qty(Number(row.qty))}</span>
-        ),
-      value: (row) => (row.qty === null ? null : Number(row.qty)),
+      // Une case vide vaut zéro — il n'y a plus de « non compté » sur une
+      // feuille : la ligne y est parce qu'on s'attend à trouver la référence
+      // dans la zone, et n'y avoir rien trouvé est un écart, pas un silence.
+      render: (row) => <span className="num">{qty(Number(row.qty ?? 0))}</span>,
+      value: (row) => Number(row.qty ?? 0),
     },
   ]
 

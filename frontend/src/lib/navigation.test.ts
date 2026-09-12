@@ -89,3 +89,39 @@ describe('une section fermée dit toujours pourquoi', () => {
     expect(mute.map((s) => s.to)).toEqual([])
   })
 })
+
+/**
+ * L'ordre des sections suit l'ordre des gestes.
+ *
+ * Un emplacement précompté l'est des jours avant le jour J — avant même que le
+ * stock ERP n'existe. « Comptages avancés » appartient donc à la préparation,
+ * et il y vient en dernier : c'est le dernier geste avant le comptage lui-même,
+ * et il s'appuie sur l'affectation des journaux que porte « Gestion ».
+ *
+ * Vérifié sur l'ordre entier plutôt que sur une paire : une section insérée au
+ * milieu passerait à travers une comparaison deux à deux.
+ */
+describe('l’ordre des sections', () => {
+  it('met les comptages avancés en fin de préparation', () => {
+    const preparation = SECTIONS.filter((s) => s.phase === 'PREPARATION').map(
+      (s) => s.to,
+    )
+    expect(preparation).toEqual([
+      'articles',
+      'nomenclatures',
+      'feuilles',
+      'gestion',
+      'comptages-avances',
+    ])
+  })
+
+  it('se lit dans l’ordre où le travail se fait, le jour J', () => {
+    const counting = SECTIONS.filter((s) => s.phase === 'COUNTING').map((s) => s.to)
+    expect(counting).toEqual([
+      'stock-erp',
+      'backflush',
+      'compil',
+      'comptage',
+    ])
+  })
+})

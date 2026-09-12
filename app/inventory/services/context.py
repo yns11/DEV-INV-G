@@ -19,13 +19,13 @@ from ..config import Settings, get_settings
 from ..db import (
     AdjustmentRepository,
     AnalysisRepository,
+    ArbitrationRepository,
     AuditRepository,
     BackflushRepository,
     BookStockRepository,
     CampaignRepository,
     ConsolidationRepository,
     Database,
-    EarlyCountBatchRepository,
     EarlyCountDriftRepository,
     ErpJournalRepository,
     EvidenceBlobRepository,
@@ -94,16 +94,16 @@ class ServiceContext:
         return ErpJournalRepository(self.db)
 
     @functools.cached_property
-    def early_counts(self) -> EarlyCountBatchRepository:
-        return EarlyCountBatchRepository(self.db)
-
-    @functools.cached_property
     def drifts(self) -> EarlyCountDriftRepository:
         return EarlyCountDriftRepository(self.db)
 
     @functools.cached_property
     def sheets(self) -> SheetRepository:
         return SheetRepository(self.db)
+
+    @functools.cached_property
+    def arbitrations(self) -> ArbitrationRepository:
+        return ArbitrationRepository(self.db)
 
     @functools.cached_property
     def consolidation(self) -> ConsolidationRepository:
@@ -325,6 +325,7 @@ _ASPECT_LABELS = {
     "book_stock": "Le stock ERP",
     "zones": "Les zones GENERIQUE",
     "count_journals": "Les journaux de comptage",
+    "early_counts": "Les comptages avancés",
     "count_sheets": "Les feuilles de comptage",
     "count_entries": "La saisie des comptages",
     "post_journal": "Le postage des journaux",
@@ -332,6 +333,8 @@ _ASPECT_LABELS = {
     "analysis": "L'analyse des écarts",
     "backflush": "L'écart backflush",
     "stock_flow": "La réconciliation entre campagnes",
+    "settings": "Les paramètres de la campagne",
+    "managers": "Les gestionnaires et leurs périmètres",
 }
 
 _STATUS_LABELS = {

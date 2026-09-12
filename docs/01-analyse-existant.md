@@ -79,12 +79,18 @@ crédite du stock à un article qui n'a pas de compte de stock : l'écart produi
 est permanent et inexplicable. Un cycle dans la nomenclature ferait recalculer
 le classeur indéfiniment.
 
-#### c) Une case vide est traitée comme un zéro
+#### c) Une ligne sans quantité est retirée du calcul
 
-`Table.SelectRows(each [comptage] <> null and [comptage] <> 0)` : « non compté »
-et « compté à zéro » sont fusionnés. Ce sont deux faits différents — l'un
-signifie qu'il faut retourner compter, l'autre solde la ligne. Cette confusion
-est la source de l'observation « Scan missed » du bilan de juin.
+`Table.SelectRows(each [comptage] <> null and [comptage] <> 0)` : la ligne
+disparaît de la consolidation. Or elle figure sur la feuille précisément parce
+qu'on s'attend à trouver la référence dans la zone — n'y avoir rien trouvé est
+un écart, et l'écarter laisse l'article avec son stock ERP en face de rien : ni
+compté, ni manquant. C'est la source de l'observation « Scan missed » du bilan
+de juin.
+
+Ce que le filtre confond réellement, c'est autre chose : « personne n'est allé
+voir » et « on est allé voir, il n'y avait rien ». Cette distinction-là ne pèse
+sur aucune quantité ; elle dit seulement si une zone reste à compter.
 
 #### d) La section est lue dans une cellule de texte libre
 
@@ -194,7 +200,7 @@ univoque — **et l'affiche comme une correction automatique à vérifier**.
 | Jointure interne qui perd des quantités | `WIP_WITHOUT_BOM` bloque la consolidation, avec une résolution en un clic |
 | Éclatement mono-niveau, structures fantômes | `BomIndex` s'arrête au premier article porteur de stock, traverse les fantômes |
 | Cycle de nomenclature | `find_cycles()` détecté à l'import, `BomCycleError` à l'éclatement |
-| Vide = zéro | `is_counted` distingue les deux ; une case vide ne produit aucune ligne de journal |
+| Filtre `<> null and <> 0` qui écarte les lignes | Une case vide compte **zéro** — l'article reste dans le stock compté et son écart apparaît ; `has_entry` ne sert plus qu'à l'avancement d'une zone |
 | Section en texte libre | `CountSection` typée, anciens libellés traduits à l'import uniquement |
 | `#REF!` en production | Aucune formule : tout est recalculé depuis les snapshots gelés |
 | Modèle réutilisé, dates codées en dur | Duplication de campagne qui copie les référentiels et **vide** les mesures |

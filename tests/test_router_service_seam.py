@@ -212,3 +212,94 @@ class TestTheFacadeActuallyDelegates:
         service = self.service(known={})
 
         assert service.check_duplicate("camp-1", "items", mode="erp") is None
+
+
+# --------------------------------------------------------------------------- #
+# Un routeur qui recopie un schéma à la main finit par en oublier un champ
+# --------------------------------------------------------------------------- #
+
+class TestUnChampDuSchemaArriveAuService:
+    """Le second défaut de couture, et il ne ressemble pas au premier.
+
+    Là, aucun ``AttributeError`` : le routeur appelle une méthode qui existe,
+    avec un dictionnaire qu'il **construit à la main** à partir du schéma. Il
+    suffit qu'un champ ajouté au schéma ne soit pas recopié dans ce
+    dictionnaire pour qu'il n'arrive jamais au service.
+
+    C'est ce qui est arrivé à la **désignation de feuille** : le schéma
+    l'acceptait, le service la lisait, le routeur ne la transmettait pas.
+    L'écran annonçait « ligne enregistrée » — tout le reste l'était — et la
+    désignation restait celle d'avant, à l'écran comme sur le papier. Un défaut
+    silencieux, sans trace, et que ni les contrôles du schéma ni ceux du service
+    ne pouvaient voir : chacun avait raison de son côté.
+
+    Le contrôle est **dynamique** plutôt que textuel : il remplit toutes les
+    valeurs du schéma, appelle la fonction de route, et regarde ce qui est
+    arrivé. Un champ ajouté demain y sera donc soumis sans que personne n'ait à
+    y penser — ce qui est exactement ce qui a manqué.
+    """
+
+    def _forwarded(self, **over):
+        """Ce que la route transmet réellement au service, pour une ligne."""
+        from inventory.api.routers.generic import upsert_sheet_lines
+        from inventory.api.schemas import SheetLinesRequest
+
+        seen: list[dict] = []
+
+        class Service:
+            def upsert_sheet_lines(self, campaign, sheet_id, rows, **kwargs):
+                seen.extend(rows)
+                return len(rows)
+
+        payload = SheetLinesRequest.model_validate({
+            "lines": [{
+                "id": "ligne-1",
+                "itemNumber": "P-00001",
+                "section": "WIP",
+                "lineKind": "ARTICLE",
+                "label": "Intertitre",
+                "name": "CARTER ARRIÈRE M3 GEN2",
+                "qty": "3*48+7",
+                "unit": "KG",
+                "comment": "bac du fond",
+                "displayOrder": 4,
+                **over,
+            }]
+        })
+        upsert_sheet_lines(
+            campaign=object(), sheet_id="sheet-1",
+            payload=payload, service=Service(),
+        )
+        return seen[0]
+
+    def test_la_designation_arrive(self):
+        """Le défaut lui-même : elle n'arrivait pas."""
+        assert self._forwarded()["name"] == "CARTER ARRIÈRE M3 GEN2"
+
+    def test_et_tous_les_autres_champs_avec(self):
+        """Le contrôle qui vaudra pour le prochain champ ajouté.
+
+        Il ne nomme pas les champs : il les lit sur le schéma. Un champ que le
+        routeur oublierait de transmettre le ferait donc échouer sans qu'on ait
+        pensé à lui — c'est la seule forme de contrôle qui tienne contre un
+        oubli, puisqu'un oubli est par définition ce à quoi on n'a pas pensé.
+        """
+        from inventory.api.schemas import SheetLineRow
+
+        forwarded = self._forwarded()
+        absents = [name for name in SheetLineRow.model_fields if name not in forwarded]
+
+        assert absents == [], (
+            f"le routeur ne transmet pas {absents} au service : le schéma les "
+            "accepte, le service les lit, et entre les deux ils se perdent"
+        )
+
+    def test_une_desigation_absente_reste_absente(self):
+        """« Je ne parle pas de la désignation » doit survivre au passage.
+
+        C'est ce qui protège l'aperçu de mise en page : il renvoie l'ordre des
+        lignes et jamais les noms, et réordonner une feuille ne doit pas décider
+        de la façon dont elle nomme ses articles. Transmettre une chaîne vide à
+        la place de l'absence effacerait l'écrasement de toute la feuille.
+        """
+        assert self._forwarded(name=None)["name"] is None

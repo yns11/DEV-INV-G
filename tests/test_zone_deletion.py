@@ -31,7 +31,7 @@ from conftest import with_access
 from inventory.domain.enums import CampaignStatus, SheetPass
 from inventory.domain.models import Campaign, CountSheet, Manager, Zone
 from inventory.errors import InventoryError, PermissionDeniedError, ValidationError
-from inventory.services.generic_service import GenericService
+from inventory.services.zone_service import ZoneService
 
 OWNER = "alice@usine"
 
@@ -68,7 +68,7 @@ def service(
     sheets: tuple[CountSheet, ...] = (),
     actor: str = OWNER,
     managers: tuple[Manager, ...] = (),
-) -> tuple[GenericService, dict[str, list]]:
+) -> tuple[ZoneService, dict[str, list]]:
     """Le service, et le journal de ce qu'il a fait."""
     log: dict[str, list] = {
         "zones": [], "sheets": [], "events": [], "conns": [], "scopes": [],
@@ -106,7 +106,7 @@ def service(
         forget_progress=lambda cid: None,
     )
     with_access(ctx, managers=managers)
-    return GenericService(cast(Any, ctx)), log
+    return ZoneService(cast(Any, ctx)), log
 
 
 class TestTheSheetsGoWithTheZone:

@@ -118,6 +118,7 @@ structurellement impossible.
 |---|:---:|:---:|:---:|:---:|
 | Seuils | ✅ | ❌ | ❌ | ❌ |
 | Paramètres (formules) | ✅ | ✅ | ❌ | ❌ |
+| Gestionnaires et leurs périmètres | ✅ | ✅ | ✅ | ❌ |
 | Articles, nomenclatures | ✅ | ❌ | ❌ | ❌ |
 | Emplacements | ✅ | ✅ | ❌ | ❌ |
 | Stock ERP | ❌ | ✅ | ❌ | ❌ |
@@ -129,6 +130,20 @@ structurellement impossible.
 
 Les zones GENERIQUE restent créables pendant le comptage : une aire physique que
 personne n'avait listée est découverte à chaque campagne.
+
+Les gestionnaires et leurs deux périmètres — l'affectation des entrepôts, donc
+de leurs journaux, et celle des zones — restent modifiables jusqu'à la clôture.
+Ils ont partagé la garde des seuils, et la règle n'était pas la leur : un seuil
+décide de ce qui sera signalé comme exception, un gestionnaire ne décide de
+rien. C'est un filtre — « mon périmètre » — et chacun garde le droit d'agir
+partout. Le figer ne protégeait aucun chiffre et fermait l'écran au seul moment
+où le personnel bouge : quelqu'un tombe malade le matin du jour J, un renfort
+arrive à midi, un entrepôt apparaît dans un import de l'après-midi.
+
+C'est pourquoi l'affectation d'une zone à un gestionnaire ne suit pas la ligne
+« Zones GENERIQUE » mais celle-ci : la zone se fige à l'analyse parce qu'elle
+porte des quantités relevées sur le terrain ; son gestionnaire, lui, est ce
+qu'on réajuste précisément quand l'analyse se répartit.
 
 ## 5. Provenance des données
 

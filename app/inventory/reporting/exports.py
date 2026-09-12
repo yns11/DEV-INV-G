@@ -18,13 +18,15 @@ from __future__ import annotations
 
 import datetime as dt
 import io
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from html import escape
 from typing import Any
 
 from ..domain.printing import BLANK_ROWS_PER_SECTION, PrintMode
 
 __all__ = [
     "build_workbook",
+    "printed_sections",
     "build_counting_sheet_pdf",
     "build_journal_export",
     "build_variance_pdf",
@@ -167,6 +169,8 @@ def build_counting_sheet_pdf(
     mode: PrintMode = PrintMode.LIST,
     with_sources: bool = False,
     blank_lines: int = 0,
+    blank_rows: Mapping[str, int] | None = None,
+    section_titles: Mapping[str, str] | None = None,
 ) -> bytes:
     """Render a printable counting sheet in one of its three modes.
 
@@ -198,8 +202,11 @@ def build_counting_sheet_pdf(
         empty rows and nothing else — the free-entry sheet.
     :param with_sources: add the provenance and comment columns. Only meaningful
         in :attr:`~inventory.domain.printing.PrintMode.FILLED`.
-    :param blank_lines: number of rows on a free-entry sheet. Exactly what was
-        asked for: somebody who says forty lines gets forty.
+    :param blank_lines: number of rows on a free-entry sheet, used only when the
+        zone declares none. Exactly what was asked for: somebody who says forty
+        lines gets forty.
+    :param blank_rows: combien de lignes vierges chaque section imprime, tel que
+        la zone le déclare. Une section à zéro — ou absente — ne s'imprime pas.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -241,8 +248,11 @@ def build_counting_sheet_pdf(
             _side_margin, A4[1] - 19 * mm, A4[0] - _side_margin, A4[1] - 19 * mm
         )
 
-        canvas.setFont("Helvetica", 7.5)
-        canvas.setFillColor(colors.HexColor("#64748B"))
+        # Gras, un demi-point de plus, et un gris plus dense : le pied de page
+        # est ce qui permet de reclasser une page tombée d'une liasse de deux
+        # cents. En 7,5 gris clair, il fallait la chercher.
+        canvas.setFont("Helvetica-Bold", _FOOTER_FONT_SIZE)
+        canvas.setFillColor(colors.HexColor("#475569"))
         canvas.drawString(_side_margin, 8 * mm, footer_text)
         canvas.drawRightString(A4[0] - _side_margin, 8 * mm, f"Page {doc.page}")
         canvas.restoreState()
@@ -293,6 +303,23 @@ def build_counting_sheet_pdf(
         "banner", parent=styles["BodyText"], fontSize=9.5, leading=11.5,
         textColor=colors.white, spaceBefore=0, spaceAfter=0,
     )
+    subsection_style = ParagraphStyle(
+        "subsection", parent=styles["BodyText"], fontSize=9, leading=11,
+        textColor=colors.HexColor("#0F172A"), spaceBefore=0, spaceAfter=0,
+    )
+    # La référence se distingue du reste de la ligne : c'est la seule chose qui
+    # dit *quelle pièce* on tient. Voir :data:`_REF_FONT_SIZE`.
+    ref_style = ParagraphStyle(
+        "ref", parent=cell_style, fontName="Helvetica-Bold",
+        fontSize=_REF_FONT_SIZE, leading=_REF_FONT_SIZE + 2,
+    )
+
+    # Le texte de la zone quand elle en a un, celui par défaut sinon. Résolu
+    # ici et non à l'appel : une section absente du dictionnaire doit garder son
+    # défaut, ce qui permet d'en personnaliser une sans recopier les deux autres.
+    section_titles = {**DEFAULT_SECTION_TITLES, **{
+        code: text for code, text in (section_titles or {}).items() if text.strip()
+    }}
 
     by_section: dict[str, list[dict[str, Any]]] = {}
     for line in lines:
@@ -311,11 +338,9 @@ def build_counting_sheet_pdf(
 
     filled = mode is PrintMode.FILLED
     printed_a_section = False
-    for section in ("LINE_SIDE", "WIP", "WIP_OK"):
-        section_lines = [] if mode is PrintMode.BLANK else by_section.get(section, [])
-        extras = _blank_rows_for(section, mode=mode, requested=blank_lines)
-        if not section_lines and not extras:
-            continue
+    for section, section_lines, extras in printed_sections(
+        by_section, mode=mode, blank_lines=blank_lines, declared_rows=blank_rows
+    ):
 
         # The section title travels *inside* the table as a repeated row rather
         # than sitting above it as a paragraph. That is what makes it reappear
@@ -323,29 +348,55 @@ def build_counting_sheet_pdf(
         # on somebody's desk without saying whether it is line side or WIP is
         # exactly how a component gets counted under the wrong rule.
         banner = Paragraph(
-            f"<b>{_SECTION_TITLES[section]}</b> — {_SECTION_HINTS[section]}",
-            banner_style,
+            f"<b>{escape(section_titles[section])}</b>", banner_style
         )
         data: list[list[Any]] = [
             [banner] + [""] * (len(columns) - 1),
             list(columns),
         ]
+        # Les lignes de mise en page — intertitres et lignes vides — sont
+        # rendues **dans le tableau, à leur place**, et sans colonne
+        # supplémentaire : un intertitre occupe toute la largeur, une ligne vide
+        # est une ligne vide. C'est ce que faisaient les classeurs qu'on
+        # remplace, et c'est ce que le compteur cherche des yeux sur la page.
+        subsection_rows: list[int] = []
+        spacer_rows: list[int] = []
         for line in section_lines:
-            data.append(_body_row(
-                line, filled=filled, with_sources=with_sources,
-                cell=cell_style, quiet=quiet_style, paragraph=Paragraph,
-                name_width=name_width,
-            ))
+            kind = str(line.get("line_kind") or "ARTICLE")
+            if kind == "SUBSECTION":
+                subsection_rows.append(len(data))
+                data.append(
+                    [Paragraph(f"<b>{escape(str(line.get('label') or ''))}</b>",
+                               subsection_style)]
+                    + [""] * (len(columns) - 1)
+                )
+            elif kind == "SPACER":
+                spacer_rows.append(len(data))
+                data.append([""] * len(columns))
+            else:
+                data.append(_body_row(
+                    line, filled=filled, with_sources=with_sources,
+                    cell=cell_style, quiet=quiet_style, reference=ref_style,
+                    paragraph=Paragraph, name_width=name_width,
+                ))
         data.extend([[""] * len(columns) for _ in range(extras)])
 
         body_rows = len(data) - 2
+        # Les hauteurs sont imposées **sauf** sur le relevé qui porte source et
+        # commentaire. Ailleurs, une ligne haute est un choix : on y écrit un
+        # chiffre à la main, avec des gants. Là, plus personne n'écrit — c'est
+        # une archive — et le commentaire du modèle (« Réf. manuscrite ajoutée
+        # en bas du tableau MOM OK ; lecture des chiffres incertaine ») fait
+        # trois lignes. Imposée, la hauteur le laissait déborder par-dessus les
+        # lignes suivantes, jusque sur le pied de page.
         table = Table(
             data,
             colWidths=widths,
-            # Tall rows: a figure written with gloves on, in a workshop, needs
-            # room. The two heading rows keep their natural height.
-            rowHeights=[_BANNER_ROW_HEIGHT, _BASE_ROW_HEIGHT]
-            + [_ROW_HEIGHT] * body_rows,
+            rowHeights=(
+                None if with_sources
+                else [_BANNER_ROW_HEIGHT, _BASE_ROW_HEIGHT]
+                + [_ROW_HEIGHT] * body_rows
+            ),
             repeatRows=2,
         )
         table.setStyle(TableStyle([
@@ -363,6 +414,16 @@ def build_counting_sheet_pdf(
             # Quantity and unit centred; the trailing provenance columns are
             # prose and stay left-aligned.
             ("ALIGN", (2, 1), (3, -1), "CENTER"),
+            # L'intertitre traverse la largeur et se distingue du fond alterné :
+            # sans cela, « Stock physique B15 » se lirait comme une référence.
+            *[("SPAN", (0, r), (-1, r)) for r in subsection_rows],
+            *[("BACKGROUND", (0, r), (-1, r), colors.HexColor("#E2E8F0"))
+              for r in subsection_rows],
+            *[("LEFTPADDING", (0, r), (-1, r), 6) for r in subsection_rows],
+            # Une ligne vide n'a pas de quadrillage : c'est une respiration, pas
+            # une ligne à remplir.
+            *[("SPAN", (0, r), (-1, r)) for r in spacer_rows],
+            *[("BACKGROUND", (0, r), (-1, r), colors.white) for r in spacer_rows],
         ]))
         # The gap goes *before* each table but the first, never after the last:
         # a trailing spacer is still a flowable, so a table ending exactly at the
@@ -390,23 +451,36 @@ def _body_row(
     with_sources: bool,
     cell: Any,
     quiet: Any,
+    reference: Any,
     paragraph: Any,
     name_width: int,
 ) -> list[Any]:
     """One printed line — blank for a counter, or carrying what was counted."""
-    counted = line.get("qty") if filled else None
     if not filled:
         quantity: Any = ""  # left blank on purpose: the counter fills this in
-    elif counted is None:
-        # A record sheet must not leave the reader guessing: an empty cell and
-        # "counted zero" are different facts, and only the second closes a line.
-        quantity = paragraph("non compté", quiet)
     else:
-        quantity = _fr_number(counted)
+        # Une case laissée vide vaut zéro, et c'est zéro qui s'imprime. Le relevé
+        # portait « non compté », ce qui laissait le lecteur devant deux
+        # documents à rapprocher : la feuille disait « non compté » et l'analyse
+        # comptait la référence à zéro.
+        quantity = _fr_number(line.get("qty") or 0)
 
     row: list[Any] = [
-        paragraph(str(line.get("item_number", "")), cell),
-        paragraph(_shorten(str(line.get("name", "")), name_width), cell),
+        # En gras et un demi-point plus grande que le reste de la ligne : c'est
+        # la seule colonne qui identifie la pièce.
+        paragraph(str(line.get("item_number", "")), reference),
+        # Sur la mise en page à hauteur imposée, la troncature tient compte de
+        # la largeur réelle de la case ; sur celle du relevé, les lignes
+        # s'agrandissent et le texte peut s'enrouler sans rien pousser.
+        paragraph(
+            _shorten(str(line.get("name", "")), name_width)
+            if with_sources
+            else _fit(
+                str(line.get("name", "")),
+                chars=name_width, points=_NAME_COLUMN_POINTS,
+            ),
+            cell,
+        ),
         quantity,
         str(line.get("unit", "PCE")),
     ]
@@ -415,7 +489,13 @@ def _body_row(
             _SOURCE_LABELS.get(str(line.get("source", "")), str(line.get("source", ""))),
             cell,
         ))
-        row.append(paragraph(str(line.get("comment", "") or ""), cell))
+        # Borné : une note du modèle peut faire dix lignes, et une seule ligne
+        # de tableau prendrait alors le tiers de la page. Ce qui compte est le
+        # début — « lecture incertaine », « référence manuscrite » — et le
+        # détail se relit à l'écran.
+        row.append(paragraph(
+            _shorten(str(line.get("comment", "") or ""), _COMMENT_MAX_CHARS), cell
+        ))
     return row
 
 
@@ -432,16 +512,30 @@ _ROW_HEIGHT = _BASE_ROW_HEIGHT * 1.62 * 0.94
 #: The repeated section banner needs one line of text, no more.
 _BANNER_ROW_HEIGHT = 14.0
 
-#: Column widths in millimetres, summing to the 186 mm of usable page. The
-#: reference, quantity and unit columns were each trimmed — 10 %, 5 % and 15 %
-#: — and every millimetre went to the designation, which is the only column
-#: whose content was being cut.
+#: Column widths in millimetres, summing to the 186 mm of usable page.
+#:
+#: **Deux arbitrages successifs, et ils vont en sens inverse.** Le premier
+#: donnait de la place à la référence : « MASS-00049952 » tenait tout juste, et
+#: un préfixe d'atelier de plus la coupait. Le second, une fois des feuilles
+#: réelles sorties de l'imprimante, rend à la désignation ce que les trois
+#: autres colonnes avaient de trop — la référence 3 %, le comptage 2 %,
+#: l'unité 15 %.
+#:
+#: Ce n'est pas un retour en arrière : la référence garde l'essentiel de ce
+#: qu'elle avait gagné, et l'unité est la colonne dont la marge était la plus
+#: large — « PCE », « KG », « M » n'ont jamais eu besoin de dix-neuf
+#: millimètres. La désignation, elle, est tronquée par construction, et chaque
+#: millimètre y est un mot de plus que le compteur lit sans avoir à deviner.
+#:
+#: Le repreneur doit retenir l'ordre de grandeur — la désignation prime, tant
+#: que la référence tient en entier — et non ces quatre nombres, qui dépendent
+#: de la police et de la marge retenues.
 _PLAIN_COLUMNS = ("Référence", "Désignation", "Comptage", "Unité")
-_WIDTHS_PLAIN = (32.4, 93.7, 36.1, 23.8)
+_WIDTHS_PLAIN = (46.89, 89.33, 33.60, 16.18)
 
 #: With provenance, the designation gives back what the two extra columns need.
 _SOURCE_COLUMNS = (*_PLAIN_COLUMNS, "Source", "Commentaire")
-_WIDTHS_WITH_SOURCES = (32.4, 56.0, 30.0, 18.0, 22.0, 27.6)
+_WIDTHS_WITH_SOURCES = (43.1, 50.4, 28.5, 14.4, 22.0, 27.6)
 
 _SOURCE_LABELS = {
     "MANUAL": "saisie",
@@ -456,29 +550,176 @@ _SOURCE_LABELS = {
 #: Designations are truncated, not wrapped: a counter identifies a part by its
 #: reference, and letting a long label wrap onto a second line would halve the
 #: number of rows a page can hold. The narrower layout gets a tighter budget.
-_NAME_MAX_CHARS = 32
-_NAME_MAX_CHARS_WITH_SOURCES = 20
+#: Le commentaire est coupé bien plus tard que la désignation : c'est de la
+#: prose, elle s'enroule sur plusieurs lignes, et la hauteur de la ligne suit.
+_COMMENT_MAX_CHARS = 180
+
+#: Quarante-cinq, et non vingt-neuf : les désignations d'atelier que la feuille
+#: porte désormais (voir ``CountSheetLine.name``) sont plus longues que celles de
+#: l'ERP, et se faisaient couper au milieu d'un mot. Le chiffre a suivi la
+#: colonne, qui vient de s'élargir de cinq millimètres. :func:`_fit` le garde sûr
+#: en le bornant aussi à la largeur réelle de la case : quarante-cinq caractères
+#: d'une désignation réelle occupent 230 des 241 points disponibles, quarante-cinq
+#: « M » en occuperaient 319, et c'est la seconde borne qui les coupe.
+_NAME_MAX_CHARS = 45
+_NAME_MAX_CHARS_WITH_SOURCES = 18
+
+#: Le corps du texte des lignes, en points. Nommé parce que deux endroits en
+#: dépendent : la mise en page du tableau et la mesure de :func:`_fit`.
+_BODY_FONT_SIZE = 8.5
+
+#: La référence, en points — un demi-point de plus que le corps, et en gras.
+#:
+#: C'est la seule chose que le compteur lit pour savoir *quelle pièce* il tient ;
+#: tout le reste de la ligne l'aide, mais ne l'identifie pas. À bout de bras
+#: au-dessus d'un bac, sous l'éclairage d'un atelier, la distinguer du reste de
+#: la ligne coûte un demi-point et fait gagner une hésitation par ligne.
+#:
+#: La colonne le supporte largement malgré son rétrécissement : la plus longue
+#: référence réelle occupe 74 des 121 points de la case.
+_REF_FONT_SIZE = 9.0
+
+#: Le pied de page, en points — gras également, et un demi-point de plus.
+#:
+#: Il porte l'identité de la feuille et le numéro de page, c'est-à-dire ce qui
+#: permet de reclasser une page tombée d'une liasse de deux cents. En gris clair
+#: et en 7,5, il fallait la chercher.
+_FOOTER_FONT_SIZE = 8.0
+
+#: Ce que la colonne « Désignation » peut réellement afficher, en points : sa
+#: largeur moins les marges internes gauche et droite de la cellule.
+_NAME_COLUMN_POINTS = _WIDTHS_PLAIN[1] * 72 / 25.4 - 12
 
 
-def _blank_rows_for(section: str, *, mode: PrintMode, requested: int) -> int:
+def _blank_rows_for(
+    section: str,
+    *,
+    mode: PrintMode,
+    requested: int,
+    declared: Mapping[str, int] | None = None,
+) -> int:
     """How many empty rows a section gets.
 
-    A record of what was counted gets none. A free-entry sheet is nothing *but*
-    empty rows, all in one table — the counter writes both the reference and the
-    quantity, so splitting a requested total across three sections would only
-    make the number they asked for come out wrong. The sheet handed to a counter
-    keeps a small allowance per section, so an article nobody listed has
+    A record of what was counted gets none. The sheet handed to a counter keeps
+    a small fixed allowance per section, so an article nobody listed has
     somewhere to go.
+
+    La feuille vierge, elle, **n'est** que des lignes vides, et c'est la zone
+    qui dit combien par section : une aire qui compte des en-cours sur papier
+    vierge n'avait aucun moyen de le demander, et les trois bandeaux sortaient
+    de toute façon sur les zones qui n'en ont pas.
+
+    Une section absente du réglage vaut zéro, et zéro ne s'imprime pas. Une zone
+    qui ne déclare **rien** est une zone créée avant ce réglage : le nombre
+    demandé à l'impression va alors au bord de ligne, comme avant, plutôt que de
+    sortir une feuille sans une seule ligne.
     """
     if mode is PrintMode.FILLED:
         return 0
     if mode is PrintMode.BLANK:
+        if declared:
+            return declared.get(section, 0)
         return requested if section == "LINE_SIDE" else 0
     return BLANK_ROWS_PER_SECTION.get(section, 0)
 
 
+#: Les sections d'une feuille, dans l'ordre où elles s'impriment.
+PRINTED_SECTIONS = ("LINE_SIDE", "WIP", "WIP_OK")
+
+
+def printed_sections(
+    by_section: Mapping[str, Sequence[dict[str, Any]]],
+    *,
+    mode: PrintMode,
+    blank_lines: int,
+    declared_rows: Mapping[str, int] | None = None,
+) -> list[tuple[str, list[dict[str, Any]], int]]:
+    """Quelles sections sortent de l'imprimante, avec leurs lignes libres.
+
+    Sortie du rendu parce que c'est une **décision**, et qu'une décision se
+    relit et se vérifie sans fabriquer un PDF pour aller y chercher du texte.
+
+    **Une section d'en-cours sans article ne s'imprime pas.** Beaucoup de zones
+    n'ont ni WIP ni WIP assemblé, et leur feuille sortait pourtant avec deux
+    bandeaux et leurs cases vides sous lesquels il n'y a rien à compter — un
+    tiers de la page, et une invitation à écrire dans une section que la zone
+    n'a pas.
+
+    **Le bord de ligne, lui, s'imprime toujours** — sauf sur une feuille vierge
+    dont la zone lui donne zéro ligne. Ses lignes libres sont l'endroit où l'on
+    note une référence que personne n'avait listée, et c'est précisément sur une
+    feuille courte qu'on en a le plus besoin ; mais une zone en saisie libre qui
+    ne compte que des en-cours a le droit de le dire, et lui imposer un bandeau
+    « bord de ligne » vide serait lui refuser le réglage qu'on vient de lui
+    donner.
+    """
+    out: list[tuple[str, list[dict[str, Any]], int]] = []
+    for section in PRINTED_SECTIONS:
+        lines = [] if mode is PrintMode.BLANK else list(by_section.get(section, ()))
+        extras = _blank_rows_for(
+            section, mode=mode, requested=blank_lines, declared=declared_rows
+        )
+        if (
+            section != "LINE_SIDE"
+            and mode is not PrintMode.BLANK
+            and not _has_articles(lines)
+        ):
+            continue
+        if not lines and not extras:
+            continue
+        out.append((section, lines, extras))
+    return out
+
+
+def _has_articles(lines: Sequence[dict[str, Any]]) -> bool:
+    """La section porte-t-elle une référence à compter ?
+
+    Un intertitre et une ligne vide n'en sont pas : une section qui ne
+    contiendrait qu'eux n'a rien à faire compter, et son bandeau sur le papier
+    ne serait qu'un titre au-dessus du vide.
+    """
+    return any(
+        str(line.get("line_kind") or "ARTICLE") == "ARTICLE"
+        and line.get("item_number")
+        for line in lines
+    )
+
+
 def _shorten(name: str, limit: int = _NAME_MAX_CHARS) -> str:
     return name if len(name) <= limit else name[: limit - 1] + "…"
+
+
+def _fit(name: str, *, chars: int, points: float) -> str:
+    """Tronquer à *chars* caractères, **et** à ce que la case peut afficher.
+
+    Deux bornes, parce qu'une seule ne suffit pas. Le compte de caractères est
+    ce que le métier demande — quarante et un, pour que les désignations
+    d'atelier passent en entier. La largeur est ce qui rend ce chiffre sûr : à
+    8,5 points, quarante et un caractères d'une désignation réelle occupent
+    207 points sur les 227 de la colonne, mais quarante et un « M » en
+    occuperaient 290. Le texte passerait alors à la ligne, la hauteur de rang
+    étant imposée il déborderait sur les lignes suivantes, et une feuille de
+    quatre-vingts références se terminerait par-dessus son pied de page.
+
+    Borner sur la seule largeur aurait été plus court et moins bon : le nombre
+    de caractères est ce qui se relit dans une exigence, et il ne doit pas se
+    déduire d'une police.
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    def width(text: str) -> float:
+        return stringWidth(text, "Helvetica", _BODY_FONT_SIZE)
+
+    text = _shorten(name, chars)
+    if width(text) <= points:
+        return text
+    # Le cas rare, et il se règle en rognant caractère par caractère plutôt
+    # qu'en estimant une largeur moyenne : une estimation se trompe justement
+    # sur les chaînes qui posent problème.
+    cut = len(text)
+    while cut > 1 and width(text[: cut - 1] + "…") > points:
+        cut -= 1
+    return text[: cut - 1] + "…"
 
 
 def build_variance_pdf(
@@ -666,16 +907,26 @@ def _fr_number(value: Any, *, signed: bool = False) -> str:
     return text.replace(",", " ")
 
 
-_SECTION_TITLES = {
+#: Le texte imprimé en tête de chaque section, par défaut.
+#:
+#: Un seul texte, et non un titre plus un indice comme auparavant : ce que le
+#: métier dicte est une phrase entière, dont la moitié utile est justement la
+#: consigne. « WIP — ensembles déclarés » ne dit pas au compteur de noter le
+#: numéro de Galia ; c'est pourtant ce qu'il doit faire.
+#:
+#: Chaque zone peut les remplacer — voir ``section_labels`` sur
+#: :class:`~inventory.domain.models.Zone`. Le défaut est ce qui s'imprime quand
+#: personne n'a rien dit, pas une valeur qu'on recopie pour la modifier.
+DEFAULT_SECTION_TITLES = {
     "LINE_SIDE": "Composants en bord de ligne",
-    "WIP": "WIP — en-cours non déclaré",
-    "WIP_OK": "WIP — ensembles déclarés",
-}
-
-_SECTION_HINTS = {
-    "LINE_SIDE": "compter les pièces à l'unité",
-    "WIP": "compter les ensembles ; ils seront éclatés en nomenclature",
-    "WIP_OK": "compter les ensembles terminés et déclarés dans l'ERP",
+    "WIP": (
+        "WIP — en-cours non déclaré "
+        "(Statut MOM : on progress / waiting for decision)"
+    ),
+    "WIP_OK": (
+        "MOM OK — si MEL, notez le numéro de Galia ou le numéro de série sur "
+        "la feuille accompagnante"
+    ),
 }
 
 

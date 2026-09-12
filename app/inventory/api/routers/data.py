@@ -15,9 +15,11 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from ...errors import ValidationError
 from ...ingest import get_contract, list_contracts
 from ...services import ImportService, ReferentialService
-from ..deps import CampaignDep, import_service, referential_service
+from ...services.campaign_source import SUPPORTED as CAMPAIGN_SOURCE_GRIDS
+from ...services.campaign_source import candidates as campaign_candidates
+from ..deps import CampaignDep, Ctx, import_service, referential_service
 from ..paging import MAX_PAGE, page
-from ..responses import GridContractResponse
+from ..responses import CampaignSourceResponse, GridContractResponse
 from ..schemas import (
     BomActivationRequest,
     BomLinkPatch,
@@ -188,6 +190,14 @@ def import_paste(
 #: picture of "now" rather than of the moment the count began.
 ERP_TARGETS = ("items", "boms", "book_stock", "backflush")
 
+#: Les grilles qu'une campagne existante sait redonner.
+#:
+#: Importée du service plutôt que recopiée : c'est lui qui sait ce qu'une
+#: campagne peut ressortir, et deux listes auraient fini par répondre
+#: différemment — une route qui accepte une grille que le service refuse, ou
+#: l'inverse.
+CAMPAIGN_TARGETS = CAMPAIGN_SOURCE_GRIDS
+
 #: Grids read from a *fact* table, which therefore need a period. A referential
 #: has a state; a fact table has a history, and one cannot be read without
 #: saying over what.
@@ -290,6 +300,71 @@ def import_erp(
         "mode": "erp",
         **_period(target, borne_debut, borne_fin),
         **({"snapshot_date": snapshot_date} if target == "book_stock" else {}),
+    }
+    if dry_run:
+        return importer.preview(target, **kwargs)
+    extra = _write_options(target, replace=replace, allow_partial=allow_partial)
+    return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
+
+
+@router.get(
+    "/campaigns/{campaign_id}/import/{target}/campaign-sources",
+    summary="Campagnes dont cette grille peut être reprise",
+    responses={200: {"model": list[CampaignSourceResponse]}},
+)
+def campaign_sources(
+    campaign: CampaignDep, target: str, ctx: Ctx
+) -> list[dict[str, Any]]:
+    """Les campagnes candidates, **et ce que chacune porte sur cette grille**.
+
+    Le décompte est ce qui fait choisir : sans lui, l'écran offre une liste de
+    codes et de dates, on désigne au jugé, et on découvre après coup que la
+    campagne ne portait rien.
+    """
+    if target not in CAMPAIGN_TARGETS:
+        return []
+    return campaign_candidates(ctx, campaign, target)
+
+
+@router.post(
+    "/campaigns/{campaign_id}/import/{target}/campaign",
+    summary="Reprendre une grille d'une autre campagne",
+)
+def import_from_campaign(
+    campaign: CampaignDep,
+    target: str,
+    importer: Importer,
+    source_campaign_id: Annotated[str, Query(alias="sourceCampaignId")],
+    dry_run: Annotated[bool, Query(alias="dryRun")] = False,
+    replace: Annotated[bool, Query()] = False,
+    allow_partial: Annotated[bool, Query(alias="allowPartial")] = False,
+) -> dict[str, Any]:
+    """Relire une campagne existante à la forme de cette grille.
+
+    Le référentiel articles d'un trimestre est celui du suivant à quelques
+    lignes près, un stock ERP de contrôle se rejoue, et les journaux de
+    comptage avancés d'une campagne annulée n'ont aucune raison d'être
+    ressaisis. La duplication de campagne couvre le cas où l'on repart de
+    zéro ; celui-ci couvre le cas — bien plus fréquent — où la campagne existe
+    déjà et où il ne manque qu'une grille.
+
+    Comme la lecture ERP, les lignes rentrent **au même point** qu'un fichier :
+    mêmes validations, même essai à blanc, même grille modifiable ensuite. Ce
+    n'est pas une porte dérobée dans le référentiel.
+    """
+    if target not in CAMPAIGN_TARGETS:
+        raise ValidationError(
+            f"La grille « {target} » ne se reprend pas d'une autre campagne.",
+            allowed=sorted(CAMPAIGN_TARGETS),
+        )
+    if source_campaign_id == campaign.id:
+        raise ValidationError(
+            "La campagne source est la campagne courante : il n'y a rien à "
+            "reprendre d'elle-même."
+        )
+    method = _resolve(target)
+    kwargs: dict[str, Any] = {
+        "mode": "campaign", "source_campaign_id": source_campaign_id,
     }
     if dry_run:
         return importer.preview(target, **kwargs)

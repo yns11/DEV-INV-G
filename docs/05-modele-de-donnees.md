@@ -47,14 +47,21 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           ├─ warehouse
           ├─ location                     PK (campaign, warehouse, location)
           │
-          ├─ book_stock                   (snapshot ERP figé)
+          ├─ book_stock                   (snapshot ERP figé du jour J — la
+          │                                référence *unique* de la campagne,
+          │                                pour tout emplacement, précompté
+          │                                ou non)
           │
-          ├─ erp_journal ──┬─ erp_journal_scope   (le périmètre déclaré)
+          ├─ erp_journal ──┬─ erp_journal_scope   (le périmètre déclaré = scellé)
           │    le journal    └─ erp_journal_line    (la ligne brute, par étiquette)
-          │    tel que l'ERP le tient : un entrepôt, plusieurs emplacements
+          │    tel que l'ERP le tient : un entrepôt, plusieurs emplacements.
+          │    C'est *lui* le précomptage : il porte la date de comptage et le
+          │    scellement, et il n'y a pas d'objet « lot » entre les deux.
           │
-          ├─ early_count_batch            (lots de comptage avancé)
-          ├─ early_count_drift            (ERP@J − physique@T0, et son issue)
+          ├─ early_count_drift            (ERP@J − compté@T0 : ce qui a bougé
+          │                                entre le précomptage et le jour J.
+          │                                Un indice en affichage seul, sans
+          │                                action requise ni blocage.)
           │
           ├─ count_journal ──── count_journal_line
           │    1 par emplacement actif      qty_imported / qty_manual séparées
@@ -196,9 +203,23 @@ Ils suivent les chemins réellement empruntés :
 | `book_stock_uq (campaign, item, warehouse, location)` | Réconciliation |
 | `item_name_idx (campaign, lower(name) text_pattern_ops)` | Recherche par désignation |
 | `audit_campaign_idx (campaign, at DESC)` | Journal d'audit paginé |
+| `erp_journal_line_uq (journal, site, entrepôt, emplacement, étiquette, article)` | Ce qui identifie une ligne ERP — voir ci-dessous |
 
 Les index partiels (`WHERE deleted_at IS NULL`) évitent d'indexer les lignes
 logiquement supprimées, qui ne sont jamais lues.
+
+**`erp_journal_line_uq` porte les coordonnées, pas le numéro de ligne.** Il a
+porté « journal + numéro de ligne » jusqu'à la migration 031. Quatre extractions
+réelles du même jour ont montré que ce numéro n'est pas celui de l'ERP : la
+chaîne d'extraction l'invente pour départager des lignes que l'ERP numérote
+pareil — un journal par étiquette y descend « 1, -1, -2, … -79 », un autre porte
+un « 13,5 ». Il dépend donc de l'ordre des lignes : une étiquette saisie entre
+deux extractions décale tout ce qui suit, et la même palette change de clé d'un
+quart d'heure à l'autre. Comme clé d'unicité il manquait des deux côtés — trop
+strict, « 13,5 » faisait refuser la ligne entière ; trop lâche, la colonne était
+nullable et Postgres tient deux NULL pour distincts. La colonne a été supprimée
+plutôt que laissée vide ; l'export la contient toujours, et l'écran d'import
+l'annonce parmi les colonnes non utilisées.
 
 ### 3.1 Les clés composites, et pourquoi elles existent
 

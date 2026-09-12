@@ -18,6 +18,7 @@ type Schemas = components['schemas']
 
 export type CampaignStatus = 'PREPARATION' | 'COUNTING' | 'ANALYSIS' | 'CLOSED'
 export type JournalStatus = 'PENDING' | 'IN_PROGRESS' | 'POSTED' | 'BOOK_ENFORCED'
+export type SealStatus = 'UNSEALED' | 'SEALED_CLEAN' | 'SEALED_DRIFTING'
 /**
  * Trois états, dont deux se déduisent des quantités relevées.
  *
@@ -49,22 +50,15 @@ export interface CampaignConfig {
   currency: string
 }
 
-/** What the current phase still allows to be modified. */
-export interface Permissions {
-  thresholds: boolean
-  items: boolean
-  boms: boolean
-  locations: boolean
-  bookStock: boolean
-  zones: boolean
-  countJournals: boolean
-  countSheets: boolean
-  adjustments: boolean
-  analysis: boolean
-  /** Ouverts tant que la campagne l'est ; la clôture les fige. */
-  backflush: boolean
-  stockFlow: boolean
-}
+/**
+ * Ce que la phase en cours laisse encore modifier.
+ *
+ * Repris du schéma généré, et non recopié. Cette forme-là l'était, et avait
+ * déjà pris deux aspects de retard — `countEntries` et `settings` manquaient,
+ * si bien que le seul écran qui lit `settings` le lisait sur un autre type. Un
+ * alias ne peut plus dériver.
+ */
+export type Permissions = Schemas['Permissions']
 
 /**
  * What the signed-in user owns, as resolved by the server.
@@ -277,10 +271,25 @@ export interface Journal {
   location_id: string
   kind: 'INVE' | 'INVV'
   status: JournalStatus
+  /**
+   * Toujours vide : rien n'écrit jamais ce champ. Le numéro ERP se lit dans
+   * `erpJournalNumbers`, dérivé des lignes.
+   */
   journal_number: string
   description: string
   posted_at: string | null
   auto_created: boolean
+  /** Le ou les journaux ERP dont viennent les lignes de cet emplacement. */
+  erpJournalNumbers: string[]
+  /**
+   * Ce que l'emplacement a vécu avant le jour J.
+   *
+   * Un emplacement précompté et scellé a son comptage déjà fait, daté et figé.
+   * La dérive, quand il y en a une, n'appelle aucune action : elle dit
+   * seulement que quelque chose a bougé depuis, et qu'on voudra peut-être aller
+   * voir avant de clore.
+   */
+  sealStatus: SealStatus
   lineCount: number
   countedQty: number
   overriddenLines: number
@@ -465,6 +474,23 @@ export interface Zone {
   manager_code: string
   /** Whether a negative counted quantity is accepted on this zone's sheets. */
   allow_negative: boolean
+  /**
+   * Les en-têtes de section personnalisés, par code de section.
+   *
+   * Une section absente prend le texte par défaut — voir
+   * `DEFAULT_SECTION_TITLES`. C'est ce qui permet d'en personnaliser une sans
+   * recopier les deux autres, et de revenir au défaut en vidant le champ.
+   */
+  section_labels: Record<string, string>
+  /**
+   * Combien de lignes vierges chaque section imprime, par code de section.
+   *
+   * Une section absente n'imprime rien — zéro et absent sont le même état, et
+   * en garder deux écritures ferait diverger deux lectures. Un objet vide, qui
+   * est celui des zones créées avant ce réglage, rend le comportement d'avant :
+   * le nombre demandé à l'impression va tout entier au bord de ligne.
+   */
+  blank_rows: Record<string, number>
   status: ZoneStatus
   /** Quand la zone a été déclarée terminée, et par qui. Null = encore ouverte. */
   closed_at: string | null
@@ -537,8 +563,10 @@ export interface SheetLine {
   section: CountSection
   qty_imported: number | null
   qty_manual: number | null
-  qty: number | null
-  isCounted: boolean
+  qty: number
+  /** Quelqu'un a-t-il écrit quelque chose dans la case — l'avancement, pas la
+   *  quantité. Une case vide vaut zéro et `qty` le dit. */
+  hasEntry: boolean
   unit: string
   source: DataSource
   confidence: number | null
@@ -562,6 +590,9 @@ export interface Arbitration {
   decided_at: string | null
   comment: string
   name: string
+  /** La zone qui porte l'écart — la vue peut couvrir toute la campagne. */
+  zoneCode: string
+  zoneLabel: string
   gap: number
   gapValue: number
   unitCost: number
@@ -1086,9 +1117,49 @@ export interface StockFlowReport {
 // Générés : la réponse est déclarée côté serveur, donc renommer un champ y
 // fait échouer `tsc` ici plutôt que d'afficher `undefined` à l'écran.
 
+/**
+ * Une campagne dont on pourrait reprendre une grille, et ce qu'elle en porte.
+ *
+ * `rows` est l'information qui fait choisir : sans elle, l'écran offre une
+ * liste de codes et de dates, on désigne au jugé, et on découvre après coup
+ * que la campagne ne portait rien sur cette grille.
+ */
+export interface CampaignSource {
+  id: string
+  code: string
+  label: string
+  status: CampaignStatus
+  countDate: string
+  createdAt: string | null
+  createdBy: string
+  rows: number
+}
+
 export type ErpJournal = Schemas['ErpJournalResponse']
+
+/**
+ * Une ligne de journal ERP, au grain où l'ERP la produit.
+ *
+ * `inScope` est la seule chose que l'application ajoute, et c'est celle qui
+ * décide de tout : hors périmètre, la ligne est conservée comme trace d'un
+ * déplacement et **ne compte pas**.
+ */
+export interface ErpJournalLine {
+  id: string
+  site_id: string
+  warehouse_id: string
+  location_id: string
+  label_id: string
+  serial_number: string
+  item_number: string
+  unit: string
+  inventory_status_id: string
+  qtyOnHand: number
+  qtyCounted: number
+  varianceQty: number
+  inScope: boolean
+}
 export type ScopeCandidate = Schemas['ScopeCandidate']
-export type EarlyBatch = Schemas['EarlyBatchResponse']
 export type Drift = Schemas['DriftResponse']
 export type LabelAlert = Schemas['LabelAlert']
-export type DriftResolution = 'KEEP_EARLY' | 'RECOUNT'
+export type RecountedInPlace = Schemas['RecountedInPlace']

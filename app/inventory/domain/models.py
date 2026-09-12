@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Container, Mapping, Sequence
 from decimal import Decimal
 from typing import Annotated, Any, Self
 
@@ -26,9 +26,9 @@ from .enums import (
     CampaignStatus,
     ControlSeverity,
     CountingStage,
+    CountLineKind,
     CountSection,
     DataSource,
-    DriftResolution,
     ExclusionScope,
     FlowKind,
     FlowSource,
@@ -38,6 +38,7 @@ from .enums import (
     JournalStatus,
     LocationStatus,
     LocationType,
+    SealStatus,
     SheetPass,
 )
 from .quantities import ZERO, quantize_money, quantize_qty, to_decimal
@@ -62,9 +63,11 @@ __all__ = [
     "BookStockLine",
     "CountJournal",
     "CountJournalLine",
+    "erp_journal_numbers",
+    "seal_status",
+    "sheet_designation",
     "ErpJournal",
     "ErpJournalLine",
-    "EarlyCountBatch",
     "EarlyCountDrift",
     "Zone",
     "CountSheet",
@@ -608,21 +611,15 @@ class BookStockLine(DomainModel):
     unit: str = "PCE"
     #: Unit cost captured at snapshot time; the campaign is valued with it.
     unit_cost: Decimal = ZERO
-    #: La date à laquelle cette référence a été prise.
+    #: La date à laquelle cette référence a été prise — le jour J, pour toute
+    #: ligne de la campagne.
     #:
-    #: Le jour J pour la plupart des lignes ; la date du précomptage pour les
-    #: emplacements scellés, dont la référence est le stock ERP d'avant leur
-    #: comptage. La règle est la même dans les deux cas, et c'est celle que
-    #: :attr:`VarianceLine.variance_qty` documente déjà : la référence est *ce
-    #: contre quoi la campagne a été comptée*. Elle s'applique simplement à deux
-    #: dates dès qu'on précompte.
-    #:
-    #: D'où cette colonne : le total « stock ERP » d'une campagne qui précompte
-    #: est composite, et un rapprochement avec un état ERP tiré à une date unique
-    #: trouverait une différence que rien n'expliquerait.
+    #: La référence est unique et elle vaut pour tout emplacement, scellé ou
+    #: non : un précomptage est posté dans l'ERP *avant* que la photo du jour J
+    #: ne soit prise, donc la photo l'a déjà intégré. Elle ne porte plus qu'une
+    #: date, et cette colonne dit laquelle — de quoi rapprocher la campagne d'un
+    #: état ERP tiré le même jour sans avoir à deviner.
     reference_date: dt.date | None = None
-    #: Le lot avancé d'où vient cette référence, quand elle n'est pas du jour J.
-    early_batch_id: str | None = None
 
     @field_validator("item_number", "warehouse_id", "location_id", "unit", mode="before")
     @classmethod
@@ -672,7 +669,7 @@ class CountJournal(DomainModel):
     auto_created: bool = False
     updated_at: dt.datetime | None = None
     #: Le lot de comptage avancé auquel cet emplacement appartient, s'il y en a.
-    early_batch_id: str | None = None
+    erp_journal_id: str | None = None
     #: Quand le comptage de cet emplacement a été scellé, et par qui.
     #:
     #: **Le premier gel par objet du produit.** Jusqu'ici, tout ce que
@@ -778,6 +775,58 @@ class CountJournalLine(DomainModel):
 
 # --------------------------------------------------------------------------- #
 # Le journal ERP, tel que l'ERP le produit
+def erp_journal_numbers(lines: Sequence[CountJournalLine]) -> list[str]:
+    """De quel(s) document(s) ERP vient le comptage de cet emplacement.
+
+    Lu **dans les lignes**, jamais recopié. ``CountJournal`` porte bien un champ
+    ``journal_number``, et trois écrans l'affichaient — la grille des journaux
+    sous l'en-tête « N° ERP », l'export Excel, l'assistant. Rien ne l'écrit
+    jamais : les journaux de comptage naissent d'un emplacement, pas d'un
+    document, et le numéro arrive plus tard avec les lignes. La colonne était
+    donc vide dans les trois, sans que rien ne le signale.
+
+    Plusieurs valeurs quand plusieurs journaux ont alimenté l'emplacement. C'est
+    un fait — pas une anomalie — et n'en garder qu'un le cacherait.
+    """
+    return sorted({line.erp_journal_number for line in lines if line.erp_journal_number})
+
+
+def seal_status(
+    journal: CountJournal, *, drifting: Container[LocationKey]
+) -> SealStatus:
+    """Le statut de scellement d'un emplacement, en une règle et un seul endroit.
+
+    ``drifting`` porte les emplacements sur lesquels une dérive non nulle
+    subsiste. Passé plutôt que relu ici : la grille en affiche des centaines, et
+    une lecture par ligne rendrait la question du jour J plus coûteuse que la
+    réponse.
+    """
+    if journal.sealed_at is None:
+        return SealStatus.UNSEALED
+    if journal.key in drifting:
+        return SealStatus.SEALED_DRIFTING
+    return SealStatus.SEALED_CLEAN
+
+
+def sheet_designation(line: CountSheetLine, items: Mapping[str, Item]) -> str:
+    """Le nom qu'une ligne de feuille porte, et d'où il vient.
+
+    Une seule règle, écrite une seule fois : **ce que la feuille dit, sinon ce
+    que le référentiel dit.** Elle est lue par l'écran de saisie, la grille des
+    lignes, la feuille imprimée, l'arbitrage et le classeur de repli — cinq
+    endroits qui montrent le même document et qui, chacun avec sa copie de la
+    règle, auraient fini par ne plus le montrer pareil.
+
+    Un article que le référentiel ne connaît pas et qu'aucune feuille ne nomme
+    rend une chaîne vide : c'est un manque, pas une désignation, et l'écran le
+    signale déjà par ailleurs.
+    """
+    if line.name:
+        return line.name
+    item = items.get(line.item_number)
+    return item.name if item else ""
+
+
 # --------------------------------------------------------------------------- #
 #
 # Un objet **à côté** de :class:`CountJournal`, pas à sa place. ``CountJournal``
@@ -800,10 +849,11 @@ class ErpJournal(DomainModel):
     #: Le postage tel que l'en-tête ERP le déclare (``IsPosted``), distinct du
     #: statut de workflow d'un :class:`CountJournal` qu'un humain fait avancer.
     #:
-    #: C'est cette valeur-ci que le scellement d'un lot avancé exige. Poster un
-    #: journal réaligne l'ERP sur le physique compté ; n'accepter de sceller
-    #: qu'un journal posté rend donc ce réalignement acquis **par construction**,
-    #: au lieu d'avoir à le diagnostiquer plus tard depuis la forme d'une dérive.
+    #: Poster un journal réaligne l'ERP sur le physique compté. L'application ne
+    #: l'exige plus pour sceller : un journal de précomptage se charge une fois
+    #: posté et validé dans l'ERP — il y en a peu, et ils n'ont pas l'urgence du
+    #: jour J. Le cas du journal non posté ne se rencontre pas, et une garde qui
+    #: ne se déclenche jamais est une garde qu'on ne sait pas maintenir.
     erp_posted: bool = False
     erp_posted_at: dt.datetime | None = None
     line_count: int = 0
@@ -820,6 +870,15 @@ class ErpJournal(DomainModel):
     scope: list[LocationKey] = Field(default_factory=list)
     scope_declared_at: dt.datetime | None = None
     scope_declared_by: str = ""
+    #: La date du relevé physique, lue dans la colonne « Date de comptage » des
+    #: lignes du journal — jamais retapée. C'est elle qui date la référence des
+    #: emplacements scellés, donc l'inventaire de chacun d'eux.
+    counted_on: dt.date | None = None
+    #: Déclarer le périmètre **scelle**. Les deux gestes n'en font qu'un : dire
+    #: quels emplacements ce journal couvre, c'est dire lesquels sont comptés et
+    #: ne bougeront plus.
+    sealed_at: dt.datetime | None = None
+    sealed_by: str = ""
 
     @field_validator("journal_number", "site_id", mode="before")
     @classmethod
@@ -829,6 +888,10 @@ class ErpJournal(DomainModel):
     @property
     def scope_declared(self) -> bool:
         return self.scope_declared_at is not None
+
+    @property
+    def is_sealed(self) -> bool:
+        return self.sealed_at is not None
 
     @property
     def warehouses(self) -> set[str]:
@@ -853,7 +916,6 @@ class ErpJournalLine(DomainModel):
     #: Numéro de ligne ERP. Absent de certains exports, et ce n'est pas une
     #: raison de refuser la ligne : ce serait perdre une quantité comptée pour
     #: une colonne technique.
-    erp_line_number: int | None = None
     site_id: str = ""
     warehouse_id: str
     location_id: str = ""
@@ -918,86 +980,48 @@ class ErpJournalLine(DomainModel):
 # Comptages avancés
 # --------------------------------------------------------------------------- #
 
-class EarlyCountBatch(DomainModel):
-    """Un lot d'emplacements comptés avant le jour J.
-
-    Sa référence ne vient d'aucun chargement séparé : elle est déjà dans le
-    journal, colonne « Stock ERP », agrégée par emplacement et article sur le
-    périmètre déclaré.
-    """
-
-    id: str
-    campaign_id: str
-    code: str
-    label: str = ""
-    #: La date du comptage physique, telle que l'exploitant la déclare.
-    counted_on: dt.date | None = None
-    opened_at: dt.datetime | None = None
-    opened_by: str = ""
-    closed_at: dt.datetime | None = None
-    closed_by: str = ""
-    sealed_at: dt.datetime | None = None
-    sealed_by: str = ""
-    #: Les emplacements du lot, repris des journaux ERP qui le composent.
-    locations: list[LocationKey] = Field(default_factory=list)
-
-    @field_validator("code", mode="before")
-    @classmethod
-    def _code(cls, v: Any) -> str:
-        return normalise_key(str(v) if v is not None else "").replace(" ", "-")
-
-    @property
-    def is_closed(self) -> bool:
-        return self.closed_at is not None
-
-    @property
-    def is_sealed(self) -> bool:
-        return self.sealed_at is not None
-
-
 class EarlyCountDrift(DomainModel):
-    """L'écart entre le stock ERP du jour J et le physique posté au précomptage.
+    """L'écart entre le stock ERP du jour J et ce qu'un précomptage avait compté.
 
-    Attendue nulle : l'emplacement a été balisé, et poster son journal a
-    réaligné l'ERP sur le physique compté. Quand elle ne l'est pas, une seule
-    question se pose — quelle quantité fait foi au jour J ? — et
-    :class:`DriftResolution` en porte les deux réponses.
+    ``ERP@J − compté@T0``, par article et par emplacement scellé.
+
+    **Un indice, pas un écart.** Elle ne mesure rien de la campagne : le journal
+    de précomptage a été posté dans l'ERP avant que la photo du jour J ne soit
+    prise, et cette photo l'a donc déjà intégré. Ce qui reste après ce
+    réalignement, c'est ce qui a bougé entre les deux dates — une sortie, une
+    réception, une correction. Cela se regarde, cela n'appelle aucune décision
+    et ne bloque rien : l'écart d'inventaire, lui, se mesure ailleurs, contre la
+    référence unique du jour J.
 
     Ce que cette dérive ne verra pas
     --------------------------------
     Elle se calcule entre deux lectures de l'ERP, donc elle ne voit que ce que
     l'ERP a appris. Une pièce sortie d'un emplacement scellé sans aucune
     transaction laisse une dérive nulle. Si elle est re-scannée ailleurs le jour
-    J, c'est le contrôle par étiquette qui la rattrape ; sinon rien ne la voit,
-    et la perte n'apparaîtra qu'à l'inventaire suivant.
+    J, c'est le contrôle par étiquette qui la montre ; sinon rien ne la voit, et
+    la perte n'apparaîtra qu'à l'inventaire suivant.
     """
 
     id: str
     campaign_id: str
-    batch_id: str | None = None
+    erp_journal_id: str | None = None
     warehouse_id: str
     location_id: str
     item_number: str
-    #: Le stock ERP d'avant le comptage avancé — la référence de l'emplacement.
-    qty_erp_t0: Decimal = ZERO
-    #: Compté + ajusté à T0.
-    qty_physical_t0: Decimal = ZERO
-    #: Le stock ERP du snapshot général, gelé le jour J.
+    #: Ce que le précomptage a compté. Compté, et rien d'autre : l'ajustement
+    #: des précomptages n'existe plus, et « physique » aurait laissé croire
+    #: qu'un second terme s'y ajoute encore.
+    qty_counted_t0: Decimal = ZERO
+    #: Le stock ERP du snapshot général, gelé le jour J — la référence unique.
     qty_erp_j: Decimal = ZERO
     drift_value: Decimal = ZERO
-    is_material: bool = False
-    resolution: DriftResolution | None = None
-    cause_code: str = ""
-    comment: str = ""
-    resolved_at: dt.datetime | None = None
-    resolved_by: str = ""
 
     @field_validator("item_number", "warehouse_id", "location_id", mode="before")
     @classmethod
     def _key(cls, v: Any) -> str:
         return normalise_key(str(v) if v is not None else "")
 
-    @field_validator("qty_erp_t0", "qty_physical_t0", "qty_erp_j", mode="before")
+    @field_validator("qty_counted_t0", "qty_erp_j", mode="before")
     @classmethod
     def _qty(cls, v: Any) -> Decimal:
         return _as_qty(v if v not in (None, "") else 0)
@@ -1015,21 +1039,12 @@ class EarlyCountDrift(DomainModel):
 
     @property
     def drift_qty(self) -> Decimal:
-        """``ERP@J − physique@T0``, calculée et non stockée.
+        """``ERP@J − compté@T0``, calculée et non stockée.
 
         Stocker la soustraction à côté de ses deux termes aurait ouvert la
         possibilité qu'ils cessent d'être d'accord.
         """
-        return quantize_qty(self.qty_erp_j - self.qty_physical_t0)
-
-    @property
-    def is_resolved(self) -> bool:
-        return self.resolution is not None
-
-    @property
-    def blocks_analysis(self) -> bool:
-        """Une dérive matérielle sans issue arrête le passage en analyse."""
-        return self.is_material and not self.is_resolved
+        return quantize_qty(self.qty_erp_j - self.qty_counted_t0)
 
 
 class Zone(DomainModel):
@@ -1050,7 +1065,29 @@ class Zone(DomainModel):
     closed_by: str = ""
     #: Free-text owner/sector, used for dispatching printed sheets.
     sector: str = ""
+    #: Les en-têtes de section personnalisés, par code de section.
+    #:
+    #: Sur la zone et non sur la feuille : les deux passages sont le même
+    #: document imprimé deux fois, et les voir diverger n'aurait aucun sens.
+    #: Une section absente prend le texte par défaut — un dictionnaire vide est
+    #: donc l'état normal, pas un manque.
+    section_labels: dict[str, str] = Field(default_factory=dict)
     display_order: int = 0
+    #: Combien de lignes vierges chaque section imprime, par code de section.
+    #:
+    #: Ne concerne que les zones **en saisie libre** : sur une feuille qui porte
+    #: une liste d'articles, les lignes libres sont une petite réserve fixe, pas
+    #: une décision de zone.
+    #:
+    #: Une section absente vaut zéro, et **zéro ne s'imprime pas**. C'est là
+    #: tout l'intérêt : la feuille vierge n'offrait que le bord de ligne, et une
+    #: zone qui compte des en-cours n'avait aucun moyen de le dire ; à l'inverse,
+    #: sortir systématiquement les trois bandeaux invite à écrire sous un titre
+    #: que la zone n'a pas.
+    #:
+    #: Un dictionnaire vide est l'état des zones créées avant ce réglage : le
+    #: nombre demandé à l'impression va alors au bord de ligne, comme avant.
+    blank_rows: dict[str, int] = Field(default_factory=dict)
     #: Number of independent counts this zone requires. Two is the rule; one is
     #: the assumed exception for an area where a second team adds nothing.
     passes: int = Field(default=2, ge=1, le=2)
@@ -1068,6 +1105,42 @@ class Zone(DomainModel):
     #: cheaper than explaining it at the variance meeting. Correction sheets are
     #: the legitimate exception, and they say so.
     allow_negative: bool = False
+
+    @field_validator("blank_rows", mode="before")
+    @classmethod
+    def _blank_rows(cls, v: Any) -> dict[str, int]:
+        """Des sections connues, des entiers dans les bornes, et rien d'autre.
+
+        Refusé plutôt que rogné : « 500 » tapé pour « 50 » est une faute de
+        frappe, et l'imprimer sur cent vingt lignes en silence coûte une rame de
+        papier avant que quiconque ne s'en aperçoive.
+        """
+        from .printing import MAX_BLANK_ROWS_PER_SECTION
+
+        if not v:
+            return {}
+        out: dict[str, int] = {}
+        for section, count in dict(v).items():
+            key = str(section).strip().upper()
+            if key not in CountSection.__members__:
+                raise ValueError(f"section inconnue : {section!r}")
+            try:
+                number = int(count)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"nombre de lignes invalide sur {key} : {count!r}"
+                ) from exc
+            if not 0 <= number <= MAX_BLANK_ROWS_PER_SECTION:
+                raise ValueError(
+                    f"nombre de lignes hors bornes sur {key} : {number} "
+                    f"(attendu 0 à {MAX_BLANK_ROWS_PER_SECTION})"
+                )
+            # Zéro ne se stocke pas : « cette section ne s'imprime pas » et
+            # « cette section n'a rien de déclaré » sont le même état, et en
+            # garder deux écritures ferait diverger deux lectures.
+            if number:
+                out[key] = number
+        return out
 
     @field_validator("code", mode="before")
     @classmethod
@@ -1116,6 +1189,41 @@ class CountSheetLine(DomainModel):
     campaign_id: str
     item_number: str
     section: CountSection = CountSection.LINE_SIDE
+    #: Article, intertitre ou ligne vide — voir :class:`CountLineKind`.
+    #:
+    #: La mise en page vit dans la même table que les articles, et c'est
+    #: délibéré : ce qu'il faut conserver d'un intertitre, c'est **sa place**
+    #: dans la feuille. Rangé à côté, il faudrait le réinsérer à l'affichage,
+    #: à l'impression et à la saisie, et les trois finiraient par diverger.
+    line_kind: CountLineKind = CountLineKind.ARTICLE
+    #: Le texte d'un intertitre. Vide sur toute autre ligne.
+    label: str = ""
+    #: L'intertitre sous lequel cette ligne d'article se trouve.
+    #:
+    #: Recopié depuis l'intertitre plutôt que déduit de l'ordre, parce que la
+    #: clé d'unicité doit se calculer sur une ligne **seule** — à l'import, où
+    #: l'ordre du fichier ne veut encore rien dire.
+    subsection: str = ""
+    #: La désignation que **la feuille** porte, quand elle diffère du référentiel.
+    #:
+    #: Les listes qui alimentent les feuilles viennent des ateliers, et elles
+    #: nomment les pièces comme l'atelier les nomme. Le compteur cherche sur le
+    #: papier le nom qu'il connaît ; lui imprimer celui de l'ERP, c'est lui
+    #: demander de traduire quatre-vingts lignes à six heures du matin.
+    #:
+    #: **Portée par la ligne, jamais par l'article.** Le référentiel n'est pas
+    #: touché, et l'écrasement ne sort pas des feuilles : les écarts, la
+    #: consolidation, les analyses et les exports continuent de nommer l'article
+    #: comme l'ERP le nomme, sans quoi un rapprochement avec l'ERP deviendrait
+    #: illisible.
+    #:
+    #: Vide est l'état normal — la ligne prend alors la désignation du
+    #: référentiel, voir :func:`sheet_designation`. Elle **cesse** de porter un
+    #: écrasement dès qu'on lui redonne le texte du référentiel : une valeur
+    #: identique à celle qu'on remplace n'est pas un remplacement, et la garder
+    #: figerait la désignation d'aujourd'hui sur toutes les lignes d'une feuille
+    #: au premier enregistrement.
+    name: str = ""
     #: Pre-printed / imported value.
     qty_imported: Decimal | None = None
     #: Value typed by the encoder, or corrected after an AI extraction.
@@ -1155,8 +1263,20 @@ class CountSheetLine(DomainModel):
         )
 
     @property
-    def is_counted(self) -> bool:
-        """A blank cell is *not* a zero: it means the line was not counted."""
+    def has_entry(self) -> bool:
+        """Quelqu'un a-t-il écrit quelque chose dans la case ?
+
+        À ne pas confondre avec la quantité comptée, qui est :attr:`qty` et vaut
+        **zéro** quand la case est vide. Une feuille de comptage énumère ce qui
+        est censé se trouver dans la zone ; une ligne laissée vide dit donc qu'il
+        n'y en avait pas, et c'est un écart, pas une absence de mesure.
+
+        Ce que cette propriété sert, c'est l'*avancement* : combien de lignes ont
+        été touchées, une zone est-elle commencée, combien de valeurs le modèle
+        a-t-il lues sur le scan. Les deux notions portaient le même nom et le
+        même booléen, et c'est ainsi qu'une ligne jamais comptée disparaissait
+        du stock au lieu d'y peser zéro.
+        """
         return self.qty_manual is not None or self.qty_imported is not None
 
     @property

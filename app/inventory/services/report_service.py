@@ -7,9 +7,16 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..domain.enums import AuditAction, SheetPass
-from ..domain.models import Campaign, CountSheetLine, Item
+from ..domain.enums import AuditAction, CountLineKind, SheetPass
+from ..domain.models import (
+    Campaign,
+    CountSheetLine,
+    Item,
+    erp_journal_numbers,
+    sheet_designation,
+)
 from ..domain.printing import PrintMode, print_refusal
+from ..domain.variance import at_standard_price
 from ..errors import NotFoundError, ValidationError
 from ..reporting.exports import (
     build_counting_sheet_pdf,
@@ -17,7 +24,10 @@ from ..reporting.exports import (
     build_variance_pdf,
     build_workbook,
 )
+from ..reporting.fallback import build_consolidation_fallback
 from .analysis_service import AnalysisService
+from .campaign_source import grid_rows as campaign_grid_rows
+from .consolidation_service import ConsolidationService
 from .context import ENGINE_VERSION, ServiceContext, utcnow
 
 log = logging.getLogger(__name__)
@@ -98,6 +108,8 @@ class ReportService:
             mode=mode,
             with_sources=with_sources,
             blank_lines=blank_lines,
+            blank_rows=zone.blank_rows,
+            section_titles=zone.section_labels,
         )
         filename = (
             f"feuille-comptage-{_MODE_SLUGS[mode]}_{_slug(zone.code)}_"
@@ -187,6 +199,8 @@ class ReportService:
                 mode=mode,
                 with_sources=with_sources,
                 blank_lines=blank_lines,
+                blank_rows=zone.blank_rows,
+                section_titles=zone.section_labels,
             ))
 
         if not documents:
@@ -365,7 +379,10 @@ class ReportService:
                  items[b.item_number].name if b.item_number in items else "",
                  b.warehouse_id, b.location_id, float(b.qty), b.unit,
                  float(b.unit_cost), float(b.value)]
-                for b in ctx.book_stock.list(campaign.id)
+                # Au prix standard, comme le reste du classeur.
+                for b in at_standard_price(
+                    ctx.book_stock.list(campaign.id), items
+                )
             ],
         )
 
@@ -377,7 +394,8 @@ class ReportService:
              "Quantité comptée", "Posté le"],
             [
                 [j.warehouse_id, j.location_id, str(j.kind), str(j.status),
-                 j.journal_number, len(journal_lines.get(j.id, [])),
+                 ", ".join(erp_journal_numbers(journal_lines.get(j.id, []))),
+                 len(journal_lines.get(j.id, [])),
                  float(sum(l.qty for l in journal_lines.get(j.id, []))),
                  j.posted_at.isoformat() if j.posted_at else ""]
                 for j in journals
@@ -487,6 +505,58 @@ class ReportService:
             summary=f"Export du dossier complet ({len(sheets)} onglets)",
         )
         return payload, f"bilan-inventaire_{campaign.code}.xlsx"
+
+    def consolidation_fallback(self, campaign: Campaign) -> tuple[bytes, str]:
+        """Le second classeur : la consolidation GENERIQUE, refaite par formules.
+
+        Le dossier de campagne est une photo — on la classe, on ne la corrige
+        pas. Celui-ci est l'autre document : il porte les données et les
+        recalcule. Le jour où l'application n'est pas joignable et où le journal
+        doit partir quand même, c'est le fichier qu'on ouvre.
+
+        Il est engendré à partir de **la même entrée que le moteur**, et non
+        d'une seconde lecture de la base : le référentiel, les nomenclatures et
+        les zones y sont ceux du calcul qu'il rejoue.
+
+        Les deux options de cette entrée — n'inclure que les zones terminées,
+        deviner une quantité quand l'arbitrage est en attente — pilotent le
+        **calcul**, et le classeur n'en fait aucun : il porte toutes les zones,
+        et ce sont ses formules qui décident. Elles restent donc à leur défaut
+        plutôt que d'être posées à une valeur sans effet, qui ferait croire à un
+        choix.
+        """
+        ctx = self.ctx
+        payload = ConsolidationService(ctx).payload(campaign)
+        config = campaign.config
+        content = build_consolidation_fallback(
+            payload,
+            campaign_code=campaign.code,
+            campaign_label=campaign.label,
+            count_date=campaign.count_date,
+            generic_key=(
+                f"{config.generic_warehouse} / {config.generic_location}"
+            ),
+            provenance={
+                "Statut de la campagne": str(campaign.status),
+                "Stock ERP gelé le": _iso(campaign.book_stock_frozen_at),
+                "Comptage clôturé le": _iso(campaign.counting_frozen_at),
+                "Profondeur d'éclatement": config.max_bom_depth,
+                "Version du moteur de calcul": ENGINE_VERSION,
+                "Généré le": utcnow().isoformat(timespec="seconds"),
+                "Généré par": ctx.actor,
+            },
+        )
+        ctx.record(
+            campaign_id=campaign.id,
+            action=AuditAction.EXPORT,
+            entity_type="consolidation",
+            entity_id=campaign.id,
+            summary=(
+                f"Export du classeur de repli GENERIQUE "
+                f"({len(payload.zones)} zone(s))"
+            ),
+        )
+        return content, f"repli-consolidation-generique_{campaign.code}.xlsx"
 
     # ------------------------------------------------------------- variances
 
@@ -772,21 +842,44 @@ def _printable_lines(
     """Sheet lines shaped for the PDF builder.
 
     Every line that carries a reference is printed, counted or not. On a filled
-    sheet an uncounted line is rendered as « non compté » rather than dropped:
-    "this article was on the list and nobody counted it" is precisely the fact a
-    record has to carry, and silently omitting the row is how the legacy
-    workbook lost lines.
+    sheet a line nobody wrote on prints **zero** rather than being dropped: "this
+    article was on the list and there was none" is precisely the fact a record
+    has to carry, and silently omitting the row is how the legacy workbook lost
+    lines.
     """
     out: list[dict[str, Any]] = []
     for line in lines:
+        # Un intertitre et une ligne vide n'ont pas d'article, et c'est
+        # précisément ce qui les distinguait d'une ligne à jeter : le filtre
+        # « pas de référence, on saute » les aurait fait disparaître de la
+        # feuille imprimée, où ils sont tout l'intérêt.
+        if line.line_kind is not CountLineKind.ARTICLE:
+            out.append({
+                "item_number": "",
+                "name": "",
+                "section": str(line.section),
+                "line_kind": str(line.line_kind),
+                "label": line.label,
+                "unit": "",
+                "qty": None,
+                "source": str(line.source),
+                "comment": "",
+            })
+            continue
         if not line.item_number:
             continue
         out.append({
             "item_number": line.item_number,
-            "name": items[line.item_number].name if line.item_number in items else "",
+            # Le nom que la feuille porte, sinon celui du référentiel. C'est
+            # celui-là qui s'imprime : le compteur cherche sur le papier le nom
+            # que l'atelier emploie.
+            "name": sheet_designation(line, items),
             "section": str(line.section),
+            "line_kind": str(line.line_kind),
+            "label": "",
             "unit": line.unit,
-            "qty": float(line.qty) if line.is_counted else None,
+            # Une case vide vaut zéro : c'est ce qui s'imprime.
+            "qty": float(line.qty),
             "source": str(line.source),
             "comment": line.comment,
         })
@@ -794,64 +887,14 @@ def _printable_lines(
 
 
 def _grid_rows(ctx: ServiceContext, campaign: Campaign, key: str) -> list[list[Any]]:
-    match key:
-        case "items":
-            return [
-                [i.item_number, i.name, i.search_name, i.item_group,
-                 i.lifecycle_state, str(i.item_type), i.category, i.program,
-                 str(i.commonality), i.unit, float(i.std_price),
-                 ",".join(sorted(str(e) for e in i.exclusions))]
-                for i in ctx.referentials.list_items(campaign.id)
-            ]
-        case "boms":
-            items = ctx.referentials.items_by_number(campaign.id)
-            return [
-                [l.parent_item,
-                 items[l.parent_item].name if l.parent_item in items else "",
-                 l.child_item, float(l.qty_per), l.unit]
-                for l in ctx.referentials.list_bom_links(campaign.id)
-            ]
-        case "book_stock":
-            return [
-                [b.item_number, b.warehouse_id, b.location_id, float(b.qty),
-                 b.unit, float(b.unit_cost)]
-                for b in ctx.book_stock.list(campaign.id)
-            ]
-        case "locations":
-            return [
-                [l.warehouse_id, l.location_id, l.zone, str(l.type), str(l.status)]
-                for l in ctx.referentials.list_locations(campaign.id)
-            ]
-        case "zones":
-            return [
-                [z.code, z.label, z.sector, z.display_order]
-                for z in ctx.sheets.list_zones(campaign.id)
-            ]
-        case "count_sheets":
-            # Pass 1 only: both passes carry the same article list by
-            # construction, and exporting it twice would re-import as duplicates.
-            from ..domain.enums import SheetPass
+    """Une grille de cette campagne, dans l'ordre des colonnes du contrat.
 
-            zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
-            lines_by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
-            return [
-                [zones[sheet.zone_id].code, line.item_number, str(line.section),
-                 line.unit]
-                for sheet in ctx.sheets.list_sheets(campaign.id)
-                if sheet.pass_no is SheetPass.PASS_1 and sheet.zone_id in zones
-                for line in lines_by_sheet.get(sheet.id, ())
-            ]
-        case "adjustments":
-            return [
-                [a.item_number,
-                 a.physical_date.isoformat() if a.physical_date else "",
-                 str(a.kind), a.journal_number, float(a.qty), a.unit,
-                 float(a.value), a.warehouse_id, a.location_id, a.reason_code,
-                 a.comment]
-                for a in ctx.adjustments.list(campaign.id)
-            ]
-        case _:
-            return []
+    La définition vit à côté, dans :mod:`~inventory.services.campaign_source` :
+    elle sert à la fois l'export d'une grille et l'import « depuis une autre
+    campagne », et deux copies auraient fini par répondre différemment à la
+    même question — « que sait-on ressortir de cette campagne ? ».
+    """
+    return campaign_grid_rows(ctx, campaign, key)
 
 
 def _kpi_rows(kpis: Any) -> list[tuple[str, Any]]:

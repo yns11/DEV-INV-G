@@ -47,6 +47,7 @@ from ..domain.models import (
     Location,
     Warehouse,
 )
+from ..domain.variance import at_standard_price
 from ..errors import NotFoundError, ValidationError
 from .context import ServiceContext
 
@@ -429,7 +430,14 @@ class ReferentialService:
         représentent vraiment, pour que l'affirmation soit mesurée plutôt que
         supposée.
         """
-        lines = self.ctx.book_stock.list(campaign.id)
+        # Au prix standard, comme les écarts et les KPI. La grille affichait
+        # le coût porté par la ligne — celui de l'ERP au gel pour le snapshot,
+        # le prix standard pour un emplacement précompté — et son total ne
+        # tombait donc pas sur celui du carrousel, sur les mêmes lignes.
+        lines = at_standard_price(
+            self.ctx.book_stock.list(campaign.id),
+            self.ctx.referentials.items_by_number(campaign.id),
+        )
         total_value = sum(float(l.value) for l in lines)
         top_share: float | None = None
         if top is not None:

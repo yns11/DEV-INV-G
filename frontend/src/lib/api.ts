@@ -10,10 +10,11 @@
 
 import type {
   Drift,
-  DriftResolution,
-  EarlyBatch,
   ErpJournal,
+  ErpJournalLine,
+  CampaignSource,
   LabelAlert,
+  RecountedInPlace,
   ScopeCandidate,
   ClosureChecklist,
   CampaignPage,
@@ -243,6 +244,12 @@ export const api = {
     }),
   deleteCampaign: (id: string) =>
     request<void>(`/campaigns/${id}`, { method: 'DELETE' }),
+  /** Tout ou rien : un seul refus arrête le lot et le dit. */
+  deleteCampaigns: (ids: string[]) =>
+    request<{ deleted: number; codes: string[] }>('/campaigns/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
   transitionReadiness: (id: string, target: string) =>
     request<TransitionReadiness>(`/campaigns/${id}/transition-readiness${qs({ target })}`),
   // Lisible pendant toute la phase d'analyse, et pas seulement dans la fenêtre
@@ -273,6 +280,16 @@ export const api = {
     request<AuditEvent[]>(`/campaigns/${id}/audit${qs(params)}`),
   importHistory: (id: string) =>
     request<Array<Record<string, unknown>>>(`/campaigns/${id}/imports`),
+  /**
+   * Les scans archivés de la campagne — une ligne par document déposé.
+   *
+   * Une pile déposée d'un coup est un seul document, et les feuilles qu'on y a
+   * lues pointent toutes dessus : la liste les regroupe plutôt que de rendre
+   * dix fois le même PDF. Elle ne porte pas les octets ; le fichier se demande
+   * ensuite par `downloads.sheetEvidence`.
+   */
+  archivedScans: (id: string) =>
+    request<Array<Record<string, unknown>>>(`/campaigns/${id}/scans`),
 
   // ------------------------------------------------------------ referentials
   // `counted` keeps only what a GENERIQUE sheet or a counting journal names.
@@ -455,6 +472,30 @@ export const api = {
       })}`,
       { method: 'POST' },
     ),
+  /** Les campagnes dont cette grille peut être reprise, et ce qu'elles portent. */
+  campaignSources: (id: string, target: string) =>
+    request<CampaignSource[]>(
+      `/campaigns/${id}/import/${target}/campaign-sources`,
+    ),
+  /**
+   * Reprendre une grille d'une autre campagne.
+   *
+   * Les lignes rentrent au même point qu'un fichier : mêmes validations, même
+   * essai à blanc, même grille modifiable ensuite. Ce n'est pas une porte
+   * dérobée dans le référentiel.
+   */
+  importFromCampaign: (id: string, target: string, sourceCampaignId: string, options: {
+    dryRun?: boolean
+    replace?: boolean
+  } = {}) =>
+    request<ImportResult & ImportPreview>(
+      `/campaigns/${id}/import/${target}/campaign${qs({
+        sourceCampaignId,
+        dryRun: options.dryRun || undefined,
+        replace: options.replace || undefined,
+      })}`,
+      { method: 'POST' },
+    ),
   importPaste: (id: string, target: string, text: string, options: {
     dryRun?: boolean
     replace?: boolean
@@ -481,6 +522,11 @@ export const api = {
   // -------------------------------------------------------- comptages avancés
   erpJournals: (id: string) =>
     request<ErpJournal[]>(`/campaigns/${id}/early-counts/journals`),
+  /** Les lignes brutes d'un journal ERP, telles que l'ERP les a produites. */
+  erpJournalLines: (id: string, journalId: string) =>
+    request<ErpJournalLine[]>(
+      `/campaigns/${id}/early-counts/journals/${journalId}/lines`,
+    ),
   scopeProposal: (id: string, journalId: string) =>
     request<ScopeCandidate[]>(
       `/campaigns/${id}/early-counts/journals/${journalId}/scope-proposal`,
@@ -494,46 +540,19 @@ export const api = {
       `/campaigns/${id}/early-counts/journals/${journalId}/scope`,
       { method: 'PUT', body: JSON.stringify({ locations }) },
     ),
-  earlyBatches: (id: string) =>
-    request<EarlyBatch[]>(`/campaigns/${id}/early-counts/batches`),
-  createEarlyBatch: (
-    id: string,
-    body: { code: string; label?: string; countedOn?: string | null; erpJournalIds: string[] },
-  ) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  closeEarlyBatch: (id: string, batchId: string) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/close`, {
-      method: 'POST',
-    }),
-  sealEarlyBatch: (id: string, batchId: string) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/seal`, {
-      method: 'POST',
-    }),
-  unsealEarlyBatch: (id: string, batchId: string, reason: string) =>
-    request<EarlyBatch>(`/campaigns/${id}/early-counts/batches/${batchId}/unseal`, {
-      method: 'POST',
-      body: JSON.stringify({ reason }),
-    }),
+  unsealJournal: (id: string, journalId: string, reason: string) =>
+    request<{ locations: number }>(
+      `/campaigns/${id}/early-counts/journals/${journalId}/unseal`,
+      { method: 'POST', body: JSON.stringify({ reason }) },
+    ),
   drifts: (id: string) =>
     request<Drift[]>(`/campaigns/${id}/early-counts/drifts`),
-  resolveDrifts: (
-    id: string,
-    body: {
-      driftIds: string[]
-      resolution: DriftResolution
-      causeCode?: string
-      comment?: string
-    },
-  ) =>
-    request<{ resolved: number }>(`/campaigns/${id}/early-counts/drifts/resolve`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
   labelAlerts: (id: string) =>
     request<LabelAlert[]>(`/campaigns/${id}/early-counts/label-alerts`),
+  recountedInPlace: (id: string) =>
+    request<RecountedInPlace[]>(
+      `/campaigns/${id}/early-counts/recounted-in-place`,
+    ),
 
   // ---------------------------------------------------------------- counting
   // `focus` is a server-side filter: the browser asks for it, the server
@@ -588,10 +607,36 @@ export const api = {
     passes?: 1 | 2
     freeEntry?: boolean
     managerCode?: string
+    blankRows?: Record<string, number>
   }) =>
     request<Zone>(`/campaigns/${id}/generic/zones`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+  /**
+   * Créer d'un coup toutes les zones d'un bloc collé.
+   *
+   * Tout ou rien côté serveur : un lot à moitié créé laisserait un état que
+   * personne n'a voulu, et dont rien ne dit comment le défaire.
+   */
+  createZones: (id: string, zones: Array<{
+    code: string
+    label?: string
+    blankRows?: Record<string, number>
+  }>) =>
+    request<{ created: number; zones: Zone[] }>(
+      `/campaigns/${id}/generic/zones/bulk`,
+      { method: 'POST', body: JSON.stringify({ zones }) },
+    ),
+  /** Combien de lignes vierges chaque section de cette zone imprime. */
+  setZoneBlankRows: (
+    id: string,
+    zoneId: string,
+    blankRows: Record<string, number>,
+  ) =>
+    request<Zone>(`/campaigns/${id}/generic/zones/${zoneId}/blank-rows`, {
+      method: 'POST',
+      body: JSON.stringify({ blankRows }),
     }),
   setZonePasses: (id: string, zoneIds: string[], passes: 1 | 2) =>
     request<{ updated: number; sheetsRemoved: number; sheetsCreated: number }>(
@@ -639,10 +684,32 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ lines, replace, expectedVersion }),
     }),
+  /** Renommer une zone : son code, et facultativement libellé et secteur. */
+  renameZone: (
+    id: string,
+    zoneId: string,
+    body: { code: string; label?: string; sector?: string },
+  ) =>
+    request<Zone>(`/campaigns/${id}/generic/zones/${zoneId}/rename`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   deleteSheetLine: (id: string, lineId: string) =>
     request<{ deleted: boolean }>(`/campaigns/${id}/generic/lines/${lineId}`, {
       method: 'DELETE',
     }),
+  /**
+   * Le texte imprimé en tête de chaque section d'une zone.
+   *
+   * Un texte vide n'est pas enregistré : il remet le défaut. La réponse rend ce
+   * qui est **retenu**, pas ce qui a été envoyé, pour que l'écran voie cette
+   * différence tout de suite plutôt qu'au prochain rechargement.
+   */
+  setSectionLabels: (id: string, zoneId: string, labels: Record<string, string>) =>
+    request<{ labels: Record<string, string> }>(
+      `/campaigns/${id}/generic/zones/${zoneId}/section-labels`,
+      { method: 'POST', body: JSON.stringify({ labels }) },
+    ),
   setZoneNegative: (id: string, zoneIds: string[], allowed: boolean) =>
     request<{ updated: number }>(`/campaigns/${id}/generic/zones/negative`, {
       method: 'POST',
@@ -687,8 +754,10 @@ export const api = {
   /** Le dernier scan de cette feuille, pour reprendre un suivi interrompu. */
   sheetScanJob: (id: string, sheetId: string) =>
     request<ScanJob | null>(`/campaigns/${id}/generic/sheets/${sheetId}/scan/job`),
-  arbitrations: (id: string, zoneId?: string) =>
-    request<Arbitration[]>(`/campaigns/${id}/generic/arbitrations${qs({ zoneId })}`),
+  arbitrations: (id: string, zoneId?: string, divergentOnly?: boolean) =>
+    request<Arbitration[]>(
+      `/campaigns/${id}/generic/arbitrations${qs({ zoneId, divergentOnly })}`,
+    ),
   refreshArbitrations: (id: string, zoneId: string) =>
     request<Arbitration[]>(
       `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/refresh`,
@@ -699,12 +768,22 @@ export const api = {
       `/campaigns/${id}/generic/arbitrations/${arbitrationId}`,
       { method: 'POST', body: JSON.stringify({ qty, comment }) },
     ),
-  // Fills the fields; it does not decide. Each line still has to be validated
-  // before the consolidation will use it.
-  prefillWithPass2: (id: string, zoneId: string) =>
-    request<{ proposed: number }>(
-      `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/prefill-pass-2`,
-      { method: 'POST' },
+  /**
+   * Valider d'un geste les quantités **affichées**.
+   *
+   * Le corps portait auparavant une règle — « le n°1 partout », « le n°2
+   * partout », « les propositions » — et le serveur allait rechercher la
+   * quantité lui-même. Une quantité tapée dans le champ, ou posée là par un
+   * bouton de remplissage, n'existait pas de son côté : « Valider tout »
+   * comptait comme non tranchées des lignes qui portaient un chiffre sous les
+   * yeux de l'utilisateur. Ce sont maintenant ces quantités-là qui remontent.
+   */
+  decideArbitrations: (
+    id: string, zoneId: string, decisions: { id: string; qty: number }[],
+  ) =>
+    request<{ decided: number; skipped: number }>(
+      `/campaigns/${id}/generic/zones/${zoneId}/arbitrations/decide-all`,
+      { method: 'POST', body: JSON.stringify({ decisions }) },
     ),
   wipWithoutBom: (id: string) =>
     request<WipWithoutBom[]>(`/campaigns/${id}/generic/wip-without-bom`),
@@ -1015,6 +1094,13 @@ export const assistantApi = {
 
 export const downloads = {
   campaignWorkbook: (id: string) => `/campaigns/${id}/reports/campaign.xlsx`,
+  /**
+   * Le second fichier de l'export : la consolidation GENERIQUE **refaite par
+   * formules**. Le dossier est une photo, celui-ci se recalcule — c'est le
+   * repli du jour où l'application ne répond pas et où le journal doit partir.
+   */
+  consolidationFallback: (id: string) =>
+    `/campaigns/${id}/reports/consolidation-fallback.xlsx`,
   gridTemplate: (id: string, key: string) => `/campaigns/${id}/reports/grids/${key}.xlsx`,
   journal: (id: string, journalId: string) =>
     `/campaigns/${id}/reports/journals/${journalId}.xlsx`,

@@ -26,6 +26,7 @@ export type BreakdownAspect =
   | 'wip_ok'
   | 'wip'
   | 'variance'
+  | 'generic'
 
 const ASPECT_LABELS: Record<BreakdownAspect, { title: string; hint: string }> = {
   book: {
@@ -35,6 +36,10 @@ const ASPECT_LABELS: Record<BreakdownAspect, { title: string; hint: string }> = 
   counted: {
     title: 'Quantité comptée',
     hint: 'Chaque journal, et la part GENERIQUE ventilée par origine.',
+  },
+  generic: {
+    title: 'Quantité consolidée GENERIQUE',
+    hint: 'Ce que chaque zone apporte au journal consolidé — quantité retenue, arbitrages appliqués.',
   },
   physical: {
     title: 'Stock physique',

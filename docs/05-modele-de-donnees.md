@@ -122,6 +122,25 @@ C'est ce qui permet de recharger l'export ERP autant de fois qu'on veut pendant
 la journée sans jamais détruire une correction. Une colonne unique obligerait à
 choisir entre « je perds les corrections » et « je ne rafraîchis plus ».
 
+**Le rechargement rapproche sur (journal, article)** — migration 032. Il ne le
+faisait pas : il supprimait les lignes sans valeur manuelle, puis réinsérait
+toutes celles du fichier avec un identifiant neuf, sans jamais retrouver celle
+qui portait déjà l'article. La ligne corrigée à la main survivait au ménage
+— c'est ce qui la protège, et c'est juste — et l'import lui en ajoutait une
+seconde à côté. Les deux vivaient, et la somme les additionnait. Le journal
+GENERIQUE, rempli par la consolidation avec des valeurs *manuelles*, y était
+exposé en entier : sur une campagne terrain, ses 245 articles ont été comptés
+deux fois après son retour de l'ERP.
+
+**Aucun index unique ne porte (journal, article)**, et c'est délibéré : l'écran
+permet d'ajouter deux lignes pour un même article — deux relevés distincts au
+même endroit, qui s'additionnent légitimement. Ce qui ne doit pas coexister,
+c'est une ligne *importée* à côté d'une ligne qui porte déjà une valeur : les
+deux décrivent la même mesure. Quand plusieurs lignes manuelles existent, l'écho
+de l'ERP se pose sur une seule d'entre elles, choisie par son identifiant — un
+tri par `updated_at` se déplacerait à chaque rechargement, puisque le
+rechargement met justement cette colonne à jour.
+
 ### 3.2 Pourquoi le nombre de comptages appartient à la zone
 
 ```sql

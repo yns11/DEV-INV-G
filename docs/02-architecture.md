@@ -157,9 +157,18 @@ qty_manual    NUMERIC(20,6)   -- ce qu'un humain a décidé
 ```
 
 Recharger l'export ERP dix fois dans la journée rafraîchit `qty_imported` sans
-jamais effacer une correction humaine. L'interface affiche les deux côte à côte
-avec un badge de provenance (`Import ERP`, `Saisie manuelle`, `Extraction IA`,
-`Consolidation`, `Arbitrage`, `Système`).
+jamais effacer une correction humaine, et **sans ajouter une seconde ligne à
+côté d'elle** : le rechargement retrouve la ligne de l'article et la met à jour
+en place. L'interface affiche les deux côte à côte avec un badge de provenance
+(`Import ERP`, `Saisie manuelle`, `Extraction IA`, `Consolidation`,
+`Arbitrage`, `Système`).
+
+Et il **compare**. Quand l'application tient déjà une quantité pour cet article
+— une consolidation, une correction — et que l'export n'en rapporte pas la même,
+le rapport d'import le dit et le compte. Il ne suppose rien de la cause : un
+arrondi dans un tableur en amont, un collage partiel, une correction faite dans
+l'ERP seulement. Il ne corrige rien non plus — la valeur de l'application prime
+et reste en place, l'exploitant tranche.
 
 ### Une commande métier écrit tout, ou rien
 

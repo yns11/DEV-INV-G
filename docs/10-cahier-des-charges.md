@@ -1120,6 +1120,9 @@ réimplémentation perd en premier.
 | **L'application redémarre pendant une lecture** | Le travail est marqué en échec et invite à recharger ; **les feuilles déjà lues avant l'interruption sont conservées** |
 | **On recharge la page pendant une lecture** | L'écran retrouve le travail en cours et reprend son suivi, au lieu d'inviter à relancer un scan qui tourne déjà |
 | **Une décision d'étiquette est prise puis le journal réimporté** | La décision survit au réimport |
+| **Une ligne corrigée à la main est réimportée** | La correction survit **et reste seule** : le rechargement retrouve la ligne de l'article et rafraîchit sa valeur ERP en place. Il n'en crée pas une seconde à côté, qui s'ajouterait à la première — c'est ce qui a fait compter deux fois les 245 articles d'un journal GENERIQUE sur une campagne terrain (migration 032) |
+| **Deux relevés manuels du même article au même endroit** | Ils restent deux lignes et s'additionnent : l'écran permet de les créer, et aucun index unique ne l'interdit. L'écho de l'ERP se pose sur une seule d'entre elles, toujours la même |
+| **Ce qui revient de l'ERP n'est pas ce qui y est parti** | Le rapport d'import le **dit et le compte**, article par article. Il ne suppose rien de la cause — arrondi dans un tableur en amont, collage partiel, correction faite dans l'ERP seulement — et ne corrige rien : la valeur de l'application prime et reste en place |
 | **Une clôture de zone était trop rapide** | Rouvrir, toujours permis |
 | **Un périmètre a été coché de travers** | Desceller (motif obligatoire), puis redéclarer |
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any
 
 from ..db import new_id
@@ -66,6 +67,7 @@ from .import_parsing import (
     _base_outcome,
     _require_period,
 )
+from .import_round_trip import round_trip_findings
 
 log = logging.getLogger(__name__)
 
@@ -86,8 +88,6 @@ __all__ = [
 #: qu'elle n'en détaille qu'une partie. Une liste tronquée qui se lirait comme
 #: complète ferait croire le référentiel à jour à deux cents références près.
 UNKNOWN_ITEMS_KEPT = 200
-
-
 
 class ImportService:
     """Parses, validates and persists bulk data for every grid."""
@@ -769,6 +769,16 @@ class ImportService:
         locations = ctx.referentials.locations_by_key(campaign.id)
         journals = {j.key: j for j in ctx.journals.list(campaign.id)}
 
+        # Ce que l'application tient *avant* de recharger, lu maintenant parce
+        # qu'après il sera trop tard : c'est le terme de comparaison du contrôle
+        # aller-retour, plus bas.
+        held: dict[tuple[str, str], Decimal] = {
+            (journal_id, line.item_number): line.qty_manual
+            for journal_id, group in ctx.journals.lines_by_journal(campaign.id).items()
+            for line in group
+            if line.qty_manual is not None
+        }
+
         keys_in_file = {
             LocationKey(warehouse_id=l.warehouse_id, location_id=l.location_id)
             for l in imported
@@ -896,6 +906,9 @@ class ImportService:
                 for (_key, item_number), bucket in grouped.items()
             ]
 
+            findings, divergences = round_trip_findings(held, lines)
+            outcome.warnings.extend(findings)
+
             touched = sorted(posted_flags)
             ctx.journals.replace_imported_lines(
                 campaign.id, touched, lines, conn=conn
@@ -973,6 +986,9 @@ class ImportService:
             # lignes ne produisent aucune référence — d'où la liste, en tête du
             # rapport plutôt qu'à découvrir plus tard.
             "scopeUndeclared": undeclared,
+            # Le compte est entier même quand la liste est tronquée : c'est lui
+            # qui distingue l'accident du fichier entier qui a dérivé.
+            "roundTripMismatches": divergences,
         }
         return outcome
 

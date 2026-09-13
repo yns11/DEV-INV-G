@@ -321,6 +321,33 @@ class JournalRepository(_Base):
         Reloading the ERP export replaces ``qty_imported`` but **preserves**
         ``qty_manual``: the whole point of keeping the two columns apart is that
         a re-import never silently discards a human correction.
+
+        Le rapprochement se fait sur (journal, article), et il manquait
+        -----------------------------------------------------------
+        La préservation marchait ; le remplacement, non. Les lignes sans valeur
+        manuelle étaient supprimées puis toutes les lignes du fichier réinsérées
+        avec un identifiant neuf — sans jamais retrouver celle qui portait déjà
+        cet article. Une ligne à valeur manuelle survivait donc au ménage, et
+        l'import lui en ajoutait une seconde à côté. Les deux vivaient, et
+        :meth:`counted_quantities` les additionnait : l'article était compté
+        deux fois.
+
+        Vu en vrai, sur une campagne terrain. Le journal GENERIQUE est rempli
+        par la consolidation — une valeur *manuelle* pour chacun de ses articles
+        — puis posté dans l'ERP ; l'extraction suivante le rapporte, et ses 245
+        articles se sont retrouvés doublés. Le même mécanisme frappait n'importe
+        quelle ligne corrigée à la main avant un rechargement.
+
+        Le même article deux fois reste possible, et c'est voulu
+        -------------------------------------------------------
+        L'écran permet d'ajouter deux lignes pour un même article — deux relevés
+        distincts au même endroit, qui s'additionnent légitimement. Interdire le
+        doublon par un index unique aurait donc retiré un geste que le métier
+        utilise. Ce qui ne doit pas coexister, c'est **une ligne importée à côté
+        d'une ligne qui porte déjà une valeur** : les deux décrivent la même
+        mesure, et la manuelle prime. Quand plusieurs lignes manuelles existent
+        pour un article, l'écho de l'ERP se pose sur une seule d'entre elles —
+        la plus ancienne — pour que le total reste celui des saisies.
         """
         owns = conn is None
         ctx = self.db.transaction() if owns else _NullContext(conn)
@@ -336,19 +363,70 @@ class JournalRepository(_Base):
                 )
             if not lines:
                 return 0
-            cur.executemany(
-                "INSERT INTO count_journal_line (id, journal_id, campaign_id, "
-                "item_number, qty_imported, unit, source, updated_by, updated_at, "
-                "qty_on_hand, erp_journal_number, label_count) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now(), %s,%s,%s) "
-                "ON CONFLICT (id) DO NOTHING",
-                [
-                    (l.id, l.journal_id, campaign_id, l.item_number, l.qty_imported,
-                     l.unit, str(l.source), l.updated_by or "import",
-                     l.qty_on_hand, l.erp_journal_number, l.label_count)
-                    for l in lines
-                ],
-            )
+
+            # Ce qui a survécu au ménage : les lignes à valeur manuelle. Ce sont
+            # elles qu'il faut retrouver plutôt que doubler.
+            #
+            # Le tri porte sur `id`, et sur lui seul. Trier par `updated_at`
+            # semblait plus parlant — « la plus ancienne » — mais cette
+            # écriture-ci le met à jour : la ligne choisie devenait la plus
+            # récente, et le rechargement suivant portait l'écho sur l'autre.
+            # Au bout de deux imports les deux lignes annonçaient chacune le
+            # chiffre de l'ERP. Le jour J, avec une extraction tous les quarts
+            # d'heure, l'écho aurait fait des allers-retours toute la journée.
+            #
+            # Un identifiant, lui, ne bouge jamais. Laquelle est choisie importe
+            # peu — c'est toujours la même, et c'est la seule propriété dont
+            # dépendent la migration 032 et ce code.
+            survivors: dict[tuple[str, str], str] = {}
+            if journal_ids:
+                cur.execute(
+                    "SELECT id, journal_id, item_number FROM count_journal_line "
+                    "WHERE journal_id = ANY(%s::uuid[]) AND deleted_at IS NULL "
+                    "ORDER BY id",
+                    (list(journal_ids),),
+                )
+                for row in cur.fetchall():
+                    survivors.setdefault(
+                        (str(row["journal_id"]), str(row["item_number"])), str(row["id"])
+                    )
+
+            updates, inserts = [], []
+            for line in lines:
+                existing = survivors.get((line.journal_id, line.item_number))
+                if existing is None:
+                    inserts.append(line)
+                else:
+                    updates.append((existing, line))
+
+            if updates:
+                cur.executemany(
+                    "UPDATE count_journal_line SET qty_imported = %s, unit = %s, "
+                    "updated_by = %s, updated_at = now(), "
+                    "row_version = row_version + 1, qty_on_hand = %s, "
+                    "erp_journal_number = %s, label_count = %s "
+                    "WHERE id = %s",
+                    [
+                        (l.qty_imported, l.unit, l.updated_by or "import",
+                         l.qty_on_hand, l.erp_journal_number, l.label_count, line_id)
+                        for line_id, l in updates
+                    ],
+                )
+            if inserts:
+                cur.executemany(
+                    "INSERT INTO count_journal_line (id, journal_id, campaign_id, "
+                    "item_number, qty_imported, unit, source, updated_by, updated_at, "
+                    "qty_on_hand, erp_journal_number, label_count) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now(), %s,%s,%s) "
+                    "ON CONFLICT (id) DO NOTHING",
+                    [
+                        (l.id, l.journal_id, campaign_id, l.item_number,
+                         l.qty_imported, l.unit, str(l.source),
+                         l.updated_by or "import", l.qty_on_hand,
+                         l.erp_journal_number, l.label_count)
+                        for l in inserts
+                    ],
+                )
         return len(lines)
 
     # -------------------------------------------------------------- scellement

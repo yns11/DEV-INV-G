@@ -367,3 +367,134 @@ class TestTheCountingDateComesFromTheLines:
 
         journal = service.ctx.erp_journals.get_by_number(campaign.id, "NPEM-1")
         assert journal.counted_on == dt.date(2026, 6, 10)
+
+
+class TestLAllerEtLeRetourDoiventCoincider:
+    """Ce que l'application a calculé doit revenir tel quel de l'ERP.
+
+    Vu sur une campagne terrain, et jamais signalé. La consolidation GENERIQUE
+    avait produit 1 336,92 kg de résine ; l'exploitant l'a portée dans l'ERP,
+    qui l'a acceptée telle quelle. Mais une analyse rapide sous Power Query,
+    entre l'extraction et l'import, avait typé la colonne en entier : 1 337 est
+    revenu. Soixante-quatre quantités pesées ou mesurées — des kilos, des
+    mètres — ont été arrondies de la même façon, et l'import les a acceptées
+    sans un mot. L'écart ne s'est vu que des jours plus tard.
+
+    Le contrôle ne suppose rien de la cause. Arrondi en amont, collage partiel,
+    ligne oubliée, correction faite dans l'ERP et pas ici : il constate que les
+    deux chiffres diffèrent et les nomme. C'est ce qui le rend utile — les
+    causes, on ne les connaît qu'après.
+    """
+
+    def _avec_une_valeur_calculee(self, service, campaign, qty):
+        """Poser une valeur que l'application tient pour sienne."""
+        from inventory.db import new_id
+        from inventory.domain.enums import DataSource
+        from inventory.domain.models import CountJournalLine, LocationKey
+
+        key = LocationKey(warehouse_id="ATP", location_id="SOL")
+        service.ctx.journals.ensure_journals(campaign.id, [key], actor="test")
+        journal = next(
+            j for j in service.ctx.journals.list(campaign.id) if j.key == key
+        )
+        service.ctx.journals.replace_lines_for_journal(
+            journal.id, campaign.id,
+            [CountJournalLine(
+                id=new_id(), journal_id=journal.id, campaign_id=campaign.id,
+                item_number="MASS-1", qty_manual=qty, unit="PCE",
+                source=DataSource.CONSOLIDATION,
+            )],
+            actor="test",
+        )
+        return journal
+
+    def test_un_retour_arrondi_est_signale(self, service, campaign, monkeypatch):
+        self._avec_une_valeur_calculee(service, campaign, Decimal("1336.92"))
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(1337))])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        assert outcome.details["roundTripMismatches"] == 1
+        message = " ".join(w.message for w in outcome.warnings)
+        assert "1336.92" in message and "1337" in message
+
+    def test_le_message_nomme_l_article(self, service, campaign, monkeypatch):
+        """Un constat qu'on ne peut pas rattacher à une ligne ne sert à rien."""
+        self._avec_une_valeur_calculee(service, campaign, Decimal("1336.92"))
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(1337))])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+        assert any("MASS-1" in w.message for w in outcome.warnings)
+
+    def test_un_retour_identique_ne_dit_rien(self, service, campaign, monkeypatch):
+        """Le cas nominal, et de loin le plus fréquent : le silence."""
+        self._avec_une_valeur_calculee(service, campaign, Decimal(40))
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(40))])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+        assert outcome.details["roundTripMismatches"] == 0
+        assert outcome.warnings == []
+
+    def test_la_valeur_de_lapplication_est_conservee(
+        self, service, campaign, monkeypatch
+    ):
+        """Signaler, pas écraser. C'est elle qui prime, et le contrôle ne fait
+        que demander qu'on regarde pourquoi elles diffèrent."""
+        self._avec_une_valeur_calculee(service, campaign, Decimal("1336.92"))
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(1337))])
+        service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        compte = {
+            r["item_number"]: r["qty"]
+            for r in service.ctx.journals.counted_quantities(campaign.id)
+        }
+        assert compte["MASS-1"] == Decimal("1336.92")
+
+    def test_une_ligne_sans_valeur_calculee_ne_diverge_de_rien(
+        self, service, campaign, monkeypatch
+    ):
+        """L'immense majorité des journaux : l'ERP est la seule source, il n'y
+        a pas d'aller à comparer au retour."""
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(30))])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+        assert outcome.details["roundTripMismatches"] == 0
+
+    def test_le_compte_reste_entier_meme_quand_la_liste_est_tronquee(
+        self, service, campaign, monkeypatch
+    ):
+        """Quand c'est le fichier entier qui a dérivé, c'est le compte qui le dit.
+
+        Les nommer toutes recopierait le fichier dans le rapport ; n'en garder
+        que vingt sans dire combien il y en a ferait passer une dérive générale
+        pour une poignée d'accidents.
+        """
+        from inventory.db import new_id
+        from inventory.domain.enums import DataSource
+        from inventory.domain.models import CountJournalLine, LocationKey
+        from inventory.services.import_round_trip import ROUND_TRIP_REPORTED
+
+        key = LocationKey(warehouse_id="ATP", location_id="SOL")
+        service.ctx.journals.ensure_journals(campaign.id, [key], actor="test")
+        journal = next(
+            j for j in service.ctx.journals.list(campaign.id) if j.key == key
+        )
+        articles = [f"MASS-{n}" for n in range(1, ROUND_TRIP_REPORTED + 6)]
+        service.ctx.journals.replace_lines_for_journal(
+            journal.id, campaign.id,
+            [CountJournalLine(
+                id=new_id(), journal_id=journal.id, campaign_id=campaign.id,
+                item_number=article, qty_manual=Decimal("10.5"), unit="PCE",
+                source=DataSource.CONSOLIDATION,
+            ) for article in articles],
+            actor="test",
+        )
+        _feed(service, monkeypatch, [
+            _row(item_number=article, counted_quantity=Decimal(11))
+            for article in articles
+        ])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        assert outcome.details["roundTripMismatches"] == len(articles)
+        assert len(outcome.warnings) == ROUND_TRIP_REPORTED

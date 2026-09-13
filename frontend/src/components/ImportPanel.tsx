@@ -484,6 +484,8 @@ export function ImportReport({
   const outOfScopeItems = Number(details.outOfScopeItems ?? 0)
   const unknownLines = Number(details.unknownLines ?? 0)
   const unknownItems = Number(details.unknownItems ?? 0)
+  // Ce que l'application avait calculé et qui ne revient pas tel quel de l'ERP.
+  const roundTrip = Number(details.roundTripMismatches ?? 0)
   // Quelques-unes seulement : le panneau sert à décider tout de suite, pas à
   // relire douze mille références. La liste entière est dans Contrôles.
   const unknownSample = (
@@ -592,12 +594,30 @@ export function ImportReport({
           </Alert>
         )}
 
+        {roundTrip > 0 && (
+          <Alert
+            tone="warning"
+            title={`${roundTrip} quantité(s) ne reviennent pas telles qu’elles sont parties`}
+          >
+            L’application avait calculé ces quantités — une consolidation, une
+            correction — et l’export n’en rapporte pas les mêmes. Quelque chose
+            les a modifiées en chemin : un arrondi dans un tableur, un collage
+            partiel, une correction faite dans l’ERP seulement. <strong>La
+            valeur de l’application est conservée</strong> ; le détail est
+            ci-dessous, ligne par ligne.
+          </Alert>
+        )}
+
         {warnings.length > 0 && (
           <Alert tone="warning" title={`${warnings.length} ligne(s) signalée(s)`}>
             <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
               {warnings.slice(0, 8).map((warning, index) => (
                 <li key={index}>
-                  Ligne {warning.line} — {warning.message}
+                  {/* « Ligne 0 » ne désigne rien : un constat qui porte sur la
+                      campagne, et non sur une ligne du fichier, ne doit pas
+                      renvoyer le lecteur chercher une ligne qui n'existe pas. */}
+                  {warning.line > 0 && <>Ligne {warning.line} — </>}
+                  {warning.message}
                 </li>
               ))}
             </ul>

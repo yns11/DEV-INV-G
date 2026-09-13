@@ -7,7 +7,7 @@
  */
 
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api, download, downloads } from '../lib/api'
 import type { Overview } from '../lib/types'
@@ -21,11 +21,15 @@ import {
 import {
   AsyncBoundary,
   Badge,
+  Button,
   Card,
+  Modal,
   EmptyState,
   Icons,
   Skeleton,
   ViewTabs,
+  useErrorToast,
+  useToast,
 } from '../components/ui'
 import { DataGrid, type Column } from '../components/DataGrid'
 
@@ -135,9 +139,31 @@ function Events({ campaignId }: { campaignId: string }) {
 }
 
 function Imports({ campaignId }: { campaignId: string }) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+  const [replaying, setReplaying] = useState<Record<string, unknown> | null>(null)
   const query = useQuery({
     queryKey: ['import-history', campaignId],
     queryFn: () => api.importHistory(campaignId),
+  })
+
+  // Rejouer, c'est réimporter : la même écriture, les mêmes gardes, et donc la
+  // même invalidation qu'un chargement ordinaire.
+  const replay = useMutation({
+    mutationFn: (batchId: string) => api.replayImport(campaignId, batchId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries()
+      setReplaying(null)
+      toast.success(
+        'Chargement rejoué',
+        `${Number(result.rowsAccepted).toLocaleString('fr-FR')} ligne(s) reprises du fichier d’origine.`,
+      )
+    },
+    onError: (error) => {
+      setReplaying(null)
+      showError(error, 'Rejeu impossible')
+    },
   })
 
   const columns: Column[] = [
@@ -203,6 +229,28 @@ function Imports({ campaignId }: { campaignId: string }) {
       value: (row) => Number(row.rows_rejected),
     },
     { key: 'imported_by', label: 'Par', width: 200 },
+    {
+      key: 'replay',
+      label: '',
+      width: 120,
+      sortable: false,
+      filter: false as const,
+      // Offert seulement quand l'original existe. Un collage ou une lecture ERP
+      // n'a pas de fichier à repasser : proposer le bouton partout ferait
+      // découvrir la règle par un refus.
+      render: (row) =>
+        row.archived ? (
+          <Button
+            size="sm"
+            icon={<Icons.history size={13} />}
+            disabled={replay.isPending}
+            title="Repasser ce fichier par le même importeur"
+            onClick={() => setReplaying(row)}
+          >
+            Rejouer
+          </Button>
+        ) : null,
+    },
   ]
 
   return (
@@ -229,6 +277,43 @@ function Imports({ campaignId }: { campaignId: string }) {
           />
         )}
       </AsyncBoundary>
+
+      {replaying && (
+        <Modal
+          title="Rejouer ce chargement ?"
+          width={560}
+          onClose={() => setReplaying(null)}
+          footer={
+            <>
+              <Button
+                variant="ghost"
+                onClick={() => setReplaying(null)}
+                disabled={replay.isPending}
+              >
+                Annuler
+              </Button>
+              <Button
+                variant="primary"
+                disabled={replay.isPending}
+                onClick={() => replay.mutate(String(replaying.id))}
+              >
+                Rejouer
+              </Button>
+            </>
+          }
+        >
+          <p>
+            <strong>{String(replaying.filename || 'le fichier archivé')}</strong>{' '}
+            va repasser par l’importeur <strong>{String(replaying.target)}</strong>,
+            tel qu’il a été reçu le {dateTime(String(replaying.imported_at))}.
+          </p>
+          <p className="subtle">
+            Les quantités que ce fichier portait remplacent celles d’aujourd’hui.
+            Ce qu’un humain a saisi ou corrigé depuis n’est pas touché, et le
+            statut des journaux ne revient pas en arrière.
+          </p>
+        </Modal>
+      )}
     </Card>
   )
 }

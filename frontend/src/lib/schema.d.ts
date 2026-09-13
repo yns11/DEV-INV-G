@@ -1996,6 +1996,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/imports/{batch_id}/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rejouer un chargement déjà fait
+         * @description Repasser le fichier d'un chargement archivé par le même importeur.
+         *
+         *     Il n'y a pas d'annulation d'import — une ligne mise à jour en place ne garde
+         *     pas son image d'avant. Ce qui existe, c'est le fichier d'origine, et comme
+         *     l'import remplace, le rejouer remet ce qu'il portait. Cette route ne fait
+         *     donc rien de neuf : elle retire les quatre gestes qui séparaient
+         *     l'exploitant d'un retour en arrière que l'application savait déjà faire.
+         *
+         *     Les gardes sont celles de la cible rejouée, franchies par la méthode
+         *     appelée : rejouer n'est pas un droit de plus.
+         */
+        post: operations["replay_import_api_campaigns__campaign_id__imports__batch_id__replay_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/items": {
         parameters: {
             query?: never;
@@ -8424,6 +8453,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replay_import_api_campaigns__campaign_id__imports__batch_id__replay_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                batch_id: string;
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
                 };
             };
             /** @description Validation Error */

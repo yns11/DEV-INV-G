@@ -148,13 +148,20 @@ def test_every_import_target_names_a_real_importer():
     un nom de méthode, et c'est à l'exécution que le nom devient un appel. Une
     méthode renommée y produirait le même 500 que celui qu'on vient de corriger,
     et sur la même route.
+
+    La table vit avec le service depuis que le **rejeu** d'un chargement a eu
+    besoin du même aiguillage : deux copies auraient fini par diverger sur ce
+    qu'une cible veut dire. La route l'importe, et ce contrôle la lit là où elle
+    est déclarée plutôt que là où elle est utilisée.
     """
-    from inventory.api.routers.data import _TARGETS
+    from inventory.api.routers import data
+    from inventory.services.import_replay import TARGET_METHODS
     from inventory.services.import_service import ImportService
 
+    assert data._resolve is not None, "la route n'aiguille plus vers le service"
     missing = sorted(
         f"{target} → ImportService.{method}"
-        for target, method in _TARGETS.items()
+        for target, method in TARGET_METHODS.items()
         if not callable(getattr(ImportService, method, None))
     )
     assert not missing, missing

@@ -56,6 +56,7 @@ from ..ingest import (
 from .arbitration_service import refresh_after_sheet_writes
 from .context import ServiceContext, utcnow
 from .import_batches import (
+    UNKNOWN_ITEMS_KEPT,
     ImportBatches,
     ImportOutcome,
     _hash_of,
@@ -67,6 +68,7 @@ from .import_parsing import (
     _base_outcome,
     _require_period,
 )
+from .import_replay import replay_batch
 from .import_round_trip import round_trip_findings
 
 log = logging.getLogger(__name__)
@@ -76,18 +78,6 @@ __all__ = [
     "suggested_period",
 ]
 
-#: Combien de références écartées sont **nommées** dans le rapport d'un lot.
-#:
-#: Le rapport part en JSONB dans ``import_batch`` et se relit à chaque affichage
-#: des contrôles. Un fichier ERP chargé contre un référentiel vide en produirait
-#: des dizaines de milliers : ce n'est plus un constat, c'est une copie du
-#: fichier. Deux cents suffisent à reconnaître ce qui manque et à décider.
-#:
-#: Le **compte**, lui, n'est jamais tronqué : ``unknownItems`` et
-#: ``outOfScopeItems`` portent le total, et la vue Contrôles dit explicitement
-#: qu'elle n'en détaille qu'une partie. Une liste tronquée qui se lirait comme
-#: complète ferait croire le référentiel à jour à deux cents références près.
-UNKNOWN_ITEMS_KEPT = 200
 
 class ImportService:
     """Parses, validates and persists bulk data for every grid."""
@@ -178,6 +168,14 @@ class ImportService:
         return removed, kept
 
     # ---------------------------------------------------------------- parsing
+
+    def replay(self, campaign: Campaign, batch_id: str) -> ImportOutcome:
+        """Repasser le fichier d'un chargement déjà fait — voir :mod:`import_replay`.
+
+        Le travail est à côté ; le point d'entrée est ici parce que c'est ce
+        service que la route connaît, et que le rejeu appelle ses méthodes.
+        """
+        return replay_batch(self, campaign, batch_id)
 
     def parse(self, *args: Any, **kwargs: Any) -> tuple[GridContract, ParseResult]:
         """Lit une entrée — voir :class:`ImportParser`.

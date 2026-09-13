@@ -17,6 +17,12 @@ from ...ingest import get_contract, list_contracts
 from ...services import ImportService, ReferentialService
 from ...services.campaign_source import SUPPORTED as CAMPAIGN_SOURCE_GRIDS
 from ...services.campaign_source import candidates as campaign_candidates
+from ...services.import_replay import (
+    PERIOD_TARGETS,
+)
+from ...services.import_replay import (
+    resolve_target as _resolve,
+)
 from ..deps import CampaignDep, Ctx, import_service, referential_service
 from ..paging import MAX_PAGE, page
 from ..responses import CampaignSourceResponse, GridContractResponse
@@ -57,18 +63,6 @@ def _write_options(target: str, *, replace: bool, allow_partial: bool) -> dict:
     return options
 
 
-#: Import targets and the service method that handles each. Declaring the map
-#: here keeps the routes thin and makes an unsupported target a clean 422.
-_TARGETS = {
-    "items": "import_items",
-    "boms": "import_boms",
-    "book_stock": "import_book_stock",
-    "count_journal_lines": "import_journal_lines",
-    "count_sheets": "import_count_sheets",
-    "adjustments": "import_adjustments",
-    "backflush": "import_backflush",
-    "locations": "import_locations",
-}
 
 
 # --------------------------------------------------------------------------- #
@@ -160,6 +154,27 @@ async def import_file(
 
 
 @router.post(
+    "/campaigns/{campaign_id}/imports/{batch_id}/replay",
+    summary="Rejouer un chargement déjà fait",
+)
+def replay_import(
+    campaign: CampaignDep, batch_id: str, importer: Importer
+) -> dict[str, Any]:
+    """Repasser le fichier d'un chargement archivé par le même importeur.
+
+    Il n'y a pas d'annulation d'import — une ligne mise à jour en place ne garde
+    pas son image d'avant. Ce qui existe, c'est le fichier d'origine, et comme
+    l'import remplace, le rejouer remet ce qu'il portait. Cette route ne fait
+    donc rien de neuf : elle retire les quatre gestes qui séparaient
+    l'exploitant d'un retour en arrière que l'application savait déjà faire.
+
+    Les gardes sont celles de la cible rejouée, franchies par la méthode
+    appelée : rejouer n'est pas un droit de plus.
+    """
+    return importer.replay(campaign, batch_id).as_dict()
+
+
+@router.post(
     "/campaigns/{campaign_id}/import/{target}/paste",
     summary="Importer un collage depuis Excel",
 )
@@ -201,7 +216,6 @@ CAMPAIGN_TARGETS = CAMPAIGN_SOURCE_GRIDS
 #: Grids read from a *fact* table, which therefore need a period. A referential
 #: has a state; a fact table has a history, and one cannot be read without
 #: saying over what.
-PERIOD_TARGETS = ("backflush",)
 
 
 def _period(
@@ -602,10 +616,4 @@ def list_locations(campaign: CampaignDep, service: Referentials) -> dict[str, An
     }
 
 
-def _resolve(target: str) -> str:
-    method = _TARGETS.get(target)
-    if method is None:
-        raise ValidationError(
-            f"Cible d'import inconnue : {target!r}.", allowed=sorted(_TARGETS)
-        )
-    return method
+

@@ -442,6 +442,17 @@ export const api = {
       { method: 'POST', body: form },
     )
   },
+  /**
+   * Repasser le fichier d'un chargement déjà fait.
+   *
+   * Il n'y a pas d'annulation d'import — une ligne mise à jour en place ne
+   * garde pas son image d'avant. Le fichier d'origine, lui, est archivé, et
+   * comme l'import remplace, le rejouer remet ce qu'il portait.
+   */
+  replayImport: (id: string, batchId: string) =>
+    request<ImportResult>(`/campaigns/${id}/imports/${batchId}/replay`, {
+      method: 'POST',
+    }),
   /** Whether an ERP read is possible, and from which tables. */
   erpSource: () => request<ErpSource>('/erp/source'),
   /**

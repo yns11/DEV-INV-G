@@ -561,7 +561,12 @@ class ReportService:
     # ------------------------------------------------------------- variances
 
     def _variance_rows(
-        self, campaign: Campaign, *, granularity: str, material_only: bool
+        self,
+        campaign: Campaign,
+        *,
+        granularity: str,
+        material_only: bool,
+        only_items: frozenset[str] | None = None,
     ) -> list[dict[str, Any]]:
         """The variance view, exactly as the screen shows it.
 
@@ -576,6 +581,7 @@ class ReportService:
             limit=VARIANCE_EXPORT_CEILING,
             material_only=material_only,
             granularity=granularity,
+            only_items=only_items,
         )
         for row in rows:
             row["countedValue"] = row["countedQty"] * row["unitCost"]
@@ -583,7 +589,7 @@ class ReportService:
 
     def variance_export(
         self, campaign: Campaign, *, granularity: str = "item",
-        material_only: bool = False,
+        material_only: bool = False, only_items: frozenset[str] | None = None,
     ) -> tuple[bytes, str]:
         """The variance table as a workbook, quantities and values side by side.
 
@@ -594,7 +600,8 @@ class ReportService:
         """
         by_location = granularity == "item_location"
         rows = self._variance_rows(
-            campaign, granularity=granularity, material_only=material_only
+            campaign, granularity=granularity, material_only=material_only,
+            only_items=only_items,
         )
         headers = variance_columns(by_location=by_location)
         body = [variance_row(r, by_location=by_location) for r in rows]
@@ -611,6 +618,14 @@ class ReportService:
                 "Filtre": (
                     "au-delà des seuils uniquement" if material_only
                     else "tous les écarts"
+                ),
+                # Le périmètre fait partie du chiffre : un total sur un
+                # portefeuille et un total sur la campagne portent le même
+                # titre et ne disent pas la même chose, et c'est la feuille de
+                # provenance qui doit les départager six mois plus tard.
+                "Périmètre": (
+                    "mon portefeuille" if only_items is not None
+                    else "toutes les références"
                 ),
                 "Lignes": len(rows),
                 "Généré le": utcnow().isoformat(timespec="seconds"),
@@ -629,7 +644,7 @@ class ReportService:
 
     def variance_pdf(
         self, campaign: Campaign, *, granularity: str = "item",
-        material_only: bool = False,
+        material_only: bool = False, only_items: frozenset[str] | None = None,
     ) -> tuple[bytes, str]:
         """The same table, printable.
 
@@ -639,12 +654,14 @@ class ReportService:
         """
         by_location = granularity == "item_location"
         rows = self._variance_rows(
-            campaign, granularity=granularity, material_only=material_only
+            campaign, granularity=granularity, material_only=material_only,
+            only_items=only_items,
         )
         if not rows:
             raise ValidationError(
                 "Aucun écart à imprimer avec ce filtre.",
                 granularity=granularity, materialOnly=material_only,
+                mine=only_items is not None,
             )
         payload = build_variance_pdf(
             campaign_label=campaign.label or campaign.code,

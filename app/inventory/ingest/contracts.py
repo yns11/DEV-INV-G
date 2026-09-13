@@ -678,6 +678,39 @@ LOCATIONS = GridContract(
 )
 
 
+PORTFOLIOS = GridContract(
+    key="portfolios",
+    title="Portefeuilles d'articles",
+    description=(
+        "Qui suit quelle référence. Un portefeuille filtre l'affichage — « mes "
+        "références » — il n'interdit rien : chacun garde le droit d'agir "
+        "partout."
+    ),
+    hint=(
+        "Une ligne par référence, et l'adresse e-mail de la personne qui la "
+        "suit — celle avec laquelle elle se connecte. Une adresse vide retire "
+        "l'attribution."
+    ),
+    natural_key=("item_number",),
+    fields=(
+        FieldSpec("item_number", "Numéro d'article", required=True,
+                  aliases=("numero d'article", "itemnumber", "reference",
+                           "article"), width=200),
+        # Pas « gestionnaire » : un gestionnaire pilote des emplacements, et
+        # une référence peut être suivie par quelqu'un qui n'en pilote aucun.
+        FieldSpec("actor", "Adresse e-mail",
+                  aliases=("email", "e-mail", "utilisateur", "responsable",
+                           "acheteur", "identite", "adresse"),
+                  help="L'adresse avec laquelle la personne se connecte.",
+                  width=260),
+    ),
+    examples=(
+        {"item_number": "P-00005775", "actor": "prenom.nom@exemple.fr"},
+        {"item_number": "mass-00049094", "actor": "autre.personne@exemple.fr"},
+    ),
+)
+
+
 CONTRACTS: dict[str, GridContract] = {
     c.key: c
     for c in (
@@ -691,6 +724,7 @@ CONTRACTS: dict[str, GridContract] = {
         STOCK_FLOW,
         ZONES,
         LOCATIONS,
+        PORTFOLIOS,
     )
 }
 

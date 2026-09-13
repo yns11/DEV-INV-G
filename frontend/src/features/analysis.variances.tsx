@@ -9,6 +9,7 @@ import { CompositionBar, Pareto, VarianceBars } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { BreakdownModal, DrillCell, type BreakdownAspect } from '../components/BreakdownModal'
 import { Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Skeleton, useErrorToast } from '../components/ui'
+import { MINE_EMPTY, MineToggle } from '../components/MineToggle'
 import { FLAGS_COLUMN } from './varianceFlags'
 
 // --------------------------------------------------------------------------- //
@@ -31,6 +32,12 @@ export function VariancesTab({
   overview: Overview
 }) {
   const [materialOnly, setMaterialOnly] = useState(false)
+  // Filtre de *grille*, comme « au-delà des seuils » juste à côté : les deux
+  // cartes du haut et la carte des transferts restent sur la campagne entière,
+  // parce qu'elles répondent à des questions de campagne — où se concentre
+  // l'écart, quelle part n'est qu'un déplacement — et qu'un Pareto sur trente
+  // références ne dit rien.
+  const [mine, setMine] = useState(false)
   const [granularity, setGranularity] = useState<'item' | 'item_location'>('item')
   const [dimension, setDimension] = useState('item_type')
   const [explain, setExplain] = useState<string | null>(null)
@@ -58,6 +65,7 @@ export function VariancesTab({
         downloads.variances(campaignId, format, {
           granularity,
           materialOnly: materialOnly || undefined,
+          mine: mine || undefined,
         }),
       )
     } catch (error) {
@@ -68,8 +76,14 @@ export function VariancesTab({
   }
 
   const variances = useQuery({
-    queryKey: ['variances', campaignId, materialOnly, granularity],
-    queryFn: () => api.variances(campaignId, { limit: 1000, materialOnly, granularity }),
+    queryKey: ['variances', campaignId, materialOnly, granularity, mine],
+    queryFn: () =>
+      api.variances(campaignId, {
+        limit: 1000,
+        materialOnly,
+        granularity,
+        mine: mine || undefined,
+      }),
   })
   const aggregate = useQuery({
     queryKey: ['aggregate', campaignId, dimension],
@@ -380,6 +394,7 @@ export function VariancesTab({
               <Icons.filter size={12} />
               Au-delà des seuils uniquement
             </button>
+            <MineToggle active={mine} onToggle={() => setMine((value) => !value)} />
             {/* Les deux boutons emportent la vue telle qu'elle est réglée —
                 granularité et filtre compris. Un export qui ignorerait les
                 réglages produirait un fichier qui ne ressemble pas à l'écran
@@ -410,11 +425,17 @@ export function VariancesTab({
           query={variances}
           isEmpty={(rows) => rows.length === 0}
           empty={
-            <EmptyState title="Aucun écart" icon={<Icons.check size={20} />}>
-              {materialOnly
-                ? 'Aucun écart ne dépasse les seuils de matérialité configurés.'
-                : 'Le stock compté correspond au stock ERP.'}
-            </EmptyState>
+            mine ? (
+              <EmptyState title="Rien dans votre portefeuille" icon={<Icons.filter size={20} />}>
+                {MINE_EMPTY}
+              </EmptyState>
+            ) : (
+              <EmptyState title="Aucun écart" icon={<Icons.check size={20} />}>
+                {materialOnly
+                  ? 'Aucun écart ne dépasse les seuils de matérialité configurés.'
+                  : 'Le stock compté correspond au stock ERP.'}
+              </EmptyState>
+            )
           }
         >
           {(rows) => (
@@ -432,7 +453,8 @@ export function VariancesTab({
               initialSort={{ key: 'varianceValue', direction: 'asc' }}
               footer={
                 <span className="subtle">
-                  Périmètre : {overview.campaign.code} · stock ERP gelé le{' '}
+                  Périmètre : {overview.campaign.code}
+                  {mine && ' · votre portefeuille uniquement'} · stock ERP gelé le{' '}
                   {new Date(overview.campaign.book_stock_frozen_at!).toLocaleDateString('fr-FR')}
                 </span>
               }

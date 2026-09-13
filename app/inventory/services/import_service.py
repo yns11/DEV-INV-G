@@ -62,6 +62,7 @@ from .import_batches import (
     _hash_of,
     _source_of,
 )
+from .import_locations_retired import retire_stale_locations
 from .import_parsing import (
     ImportParser,
     InputMode,
@@ -70,6 +71,7 @@ from .import_parsing import (
 )
 from .import_replay import replay_batch
 from .import_round_trip import round_trip_findings
+from .portfolio_service import import_portfolios
 
 log = logging.getLogger(__name__)
 
@@ -93,80 +95,6 @@ class ImportService:
 
     # ---------------------------------------------------------------- parsing
 
-    def _retire_stale_locations(
-        self,
-        campaign: Campaign,
-        stale: Sequence[LocationKey],
-        *,
-        outcome: ImportOutcome,
-        conn: Any,
-    ) -> tuple[int, set[LocationKey]]:
-        """Close the locations a new ERP snapshot no longer knows about.
-
-        Returns how many journals were removed, and the locations kept back.
-
-        A journal nobody has opened is a leftover and goes with its location. A
-        journal that carries a line, or that somebody has already posted, is
-        *work*: reloading the snapshot is not a decision to throw it away. Those
-        locations stay active and the import says so — an emplacement counted
-        under a snapshot that no longer lists it is exactly the sort of thing
-        that has to be looked at, not cleaned up in silence.
-        """
-        ctx = self.ctx
-        if not stale:
-            return 0, set()
-
-        untouched = ctx.journals.untouched_journal_keys(campaign.id, stale, conn=conn)
-        existing_journals = ctx.journals.journal_keys(campaign.id, stale, conn=conn)
-        kept = {
-            k for k in stale
-            if (k.warehouse_id, k.location_id) in existing_journals - untouched
-        }
-        # GENERIQUE ne porte pas de ligne de journal : son comptage vit dans les
-        # feuilles. Le juger sur ses lignes de journal le déclarerait vierge
-        # alors qu'une zone entière y a été comptée, et le rechargement d'un
-        # snapshot emporterait tout ce travail sans le dire.
-        generic = campaign.config.generic_key
-        if generic in stale and ctx.sheets.count_counted_lines(campaign.id, conn=conn):
-            kept.add(generic)
-        removable = [
-            k for k in stale
-            if (k.warehouse_id, k.location_id) in untouched and k not in kept
-        ]
-
-        removed = ctx.journals.delete_journals_for_locations(
-            campaign.id, removable, conn=conn
-        )
-        # L'emplacement suit son journal : le désactiver alors qu'un comptage y
-        # est encore ouvert le ferait disparaître des écrans où ce comptage doit
-        # rester visible.
-        closing = [k for k in stale if k not in kept]
-        if closing:
-            ctx.referentials.set_location_status(
-                campaign.id, closing, LocationStatus.DISABLED,
-                actor=ctx.actor, conn=conn,
-            )
-
-        outcome.details["locationsRetired"] = len(closing)
-        outcome.details["journalsRemoved"] = removed
-        if kept:
-            outcome.details["locationsKept"] = sorted(
-                f"{k.warehouse_id} / {k.location_id}" for k in kept
-            )[:50]
-            outcome.warnings.append(
-                RowError(
-                    line=0,
-                    column="",
-                    value="",
-                    message=(
-                        f"{len(kept)} emplacement(s) absents du nouveau stock ERP "
-                        "portent déjà un comptage : leur journal est conservé. "
-                        "Vérifiez-les avant la clôture."
-                    ),
-                )
-            )
-        return removed, kept
-
     # ---------------------------------------------------------------- parsing
 
     def replay(self, campaign: Campaign, batch_id: str) -> ImportOutcome:
@@ -176,6 +104,10 @@ class ImportService:
         service que la route connaît, et que le rejeu appelle ses méthodes.
         """
         return replay_batch(self, campaign, batch_id)
+
+    def import_portfolios(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
+        """Charger les attributions d'articles — voir :mod:`portfolio_service`."""
+        return import_portfolios(self, campaign, **kwargs)
 
     def parse(self, *args: Any, **kwargs: Any) -> tuple[GridContract, ParseResult]:
         """Lit une entrée — voir :class:`ImportParser`.
@@ -493,8 +425,8 @@ class ImportService:
         batch_id = new_id()
         with ctx.db.transaction() as conn:
             ctx.book_stock.replace(campaign.id, lines, batch_id=batch_id, conn=conn)
-            removed, kept = self._retire_stale_locations(
-                campaign, stale, outcome=outcome, conn=conn
+            removed, kept = retire_stale_locations(
+                ctx, campaign, stale, outcome=outcome, conn=conn
             )
             if warehouses:
                 ctx.referentials.upsert_warehouses(

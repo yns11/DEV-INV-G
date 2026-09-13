@@ -420,7 +420,13 @@ class ReferentialService:
 
     # -------------------------------------------------------------- stock ERP
 
-    def book_stock(self, campaign: Campaign, *, top: int | None = None) -> BookStockView:
+    def book_stock(
+        self,
+        campaign: Campaign,
+        *,
+        top: int | None = None,
+        only_items: frozenset[str] | None = None,
+    ) -> BookStockView:
         """L'instantané ERP, et le poids de ses plus grosses lignes.
 
         ``top=25`` garde les vingt-cinq triplets article / entrepôt /
@@ -438,6 +444,11 @@ class ReferentialService:
             self.ctx.book_stock.list(campaign.id),
             self.ctx.referentials.items_by_number(campaign.id),
         )
+        # Le filtre s'applique **avant** le total et avant `top` : un total qui
+        # compterait des lignes que l'écran ne montre pas serait le genre de
+        # chiffre qu'on passe une matinée à ne pas retrouver.
+        if only_items is not None:
+            lines = [l for l in lines if l.item_number in only_items]
         total_value = sum(float(l.value) for l in lines)
         top_share: float | None = None
         if top is not None:

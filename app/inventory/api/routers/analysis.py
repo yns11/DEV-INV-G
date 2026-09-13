@@ -7,7 +7,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query
 
 from ...services import AnalysisService
-from ..deps import CampaignDep, analysis_service
+from ...services.portfolio_service import portfolio_filter
+from ..deps import CampaignDep, Ctx, analysis_service
 from ..schemas import AdjustmentRowRequest, AnalysisRequest
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/analysis", tags=["analyse"])
@@ -34,9 +35,11 @@ def kpis(campaign: CampaignDep, service: Service) -> dict[str, Any]:
 def variances(
     campaign: CampaignDep,
     service: Service,
+    ctx: Ctx,
     limit: Annotated[int, Query(ge=1, le=100_000)] = 200,
     material_only: Annotated[bool, Query(alias="materialOnly")] = False,
     granularity: Annotated[str, Query(pattern="^(item|item_location)$")] = "item",
+    mine: Annotated[bool, Query()] = False,
 ) -> list[dict[str, Any]]:
     """The exception list.
 
@@ -45,7 +48,8 @@ def variances(
     and recount).
     """
     return service.top_variances(
-        campaign, limit=limit, material_only=material_only, granularity=granularity
+        campaign, limit=limit, material_only=material_only, granularity=granularity,
+        only_items=portfolio_filter(ctx, campaign, mine=mine),
     )
 
 
@@ -117,14 +121,21 @@ def breakdown(
 
 
 @router.get("/backflush", summary="Écart backflush de la campagne")
-def backflush(campaign: CampaignDep, service: Service) -> dict[str, Any]:
+def backflush(
+    campaign: CampaignDep,
+    service: Service,
+    ctx: Ctx,
+    mine: Annotated[bool, Query()] = False,
+) -> dict[str, Any]:
     """One line per article: what production explains, and what it does not.
 
     The period header travels with the rows rather than being fetched apart:
     a backflush figure without its bounds is not interpretable, and the two
     arriving in separate responses is how they end up disagreeing on screen.
     """
-    return service.backflush(campaign)
+    return service.backflush(
+        campaign, only_items=portfolio_filter(ctx, campaign, mine=mine)
+    )
 
 
 @router.get("/backflush/period", summary="Période proposée pour l'écart backflush")

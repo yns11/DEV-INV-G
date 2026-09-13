@@ -172,6 +172,7 @@ export const SECTIONS: Section[] = [
       { id: 'managers', label: 'Gestionnaires' },
       { id: 'zone_scope', label: 'Affectation zones' },
       { id: 'journal_scope', label: 'Affectation journaux' },
+      { id: 'portfolios', label: 'Portefeuilles' },
       { id: 'settings', label: 'Paramètres' },
     ],
   },

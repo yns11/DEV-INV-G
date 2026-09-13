@@ -11,6 +11,7 @@ import { BomsTab } from './preparation.boms'
 import { BookStockTab } from './preparation.bookStock'
 import { CountSheetsTab } from './preparation.sheets'
 import { JournalScopeTab, ManagersTab, SettingsTab, ZoneScopeTab } from './preparation.gestion'
+import { PortfoliosTab } from './preparation.portfolios'
 
 /**
  * The screens this file serves, one per navigation entry.
@@ -28,10 +29,15 @@ export type PreparationView =
   | 'count_sheets'
   | 'gestion'
 
-type GestionTab = 'managers' | 'zone_scope' | 'journal_scope' | 'settings'
+type GestionTab =
+  | 'managers'
+  | 'zone_scope'
+  | 'journal_scope'
+  | 'portfolios'
+  | 'settings'
 
 const GESTION_TABS: GestionTab[] = [
-  'managers', 'zone_scope', 'journal_scope', 'settings',
+  'managers', 'zone_scope', 'journal_scope', 'portfolios', 'settings',
 ]
 
 export function Preparation({ view }: { view: PreparationView }) {
@@ -88,6 +94,13 @@ export function Preparation({ view }: { view: PreparationView }) {
       )}
       {tab === 'gestion' && gestion === 'zone_scope' && (
         <ZoneScopeTab campaignId={campaignId} overview={overview} />
+      )}
+      {tab === 'gestion' && gestion === 'portfolios' && contract('portfolios') && (
+        <PortfoliosTab
+          campaignId={campaignId}
+          contract={contract('portfolios')!}
+          overview={overview}
+        />
       )}
     </div>
   )

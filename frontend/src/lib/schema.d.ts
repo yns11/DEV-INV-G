@@ -2196,6 +2196,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/portfolios": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Qui suit quelle référence
+         * @description Le tableau d'attribution, et ce qu'il pèse par personne.
+         *
+         *     Les deux ensemble : la grille seule ne dit pas si la répartition est
+         *     complète, et sur cinq cents références c'est la première question.
+         */
+        get: operations["list_portfolios_api_campaigns__campaign_id__portfolios_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Retirer toutes les attributions
+         * @description Repartir de zéro. Le chargement fusionne, donc ceci est la seule façon
+         *     de tout défaire d'un coup — et c'est explicite plutôt qu'implicite dans un
+         *     fichier vide.
+         */
+        delete: operations["clear_api_campaigns__campaign_id__portfolios_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/reports/campaign.xlsx": {
         parameters: {
             query?: never;
@@ -5475,7 +5504,9 @@ export interface operations {
     };
     backflush_api_campaigns__campaign_id__analysis_backflush_get: {
         parameters: {
-            query?: never;
+            query?: {
+                mine?: boolean;
+            };
             header?: {
                 "x-forwarded-email"?: string | null;
                 "x-forwarded-preferred-username"?: string | null;
@@ -5842,6 +5873,7 @@ export interface operations {
                 limit?: number;
                 materialOnly?: boolean;
                 granularity?: string;
+                mine?: boolean;
             };
             header?: {
                 "x-forwarded-email"?: string | null;
@@ -6289,6 +6321,7 @@ export interface operations {
                 limit?: number;
                 offset?: number;
                 top?: number | null;
+                mine?: boolean;
             };
             header?: {
                 "x-forwarded-email"?: string | null;
@@ -8885,6 +8918,78 @@ export interface operations {
             };
         };
     };
+    list_portfolios_api_campaigns__campaign_id__portfolios_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_api_campaigns__campaign_id__portfolios_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     campaign_workbook_api_campaigns__campaign_id__reports_campaign_xlsx_get: {
         parameters: {
             query?: never;
@@ -9159,6 +9264,7 @@ export interface operations {
             query?: {
                 granularity?: "item" | "item_location";
                 materialOnly?: boolean;
+                mine?: boolean;
             };
             header?: {
                 "x-forwarded-email"?: string | null;
@@ -9198,6 +9304,7 @@ export interface operations {
             query?: {
                 granularity?: "item" | "item_location";
                 materialOnly?: boolean;
+                mine?: boolean;
             };
             header?: {
                 "x-forwarded-email"?: string | null;

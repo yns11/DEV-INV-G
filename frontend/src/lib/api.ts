@@ -406,7 +406,7 @@ export const api = {
     }>(`/campaigns/${id}/bom-health`),
   bookStock: (
     id: string,
-    params: { limit?: number; offset?: number; top?: number } = {},
+    params: { limit?: number; offset?: number; top?: number; mine?: boolean } = {},
   ) =>
     request<{
       total: number
@@ -423,6 +423,17 @@ export const api = {
       warehouses: Array<Record<string, unknown>>
       locations: Array<Record<string, unknown>>
     }>(`/campaigns/${id}/locations`),
+
+  // ------------------------------------------------------------ portefeuilles
+  /** Qui suit quelle référence, et ce que ça pèse par personne. */
+  portfolios: (id: string) =>
+    request<{
+      rows: Array<{ itemNumber: string; actor: string; name: string; known: boolean }>
+      byActor: Array<{ actor: string; items: number }>
+      unassigned: number
+    }>(`/campaigns/${id}/portfolios`),
+  clearPortfolios: (id: string) =>
+    request<{ removed: number }>(`/campaigns/${id}/portfolios`, { method: 'DELETE' }),
 
   // ----------------------------------------------------------------- imports
   importFile: (id: string, target: string, file: File, options: {
@@ -859,6 +870,8 @@ export const api = {
     limit?: number
     materialOnly?: boolean
     granularity?: 'item' | 'item_location'
+    /** « Uniquement mes références » — résolu côté serveur depuis l'identité. */
+    mine?: boolean
   } = {}) => request<VarianceRow[]>(`/campaigns/${id}/analysis/variances${qs(params)}`),
   aggregate: (id: string, dimension: string, limit = 200) =>
     request<AggregateRow[]>(`/campaigns/${id}/analysis/aggregate${qs({ dimension, limit })}`),
@@ -912,8 +925,8 @@ export const api = {
     }),
 
   // --------------------------------------------------------------- backflush
-  backflush: (id: string) =>
-    request<BackflushView>(`/campaigns/${id}/analysis/backflush`),
+  backflush: (id: string, params: { mine?: boolean } = {}) =>
+    request<BackflushView>(`/campaigns/${id}/analysis/backflush${qs(params)}`),
   /** La période que l'écran pré-remplit, et que l'utilisateur peut changer. */
   backflushPeriod: (id: string) =>
     request<{ periodStart: string; periodEnd: string }>(
@@ -1133,7 +1146,7 @@ export const downloads = {
   variances: (
     id: string,
     format: 'xlsx' | 'pdf',
-    params: { granularity?: string; materialOnly?: boolean } = {},
+    params: { granularity?: string; materialOnly?: boolean; mine?: boolean } = {},
   ) => `/campaigns/${id}/reports/variances.${format}${qs(params)}`,
   //ostensiblement générique : chaque grille poste ses propres colonnes et ses
   // propres lignes, donc un tableau ajouté demain a le bouton sans rien coder.

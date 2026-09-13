@@ -23,6 +23,7 @@ from ...services.import_replay import (
 from ...services.import_replay import (
     resolve_target as _resolve,
 )
+from ...services.portfolio_service import portfolio_filter
 from ..deps import CampaignDep, Ctx, import_service, referential_service
 from ..paging import MAX_PAGE, page
 from ..responses import CampaignSourceResponse, GridContractResponse
@@ -569,12 +570,16 @@ def bom_health(campaign: CampaignDep, service: Referentials) -> dict[str, Any]:
 def book_stock(
     campaign: CampaignDep,
     service: Referentials,
+    ctx: Ctx,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 1000,
     offset: Annotated[int, Query(ge=0)] = 0,
     top: Annotated[int | None, Query(ge=1, le=1000)] = None,
+    mine: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     """The ERP snapshot, and what the biggest lines of it weigh."""
-    view = service.book_stock(campaign, top=top)
+    view = service.book_stock(
+        campaign, top=top, only_items=portfolio_filter(ctx, campaign, mine=mine)
+    )
     return {
         "total": len(view.lines),
         "totalValue": view.total_value,

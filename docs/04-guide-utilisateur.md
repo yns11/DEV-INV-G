@@ -423,6 +423,46 @@ relevées sur le terrain — mais son gestionnaire se change encore : dans
 > du périmètre. Le filtrage se fait côté serveur : ce que le périmètre exclut
 > n'est jamais envoyé au poste.
 
+### 1.7 bis Répartir les **références** — les portefeuilles
+
+**Référentiels & seuils → Portefeuilles**, entre *Affectation journaux* et
+*Paramètres*.
+
+Les affectations ci-dessus répartissent des **emplacements**. Cet onglet
+répartit des **articles**, et ce n'est pas la même découpe : un acheteur suit
+ses références partout où elles sont, quel que soit l'entrepôt qui les range.
+Sur une campagne de cinq cents références, l'écran des écarts montrait à chacun
+le travail de tout le monde.
+
+Le tableau se charge **comme toutes les autres grilles** — un fichier, un
+collage depuis le tableur, ou une saisie à la main — avec deux colonnes : la
+référence et l'adresse e-mail, celle avec laquelle la personne se connecte.
+
+Trois comportements à connaître :
+
+- **Charger ajoute, n'efface pas.** Un fichier de trente références ne dit rien
+  des quatre cent cinquante autres. On charge donc par morceaux, un portefeuille
+  à la fois. Pour tout défaire d'un coup, le bouton **Tout retirer**.
+- **Une adresse vide retire l'attribution.** C'est la façon d'en défaire une
+  depuis le même fichier qui les pose.
+- **Une référence inconnue du référentiel est acceptée**, et signalée « hors
+  référentiel » dans la grille. Le tableau se prépare souvent avant que les
+  articles ne soient chargés ; la pastille est là pour repérer une coquille.
+
+Comme les affectations, l'onglet **reste ouvert jusqu'à la clôture**.
+
+Le portefeuille se lit ensuite sur trois écrans — **Stock ERP**, **Écart
+backflush** et **Écarts** — par la bascule **Mes références**, à côté des autres
+filtres de la grille. Sur l'écran des écarts, les deux exports Excel et PDF
+emportent la bascule : le fichier contient ce qu'on avait sous les yeux, et sa
+feuille de provenance dit sur quel périmètre il a été tiré.
+
+> **Un portefeuille n'est pas une habilitation**, pas plus qu'un périmètre. Il
+> filtre l'affichage et n'interdit rien : chacun garde le droit d'agir sur toutes
+> les références. Comme « Mon périmètre », il est résolu côté serveur à partir de
+> l'identité de connexion — le navigateur ne nomme jamais personne, et ne peut
+> donc pas demander le portefeuille d'un autre.
+
 ### 1.8 Imprimer les feuilles
 
 **GENERIQUE → Imprimer les feuilles** produit un seul PDF, dans l'ordre des

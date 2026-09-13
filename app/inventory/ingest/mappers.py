@@ -37,6 +37,7 @@ from ..domain.models import (
     BookStockLine,
     CountSheetLine,
     Item,
+    ItemPortfolio,
     Location,
     StockFlowInput,
     Zone,
@@ -247,6 +248,34 @@ def map_locations(
         except (ValueError, KeyError) as exc:
             errors.append(RowError(index, "warehouse_id", row.get("warehouse_id"), str(exc)))
     return locations, errors
+
+
+def map_portfolios(
+    campaign_id: str, rows: Iterable[Mapping[str, Any]]
+) -> tuple[list[ItemPortfolio], list[RowError]]:
+    """Qui suit quelle référence.
+
+    Une adresse vide est **acceptée** et veut dire « plus personne » : c'est la
+    façon de retirer une attribution depuis le même fichier qui les pose, sans
+    obliger à passer par l'écran ligne à ligne. Le service la traduit en
+    suppression ; ici elle reste une ligne comme les autres.
+    """
+    portfolios: list[ItemPortfolio] = []
+    errors: list[RowError] = []
+    for index, row in enumerate(rows, start=2):
+        try:
+            portfolios.append(
+                ItemPortfolio(
+                    campaign_id=campaign_id,
+                    item_number=row["item_number"],
+                    actor=row.get("actor") or "",
+                )
+            )
+        except (ValueError, KeyError) as exc:
+            errors.append(
+                RowError(index, "item_number", row.get("item_number"), str(exc))
+            )
+    return portfolios, errors
 
 
 def map_zones(

@@ -9,8 +9,9 @@ from fastapi.responses import Response
 
 from ...domain.printing import PrintMode
 from ...services import ReportService
+from ...services.portfolio_service import portfolio_filter
 from ...services.report_service import MAX_BLANK_LINES
-from ..deps import CampaignDep, report_service
+from ..deps import CampaignDep, Ctx, report_service
 from ..downloads import attachment
 from ..schemas import TableExportRequest
 
@@ -151,6 +152,10 @@ _Granularity = Annotated[
     Literal["item", "item_location"], Query(alias="granularity")
 ]
 _MaterialOnly = Annotated[bool, Query(alias="materialOnly")]
+#: « Uniquement mes références ». Résolu côté serveur, à partir de l'identité que
+#: la plateforme transmet : le fichier suit la bascule de l'écran, et personne ne
+#: peut demander le portefeuille d'un autre en changeant un paramètre d'URL.
+_Mine = Annotated[bool, Query()]
 
 
 @router.get(
@@ -161,8 +166,10 @@ _MaterialOnly = Annotated[bool, Query(alias="materialOnly")]
 def variance_export(
     campaign: CampaignDep,
     service: Service,
+    ctx: Ctx,
     granularity: _Granularity = "item",
     material_only: _MaterialOnly = False,
+    mine: _Mine = False,
 ) -> Response:
     """The variance view, with each figure in its own column.
 
@@ -172,7 +179,8 @@ def variance_export(
     cells hold two figures cannot be summed or pivoted.
     """
     payload, filename = service.variance_export(
-        campaign, granularity=granularity, material_only=material_only
+        campaign, granularity=granularity, material_only=material_only,
+        only_items=portfolio_filter(ctx, campaign, mine=mine),
     )
     return attachment(payload, filename, _XLSX)
 
@@ -185,8 +193,10 @@ def variance_export(
 def variance_pdf(
     campaign: CampaignDep,
     service: Service,
+    ctx: Ctx,
     granularity: _Granularity = "item",
     material_only: _MaterialOnly = False,
+    mine: _Mine = False,
 ) -> Response:
     """The same table as a document, biggest variances first.
 
@@ -194,7 +204,8 @@ def variance_pdf(
     many lines it left out, and the Excel export carries them all.
     """
     payload, filename = service.variance_pdf(
-        campaign, granularity=granularity, material_only=material_only
+        campaign, granularity=granularity, material_only=material_only,
+        only_items=portfolio_filter(ctx, campaign, mine=mine),
     )
     return attachment(payload, filename, "application/pdf")
 

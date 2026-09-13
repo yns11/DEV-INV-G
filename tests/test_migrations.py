@@ -58,6 +58,7 @@ SHIPPED = {
     "030_zone_lignes_vierges": "089e21c83682",
     "031_ligne_erp_sans_numero": "8404b352948a",
     "032_doublons_de_comptage_fusionnes": "9bfc9907e03e",
+    "033_portefeuilles_d_articles": "dcba49923663",
 }
 
 

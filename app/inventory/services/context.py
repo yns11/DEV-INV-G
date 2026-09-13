@@ -31,6 +31,7 @@ from ..db import (
     EvidenceBlobRepository,
     ImportBatchRepository,
     JournalRepository,
+    PortfolioRepository,
     ReferentialRepository,
     ScanJobRepository,
     SheetRepository,
@@ -104,6 +105,10 @@ class ServiceContext:
     @functools.cached_property
     def arbitrations(self) -> ArbitrationRepository:
         return ArbitrationRepository(self.db)
+
+    @functools.cached_property
+    def portfolios(self) -> PortfolioRepository:
+        return PortfolioRepository(self.db)
 
     @functools.cached_property
     def consolidation(self) -> ConsolidationRepository:

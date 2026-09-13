@@ -563,6 +563,44 @@ class Location(DomainModel):
         return self.status is LocationStatus.ACTIVE
 
 
+class ItemPortfolio(DomainModel):
+    """Qui suit une référence — le portefeuille, par opposition au périmètre.
+
+    L'application répartissait déjà des **emplacements** entre gestionnaires.
+    Ceci répartit des **articles**, et ce n'est pas la même découpe : un acheteur
+    suit ses références partout où elles sont, quel que soit l'entrepôt qui les
+    range.
+
+    ``actor`` est l'identité transmise par l'authentification, la même que celle
+    d'un gestionnaire. Elle ne donne ici **aucun droit** : un portefeuille filtre
+    l'affichage — « mes références » — et chacun garde la possibilité d'agir sur
+    toutes. Être déclaré gestionnaire reste ce qui ouvre l'écriture ; avoir un
+    portefeuille ne l'ouvre pas, et ne la referme pas non plus.
+
+    Une référence a **un** propriétaire. Le partage aurait tenu dans la clé, et
+    n'est pas retenu : « à qui est cette référence » doit avoir une réponse.
+    """
+
+    campaign_id: str
+    item_number: str
+    actor: str = ""
+
+    @field_validator("actor", mode="before")
+    @classmethod
+    def _actor(cls, v: Any) -> str:
+        """L'annuaire varie sur la casse ; un portefeuille ne peut pas en dépendre.
+
+        Sans cela « Prenom.Nom@ » et « prenom.nom@ » produiraient deux
+        portefeuilles pour une personne, et le filtre n'en rendrait qu'un.
+        """
+        return str(v or "").strip().lower()
+
+    @field_validator("item_number", mode="before")
+    @classmethod
+    def _item(cls, v: Any) -> str:
+        return normalise_key(str(v or ""))
+
+
 class Manager(DomainModel):
     """One of the campaign's managers (« gestionnaire ») and their identity.
 

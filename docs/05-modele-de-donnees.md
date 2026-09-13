@@ -79,6 +79,7 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           │
           ├─ manager                      (5 postes, avec l'identité de chacun)
           ├─ warehouse_manager            (entrepôt → gestionnaire, clé AUTRES)
+          ├─ item_portfolio               (article → personne qui le suit)
           │
           ├─ consolidation_run ─┬─ consolidation_line   (journal GENERIQUE produit)
           │                     └─ wip_breakdown        (traçabilité de l'éclatement)
@@ -193,7 +194,43 @@ la préparation.
 Le périmètre est un **filtre, jamais une permission** : aucune écriture n'en
 dépend, et la matrice de gel reste la seule autorité sur ce qui est modifiable.
 
-### 3.5 Pourquoi l'audit est protégé au niveau du moteur
+### 3.5 Portefeuilles : la seconde découpe, sur les articles
+
+```sql
+item_portfolio (campaign_id, item_number) + actor   -- la même identité
+```
+
+Deux découpes cohabitent parce qu'elles répondent à deux questions. Le
+**périmètre** d'un gestionnaire porte sur des *emplacements* : quels journaux,
+quelles zones sont à lui. Le **portefeuille** porte sur des *articles* : un
+acheteur suit ses références partout où elles sont, quel que soit l'entrepôt
+qui les range, et le périmètre ne l'aide en rien. Elles se cumulent sans se
+connaître — on peut suivre des références dans un entrepôt qu'on ne pilote pas.
+
+Un propriétaire par référence : l'identité est une colonne, pas un morceau de
+la clé. « À qui est cette référence » doit avoir une réponse, sans quoi le
+tableau se lit à deux endroits et se corrige à trois. Le jour où le partage
+sera un besoin réel, il méritera sa propre forme plutôt qu'une clé élargie par
+précaution.
+
+`actor` n'est pas une clé étrangère vers `manager`, et délibérément : une
+référence peut être suivie par quelqu'un qui ne pilote aucun emplacement — un
+acheteur, un contrôleur de gestion — et lier les deux obligerait à inventer un
+poste de gestionnaire pour lui donner des articles.
+
+Table à part plutôt que colonne sur `item` : le référentiel articles **gèle à
+l'entrée en comptage**, alors que la répartition du travail bouge — quelqu'un
+tombe malade le matin du jour J, l'analyse se répartit autrement trois semaines
+plus tard. Le portefeuille suit donc la garde `managers`, ouverte jusqu'à la
+clôture.
+
+Comme le périmètre, c'est un **filtre et jamais une permission** : la bascule
+« Mes références » du stock ERP, de l'écart backflush et des écarts n'interdit
+rien, elle cache. Le chargement **fusionne** — un fichier de trente références
+ne dit rien des quatre cent cinquante autres — et une adresse vide retire
+l'attribution.
+
+### 3.6 Pourquoi l'audit est protégé au niveau du moteur
 
 ```sql
 CREATE OR REPLACE RULE audit_event_no_update AS ON UPDATE TO audit_event DO INSTEAD NOTHING;
@@ -203,7 +240,7 @@ CREATE OR REPLACE RULE audit_event_no_delete AS ON DELETE TO audit_event DO INST
 Une convention de code se contourne par accident. Une règle SQL, non : même un
 bug dans la couche service ne peut pas réécrire l'histoire.
 
-### 3.6 Concurrence
+### 3.7 Concurrence
 
 Toutes les tables mutables portent `row_version BIGINT`. Les écritures qui
 peuvent entrer en conflit (correction d'une ligne de comptage) comparent la
@@ -211,7 +248,7 @@ version attendue et renvoient un **409** plutôt qu'un dernier-arrivé-gagne
 silencieux. Le jour J, dix personnes travaillent en parallèle : c'est le moment
 où ça compte.
 
-### 3.7 Index
+### 3.8 Index
 
 Ils suivent les chemins réellement empruntés :
 

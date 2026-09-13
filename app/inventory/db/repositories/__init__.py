@@ -42,6 +42,7 @@ from .erp_journal import (
 from .evidence import EvidenceBlobRepository
 from .journal import JournalRepository
 from .operations import OperationsRepository
+from .portfolio import PortfolioRepository
 from .referential import ReferentialRepository
 from .scan_job import ScanJobRepository
 from .sheet import SheetRepository
@@ -56,6 +57,7 @@ __all__ = [
     "ErpJournalRepository",
     "EarlyCountDriftRepository",
     "ArbitrationRepository",
+    "PortfolioRepository",
     "SheetRepository",
     "ConsolidationRepository",
     "EvidenceBlobRepository",

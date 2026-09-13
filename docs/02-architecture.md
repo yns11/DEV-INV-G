@@ -118,7 +118,7 @@ structurellement impossible.
 |---|:---:|:---:|:---:|:---:|
 | Seuils | ✅ | ❌ | ❌ | ❌ |
 | Paramètres (formules) | ✅ | ✅ | ❌ | ❌ |
-| Gestionnaires et leurs périmètres | ✅ | ✅ | ✅ | ❌ |
+| Gestionnaires, périmètres et portefeuilles | ✅ | ✅ | ✅ | ❌ |
 | Articles, nomenclatures | ✅ | ❌ | ❌ | ❌ |
 | Emplacements | ✅ | ✅ | ❌ | ❌ |
 | Stock ERP | ❌ | ✅ | ❌ | ❌ |
@@ -144,6 +144,14 @@ C'est pourquoi l'affectation d'une zone à un gestionnaire ne suit pas la ligne
 « Zones GENERIQUE » mais celle-ci : la zone se fige à l'analyse parce qu'elle
 porte des quantités relevées sur le terrain ; son gestionnaire, lui, est ce
 qu'on réajuste précisément quand l'analyse se répartit.
+
+Les **portefeuilles** (`item_portfolio`) sont sur la même ligne, et pour la même
+raison. Ils répartissent des *articles* là où les périmètres répartissent des
+*emplacements* — un acheteur suit ses références quel que soit l'entrepôt qui
+les range — et ce sont eux que lit la bascule « Mes références » du stock ERP,
+de l'écart backflush et des écarts. Une colonne sur `item` aurait été plus
+courte et fausse : le référentiel articles gèle à l'entrée en comptage, ce qui
+aurait rendu le portefeuille immodifiable au moment précis où il sert.
 
 ## 5. Provenance des données
 

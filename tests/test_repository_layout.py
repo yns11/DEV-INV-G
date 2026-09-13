@@ -59,6 +59,7 @@ PUBLIC = (
     "ImportBatchRepository",
     "JournalRepository",
     "OperationsRepository",
+    "PortfolioRepository",
     "ReferentialRepository",
     "ScanJobRepository",
     "SheetRepository",

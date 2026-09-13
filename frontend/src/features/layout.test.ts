@@ -35,7 +35,7 @@ const FEATURES = join(process.cwd(), 'src', 'features')
  * contrôle — ce qui est le moment de se demander s'il a sa place.
  */
 const SCREENS = [
-  { shell: 'Preparation.tsx', prefix: 'preparation.', tabs: 6 },
+  { shell: 'Preparation.tsx', prefix: 'preparation.', tabs: 7 },
   { shell: 'Generic.tsx', prefix: 'generic.', tabs: 6 },
   { shell: 'Analysis.tsx', prefix: 'analysis.', tabs: 5 },
 ]

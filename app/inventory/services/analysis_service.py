@@ -184,8 +184,22 @@ class AnalysisService:
         )
         return kept
 
-    def kpis(self, campaign: Campaign) -> KpiBlock:
-        return compute_kpis(self.variances(campaign, granularity="item"), campaign=campaign)
+    def kpis(
+        self, campaign: Campaign, *, only_items: frozenset[str] | None = None
+    ) -> KpiBlock:
+        """Les totaux de la campagne, ou ceux d'un portefeuille.
+
+        ``only_items`` restreint la population **avant** le calcul, et pas
+        seulement l'affichage : un bandeau de totaux qui resterait celui de la
+        campagne entière au-dessus d'une grille filtrée serait une soustraction
+        qui ne tombe pas, et c'est l'écran de l'écart backflush — trois cartes
+        dont la troisième est la différence des deux premières — qui le rendrait
+        le plus visiblement faux.
+        """
+        lines = self.variances(campaign, granularity="item")
+        if only_items is not None:
+            lines = [line for line in lines if line.item_number in only_items]
+        return compute_kpis(lines, campaign=campaign)
 
     def aggregate(
         self, campaign: Campaign, dimension: str, *, limit: int = 200
@@ -210,12 +224,18 @@ class AnalysisService:
         limit: int = 100,
         material_only: bool = False,
         granularity: str = "item",
+        only_items: frozenset[str] | None = None,
     ) -> list[dict[str, Any]]:
         """The exception list — the screen a manager actually works from."""
         ctx = self.ctx
         items = ctx.referentials.items_by_number(campaign.id)
         analyses = {a.item_number: a for a in ctx.analysis.list_analyses(campaign.id)}
         lines = self.variances(campaign, granularity=granularity)
+        # Avant le tri et avant `limit` : filtrer après aurait rendu « les vingt
+        # plus gros écarts, dont ceux qui sont à moi », c'est-à-dire parfois
+        # aucun, sur une liste où l'on en attend vingt.
+        if only_items is not None:
+            lines = [l for l in lines if l.item_number in only_items]
         if material_only:
             lines = [
                 l for l in lines
@@ -358,7 +378,9 @@ class AnalysisService:
 
     # ------------------------------------------------------------- backflush
 
-    def backflush(self, campaign: Campaign) -> dict[str, Any]:
+    def backflush(
+        self, campaign: Campaign, *, only_items: frozenset[str] | None = None
+    ) -> dict[str, Any]:
         """The backflush view: one line per article, and what it explains.
 
         Sorted by unexplained value rather than by backflush variance. A large
@@ -382,6 +404,8 @@ class AnalysisService:
 
         rows: list[dict[str, Any]] = []
         for line in lines:
+            if only_items is not None and line.item_number not in only_items:
+                continue
             item = items.get(line.item_number)
             if item is not None and item.excluded_everywhere:
                 continue
@@ -431,7 +455,7 @@ class AnalysisService:
         rows.sort(key=lambda r: abs(r["unexplainedValue"] or 0.0), reverse=True)
         return {
             "period": _period_payload(period),
-            "kpis": self.kpis(campaign).as_dict(),
+            "kpis": self.kpis(campaign, only_items=only_items).as_dict(),
             "rows": rows,
         }
 

@@ -15,7 +15,12 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
+// Les fins de ligne sont normalisées : un dépôt cloné sous Windows rend des
+// `\r\n`, et un repère qui contient un `\n` n'y trouve plus rien. Le contrôle
+// tombait alors sur la machine de quelqu'un d'autre, pour une raison qui n'a
+// rien à voir avec ce qu'il surveille.
+const read = (path: string) =>
+  readFileSync(new URL(path, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
 const SHELL = read('./Preparation.tsx')
 const TAB = read('./preparation.portfolios.tsx')
@@ -209,7 +214,12 @@ describe('le fichier ressemble à l’écran depuis lequel on l’a demandé', (
   })
 
   it('et l’adresse d’export le déclare', () => {
-    const link = API.slice(API.indexOf('  variances: (\n    id: string,\n    format:'))
-    expect(link.slice(0, 300)).toContain('mine?: boolean')
+    // Celle de `downloads`, pas celle d'`api` : les deux s'appellent
+    // `variances`, et la seconde est déjà couverte plus haut. On part donc de
+    // la déclaration de l'objet plutôt que d'un repère qui épouse la mise en
+    // forme du fichier.
+    const telechargements = API.slice(API.indexOf('export const downloads = {'))
+    const lien = telechargements.slice(telechargements.indexOf('  variances: ('))
+    expect(lien.slice(0, 300)).toContain('mine?: boolean')
   })
 })

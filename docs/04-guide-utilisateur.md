@@ -1183,6 +1183,22 @@ Le filtre **Au-delà des seuils uniquement** réduit à ce qui mérite une actio
 La courbe de **concentration** montre combien d'articles portent 80 % de l'écart
 absolu — typiquement moins de trente sur plusieurs centaines.
 
+**Les deux exports ne portent pas la même chose, et c'est voulu.**
+
+| | Ce qu'il contient | Ce à quoi il sert |
+|---|---|---|
+| **Excel** | tout, lignes sans écart comprises | recouper, filtrer, prouver que le comptage a couvert une référence |
+| **PDF** | les seules lignes dont l'écart de quantité n'est pas nul | traiter — le document qu'on lit et qu'on annote |
+
+Une ligne qui tombe juste n'appelle aucune décision : à l'écran elle se fait
+oublier, sur papier elle prend une rangée et repousse d'autant ce qui en demande
+une. Le PDF dit sous son tableau combien de lignes il a écartées pour cette
+raison, et c'est une phrase distincte de celle qui annonce la troncature — les
+deux omissions ne se corrigent pas de la même façon.
+
+Les deux fichiers emportent par ailleurs les réglages de l'écran au moment du
+clic : granularité, seuils, et la bascule **Mes références**.
+
 ### 3.3 Charger les ajustements
 
 **Écarts & analyses → Ajustements.**

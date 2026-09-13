@@ -646,32 +646,46 @@ class ReportService:
         self, campaign: Campaign, *, granularity: str = "item",
         material_only: bool = False, only_items: frozenset[str] | None = None,
     ) -> tuple[bytes, str]:
-        """The same table, printable.
+        """The same table, printable — et seulement ce qui s'écarte.
 
         Capped well below the workbook: past a few hundred rows a PDF is no
         longer a document somebody reads, it is a spreadsheet that lost its
         filters. The cap is announced on the page rather than applied silently.
+
+        **Les lignes dont l'écart de quantité est nul ne sont pas imprimées.**
+        Une ligne qui tombe juste n'appelle aucune décision : sur papier elle
+        occupe une rangée, repousse d'autant ce qui en demande une, et fait
+        d'un document qu'on lit une liste qu'on parcourt. Le classeur, lui, les
+        garde toutes — c'est lui qui sert à recouper, quand celui-ci sert à
+        traiter.
+
+        Le filtre passe **avant** le plafond, sans quoi les trois cents lignes
+        imprimables auraient pu être mangées par des lignes à zéro, et le
+        document aurait annoncé une troncature en n'ayant rien à montrer.
         """
         by_location = granularity == "item_location"
         rows = self._variance_rows(
             campaign, granularity=granularity, material_only=material_only,
             only_items=only_items,
         )
-        if not rows:
+        printable = [row for row in rows if row["varianceQty"]]
+        if not printable:
             raise ValidationError(
-                "Aucun écart à imprimer avec ce filtre.",
+                "Aucun écart à imprimer : aucune ligne ne présente d'écart de "
+                "quantité sur ce périmètre.",
                 granularity=granularity, materialOnly=material_only,
-                mine=only_items is not None,
+                mine=only_items is not None, balanced=len(rows),
             )
         payload = build_variance_pdf(
             campaign_label=campaign.label or campaign.code,
             campaign_code=campaign.code,
             count_date=campaign.count_date,
-            rows=rows[:VARIANCE_PDF_CEILING],
+            rows=printable[:VARIANCE_PDF_CEILING],
             by_location=by_location,
             material_only=material_only,
             generated_at=utcnow(),
-            omitted=max(0, len(rows) - VARIANCE_PDF_CEILING),
+            omitted=max(0, len(printable) - VARIANCE_PDF_CEILING),
+            balanced=len(rows) - len(printable),
         )
         scope = "par référence et emplacement" if by_location else "par référence"
         self.ctx.record(
@@ -681,7 +695,7 @@ class ReportService:
             entity_id=campaign.id,
             summary=(
                 f"Export PDF des écarts {scope} "
-                f"({min(len(rows), VARIANCE_PDF_CEILING)} ligne(s))"
+                f"({min(len(printable), VARIANCE_PDF_CEILING)} ligne(s))"
             ),
         )
         suffix = "emplacement" if by_location else "reference"

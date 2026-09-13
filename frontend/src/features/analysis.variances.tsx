@@ -413,7 +413,7 @@ export function VariancesTab({
               icon={<Icons.printer size={13} />}
               disabled={exporting !== null}
               onClick={() => void exportAs('pdf')}
-              title="Le tableau imprimable, plus gros écarts en tête"
+              title="Le tableau imprimable, plus gros écarts en tête. Les lignes sans écart de quantité n’y figurent pas ; l’export Excel les contient."
             >
               {exporting === 'pdf' ? 'Export…' : 'PDF'}
             </Button>

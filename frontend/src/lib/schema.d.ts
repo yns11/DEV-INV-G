@@ -2405,8 +2405,11 @@ export interface paths {
          * Imprimer les écarts
          * @description The same table as a document, biggest variances first.
          *
-         *     Capped: past a few hundred rows a PDF stops being read. The page says how
-         *     many lines it left out, and the Excel export carries them all.
+         *     Deux réductions, annoncées l'une et l'autre sur la page. Les lignes **sans
+         *     écart de quantité** ne sont pas imprimées : elles n'appellent aucune
+         *     décision, et sur papier elles repoussent ce qui en demande une. Et le
+         *     document est **plafonné** : passé quelques centaines de rangées, un PDF
+         *     cesse d'être lu. L'export Excel, lui, porte tout.
          */
         get: operations["variance_pdf_api_campaigns__campaign_id__reports_variances_pdf_get"];
         put?: never;

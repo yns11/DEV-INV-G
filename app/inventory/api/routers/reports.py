@@ -200,8 +200,11 @@ def variance_pdf(
 ) -> Response:
     """The same table as a document, biggest variances first.
 
-    Capped: past a few hundred rows a PDF stops being read. The page says how
-    many lines it left out, and the Excel export carries them all.
+    Deux réductions, annoncées l'une et l'autre sur la page. Les lignes **sans
+    écart de quantité** ne sont pas imprimées : elles n'appellent aucune
+    décision, et sur papier elles repoussent ce qui en demande une. Et le
+    document est **plafonné** : passé quelques centaines de rangées, un PDF
+    cesse d'être lu. L'export Excel, lui, porte tout.
     """
     payload, filename = service.variance_pdf(
         campaign, granularity=granularity, material_only=material_only,

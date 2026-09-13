@@ -732,6 +732,7 @@ def build_variance_pdf(
     material_only: bool,
     generated_at: dt.datetime,
     omitted: int = 0,
+    balanced: int = 0,
 ) -> bytes:
     """The variance table as a document one can hand over or file.
 
@@ -746,11 +747,20 @@ def build_variance_pdf(
     that sometimes holds a quantity and sometimes an amount is unreadable in a
     print-out that is going to be annotated by hand.
 
-    Rows arrive already sorted and capped by the caller; the total line sums
-    *what is printed*, and says so, because a total that included rows absent
-    from the page would be the one number nobody could check. ``omitted`` is
-    what the cap left out, printed under the table — a truncation nobody is told
-    about is read as a complete document.
+    Rows arrive already sorted, filtered and capped by the caller; the total line
+    sums *what is printed*, and says so, because a total that included rows
+    absent from the page would be the one number nobody could check.
+
+    Deux omissions, et deux notes distinctes, parce qu'elles ne se corrigent pas
+    de la même façon. ``omitted`` est ce que le **plafond** a coupé : des écarts
+    réels, plus faibles, qu'il faut aller chercher dans le classeur. ``balanced``
+    est le nombre de lignes **sans écart de quantité**, écartées parce qu'elles
+    n'appellent aucune décision. Les additionner sous une seule phrase ferait
+    croire à des centaines d'écarts non imprimés là où il n'y a que des lignes
+    qui tombent juste — et, l'année où le plafond mord vraiment, l'inverse.
+
+    Une troncature dont on ne dit rien se lit comme un document complet : les
+    deux notes sont donc imprimées sous le tableau, pas seulement journalisées.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
@@ -762,7 +772,12 @@ def build_variance_pdf(
     buffer = io.BytesIO()
 
     scope = "par référence et emplacement" if by_location else "par référence"
-    filters = "au-delà des seuils uniquement" if material_only else "tous les écarts"
+    # « Tous les écarts » ne se dit plus : les lignes qui tombent juste ne sont
+    # pas imprimées, et un en-tête qui promettrait l'exhaustivité ferait chercher
+    # sur la page une référence qu'on n'y trouvera pas.
+    filters = (
+        "au-delà des seuils uniquement" if material_only else "écarts non nuls"
+    )
 
     def draw_page(canvas, doc) -> None:
         canvas.saveState()
@@ -857,7 +872,19 @@ def build_variance_pdf(
     ]))
 
     story: list[Any] = [table]
+    notes: list[str] = []
     if omitted > 0:
+        notes.append(
+            f"{omitted} ligne(s) d'écart plus faible ne sont pas reprises sur "
+            "ce document. L'export Excel les contient toutes."
+        )
+    if balanced > 0:
+        notes.append(
+            f"{balanced} ligne(s) sans écart de quantité ne sont pas imprimées : "
+            "le stock compté y correspond au stock ERP. L'export Excel les "
+            "contient."
+        )
+    if notes:
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.platypus import Paragraph, Spacer
 
@@ -865,14 +892,8 @@ def build_variance_pdf(
             "note", parent=getSampleStyleSheet()["BodyText"],
             fontSize=8, leading=10, textColor=colors.HexColor("#B45309"),
         )
-        story += [
-            Spacer(1, 4 * mm),
-            Paragraph(
-                f"{omitted} ligne(s) d'écart plus faible ne sont pas reprises sur "
-                "ce document. L'export Excel les contient toutes.",
-                note,
-            ),
-        ]
+        story.append(Spacer(1, 4 * mm))
+        story += [Paragraph(texte, note) for texte in notes]
 
     doc.build(story)
     return buffer.getvalue()

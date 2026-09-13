@@ -438,16 +438,36 @@ Le tableau se charge **comme toutes les autres grilles** — un fichier, un
 collage depuis le tableur, ou une saisie à la main — avec deux colonnes : la
 référence et l'adresse e-mail, celle avec laquelle la personne se connecte.
 
-Trois comportements à connaître :
+**Une référence peut être suivie par plusieurs personnes.** Elle prend alors
+autant de lignes qu'elle a de propriétaires, dans le même fichier :
 
-- **Charger ajoute, n'efface pas.** Un fichier de trente références ne dit rien
-  des quatre cent cinquante autres. On charge donc par morceaux, un portefeuille
-  à la fois. Pour tout défaire d'un coup, le bouton **Tout retirer**.
-- **Une adresse vide retire l'attribution.** C'est la façon d'en défaire une
-  depuis le même fichier qui les pose.
+```
+Article        E-mail
+P-00005775     acheteur@usine.fr
+P-00005775     controle.gestion@usine.fr
+MASS-00049094  autre.personne@usine.fr
+```
+
+Quatre comportements à connaître :
+
+- **Charger n'efface pas les références absentes du fichier.** Un fichier de
+  trente références ne dit rien des quatre cent cinquante autres. On charge donc
+  par morceaux. Pour tout défaire d'un coup, le bouton **Tout retirer**.
+- **Mais pour une référence citée, le fichier fait foi** : ses lignes sont la
+  liste complète de ceux qui la suivent. C'est ainsi qu'on **retire une seule
+  personne** d'une référence partagée — on recharge la référence avec la liste
+  voulue, sans celle qui s'en va.
+- **Une adresse vide retire toutes les attributions de la référence.** C'est le
+  cas particulier du point précédent : une référence citée sans personne n'est
+  plus à personne.
 - **Une référence inconnue du référentiel est acceptée**, et signalée « hors
   référentiel » dans la grille. Le tableau se prépare souvent avant que les
   articles ne soient chargés ; la pastille est là pour repérer une coquille.
+
+> **Les décomptes de la carte « Répartition » se cumulent.** Une référence suivie
+> à deux compte pour chacun : la somme des « X références » peut donc dépasser le
+> nombre de références du référentiel, et c'est exact. Le compteur *sans
+> propriétaire*, lui, raisonne bien en références distinctes.
 
 Comme les affectations, l'onglet **reste ouvert jusqu'à la clôture**.
 

@@ -102,6 +102,45 @@ describe('le tableau d’attribution se charge par le panneau partagé', () => {
 })
 
 // --------------------------------------------------------------------------- //
+// 2 bis. Une référence suivie à plusieurs
+// --------------------------------------------------------------------------- //
+
+describe('la grille sait montrer une référence partagée', () => {
+  it('une ligne par couple référence / personne, distinguables', () => {
+    /* Une référence suivie à deux donne deux lignes. La seule référence comme
+       identifiant les rendrait indistinguables — sélection, tri et rendu
+       s'emmêleraient sur la ligne que React croirait être la même. */
+    const id = TAB.slice(TAB.indexOf('getRowId='), TAB.indexOf('searchPlaceholder='))
+    expect(id).toContain('row.itemNumber')
+    expect(id).toContain('row.actor')
+  })
+
+  it('le pied ne confond pas les attributions et les références', () => {
+    /* Depuis le partage les deux nombres diffèrent, et n'annoncer que le
+       premier laisserait lire « 420 références » là où il y en a 300. */
+    const pied = TAB.slice(TAB.indexOf('footer={'))
+    expect(pied.slice(0, 400)).toContain('attribution(s)')
+    expect(pied.slice(0, 400)).toContain('data.items')
+  })
+
+  it('et l’écran prévient que les décomptes par personne se cumulent', () => {
+    expect(TAB).toContain('peut donc dépasser le nombre de références')
+  })
+
+  it('le client déclare le décompte de références distinctes', () => {
+    /* `items` et la hauteur de `rows` répondent à deux questions différentes ;
+       sans le champ, l'écran retomberait sur `rows.length` — le décompte qui
+       rassure au lieu d'alerter. */
+    // Ligne par ligne, et non « le mot apparaît quelque part » : `byActor`
+    // porte lui aussi un `items: number`, à l'intérieur de son objet, et une
+    // simple recherche de sous-chaîne se contenterait de celui-là.
+    const portefeuilles = API.slice(API.indexOf('  portfolios: (id: string) =>'))
+    const champs = portefeuilles.slice(0, portefeuilles.indexOf('}>('))
+    expect(champs.split('\n').map((ligne) => ligne.trim())).toContain('items: number')
+  })
+})
+
+// --------------------------------------------------------------------------- //
 // 3. La bascule, sur les trois grilles annoncées
 // --------------------------------------------------------------------------- //
 

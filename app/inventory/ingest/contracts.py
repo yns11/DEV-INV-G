@@ -687,11 +687,16 @@ PORTFOLIOS = GridContract(
         "partout."
     ),
     hint=(
-        "Une ligne par référence, et l'adresse e-mail de la personne qui la "
-        "suit — celle avec laquelle elle se connecte. Une adresse vide retire "
-        "l'attribution."
+        "Une ligne par personne qui suit une référence, et l'adresse e-mail "
+        "avec laquelle elle se connecte. Une référence suivie à plusieurs "
+        "prend autant de lignes. Le fichier fait foi pour les références qu'il "
+        "cite : il les remplace, et laisse les autres en place. Une adresse "
+        "vide retire l'attribution."
     ),
-    natural_key=("item_number",),
+    # La référence **et** l'identité : sans l'identité, les deux lignes d'une
+    # référence partagée seraient signalées en doublon, et le chargement qui la
+    # partage se ferait donc toujours sous un avertissement.
+    natural_key=("item_number", "actor"),
     fields=(
         FieldSpec("item_number", "Numéro d'article", required=True,
                   aliases=("numero d'article", "itemnumber", "reference",
@@ -705,7 +710,11 @@ PORTFOLIOS = GridContract(
                   width=260),
     ),
     examples=(
+        # La même référence sur deux lignes : c'est la forme du partage, et un
+        # exemple qui ne la montrerait pas laisserait croire à un propriétaire
+        # unique — ce que le tableau a été pendant une version.
         {"item_number": "P-00005775", "actor": "prenom.nom@exemple.fr"},
+        {"item_number": "P-00005775", "actor": "controle.gestion@exemple.fr"},
         {"item_number": "mass-00049094", "actor": "autre.personne@exemple.fr"},
     ),
 )

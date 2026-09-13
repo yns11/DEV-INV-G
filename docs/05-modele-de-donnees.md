@@ -197,7 +197,7 @@ dépend, et la matrice de gel reste la seule autorité sur ce qui est modifiable
 ### 3.5 Portefeuilles : la seconde découpe, sur les articles
 
 ```sql
-item_portfolio (campaign_id, item_number) + actor   -- la même identité
+item_portfolio (campaign_id, item_number, actor)    -- la même identité
 ```
 
 Deux découpes cohabitent parce qu'elles répondent à deux questions. Le
@@ -207,11 +207,23 @@ acheteur suit ses références partout où elles sont, quel que soit l'entrepôt
 qui les range, et le périmètre ne l'aide en rien. Elles se cumulent sans se
 connaître — on peut suivre des références dans un entrepôt qu'on ne pilote pas.
 
-Un propriétaire par référence : l'identité est une colonne, pas un morceau de
-la clé. « À qui est cette référence » doit avoir une réponse, sans quoi le
-tableau se lit à deux endroits et se corrige à trois. Le jour où le partage
-sera un besoin réel, il méritera sa propre forme plutôt qu'une clé élargie par
-précaution.
+**Plusieurs propriétaires par référence**, l'identité faisant partie de la clé
+(migration 034). La 033 l'avait mise en colonne — un propriétaire et un seul,
+sans ambiguïté — et cette forme décrivait mal l'organisation : un acheteur et un
+contrôleur de gestion suivent les mêmes articles, aucun n'étant le propriétaire
+de l'autre.
+
+Trois décomptes en découlent, et ils ne comptent pas la même chose :
+
+| Question | Compte |
+|---|---|
+| Combien X en suit-il ? | des **lignes** — la somme dépasse le nombre de références dès qu'une est partagée, et c'est exact |
+| Combien de références sont couvertes ? | des `item_number` **distincts** |
+| Combien sont orphelines ? | référentiel moins les précédentes |
+
+Prendre la hauteur de la table pour le deuxième ferait passer une référence
+suivie à deux pour deux références couvertes, et l'écran annoncerait moins
+d'orphelines qu'il n'y en a — l'erreur qui rassure au lieu d'alerter.
 
 `actor` n'est pas une clé étrangère vers `manager`, et délibérément : une
 référence peut être suivie par quelqu'un qui ne pilote aucun emplacement — un
@@ -226,9 +238,16 @@ clôture.
 
 Comme le périmètre, c'est un **filtre et jamais une permission** : la bascule
 « Mes références » du stock ERP, de l'écart backflush et des écarts n'interdit
-rien, elle cache. Le chargement **fusionne** — un fichier de trente références
-ne dit rien des quatre cent cinquante autres — et une adresse vide retire
-l'attribution.
+rien, elle cache.
+
+Le chargement a **deux portées**. Entre les références, il fusionne : un fichier
+de trente références ne dit rien des quatre cent cinquante autres. Sur une
+référence qu'il cite, il remplace : ses lignes sont la liste complète de ceux qui
+la suivent. C'est ce qui permet de retirer *une* personne d'une référence
+partagée — on recharge la référence avec la liste voulue — là où une fusion pure
+ne saurait qu'ajouter et obligerait à tout vider pour enlever quelqu'un. Une
+adresse vide est le cas limite de cette règle : une référence citée sans personne
+n'est à personne.
 
 ### 3.6 Pourquoi l'audit est protégé au niveau du moteur
 

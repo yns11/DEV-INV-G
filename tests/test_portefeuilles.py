@@ -13,10 +13,22 @@ de retrouver les siennes dans la liste de tout le monde.
 
 Ce que ces contrôles tiennent
 -----------------------------
-**Le tableau se charge comme les autres grilles** — et il **fusionne**. Un
-fichier de trente références ne dit rien des quatre cent cinquante autres, et
-les effacer parce qu'il ne les mentionne pas ferait d'une correction ciblée une
-remise à zéro. Une adresse vide, elle, retire l'attribution.
+**Plusieurs personnes suivent la même référence.** L'identité fait partie de la
+clé depuis la migration 034. Le premier choix — un propriétaire unique — avait
+pour lui d'être sans ambiguïté, et décrivait mal l'organisation : un acheteur et
+un contrôleur de gestion regardent les mêmes articles, sans que l'un soit le
+propriétaire de l'autre. Les décomptes changent avec la clé, et c'est là que ce
+genre de changement laisse des traces : la somme des « X références » par
+personne dépasse le nombre de références, tandis que « sans propriétaire » doit
+continuer à compter des références **distinctes**. L'erreur inverse annoncerait
+moins d'orphelines qu'il n'y en a, c'est-à-dire rassurerait au lieu d'alerter.
+
+**Le tableau se charge comme les autres grilles**, avec deux portées. Entre les
+références, une fusion : un fichier de trente références ne dit rien des quatre
+cent cinquante autres, et les effacer ferait d'une correction ciblée une remise
+à zéro. Sur une référence citée, un remplacement : le fichier fait foi pour
+elle, ce qui est la seule façon de retirer *une* personne d'une référence
+partagée. Une adresse vide est le cas limite de cette règle.
 
 **Le filtre est résolu côté serveur**, à partir de l'identité que la plateforme
 transmet — comme « mon périmètre ». Le navigateur n'envoie qu'un booléen, ce qui
@@ -166,7 +178,7 @@ def client(db):
 def seeded(db, campaign, ctx):
     """Une campagne complète : trois articles, leur stock ERP, leurs propriétaires."""
     _stock(ctx, campaign)
-    _attribuer(ctx, campaign, {"P-100": ANNE, "P-200": ANNE, "P-300": BORIS})
+    _attribuer(ctx, campaign, ("P-100", ANNE), ("P-200", ANNE), ("P-300", BORIS))
     return campaign.id
 
 
@@ -190,12 +202,18 @@ def service(chef):
     return ImportService(chef)
 
 
-def _attribuer(ctx, campaign: Campaign, attributions: dict[str, str]) -> None:
+def _attribuer(ctx, campaign: Campaign, *attributions: tuple[str, str]) -> None:
+    """Poser des couples (référence, personne).
+
+    Des couples et non un dictionnaire : depuis le partage, une référence en
+    porte plusieurs, et un dictionnaire indexé par référence ne saurait pas
+    l'écrire — le contrôle serait alors incapable d'exprimer ce qu'il vérifie.
+    """
     ctx.portfolios.upsert(
         campaign.id,
         [
             ItemPortfolio(campaign_id=campaign.id, item_number=number, actor=actor)
-            for number, actor in attributions.items()
+            for number, actor in attributions
         ],
         actor="test",
     )
@@ -246,46 +264,143 @@ def _backflush(ctx, campaign: Campaign) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _couples(ctx, campaign: Campaign) -> set[tuple[str, str]]:
+    return {(r.item_number, r.actor) for r in ctx.portfolios.list(campaign.id)}
+
+
+class TestUneReferenceSeSuitAPlusieurs:
+    """La forme retenue : l'identité fait partie de la clé.
+
+    Le premier choix était un propriétaire unique — sans ambiguïté, et décrivant
+    mal l'organisation. Ces contrôles tiennent le partage lui-même ; ceux de la
+    classe suivante tiennent la façon dont un fichier l'écrit.
+    """
+
+    def test_deux_personnes_suivent_la_meme(self, ctx, campaign):
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-100", BORIS))
+
+        assert _couples(ctx, campaign) == {("P-100", ANNE), ("P-100", BORIS)}
+
+    def test_et_chacune_la_voit_dans_ses_références(self, db, ctx, campaign):
+        """Ce à quoi le partage sert : la bascule la rend aux deux.
+
+        Sans cela la clé élargie ne serait qu'une ligne de plus en base — le
+        filtre, lui, continuerait de n'en désigner qu'une.
+        """
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-100", BORIS))
+
+        assert ctx.portfolios.items_of(campaign.id, ANNE) == frozenset({"P-100"})
+        assert ctx.portfolios.items_of(campaign.id, BORIS) == frozenset({"P-100"})
+
+    def test_la_même_paire_deux_fois_ne_fait_qu_une_ligne(self, ctx, campaign):
+        """Un tableur répète volontiers la même paire, et deux fois « P-100 est
+        à Anne » dit une seule chose."""
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-100", ANNE))
+
+        assert _couples(ctx, campaign) == {("P-100", ANNE)}
+
+    def test_les_décomptes_par_personne_se_cumulent(self, ctx, campaign):
+        """Et la somme dépasse le nombre de références. C'est exact : chacun en
+        suit bien autant."""
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-100", BORIS), ("P-200", ANNE))
+
+        par_personne = {
+            row["actor"]: row["items"]
+            for row in ctx.portfolios.counts_by_actor(campaign.id)
+        }
+        assert par_personne == {ANNE: 2, BORIS: 1}
+
+    def test_mais_les_références_couvertes_restent_distinctes(self, ctx, campaign):
+        """Le décompte qui ne doit surtout pas suivre le précédent.
+
+        Compter les lignes ferait passer une référence suivie à deux pour deux
+        références couvertes, et l'écran annoncerait moins d'orphelines qu'il
+        n'y en a — l'erreur qui rassure au lieu d'alerter.
+        """
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-100", BORIS), ("P-200", ANNE))
+
+        assert ctx.portfolios.assigned_items(campaign.id) == 2
+
+    def test_les_propriétaires_d_une_référence_se_suivent(self, ctx, campaign):
+        """La grille ouvre sur l'ordre qui montre le partage.
+
+        Par référence d'abord : les deux personnes d'une référence partagée
+        arrivent côte à côte. Ordonner par personne les séparerait de plusieurs
+        écrans, et donnerait à lire deux portefeuilles indépendants là où il y a
+        un partage — c'est-à-dire cacherait précisément ce que cette version
+        ajoute.
+        """
+        _attribuer(ctx, campaign, ("P-200", ANNE), ("P-100", BORIS), ("P-100", ANNE))
+
+        rows = ctx.portfolios.list(campaign.id)
+        assert [(r.item_number, r.actor) for r in rows] == [
+            ("P-100", ANNE), ("P-100", BORIS), ("P-200", ANNE),
+        ]
+
+    def test_l_écran_le_dit_de_la_même_façon(self, ctx, campaign):
+        """Trois références connues, deux couvertes : une orpheline."""
+        from inventory.services.portfolio_service import PortfolioService
+
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-100", BORIS), ("P-200", ANNE))
+
+        vue = PortfolioService(ctx).overview(campaign)
+        assert len(vue["rows"]) == 3
+        assert vue["items"] == 2
+        assert vue["unassigned"] == 1
+
+
 class TestLeTableauSeChargeEtFusionne:
     def test_une_attribution_se_pose(self, ctx, campaign):
-        _attribuer(ctx, campaign, {"P-100": ANNE})
+        _attribuer(ctx, campaign, ("P-100", ANNE))
 
         rows = ctx.portfolios.list(campaign.id)
         assert [(r.item_number, r.actor) for r in rows] == [("P-100", ANNE)]
 
     def test_un_second_chargement_ne_efface_pas_le_premier(self, ctx, campaign):
-        """Le cas qui décide de la forme : une fusion, pas un remplacement.
+        """Le cas qui décide de la portée : une fusion **entre** les références.
 
         Un fichier de trente références ne dit rien des quatre cent cinquante
         autres. Les effacer parce qu'il ne les mentionne pas ferait d'une
         correction ciblée une remise à zéro — et sur une table tenue dans un
         tableur, on charge par morceaux.
         """
-        _attribuer(ctx, campaign, {"P-100": ANNE, "P-200": ANNE})
-        _attribuer(ctx, campaign, {"P-300": BORIS})
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-200", ANNE))
+        _attribuer(ctx, campaign, ("P-300", BORIS))
 
         assert {r.item_number for r in ctx.portfolios.list(campaign.id)} == set(TOUTES)
 
+    def test_une_référence_citée_est_remplacée(self, ctx, campaign):
+        """Et l'autre portée : sur une référence citée, le fichier fait foi.
+
+        C'est ce qui permet de retirer *une* personne d'une référence partagée —
+        on la recharge avec la liste voulue. Une fusion pure ne saurait
+        qu'ajouter, et obligerait à tout vider pour enlever quelqu'un.
+        """
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-100", BORIS))
+        _attribuer(ctx, campaign, ("P-100", ANNE))
+
+        assert _couples(ctx, campaign) == {("P-100", ANNE)}
+
     def test_une_reference_change_de_main(self, ctx, campaign):
-        _attribuer(ctx, campaign, {"P-100": ANNE})
-        _attribuer(ctx, campaign, {"P-100": BORIS})
+        _attribuer(ctx, campaign, ("P-100", ANNE))
+        _attribuer(ctx, campaign, ("P-100", BORIS))
 
-        rows = {r.item_number: r.actor for r in ctx.portfolios.list(campaign.id)}
-        assert rows == {"P-100": BORIS}
+        assert _couples(ctx, campaign) == {("P-100", BORIS)}
 
-    def test_une_adresse_vide_retire_l_attribution(self, ctx, campaign):
-        """La seule façon de défaire une attribution depuis le fichier qui les
-        pose. Sans elle, retirer demanderait de tout vider et tout recharger."""
-        _attribuer(ctx, campaign, {"P-100": ANNE, "P-200": ANNE})
-        _attribuer(ctx, campaign, {"P-100": ""})
+    def test_une_adresse_vide_retire_toutes_les_attributions(self, ctx, campaign):
+        """Le cas limite du remplacement, et non une règle à part : une
+        référence citée sans personne n'est à personne. Sur une référence
+        partagée, elle les retire donc tous."""
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-100", BORIS), ("P-200", ANNE))
+        _attribuer(ctx, campaign, ("P-100", ""))
 
-        assert [r.item_number for r in ctx.portfolios.list(campaign.id)] == ["P-200"]
+        assert _couples(ctx, campaign) == {("P-200", ANNE)}
 
     def test_l_adresse_ecrite_est_rangee_en_minuscules(self, ctx, campaign):
         """Un annuaire qui écrit « Prenom.Nom@ » un jour et « prenom.nom@ » le
         lendemain ne doit pas produire deux portefeuilles — dont l'un des deux
         ne rendrait jamais rien."""
-        _attribuer(ctx, campaign, {"P-100": "  Anne.DURAND@usine.FR  "})
+        _attribuer(ctx, campaign, ("P-100", "  Anne.DURAND@usine.FR  "))
 
         assert [r.actor for r in ctx.portfolios.list(campaign.id)] == [ANNE]
 
@@ -300,7 +415,7 @@ class TestLeTableauSeChargeEtFusionne:
         """
         from inventory.services.portfolio_service import PortfolioService
 
-        _attribuer(ctx, campaign, {"P-100": ANNE})
+        _attribuer(ctx, campaign, ("P-100", ANNE))
 
         connectee = PortfolioService(_ctx(db, " Anne.DURAND@usine.FR "))
         assert connectee.mine(campaign) == frozenset({"P-100"})
@@ -308,7 +423,7 @@ class TestLeTableauSeChargeEtFusionne:
     def test_tout_retirer_est_un_geste_a_part(self, ctx, chef, campaign):
         from inventory.services.portfolio_service import clear_portfolios
 
-        _attribuer(ctx, campaign, dict.fromkeys(TOUTES, ANNE))
+        _attribuer(ctx, campaign, *((n, ANNE) for n in TOUTES))
         removed = clear_portfolios(chef, campaign)
 
         assert removed == 3
@@ -330,7 +445,56 @@ class TestLeChargementPasseParLePipelineDesGrilles:
         from inventory.ingest.contracts import CONTRACTS
 
         assert "portfolios" in CONTRACTS
-        assert CONTRACTS["portfolios"].natural_key == ("item_number",)
+
+    def test_la_clé_naturelle_porte_aussi_l_identité(self):
+        """Sans elle, les deux lignes d'une référence partagée seraient
+        signalées en doublon — et le chargement qui la partage se ferait donc
+        toujours sous un avertissement, ce qu'on apprend à ignorer."""
+        from inventory.ingest.contracts import CONTRACTS
+
+        assert CONTRACTS["portfolios"].natural_key == ("item_number", "actor")
+
+    def test_deux_lignes_pour_une_référence_la_partagent(self, service, ctx, campaign):
+        """La forme sous laquelle le partage arrive réellement : deux lignes du
+        même fichier, et non deux chargements."""
+        outcome = service.import_portfolios(
+            campaign, mode="paste",
+            text=f"Article\tE-mail\nP-100\t{ANNE}\nP-100\t{BORIS}\n",
+        )
+
+        assert outcome.rows_accepted == 2
+        assert not outcome.warnings, "un partage n'est pas un doublon"
+        assert _couples(ctx, campaign) == {("P-100", ANNE), ("P-100", BORIS)}
+
+    def test_le_rapport_compte_les_références_et_les_partages(self, service, campaign):
+        """Deux lignes sur une référence, une sur une autre : trois attributions,
+        deux références, un partage. Le premier chiffre qu'on vérifie après un
+        chargement est « ai-je bien touché mes références ? », et la hauteur du
+        fichier n'y répond plus."""
+        outcome = service.import_portfolios(
+            campaign, mode="paste",
+            text=f"Article\tE-mail\nP-100\t{ANNE}\nP-100\t{BORIS}\nP-200\t{ANNE}\n",
+        )
+
+        assert outcome.rows_accepted == 3
+        assert outcome.details["items"] == 2
+        assert outcome.details["shared"] == 1
+
+    def test_un_rechargement_retire_quelqu_un_d_une_référence_partagée(
+        self, service, ctx, campaign
+    ):
+        """Le geste que la forme « remplacement par référence » rend possible,
+        et qu'une fusion pure interdirait : Boris s'en va, Anne reste, et les
+        autres références ne bougent pas."""
+        service.import_portfolios(
+            campaign, mode="paste",
+            text=f"Article\tE-mail\nP-100\t{ANNE}\nP-100\t{BORIS}\nP-200\t{BORIS}\n",
+        )
+        service.import_portfolios(
+            campaign, mode="paste", text=f"Article\tE-mail\nP-100\t{ANNE}\n",
+        )
+
+        assert _couples(ctx, campaign) == {("P-100", ANNE), ("P-200", BORIS)}
 
     def test_une_reference_hors_referentiel_est_acceptee_et_signalee(
         self, service, ctx, campaign
@@ -413,7 +577,7 @@ class TestLeFiltreEstResoluCoteServeur:
         seulement interdit, de demander le portefeuille d'un autre."""
         from inventory.services.portfolio_service import PortfolioService
 
-        _attribuer(ctx, campaign, {"P-100": ANNE, "P-200": ANNE, "P-300": BORIS})
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-200", ANNE), ("P-300", BORIS))
 
         assert PortfolioService(ctx).mine(campaign) == frozenset(A_ANNE)
         assert PortfolioService(_ctx(db, BORIS)).mine(campaign) == frozenset(A_BORIS)
@@ -421,7 +585,7 @@ class TestLeFiltreEstResoluCoteServeur:
     def test_sans_bascule_rien_n_est_filtre(self, ctx, campaign):
         from inventory.services.portfolio_service import portfolio_filter
 
-        _attribuer(ctx, campaign, {"P-100": ANNE})
+        _attribuer(ctx, campaign, ("P-100", ANNE))
 
         assert portfolio_filter(ctx, campaign, mine=False) is None
 
@@ -440,7 +604,7 @@ class TestLeStockErpSuitLeFiltre:
         from inventory.services import ReferentialService
 
         _stock(ctx, campaign)
-        _attribuer(ctx, campaign, {"P-100": ANNE, "P-200": ANNE, "P-300": BORIS})
+        _attribuer(ctx, campaign, ("P-100", ANNE), ("P-200", ANNE), ("P-300", BORIS))
 
         view = ReferentialService(ctx).book_stock(
             campaign, only_items=frozenset(A_ANNE)

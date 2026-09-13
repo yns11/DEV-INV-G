@@ -153,6 +153,14 @@ de l'écart backflush et des écarts. Une colonne sur `item` aurait été plus
 courte et fausse : le référentiel articles gèle à l'entrée en comptage, ce qui
 aurait rendu le portefeuille immodifiable au moment précis où il sert.
 
+Une référence est suivie par **plusieurs personnes** — l'identité fait partie de
+la clé. La forme d'abord retenue, un propriétaire unique, avait pour elle d'être
+sans ambiguïté et décrivait mal l'organisation : un acheteur et un contrôleur de
+gestion regardent les mêmes articles sans que l'un soit le propriétaire de
+l'autre. Les décomptes s'en ressentent, et c'est le point à ne pas manquer en
+lisant ce modèle : « combien X en suit-il » compte des lignes, « combien sont
+couvertes » compte des références distinctes.
+
 ## 5. Provenance des données
 
 Toute quantité porte sa source, et les valeurs importées et saisies vivent dans

@@ -1,4 +1,4 @@
-/** Les portefeuilles : quelles références sont à qui, et qui les filtre.
+/** Les portefeuilles : qui suit quelles références, et la bascule qui les filtre.
  *
  * L'application répartissait déjà des **emplacements** — c'est « mon
  * périmètre », porté par les gestionnaires. Elle ne répartissait pas les
@@ -99,7 +99,7 @@ export function PortfoliosTab({
         {(data) => (
           <Card
             title="Répartition"
-            message="Combien de références chacun suit, et combien n’ont pas encore de propriétaire."
+            message="Combien de références chacun suit, et combien n’ont personne. Une référence suivie à plusieurs compte pour chacun : la somme peut donc dépasser le nombre de références, et c’est exact."
           >
             <div className="row-wrap" style={{ gap: 'var(--space-3)' }}>
               {data.byActor.length === 0 && (
@@ -133,7 +133,7 @@ export function PortfoliosTab({
 
       <Card
         title="Attributions"
-        message="Une ligne par référence. Charger à nouveau met à jour les références citées et laisse les autres en place ; une adresse vide retire l’attribution."
+        message="Une ligne par personne qui suit une référence : une référence suivie à plusieurs en prend autant. Charger à nouveau remplace les références citées et laisse les autres en place — c’est ainsi qu’on retire quelqu’un d’une référence partagée. Une adresse vide retire toutes ses attributions."
         actions={
           editable && (query.data?.rows.length ?? 0) > 0 ? (
             <Button
@@ -168,12 +168,16 @@ export function PortfoliosTab({
               rows={data.rows as unknown as Row[]}
               exportTitle="Portefeuilles"
               campaignId={campaignId}
-              getRowId={(row) => String(row.itemNumber)}
+              // La référence **et** la personne : une référence suivie à deux
+              // donne deux lignes, et la seule référence comme identifiant les
+              // rendrait indistinguables l'une de l'autre.
+              getRowId={(row) => `${row.itemNumber}|${row.actor}`}
               searchPlaceholder="Filtrer par référence, désignation, adresse…"
               maxHeight={520}
               footer={
                 <span>
-                  {data.rows.length.toLocaleString('fr-FR')} attribution(s) ·{' '}
+                  {data.rows.length.toLocaleString('fr-FR')} attribution(s) sur{' '}
+                  {data.items.toLocaleString('fr-FR')} référence(s) ·{' '}
                   {data.byActor.length} personne(s)
                 </span>
               }

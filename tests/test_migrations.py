@@ -59,6 +59,7 @@ SHIPPED = {
     "031_ligne_erp_sans_numero": "8404b352948a",
     "032_doublons_de_comptage_fusionnes": "9bfc9907e03e",
     "033_portefeuilles_d_articles": "dcba49923663",
+    "034_portefeuilles_partages": "a85e2d86e6d2",
 }
 
 

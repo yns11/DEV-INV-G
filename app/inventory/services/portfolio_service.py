@@ -26,6 +26,12 @@ déclaré gestionnaire, et de rien d'autre — voir :mod:`inventory.domain.acces
 **Un doublon du périmètre.** Les deux se cumulent sans se connaître : on peut
 suivre des références dans un entrepôt qu'on ne pilote pas, et piloter un
 entrepôt plein de références qui ne sont pas les siennes.
+
+**Une exclusivité.** Plusieurs personnes suivent la même référence, et aucune
+n'est le propriétaire de l'autre : un acheteur et un contrôleur de gestion
+regardent les mêmes articles pour des raisons différentes. Les décomptes s'en
+ressentent, et c'est voulu — la somme des « X références » par personne dépasse
+le nombre de références dès qu'une est partagée.
 """
 
 from __future__ import annotations
@@ -55,10 +61,20 @@ class PortfolioService:
         Les deux ensemble parce que l'écran montre les deux : la grille des
         attributions, et au-dessus le décompte qui dit d'un coup d'œil si la
         répartition est complète ou si quelqu'un porte tout.
+
+        Une ligne par **couple** référence / personne depuis le partage. Les
+        trois décomptes en dessous ne comptent donc pas la même chose, et les
+        confondre est ici l'erreur facile : `byActor` compte des lignes — chacun
+        suit bien autant de références — tandis que `items` et `unassigned`
+        comptent des **références distinctes**. Prendre la hauteur de la table
+        pour le nombre de références couvertes ferait passer une référence
+        suivie à deux pour deux références couvertes, et l'écran annoncerait
+        moins d'orphelines qu'il n'y en a.
         """
         ctx = self.ctx
         rows = ctx.portfolios.list(campaign.id)
         known = ctx.referentials.items_by_number(campaign.id)
+        assigned = ctx.portfolios.assigned_items(campaign.id)
         return {
             "rows": [
                 {
@@ -77,7 +93,8 @@ class PortfolioService:
                 {"actor": row["actor"], "items": row["items"]}
                 for row in ctx.portfolios.counts_by_actor(campaign.id)
             ],
-            "unassigned": max(len(known) - len(rows), 0),
+            "items": assigned,
+            "unassigned": max(len(known) - assigned, 0),
         }
 
     def mine(self, campaign: Campaign) -> frozenset[str]:
@@ -99,11 +116,14 @@ def import_portfolios(
     c'est la même nature de décision — qui s'occupe de quoi — et elle bouge aux
     mêmes moments, jusqu'à la clôture comprise.
 
-    **Une fusion, pas un remplacement.** Un fichier de trente références ne dit
-    rien des quatre cent cinquante autres, et les effacer parce qu'il ne les
-    mentionne pas ferait d'une correction ciblée une remise à zéro. Une adresse
-    vide, elle, retire l'attribution : c'est ainsi qu'on en défait une depuis le
-    même fichier qui les pose.
+    **Une fusion entre les références, un remplacement sur chacune.** Un fichier
+    de trente références ne dit rien des quatre cent cinquante autres, et les
+    effacer parce qu'il ne les mentionne pas ferait d'une correction ciblée une
+    remise à zéro. Mais pour une référence qu'il cite, le fichier fait foi : ses
+    lignes sont la liste complète de ceux qui la suivent. C'est ce qui permet de
+    retirer *une* personne d'une référence partagée, là où une fusion pure ne
+    saurait qu'ajouter. Une adresse vide est le cas limite de cette règle, et
+    non une règle à part : une référence citée sans personne n'est à personne.
 
     Les références inconnues du référentiel ne sont **pas** refusées, et c'est
     voulu : le tableau se prépare souvent avant que les articles ne soient
@@ -127,10 +147,21 @@ def import_portfolios(
 
     known = set(ctx.referentials.items_by_number(campaign.id))
     unknown = sorted({r.item_number for r in rows if r.item_number not in known})
+    owners: dict[str, set[str]] = {}
+    for row in rows:
+        owners.setdefault(row.item_number, set())
+        if row.actor:
+            owners[row.item_number].add(row.actor)
+
     outcome.rows_accepted = len(rows)
     outcome.details["unknownItems"] = len(unknown)
     outcome.details["unknownItemNumbers"] = unknown[:50]
-    outcome.details["cleared"] = sum(1 for r in rows if not r.actor)
+    # Références citées, et non lignes lues : depuis le partage les deux
+    # diffèrent, et c'est le premier chiffre que quelqu'un vérifie après un
+    # chargement — « ai-je bien touché mes trente références ? ».
+    outcome.details["items"] = len(owners)
+    outcome.details["cleared"] = sum(1 for people in owners.values() if not people)
+    outcome.details["shared"] = sum(1 for people in owners.values() if len(people) > 1)
     outcome.details["actors"] = len({r.actor for r in rows if r.actor})
 
     with ctx.db.transaction() as conn:
@@ -144,6 +175,7 @@ def import_portfolios(
             entity_type="item_portfolio",
             summary=(
                 f"Portefeuilles : {len(rows)} attribution(s) sur "
+                f"{outcome.details['items']} référence(s) et "
                 f"{outcome.details['actors']} personne(s)"
             ),
             conn=conn,

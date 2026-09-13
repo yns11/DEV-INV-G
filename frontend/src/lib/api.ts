@@ -428,8 +428,11 @@ export const api = {
   /** Qui suit quelle référence, et ce que ça pèse par personne. */
   portfolios: (id: string) =>
     request<{
+      /** Une ligne par couple référence / personne : une référence partagée en a plusieurs. */
       rows: Array<{ itemNumber: string; actor: string; name: string; known: boolean }>
       byActor: Array<{ actor: string; items: number }>
+      /** Références **distinctes** ayant au moins un propriétaire — pas la hauteur de `rows`. */
+      items: number
       unassigned: number
     }>(`/campaigns/${id}/portfolios`),
   clearPortfolios: (id: string) =>

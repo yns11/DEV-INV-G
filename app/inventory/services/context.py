@@ -32,6 +32,7 @@ from ..db import (
     ImportBatchRepository,
     JournalRepository,
     PortfolioRepository,
+    ProductRepository,
     ReferentialRepository,
     ScanJobRepository,
     SheetRepository,
@@ -109,6 +110,10 @@ class ServiceContext:
     @functools.cached_property
     def portfolios(self) -> PortfolioRepository:
         return PortfolioRepository(self.db)
+
+    @functools.cached_property
+    def products(self) -> ProductRepository:
+        return ProductRepository(self.db)
 
     @functools.cached_property
     def consolidation(self) -> ConsolidationRepository:

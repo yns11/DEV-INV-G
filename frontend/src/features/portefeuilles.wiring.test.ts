@@ -43,8 +43,15 @@ describe('l’onglet Portefeuilles est réellement câblé', () => {
   })
 
   it('et le rend sur son onglet', () => {
-    expect(SHELL).toContain("gestion === 'portfolios'")
-    expect(SHELL).toContain('<PortfoliosTab')
+    /* L'aiguillage range ses onglets dans deux tables selon qu'ils ont besoin
+       ou non d'un contrat d'import ; celui-ci en a un. Se tromper de table le
+       rendrait sans son contrat, c'est-à-dire sans panneau de chargement — la
+       moitié de ce que l'onglet est. */
+    const table = SHELL.slice(
+      SHELL.indexOf('const WITH_CONTRACT'),
+      SHELL.indexOf('const WITHOUT_CONTRACT'),
+    )
+    expect(table).toContain('portfolios: PortfoliosTab')
   })
 
   it('l’onglet est déclaré dans les deux listes de l’aiguillage', () => {

@@ -359,7 +359,12 @@ export const api = {
     id: string,
     itemNumber: string,
     aspect: string,
-    params: { warehouseId?: string; locationId?: string } = {},
+    params: {
+      warehouseId?: string
+      locationId?: string
+      /** Rendre aussi les emplacements désactivés — masqués par défaut. */
+      includeDisabled?: boolean
+    } = {},
   ) =>
     request<{
       itemNumber: string
@@ -369,6 +374,8 @@ export const api = {
       unitCost: number
       total: number
       totalValue: number
+      /** Combien de lignes la réponse a écartées faute d'emplacement actif. */
+      hiddenDisabled: number
       rows: Array<Record<string, unknown>>
     }>(
       `/campaigns/${id}/analysis/breakdown/${encodeURIComponent(itemNumber)}${qs({
@@ -437,6 +444,14 @@ export const api = {
     }>(`/campaigns/${id}/portfolios`),
   clearPortfolios: (id: string) =>
     request<{ removed: number }>(`/campaigns/${id}/portfolios`, { method: 'DELETE' }),
+  products: (id: string) =>
+    request<{
+      rows: Array<{ itemNumber: string; product: string; name: string; known: boolean }>
+      byProduct: Array<{ product: string; items: number }>
+      unassigned: number
+    }>(`/campaigns/${id}/products`),
+  clearProducts: (id: string) =>
+    request<{ removed: number }>(`/campaigns/${id}/products`, { method: 'DELETE' }),
 
   // ----------------------------------------------------------------- imports
   importFile: (id: string, target: string, file: File, options: {
@@ -889,6 +904,22 @@ export const api = {
       `/campaigns/${id}/analysis/compare${qs({ otherCampaignId })}`,
     ),
   causes: (id: string) => request<AssignableCause[]>(`/campaigns/${id}/analysis/causes`),
+  /**
+   * La même cause sur un lot de lignes, en un appel.
+   *
+   * Un appel par ligne donnerait autant de transactions et d'entrées d'audit,
+   * et un échec au milieu laisserait la moitié du lot posée sans que rien ne
+   * dise où. Un commentaire vide ne vide rien : voir `CauseService.save_many`.
+   */
+  saveVarianceCauses: (id: string, body: {
+    itemNumbers: string[]
+    causeCode: string | null
+    comment: string
+  }) =>
+    request<{ updated: number }>(`/campaigns/${id}/analysis/variances/causes`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   causeSplit: (id: string) => request<CauseSplit>(`/campaigns/${id}/analysis/cause-split`),
   saveVarianceAnalysis: (id: string, itemNumber: string, body: {
     causeCode: string | null

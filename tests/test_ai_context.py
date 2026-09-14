@@ -333,6 +333,9 @@ def insight_service(monkeypatch, *, line: VarianceLine, **repositories: Any):
         guard=lambda campaign, aspect: None,
         record=lambda **kw: None,
         referentials=SimpleNamespace(items_by_number=lambda cid: {}),
+        # Le produit fabriqué entre dans le dossier : il rapproche deux
+        # références du même assemblage dont les écarts se compensent.
+        products=SimpleNamespace(by_item=lambda cid: {}),
         adjustments=SimpleNamespace(list=lambda cid: []),
         consolidation=SimpleNamespace(
             wip_breakdown=lambda cid, child_item=None: [],

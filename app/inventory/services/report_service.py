@@ -788,7 +788,14 @@ def variance_columns(*, by_location: bool) -> list[str]:
     screenshot. So the ERP stock contributes two columns, the counted stock two
     more, and the gap between them two again.
     """
-    columns = ["Article", "Désignation", "Type", "Catégorie", "Programme"]
+    # « Produit fabriqué » contre « Programme » : les deux sont des découpes de
+    # l'article, et les mettre côte à côte est ce qui rend leur différence
+    # lisible — le marché pour lequel la pièce est produite, et l'assemblage dont
+    # elle fait partie.
+    columns = [
+        "Article", "Désignation", "Type", "Catégorie", "Programme",
+        "Produit fabriqué",
+    ]
     if by_location:
         columns += ["Entrepôt", "Emplacement"]
     return [
@@ -799,6 +806,12 @@ def variance_columns(*, by_location: bool) -> list[str]:
         "Écart qté", "Écart valeur €",
         "Ajusté qté", "Physique qté",
         "Écart avant ajust. qté", "Écart avant ajust. valeur €",
+        # Les deux colonnes que l'écran montre quand le backflush a été mesuré,
+        # et qui manquaient au fichier : l'écart inexpliqué est *le* chiffre qui
+        # doit déclencher une investigation, et l'exporter sans lui obligeait à
+        # le recalculer à la main dans le tableur.
+        "Part backflush qté", "Part backflush valeur €",
+        "Inexpliqué qté", "Inexpliqué valeur €",
         "Au-delà des seuils", "Cause", "Commentaire",
     ]
 
@@ -807,10 +820,14 @@ def variance_row(row: Mapping[str, Any], *, by_location: bool) -> list[Any]:
     """One variance as a spreadsheet line, matching :func:`variance_columns`."""
     cells: list[Any] = [
         row["itemNumber"], row["name"], row["itemType"],
-        row["category"], row["program"],
+        row["category"], row["program"], row.get("manufacturedProduct") or "",
     ]
     if by_location:
         cells += [row["warehouseId"], row["locationId"]]
+    # Les quatre chiffres du backflush ne valent que là où il a été mesuré. Zéro
+    # sur une référence qu'il n'a pas vue se sommerait comme un vrai zéro et
+    # ferait croire à une consommation qui tombe juste ; la cellule reste vide.
+    measured = bool(row.get("backflushMeasured"))
     return [
         *cells,
         row["unit"], row["unitCost"],
@@ -819,6 +836,10 @@ def variance_row(row: Mapping[str, Any], *, by_location: bool) -> list[Any]:
         row["varianceQty"], row["varianceValue"],
         row["adjustedQty"], row["physicalQty"],
         row["countedVarianceQty"], row["countedVarianceValue"],
+        row["backflushShareQty"] if measured else "",
+        row["backflushShareValue"] if measured else "",
+        row["unexplainedQty"] if measured else "",
+        row["unexplainedValue"] if measured else "",
         "oui" if row["isMaterial"] else "non",
         row.get("causeCode") or "", row.get("comment") or "",
     ]

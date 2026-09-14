@@ -483,6 +483,34 @@ feuille de provenance dit sur quel périmètre il a été tiré.
 > l'identité de connexion — le navigateur ne nomme jamais personne, et ne peut
 > donc pas demander le portefeuille d'un autre.
 
+### 1.7 ter Rattacher les références à un **produit fabriqué**
+
+**Référentiels & seuils → Produits fabriqués**, après *Portefeuilles*.
+
+Cette découpe-ci ne répartit rien : elle dit ce que l'usine fait de la référence,
+et elle sert à **rapprocher**. Deux pièces d'un même assemblage se ressemblent,
+voisinent sur la même étagère, et l'une est parfois comptée à la place de
+l'autre. L'inventaire rend alors un excédent franc sur la première et un manque
+du même ordre sur la seconde — deux anomalies à investiguer pour **une** erreur.
+Aucune autre colonne ne les met côte à côte : la catégorie est trop large, le
+programme dit pour quel marché la pièce est produite, et l'emplacement les sépare
+aussi mal que la référence puisque les deux sont justement au même endroit.
+
+Le tableau se charge comme les autres — fichier, collage, saisie — avec deux
+colonnes : la référence et le produit.
+
+- **Une référence appartient à un seul produit.** La recharger la déplace.
+- **Charger n'efface pas les références absentes du fichier**, comme partout.
+- **Un produit vide détache la référence.**
+
+L'onglet reste ouvert jusqu'à la clôture, y compris sur une campagne dont le
+référentiel articles est déjà gelé.
+
+Le produit se retrouve ensuite en filtre sur la vue **Écarts** — une liste à
+cocher, un produit à la fois — dans la colonne *Produit fabriqué* de l'export
+Excel, et dans le dossier envoyé à l'IA, qui signale d'elle-même les écarts qui
+se compensent.
+
 ### 1.8 Imprimer les feuilles
 
 **GENERIQUE → Imprimer les feuilles** produit un seul PDF, dans l'ordre des
@@ -1183,11 +1211,35 @@ Le filtre **Au-delà des seuils uniquement** réduit à ce qui mérite une actio
 La courbe de **concentration** montre combien d'articles portent 80 % de l'écart
 absolu — typiquement moins de trente sur plusieurs centaines.
 
+**Filtrer.** Trois filtres s'ajoutent aux seuils : *Désignation*, *Produit
+fabriqué* — une liste à cocher, un seul produit à la fois — et le *Commentaire*.
+La référence et sa désignation restent affichées dans une seule colonne ; ce sont
+les filtres qui se sont ajoutés, pas des colonnes.
+
+**Affecter une cause sans changer d'écran.** À droite de chaque ligne, à côté du
+bouton qui appelle l'IA, un second bouton ouvre une fenêtre où se saisissent la
+cause et un commentaire libre. C'est en regardant les chiffres qu'on sait quoi
+écrire, et faire le tour par un autre écran pour le noter est le meilleur moyen
+de ne pas le noter. Les deux se retrouvent dans **Analyses et causes → Causes**,
+où ils restent modifiables.
+
+**En lot.** Cochez plusieurs lignes et le même bouton les affecte d'un coup. Sur
+un lot, le formulaire s'ouvre à blanc : la cause choisie remplace celle des
+lignes sélectionnées, et un commentaire laissé vide ne touche pas à ceux qui sont
+déjà écrits — il ne peut pas montrer vingt commentaires différents, donc il n'en
+efface aucun.
+
+**La décomposition du stock ERP** — la fenêtre qui s'ouvre en cliquant une
+quantité — **masque les emplacements désactivés**. Un emplacement désactivé
+n'existe plus pour la campagne, mais ses lignes de stock restent en base, et les
+montrer faisait annoncer un total que la grille derrière ne portait pas. Un
+bouton les rend si vous le voulez, et le total suit.
+
 **Les deux exports ne portent pas la même chose, et c'est voulu.**
 
 | | Ce qu'il contient | Ce à quoi il sert |
 |---|---|---|
-| **Excel** | tout, lignes sans écart comprises | recouper, filtrer, prouver que le comptage a couvert une référence |
+| **Excel** | tout, lignes sans écart comprises, plus *Produit fabriqué*, *Part backflush*, *Inexpliqué*, *Cause* et *Commentaire* | recouper, filtrer, prouver que le comptage a couvert une référence |
 | **PDF** | les seules lignes dont l'écart de quantité n'est pas nul | traiter — le document qu'on lit et qu'on annote |
 
 Une ligne qui tombe juste n'appelle aucune décision : à l'écran elle se fait
@@ -1218,6 +1270,12 @@ autant de fois que nécessaire ; les indicateurs se mettent à jour à chaque fo
 ### 3.4 Affecter les causes
 
 **Écarts & analyses → Causes.**
+
+La liste est une grille comme les autres : recherche, filtres de colonne, export,
+et **sélection d'un lot** pour y affecter une cause commune. Trois filtres
+restent au-dessus, parce qu'aucun ne s'exprime comme un filtre de colonne — les
+lignes *non affectées*, celles *à valider* (l'IA propose, personne n'a tranché) et
+le *sens* de l'écart. Ce sont les trois files de travail de cet écran.
 
 Choisissez une cause dans le référentiel de site (14 causes standard).
 Le graphique de répartition affiche explicitement la **part non affectée** :

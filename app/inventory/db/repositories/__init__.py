@@ -43,6 +43,7 @@ from .evidence import EvidenceBlobRepository
 from .journal import JournalRepository
 from .operations import OperationsRepository
 from .portfolio import PortfolioRepository
+from .product import ProductRepository
 from .referential import ReferentialRepository
 from .scan_job import ScanJobRepository
 from .sheet import SheetRepository
@@ -58,6 +59,7 @@ __all__ = [
     "EarlyCountDriftRepository",
     "ArbitrationRepository",
     "PortfolioRepository",
+    "ProductRepository",
     "SheetRepository",
     "ConsolidationRepository",
     "EvidenceBlobRepository",

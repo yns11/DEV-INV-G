@@ -577,8 +577,11 @@ class ItemPortfolio(DomainModel):
     toutes. Être déclaré gestionnaire reste ce qui ouvre l'écriture ; avoir un
     portefeuille ne l'ouvre pas, et ne la referme pas non plus.
 
-    Une référence a **un** propriétaire. Le partage aurait tenu dans la clé, et
-    n'est pas retenu : « à qui est cette référence » doit avoir une réponse.
+    Une référence est suivie par **plusieurs** personnes — l'identité fait partie
+    de la clé depuis la migration 034. Un propriétaire unique avait pour lui
+    d'être sans ambiguïté et décrivait mal l'organisation : un acheteur et un
+    contrôleur de gestion regardent les mêmes articles sans que l'un soit le
+    propriétaire de l'autre.
     """
 
     campaign_id: str
@@ -598,6 +601,33 @@ class ItemPortfolio(DomainModel):
     @field_validator("item_number", mode="before")
     @classmethod
     def _item(cls, v: Any) -> str:
+        return normalise_key(str(v or ""))
+
+
+class ItemProduct(DomainModel):
+    """Le produit fabriqué auquel une référence se rattache.
+
+    Une troisième découpe, distincte des deux autres. Le **périmètre** répartit
+    des emplacements, le **portefeuille** répartit des articles entre personnes ;
+    celle-ci rattache un article à ce que l'usine en fait. Deux références du
+    même produit fabriqué dont les écarts se compensent à peu près ne sont pas
+    deux anomalies : c'est la signature d'une inversion au comptage — un plus
+    ici, un moins là — et aucune autre dimension ne le fait voir.
+
+    ``Programme`` existe déjà et ne répond pas à la même question : il dit pour
+    quel marché la pièce est produite, pas de quel assemblage elle fait partie.
+
+    Une référence appartient à **un** produit fabriqué : c'est ce que la
+    nomenclature décrit, et la clé le dit. Recharger une référence la déplace.
+    """
+
+    campaign_id: str
+    item_number: str
+    product: str = ""
+
+    @field_validator("item_number", "product", mode="before")
+    @classmethod
+    def _key(cls, v: Any) -> str:
         return normalise_key(str(v or ""))
 
 

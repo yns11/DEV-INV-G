@@ -720,6 +720,41 @@ PORTFOLIOS = GridContract(
 )
 
 
+PRODUCTS = GridContract(
+    key="products",
+    title="Produits fabriqués",
+    description=(
+        "À quel produit fabriqué chaque référence se rattache. Deux références "
+        "du même produit dont les écarts se compensent à peu près signalent une "
+        "inversion au comptage — un plus ici, un moins là."
+    ),
+    hint=(
+        "Une ligne par référence : le numéro d'article et le produit fabriqué. "
+        "Le fichier fait foi pour les références qu'il cite et laisse les autres "
+        "en place ; un produit vide détache la référence."
+    ),
+    natural_key=("item_number",),
+    fields=(
+        FieldSpec("item_number", "Numéro d'article", required=True,
+                  aliases=("numero d'article", "itemnumber", "reference",
+                           "article"), width=200),
+        # Pas « programme » : celui-ci existe déjà sur l'article et dit pour
+        # quel marché la pièce est produite, pas de quel assemblage elle fait
+        # partie.
+        FieldSpec("product", "Produit fabriqué",
+                  aliases=("produit", "produit fini", "assemblage", "modele",
+                           "modèle", "ensemble", "machine"),
+                  help="Le produit que l'usine fabrique avec cette référence.",
+                  width=220),
+    ),
+    examples=(
+        {"item_number": "P-00005775", "product": "MOTEUR M3 GEN2"},
+        {"item_number": "mass-00049094", "product": "MOTEUR M3 GEN2"},
+        {"item_number": "P-00012345", "product": "MOTEUR M5"},
+    ),
+)
+
+
 CONTRACTS: dict[str, GridContract] = {
     c.key: c
     for c in (
@@ -734,6 +769,7 @@ CONTRACTS: dict[str, GridContract] = {
         ZONES,
         LOCATIONS,
         PORTFOLIOS,
+        PRODUCTS,
     )
 }
 

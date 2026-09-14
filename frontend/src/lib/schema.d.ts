@@ -515,6 +515,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns/{campaign_id}/analysis/variances/causes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Affecter une cause à un lot d'écarts
+         * @description Vingt lignes, une cause, une transaction.
+         *
+         *     Vingt appels donneraient vingt transactions, vingt lignes d'audit et un
+         *     échec possible au douzième — la moitié du lot posée, l'autre non, et rien
+         *     pour dire où ça s'est arrêté.
+         */
+        post: operations["save_analyses_api_campaigns__campaign_id__analysis_variances_causes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns/{campaign_id}/analysis/variances/{item_number}": {
         parameters: {
             query?: never;
@@ -2219,7 +2243,36 @@ export interface paths {
          *     de tout défaire d'un coup — et c'est explicite plutôt qu'implicite dans un
          *     fichier vide.
          */
-        delete: operations["clear_api_campaigns__campaign_id__portfolios_delete"];
+        delete: operations["clear_all_portfolios_api_campaigns__campaign_id__portfolios_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * À quel produit fabriqué chaque référence se rattache
+         * @description Le tableau de rattachement, et ce qu'il pèse par produit.
+         *
+         *     Les deux ensemble : la grille seule ne dit pas combien de références
+         *     restent sans produit, et c'est la première question sur cinq cents.
+         */
+        get: operations["list_products_api_campaigns__campaign_id__products_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Détacher toutes les références
+         * @description Repartir de zéro. Le chargement fusionne entre les références, donc ceci
+         *     est la seule façon de tout défaire d'un coup — et c'est explicite plutôt
+         *     qu'implicite dans un fichier vide.
+         */
+        delete: operations["clear_all_products_api_campaigns__campaign_id__products_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3296,6 +3349,25 @@ export interface components {
             qtyPer?: number | string | null;
             /** Unit */
             unit?: string | null;
+        };
+        /**
+         * BulkAnalysisRequest
+         * @description Une cause posée sur un lot de lignes d'écart.
+         *
+         *     Le commentaire vide ne vide rien : le formulaire du lot s'ouvre à blanc — il
+         *     ne peut pas montrer vingt commentaires différents — donc son champ vide veut
+         *     dire « je n'en parle pas ». Voir :meth:`CauseService.save_many`.
+         */
+        BulkAnalysisRequest: {
+            /** Causecode */
+            causeCode?: string | null;
+            /**
+             * Comment
+             * @default
+             */
+            comment: string;
+            /** Itemnumbers */
+            itemNumbers: string[];
         };
         /**
          * BulkArbitrationDecision
@@ -5585,6 +5657,7 @@ export interface operations {
                 aspect?: string;
                 warehouseId?: string;
                 locationId?: string;
+                includeDisabled?: boolean;
             };
             header?: {
                 "x-forwarded-email"?: string | null;
@@ -5897,6 +5970,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_analyses_api_campaigns__campaign_id__analysis_variances_causes_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkAnalysisRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -8956,7 +9070,79 @@ export interface operations {
             };
         };
     };
-    clear_api_campaigns__campaign_id__portfolios_delete: {
+    clear_all_portfolios_api_campaigns__campaign_id__portfolios_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_products_api_campaigns__campaign_id__products_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-forwarded-email"?: string | null;
+                "x-forwarded-preferred-username"?: string | null;
+                "x-forwarded-user"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_all_products_api_campaigns__campaign_id__products_delete: {
         parameters: {
             query?: never;
             header?: {

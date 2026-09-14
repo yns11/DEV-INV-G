@@ -72,6 +72,7 @@ from .import_parsing import (
 from .import_replay import replay_batch
 from .import_round_trip import round_trip_findings
 from .portfolio_service import import_portfolios
+from .product_service import import_products
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +109,10 @@ class ImportService:
     def import_portfolios(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
         """Charger les attributions d'articles — voir :mod:`portfolio_service`."""
         return import_portfolios(self, campaign, **kwargs)
+
+    def import_products(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
+        """Charger les produits fabriqués — voir :mod:`product_service`."""
+        return import_products(self, campaign, **kwargs)
 
     def parse(self, *args: Any, **kwargs: Any) -> tuple[GridContract, ParseResult]:
         """Lit une entrée — voir :class:`ImportParser`.

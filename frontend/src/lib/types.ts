@@ -174,6 +174,15 @@ export interface VarianceRow {
   itemType: ItemType
   category: string
   program: string
+  /**
+   * L'assemblage dont la référence fait partie — vide si rien ne la rattache.
+   *
+   * Distinct du programme, qui dit pour quel marché la pièce est produite.
+   * C'est lui qui rapproche deux écarts qui se compensent : un plus ici, un
+   * moins là, sur deux pièces du même produit, est la signature d'une
+   * inversion au comptage plutôt que de deux anomalies.
+   */
+  manufacturedProduct: string
   unit: string
   unitCost: number
   bookQty: number

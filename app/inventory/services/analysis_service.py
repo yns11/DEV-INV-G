@@ -35,11 +35,12 @@ from ..domain.enums import (
     CountSection,
     ItemType,
     JournalStatus,
+    LocationStatus,
 )
 from ..domain.models import (
     AdjustmentLine,
     Campaign,
-    VarianceAnalysis,
+    LocationKey,
     VarianceLine,
     Zone,
 )
@@ -230,6 +231,10 @@ class AnalysisService:
         ctx = self.ctx
         items = ctx.referentials.items_by_number(campaign.id)
         analyses = {a.item_number: a for a in ctx.analysis.list_analyses(campaign.id)}
+        # Chargé une fois pour la page entière : la question « de quel produit
+        # est cette référence » se pose à chacune des cinq cents lignes, et un
+        # aller-retour par ligne se paierait sur l'écran qu'on ouvre le plus.
+        products = ctx.products.by_item(campaign.id)
         lines = self.variances(campaign, granularity=granularity)
         # Avant le tri et avant `limit` : filtrer après aurait rendu « les vingt
         # plus gros écarts, dont ceux qui sont à moi », c'est-à-dire parfois
@@ -255,6 +260,10 @@ class AnalysisService:
                 "itemType": str(line.item_type),
                 "category": line.category,
                 "program": line.program,
+                # Distinct du programme, qui dit pour quel marché la pièce est
+                # produite : celui-ci dit de quel assemblage elle fait partie,
+                # et c'est lui qui rapproche deux écarts qui se compensent.
+                "manufacturedProduct": products.get(line.item_number, ""),
                 "unit": line.unit,
                 "unitCost": float(line.unit_cost),
                 "bookQty": float(line.book_qty),
@@ -552,6 +561,7 @@ class AnalysisService:
         *,
         warehouse_id: str = "",
         location_id: str = "",
+        include_disabled: bool = False,
     ) -> dict[str, Any]:
         """Where one figure comes from, in one shape whatever the figure is.
 
@@ -563,6 +573,18 @@ class AnalysisService:
 
         Totals are computed from the rows returned, not fetched separately: a
         drill-down whose total disagrees with its own lines is worse than none.
+
+        Les **emplacements désactivés** sont écartés du stock ERP, sauf demande
+        explicite. Un emplacement désactivé n'existe plus pour la campagne — il
+        ne porte aucun journal, il n'entre dans aucun indicateur — mais ses
+        lignes de stock restent en base, et la décomposition les montrait au
+        milieu des autres. Sur une référence rangée dans deux allées dont une a
+        été fermée entre deux photos ERP, la fenêtre annonçait un total que la
+        grille derrière elle ne portait pas.
+
+        Le filtre est **côté serveur** et non dans la fenêtre : le total est la
+        somme des lignes rendues, et masquer à l'affichage aurait laissé un
+        total qui contredit ce qu'on lit en dessous.
         """
         if aspect not in self.BREAKDOWN_ASPECTS:
             raise ValidationError(
@@ -590,6 +612,24 @@ class AnalysisService:
             "physical": self._physical_rows,
         }[aspect](campaign, item_number)
 
+        hidden = 0
+        if aspect == "book" and not include_disabled:
+            disabled = {
+                key for key, location in ctx.referentials.locations_by_key(
+                    campaign.id
+                ).items()
+                if location.status is LocationStatus.DISABLED
+            }
+            if disabled:
+                kept = [
+                    r for r in rows
+                    if LocationKey(
+                        warehouse_id=r["warehouseId"], location_id=r["locationId"]
+                    ) not in disabled
+                ]
+                hidden = len(rows) - len(kept)
+                rows = kept
+
         if warehouse_id:
             rows = [r for r in rows if r.get("warehouseId", warehouse_id) == warehouse_id]
         if location_id:
@@ -614,6 +654,9 @@ class AnalysisService:
             "unitCost": unit_cost,
             "total": sum(r["qty"] for r in rows),
             "totalValue": sum(r["value"] for r in rows),
+            # Combien la fenêtre a écarté, pour qu'elle puisse proposer de les
+            # montrer plutôt que de laisser croire qu'il n'y a rien de plus.
+            "hiddenDisabled": hidden,
             "rows": rows,
         }
 
@@ -1013,43 +1056,6 @@ class AnalysisService:
         return self.insights.explain(campaign, item_number)
 
     # ------------------------------------------------------- human analysis
-
-    def save_analysis(
-        self,
-        campaign: Campaign,
-        *,
-        item_number: str,
-        cause_code: str | None,
-        comment: str = "",
-        accepted: bool = False,
-    ) -> VarianceAnalysis:
-        ctx = self.ctx
-        ctx.guard(campaign, "analysis")
-        existing = {a.item_number: a for a in ctx.analysis.list_analyses(campaign.id)}
-        previous = existing.get(item_number)
-        analysis = VarianceAnalysis(
-            id=previous.id if previous else new_id(),
-            campaign_id=campaign.id,
-            item_number=item_number,
-            cause_code=cause_code,
-            comment=comment,
-            analyst=ctx.actor,
-            accepted=accepted,
-            ai_suggested_cause=previous.ai_suggested_cause if previous else None,
-            ai_confidence=previous.ai_confidence if previous else None,
-            ai_rationale=previous.ai_rationale if previous else "",
-        )
-        ctx.analysis.upsert_analysis(analysis, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.UPDATE,
-            entity_type="variance_analysis",
-            entity_id=analysis.id,
-            summary=f"{item_number} : cause {cause_code or '—'}",
-            before=previous.model_dump(mode="json") if previous else None,
-            after=analysis.model_dump(mode="json"),
-        )
-        return analysis
 
     def causes(self) -> list[Any]:
         """Le référentiel des causes standard, commun à toutes les campagnes."""

@@ -568,6 +568,7 @@ def create_app() -> FastAPI:
         generic.router,
         managers.router,
         managers.portfolios,
+        managers.products,
         analysis.router,
         reports.router,
         evidence.router,

@@ -60,6 +60,7 @@ PUBLIC = (
     "JournalRepository",
     "OperationsRepository",
     "PortfolioRepository",
+    "ProductRepository",
     "ReferentialRepository",
     "ScanJobRepository",
     "SheetRepository",

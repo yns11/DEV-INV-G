@@ -80,6 +80,7 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           ├─ manager                      (5 postes, avec l'identité de chacun)
           ├─ warehouse_manager            (entrepôt → gestionnaire, clé AUTRES)
           ├─ item_portfolio               (article → personne qui le suit)
+          ├─ item_product                 (article → produit fabriqué)
           │
           ├─ consolidation_run ─┬─ consolidation_line   (journal GENERIQUE produit)
           │                     └─ wip_breakdown        (traçabilité de l'éclatement)
@@ -249,7 +250,48 @@ ne saurait qu'ajouter et obligerait à tout vider pour enlever quelqu'un. Une
 adresse vide est le cas limite de cette règle : une référence citée sans personne
 n'est à personne.
 
-### 3.6 Pourquoi l'audit est protégé au niveau du moteur
+### 3.6 Produits fabriqués : la découpe qui rapproche
+
+```sql
+item_product (campaign_id, item_number) + product
+```
+
+Une troisième découpe, et elle ne répartit rien. Le **périmètre** répartit des
+emplacements entre gestionnaires ; le **portefeuille** répartit des articles
+entre personnes ; celle-ci dit ce que l'usine fait de la référence, et elle sert
+à *rapprocher*.
+
+Ce qu'elle fait voir et que rien d'autre ne montre : deux références du même
+produit dont les écarts se compensent à peu près ne sont pas deux anomalies
+indépendantes. C'est la signature d'une **inversion au comptage** — un plus ici,
+un moins là, sur deux pièces qui se ressemblent et voisinent sur le même
+assemblage. Ni la catégorie, ni le programme, ni l'emplacement ne rapprochent ces
+deux lignes : l'emplacement les sépare même aussi mal que la référence, puisque
+les deux pièces sont justement au même endroit.
+
+`Programme` existe déjà et répond à une autre question : pour quel marché la
+pièce est produite, pas de quel assemblage elle fait partie. Les deux colonnes
+sont côte à côte dans l'export Excel, ce qui est la façon la plus courte de
+rendre leur différence lisible.
+
+Le rapprochement lui-même est un calcul, pas une intuition :
+`inventory.domain.inversion` le pose sur des quantités, sans base et sans modèle.
+Deux conditions — au moins deux références, et un solde faible devant ce qui a
+bougé. C'est un **indice** : deux écarts qui se compensent peuvent être deux
+erreurs indépendantes tombant du bon côté, et rien n'est corrigé automatiquement.
+
+Une référence appartient à **un** produit : la clé le dit, et la recharger la
+déplace. Là où le portefeuille a dû s'élargir — plusieurs personnes suivent
+légitimement la même référence — ce rattachement-ci n'a pas de raison de le
+faire, et une clé large ferait compter deux fois le même écart dans deux
+produits.
+
+Table à part, et pour la même raison que les portefeuilles : sa place est une
+colonne du référentiel articles, et c'est là qu'elle ira. Mais `item` **gèle à
+l'entrée en comptage**, donc sur les campagnes déjà gelées — celles précisément
+qu'on analyse — une colonne d'`item` serait arrivée trop tard pour servir.
+
+### 3.7 Pourquoi l'audit est protégé au niveau du moteur
 
 ```sql
 CREATE OR REPLACE RULE audit_event_no_update AS ON UPDATE TO audit_event DO INSTEAD NOTHING;
@@ -259,7 +301,7 @@ CREATE OR REPLACE RULE audit_event_no_delete AS ON DELETE TO audit_event DO INST
 Une convention de code se contourne par accident. Une règle SQL, non : même un
 bug dans la couche service ne peut pas réécrire l'histoire.
 
-### 3.7 Concurrence
+### 3.8 Concurrence
 
 Toutes les tables mutables portent `row_version BIGINT`. Les écritures qui
 peuvent entrer en conflit (correction d'une ligne de comptage) comparent la
@@ -267,7 +309,7 @@ version attendue et renvoient un **409** plutôt qu'un dernier-arrivé-gagne
 silencieux. Le jour J, dix personnes travaillent en parallèle : c'est le moment
 où ça compte.
 
-### 3.8 Index
+### 3.9 Index
 
 Ils suivent les chemins réellement empruntés :
 

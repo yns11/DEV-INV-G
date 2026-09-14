@@ -1,14 +1,17 @@
 /** Les écarts, référence par référence, et ce qui les explique. */
 
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, download, downloads } from '../lib/api'
 import type { Overview, VarianceRow } from '../lib/types'
-import { DASH, ITEM_TYPE_LABELS, moneyShort, qty, percent, signClass, signedMoney, signedNum } from '../lib/format'
-import { CompositionBar, Pareto, VarianceBars } from '../components/charts'
+import { DASH, ITEM_TYPE_LABELS, moneyShort, qty, signClass, signedMoney, signedNum } from '../lib/format'
+import { Pareto, VarianceBars } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { BreakdownModal, DrillCell, type BreakdownAspect } from '../components/BreakdownModal'
-import { Alert, AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Modal, Skeleton, useErrorToast } from '../components/ui'
+import { ExplainModal } from '../components/ExplainModal'
+import { CauseDialog } from '../components/CauseDialog'
+import { TransferCard } from '../components/TransferCard'
+import { AsyncBoundary, Badge, Button, Card, EmptyState, Icons, Skeleton, useErrorToast, useToast } from '../components/ui'
 import { MINE_EMPTY, MineToggle } from '../components/MineToggle'
 import { FLAGS_COLUMN } from './varianceFlags'
 
@@ -45,7 +48,44 @@ export function VariancesTab({
     { itemNumber: string; aspect: BreakdownAspect; warehouseId?: string; locationId?: string } | null
   >(null)
   const [exporting, setExporting] = useState<'xlsx' | 'pdf' | null>(null)
+  // La cause se décide **ici**, en regardant les chiffres. `null` : fenêtre
+  // fermée ; une liste de références : fenêtre ouverte sur elles, qu'il y en ait
+  // une ou vingt.
+  const [assigning, setAssigning] = useState<VarianceRow[] | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const showError = useErrorToast()
+  const toast = useToast()
+  const queryClient = useQueryClient()
+  // Même garde que la vue Causes : affecter une cause est une écriture
+  // d'analyse, et elle se ferme à la clôture comme le reste de l'analyse.
+  const editable = overview.permissions.analysis
+
+  const causes = useQuery({
+    queryKey: ['causes', campaignId],
+    queryFn: () => api.causes(campaignId),
+  })
+  const assign = useMutation({
+    mutationFn: ({ items, cause, comment }: {
+      items: string[]
+      cause: string | null
+      comment: string
+    }) =>
+      api.saveVarianceCauses(campaignId, {
+        itemNumbers: items,
+        causeCode: cause,
+        comment,
+      }),
+    onSuccess: (result) => {
+      // Tout, et pas seulement la grille : la carte de répartition des causes
+      // et la vue Causes lisent les mêmes lignes, et les laisser périmées
+      // ferait douter de ce qu'on vient d'enregistrer.
+      void queryClient.invalidateQueries()
+      setAssigning(null)
+      setSelected(new Set())
+      toast.success(`${result.updated} écart(s) mis à jour`)
+    },
+    onError: (error) => showError(error, 'Affectation impossible'),
+  })
 
   // En vue par emplacement, la ligne cliquée en désigne un : décomposer l'article
   // entier répondrait à une autre question que celle posée.
@@ -120,6 +160,30 @@ export function VariancesTab({
         </div>
       ),
       value: (row) => row.itemNumber,
+    },
+    // La désignation est déjà à l'écran, sous la référence, et c'est délibéré :
+    // deux colonnes prendraient la moitié de la largeur pour la même
+    // information. Elle n'avait pour autant ni filtre propre, ni prise sur la
+    // recherche libre — la barre annonçait « désignation » et ne la trouvait
+    // pas. Déclarée en filtre seul, elle gagne les deux sans prendre de place.
+    {
+      key: 'name',
+      label: 'Désignation',
+      filterOnly: true,
+      filter: 'text',
+      value: (row) => row.name,
+    },
+    {
+      key: 'manufacturedProduct',
+      label: 'Produit fabriqué',
+      filterOnly: true,
+      filter: 'choice',
+      // Un produit à la fois : la question qu'on pose ici est « montre-moi cet
+      // ensemble », pour y chercher deux écarts qui se compensent. Trois
+      // produits cochés rendraient un mélange dont ce rapprochement ne sort
+      // pas. Une trentaine de valeurs, donc une liste et non un « contient ».
+      choiceSingle: true,
+      value: (row) => row.manufacturedProduct,
     },
     ...(granularity === 'item_location'
       ? [
@@ -287,17 +351,34 @@ export function VariancesTab({
     {
       key: 'explain',
       label: '',
-      width: 60,
+      width: 96,
       sortable: false,
       render: (row) => (
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={<Icons.sparkles size={13} />}
-          onClick={() => setExplain(row.itemNumber)}
-          title="Expliquer cet écart"
-          aria-label="Expliquer"
-        />
+        <span className="row" style={{ gap: 2 }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<Icons.sparkles size={13} />}
+            onClick={() => setExplain(row.itemNumber)}
+            title="Expliquer cet écart"
+            aria-label="Expliquer"
+          />
+          {/* Voisin du précédent, et c'est voulu : l'un propose une lecture,
+              l'autre enregistre la vôtre. Les deux se font au même moment, sur
+              la même ligne, avec les mêmes chiffres sous les yeux. */}
+          <Button
+            variant={row.causeCode ? 'primary' : 'ghost'}
+            size="sm"
+            icon={<Icons.clipboard size={13} />}
+            onClick={() => setAssigning([row])}
+            title={
+              row.causeCode
+                ? `Cause : ${row.causeCode}${row.comment ? ` — ${row.comment}` : ''}`
+                : 'Affecter une cause'
+            }
+            aria-label="Affecter une cause"
+          />
+        </span>
       ),
     },
   ]
@@ -445,6 +526,29 @@ export function VariancesTab({
               exportTitle="Écarts"
               campaignId={campaignId}
               getRowId={(row, index) => `${row.itemNumber}-${row.warehouseId}-${row.locationId}-${index}`}
+              selectable={editable}
+              selected={selected}
+              onSelectedChange={setSelected}
+              toolbar={
+                selected.size > 0 ? (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    icon={<Icons.clipboard size={13} />}
+                    onClick={() =>
+                      setAssigning(
+                        rows.filter((row, index) =>
+                          selected.has(
+                            `${row.itemNumber}-${row.warehouseId}-${row.locationId}-${index}`,
+                          ),
+                        ),
+                      )
+                    }
+                  >
+                    Affecter une cause
+                  </Button>
+                ) : null
+              }
               searchPlaceholder="Filtrer par article, désignation, programme…"
               maxHeight={640}
               // Ascendant : les manques d'abord. L'écart le plus négatif est
@@ -465,6 +569,31 @@ export function VariancesTab({
 
       {explain && (
         <ExplainModal campaignId={campaignId} itemNumber={explain} onClose={() => setExplain(null)} />
+      )}
+      {assigning && (
+        <CauseDialog
+          count={assigning.length}
+          // Pré-rempli sur une ligne, à blanc sur un lot : vingt lignes n'ont
+          // pas une valeur à montrer. C'est ce qui décide aussi du sort d'un
+          // commentaire vide — voir `CauseDialog`.
+          initialCause={assigning.length === 1 ? assigning[0]!.causeCode : null}
+          initialComment={assigning.length === 1 ? assigning[0]!.comment : ''}
+          causes={causes.data ?? []}
+          title={
+            assigning.length === 1
+              ? `Cause de l’écart — ${assigning[0]!.itemNumber}`
+              : `Cause pour ${assigning.length} écarts`
+          }
+          pending={assign.isPending}
+          onSubmit={(cause, comment) =>
+            assign.mutate({
+              items: assigning.map((row) => row.itemNumber),
+              cause,
+              comment,
+            })
+          }
+          onClose={() => setAssigning(null)}
+        />
       )}
       {drill && (
         <BreakdownModal
@@ -516,194 +645,5 @@ export function CellBarInline({ value, max }: { value: number; max: number }) {
         }}
       />
     </span>
-  )
-}
-
-function ExplainModal({
-  campaignId,
-  itemNumber,
-  onClose,
-}: {
-  campaignId: string
-  itemNumber: string
-  onClose: () => void
-}) {
-  const query = useQuery({
-    queryKey: ['explain', campaignId, itemNumber],
-    queryFn: () => api.explain(campaignId, itemNumber),
-  })
-
-  return (
-    <Modal title={`Analyse de l’écart — ${itemNumber}`} onClose={onClose} width={820}>
-      <AsyncBoundary query={query} skeleton={<Skeleton count={5} height={18} />}>
-        {(data) => (
-          <div className="stack">
-            <Alert tone="info" title="Généré par IA — à vérifier">
-              Proposition fondée sur les chiffres de la campagne. Elle n’écrit rien.
-            </Alert>
-            <div style={{ whiteSpace: 'pre-wrap', fontSize: 'var(--text-base)' }}>
-              {data.explanation}
-            </div>
-            {data.wipBreakdown.length > 0 && (
-              <Card title="Composition du WIP">
-                <div className="table-wrap" style={{ maxHeight: 220 }}>
-                  <table className="data">
-                    <thead>
-                      <tr>
-                        <th>Zone</th>
-                        <th>Assemblage</th>
-                        <th className="num">Quantité apportée</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.wipBreakdown.map((row, index) => (
-                        <tr key={index}>
-                          <td>{row.zone_code}</td>
-                          <td className="mono">{row.parent_item}</td>
-                          <td className="num">{qty(row.child_qty)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            )}
-            {data.movements.length > 0 && (
-              <Card title="Mouvements enregistrés">
-                <div className="table-wrap" style={{ maxHeight: 220 }}>
-                  <table className="data">
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Nature</th>
-                        <th className="num">Quantité</th>
-                        <th className="num">Valeur</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.movements.map((row, index) => (
-                        <tr key={index}>
-                          <td>{String(row.date ?? '—')}</td>
-                          <td>{String(row.kind)}</td>
-                          <td className="num">{qty(Number(row.qty))}</td>
-                          <td className="num">{moneyShort(Number(row.value))}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            )}
-          </div>
-        )}
-      </AsyncBoundary>
-    </Modal>
-  )
-}
-
-/**
- * How much of the variance is a move between bins rather than a loss.
- *
- * The reason the screen opens on the per-reference reading. A pallet moved from
- * one location to another shows up twice in the per-location view — short here,
- * over there — and drags the IRA down without a single part having been lost.
- * That is a location-accuracy problem, worth fixing, but it is not the same
- * alarm as a shortfall, and conflating the two sends people chasing the wrong
- * thing.
- */
-export function TransferCard({
-  campaignId,
-  onDrillDown,
-}: {
-  campaignId: string
-  onDrillDown: () => void
-}) {
-  const query = useQuery({
-    queryKey: ['transfers', campaignId],
-    queryFn: () => api.transfers(campaignId, 20),
-  })
-
-  return (
-    <AsyncBoundary
-      query={query}
-      skeleton={<Skeleton height={160} />}
-      isEmpty={(data) => data.grossValue === 0}
-      empty={null}
-    >
-      {(data) => (
-        <Card
-          title="Perte sèche ou simple transfert ?"
-          message="L’écart vu par emplacement compte deux fois une palette déplacée. La différence avec l’écart par référence mesure exactement cette part-là."
-          actions={
-            data.itemCount > 0 ? (
-              <Button size="sm" variant="ghost" onClick={onDrillDown}>
-                Voir le détail par emplacement
-              </Button>
-            ) : null
-          }
-        >
-          <div className="stack">
-            <CompositionBar
-              format={moneyShort}
-              segments={[
-                {
-                  label: 'Écart net par référence',
-                  value: data.netValue,
-                  color: 'var(--cat-4)',
-                },
-                {
-                  label: 'Transfert entre emplacements',
-                  value: data.transferValue,
-                  color: 'var(--cat-2)',
-                },
-              ]}
-            />
-            <p className="subtle">
-              {percent(data.transferShare)} de l’écart brut par emplacement (
-              {moneyShort(data.grossValue)}) se compense entre deux emplacements de la
-              même référence, sur {data.itemCount.toLocaleString('fr-FR')} référence(s).
-              Ce n’est pas une perte : c’est le stock qui n’est pas là où l’ERP le
-              croit.
-            </p>
-            {data.rows.length > 0 && (
-              <div className="table-wrap" style={{ maxHeight: 260 }}>
-                <table className="data">
-                  <thead>
-                    <tr>
-                      <th>Référence</th>
-                      <th className="num">Écart par référence</th>
-                      <th className="num">Écart par emplacement</th>
-                      <th className="num">Dont transfert</th>
-                      <th className="num">Emplacements</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.rows.map((row) => (
-                      <tr key={row.itemNumber}>
-                        <td>
-                          <div className="mono">{row.itemNumber}</div>
-                          <div className="subtle truncate" style={{ maxWidth: 240 }}>
-                            {row.name}
-                          </div>
-                        </td>
-                        <td className="num">{moneyShort(row.netValue)}</td>
-                        <td className="num">{moneyShort(row.grossValue)}</td>
-                        <td className="num">
-                          <strong>{moneyShort(row.transferValue)}</strong>{' '}
-                          <span className="subtle">
-                            ({percent(row.transferShare)})
-                          </span>
-                        </td>
-                        <td className="num">{row.locations}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </Card>
-      )}
-    </AsyncBoundary>
   )
 }

@@ -612,6 +612,19 @@ class AnalysisRequest(ApiModel):
     accepted: bool = False
 
 
+class BulkAnalysisRequest(ApiModel):
+    """Une cause posée sur un lot de lignes d'écart.
+
+    Le commentaire vide ne vide rien : le formulaire du lot s'ouvre à blanc — il
+    ne peut pas montrer vingt commentaires différents — donc son champ vide veut
+    dire « je n'en parle pas ». Voir :meth:`CauseService.save_many`.
+    """
+
+    item_numbers: list[str] = Field(alias="itemNumbers", min_length=1, max_length=2000)
+    cause_code: str | None = Field(default=None, alias="causeCode")
+    comment: str = ""
+
+
 class AdjustmentRowRequest(ApiModel):
     id: str | None = None
     item_number: str = Field(alias="itemNumber")

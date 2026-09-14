@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from ...services import AnalysisService
 from ...services.portfolio_service import portfolio_filter
 from ..deps import CampaignDep, Ctx, analysis_service
-from ..schemas import AdjustmentRowRequest, AnalysisRequest
+from ..schemas import AdjustmentRowRequest, AnalysisRequest, BulkAnalysisRequest
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/analysis", tags=["analyse"])
 
@@ -103,6 +103,7 @@ def breakdown(
     aspect: Annotated[str, Query()] = "counted",
     warehouse_id: Annotated[str, Query(alias="warehouseId")] = "",
     location_id: Annotated[str, Query(alias="locationId")] = "",
+    include_disabled: Annotated[bool, Query(alias="includeDisabled")] = False,
 ) -> dict[str, Any]:
     """The lines behind one figure, whichever figure it is.
 
@@ -117,6 +118,7 @@ def breakdown(
         aspect,
         warehouse_id=warehouse_id,
         location_id=location_id,
+        include_disabled=include_disabled,
     )
 
 
@@ -196,14 +198,38 @@ def cause_split(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     return service.cause_split(campaign)
 
 
+@router.post("/variances/causes", summary="Affecter une cause à un lot d'écarts")
+def save_analyses(
+    campaign: CampaignDep, payload: BulkAnalysisRequest, ctx: Ctx
+) -> dict[str, int]:
+    """Vingt lignes, une cause, une transaction.
+
+    Vingt appels donneraient vingt transactions, vingt lignes d'audit et un
+    échec possible au douzième — la moitié du lot posée, l'autre non, et rien
+    pour dire où ça s'est arrêté.
+    """
+    from ...services.cause_service import CauseService
+
+    return {
+        "updated": CauseService(ctx).save_many(
+            campaign,
+            item_numbers=payload.item_numbers,
+            cause_code=payload.cause_code,
+            comment=payload.comment,
+        )
+    }
+
+
 @router.put("/variances/{item_number}", summary="Affecter une cause à un écart")
 def save_analysis(
     campaign: CampaignDep,
     item_number: str,
     payload: AnalysisRequest,
-    service: Service,
+    ctx: Ctx,
 ) -> dict[str, Any]:
-    analysis = service.save_analysis(
+    from ...services.cause_service import CauseService
+
+    analysis = CauseService(ctx).save(
         campaign,
         item_number=item_number,
         cause_code=payload.cause_code,

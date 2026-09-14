@@ -118,7 +118,7 @@ structurellement impossible.
 |---|:---:|:---:|:---:|:---:|
 | Seuils | ✅ | ❌ | ❌ | ❌ |
 | Paramètres (formules) | ✅ | ✅ | ❌ | ❌ |
-| Gestionnaires, périmètres et portefeuilles | ✅ | ✅ | ✅ | ❌ |
+| Gestionnaires, périmètres, portefeuilles et produits fabriqués | ✅ | ✅ | ✅ | ❌ |
 | Articles, nomenclatures | ✅ | ❌ | ❌ | ❌ |
 | Emplacements | ✅ | ✅ | ❌ | ❌ |
 | Stock ERP | ❌ | ✅ | ❌ | ❌ |
@@ -152,6 +152,14 @@ les range — et ce sont eux que lit la bascule « Mes références » du stock 
 de l'écart backflush et des écarts. Une colonne sur `item` aurait été plus
 courte et fausse : le référentiel articles gèle à l'entrée en comptage, ce qui
 aurait rendu le portefeuille immodifiable au moment précis où il sert.
+
+Le **produit fabriqué** (`item_product`) est sur la même ligne de la matrice, et
+pour la même raison : le référentiel articles gèle à l'entrée en comptage, et
+c'est là qu'il ira quand les campagnes gelées d'aujourd'hui seront derrière nous.
+Il ne répartit rien — il *rapproche*. Deux références du même assemblage dont les
+écarts se compensent sont la signature d'une inversion au comptage, et
+`inventory.domain.inversion` la calcule : deux conditions sur des quantités, sans
+base et sans modèle. C'est un indice, jamais une correction.
 
 Une référence est suivie par **plusieurs personnes** — l'identité fait partie de
 la clé. La forme d'abord retenue, un propriétaire unique, avait pour elle d'être

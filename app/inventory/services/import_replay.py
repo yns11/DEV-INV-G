@@ -61,6 +61,7 @@ TARGET_METHODS = {
     "backflush": "import_backflush",
     "locations": "import_locations",
     "portfolios": "import_portfolios",
+    "products": "import_products",
 }
 
 #: Les grilles dont le chargement est qualifié par une période.

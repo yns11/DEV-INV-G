@@ -96,6 +96,31 @@ class TestFreezeMatrix:
         assert not editable.book_stock and not editable.locations
         assert editable.adjustments and editable.analysis
 
+    def test_the_cause_opens_with_the_count_not_with_the_analysis(self):
+        """Un écart se commente quand on l'a sous les yeux, et c'est le jour J.
+
+        Celui qui parcourt une allée sait, ce jour-là, que la palette était en
+        zone B ; trois semaines plus tard il le saura moins bien. Attendre le
+        changement de phase pour noter ce qu'on vient de constater revient à ne
+        pas le noter.
+
+        Les deux bornes tiennent toujours : rien avant le comptage — il n'y a
+        pas encore d'écart à commenter — et rien après la clôture.
+        """
+        assert mutability_of(CampaignStatus.COUNTING).analysis
+        assert mutability_of(CampaignStatus.ANALYSIS).analysis
+        assert not mutability_of(CampaignStatus.PREPARATION).analysis
+        assert not mutability_of(CampaignStatus.CLOSED).analysis
+
+    def test_but_the_count_does_not_open_the_adjustments_with_it(self):
+        """Ce que l'ouverture de la cause au comptage n'emporte pas.
+
+        Un ajustement déplace des quantités ; il attend que le comptage soit
+        clos. C'est précisément ce que la cause n'est pas.
+        """
+        assert not mutability_of(CampaignStatus.COUNTING).adjustments
+        assert mutability_of(CampaignStatus.COUNTING).count_entries
+
     def test_closed_freezes_everything_that_feeds_the_campaign_s_figures(self):
         """Une seule exception, et elle est nommée ici pour ne pas s'étendre.
 

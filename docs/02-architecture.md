@@ -126,10 +126,20 @@ structurellement impossible.
 | Journaux de comptage | ❌ | ✅ | ❌ | ❌ |
 | Feuilles de comptage | ✅ | ✅ | ❌ | ❌ |
 | Ajustements | ❌ | ❌ | ✅ | ❌ |
-| Analyse des écarts | ❌ | ❌ | ✅ | ❌ |
+| Analyse des écarts | ❌ | ✅ | ✅ | ❌ |
 
 Les zones GENERIQUE restent créables pendant le comptage : une aire physique que
 personne n'avait listée est découverte à chaque campagne.
+
+L'**analyse des écarts** — la cause, le commentaire, la proposition du modèle —
+s'ouvre dès le comptage, et c'est la seule ligne de la matrice qui n'est pas
+alignée sur les ajustements. Un écart se commente quand on l'a sous les yeux, et
+c'est le jour J qu'on l'a : celui qui parcourt l'allée sait, ce jour-là, que la
+palette était en zone B, et il le saura moins bien trois semaines plus tard.
+Attendre le changement de phase pour noter ce qu'on vient de constater revient à
+ne pas le noter. Ce que cela n'ouvre pas est tout aussi net : les **ajustements**
+déplacent des quantités et attendent, eux, que le comptage soit clos. Rien de ce
+que la ligne ouvre n'entre dans les chiffres de la campagne.
 
 Les gestionnaires et leurs deux périmètres — l'affectation des entrepôts, donc
 de leurs journaux, et celle des zones — restent modifiables jusqu'à la clôture.

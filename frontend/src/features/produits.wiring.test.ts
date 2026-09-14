@@ -160,17 +160,14 @@ describe('la cause se pose là où on regarde les chiffres', () => {
     expect(barre.slice(0, 900)).toContain('setAssigning(')
   })
 
-  it('les trois états de la barre d’outils sont couverts', () => {
-    /* Le troisième est celui qui manquait, et il a coûté une question : sur une
-       campagne hors phase d'analyse, la colonne de cases à cocher disparaît —
-       c'est la garde qui le veut — et **rien** ne le disait. « Je ne vois pas
-       comment sélectionner un lot » était la seule conclusion possible.
-
-       Les trois : la raison quand c'est fermé, l'invitation quand c'est ouvert
-       et que rien n'est coché, le bouton quand quelque chose l'est. */
+  it('les deux états de la barre d’outils sont couverts', () => {
+    /* L'invitation quand la grille est cochable et que rien n'est coché, le
+       bouton quand quelque chose l'est. Sans la première, une colonne de cases
+       à cocher ne dit pas ce qu'on peut en faire — c'est ce silence qui avait
+       coûté une question (« je ne vois pas comment sélectionner un lot »). */
     const barre = VARIANCES.slice(VARIANCES.indexOf('toolbar={'))
-    expect(barre.slice(0, 1400)).toContain('!editable ? (')
-    expect(barre.slice(0, 1400)).toContain('CAUSE_CLOSED')
+    expect(barre.slice(0, 1400)).toContain('selected.size > 0 ? (')
+    expect(barre.slice(0, 1400)).toContain(') : editable ? (')
     expect(barre.slice(0, 1400)).toContain('Cochez des lignes')
   })
 
@@ -182,12 +179,15 @@ describe('la cause se pose là où on regarde les chiffres', () => {
     expect(bouton.slice(0, 500)).toContain('disabled={!editable}')
   })
 
-  it('la raison est écrite une fois, et sert aux deux endroits', () => {
-    /* Deux formulations divergeraient, et l'une des deux finirait par décrire
-       une règle que le serveur n'applique plus. */
-    expect(VARIANCES).toContain('const CAUSE_CLOSED')
-    const occurrences = VARIANCES.match(/CAUSE_CLOSED/g) ?? []
-    expect(occurrences.length).toBeGreaterThanOrEqual(3)
+  it('et l’écran ne renvoie plus la cause à une phase ultérieure', () => {
+    /* L'écran a porté un temps « l'affectation des causes s'ouvre en phase
+       Analyse & ajustements » : c'était vrai, puis la garde a été ouverte dès
+       le comptage et la phrase est devenue un mensonge poli. Une phrase qui
+       décrit une règle finit par lui survivre ; celle-ci ne revient pas. */
+    for (const source of [VARIANCES, CAUSES]) {
+      expect(source).not.toMatch(/s’ouvre en phase|s'ouvre en phase/)
+      expect(source).not.toMatch(/Analyse & ajustements/)
+    }
   })
 
   it('les deux passent par la même fenêtre', () => {

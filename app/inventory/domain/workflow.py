@@ -92,7 +92,19 @@ class Editable:
     #: counts of a campaign that had not started.
     count_entries: bool
     adjustments: bool
-    #: Human analysis (cause assignment, comments) on variances.
+    #: L'analyse humaine d'un écart : sa cause, son commentaire, et les
+    #: propositions que le modèle peut faire à côté.
+    #:
+    #: Ouvert **dès le comptage**, et pas seulement à l'analyse. Un écart se
+    #: comprend quand on l'a sous les yeux : le magasinier qui vient de recompter
+    #: une allée sait, à ce moment-là, que la palette était en zone B — et il le
+    #: saura moins bien trois semaines plus tard. Attendre le changement de phase
+    #: pour noter ce qu'on vient de constater revient à ne pas le noter.
+    #:
+    #: Rien de ce que cet aspect ouvre n'entre dans les chiffres de la campagne :
+    #: ni la cause, ni le commentaire, ni la proposition du modèle — qui vit dans
+    #: ses propres colonnes et n'est jamais écrite à la place d'une décision. Une
+    #: quantité reste, elle, gardée par les aspects qui la portent.
     analysis: bool
     #: Reading and refreshing the frozen backflush variance. Open for as long as
     #: the campaign is: the gold table is rebuilt nightly, so a past week's
@@ -184,7 +196,8 @@ class Editable:
 #:              still be created (explicit requirement); the book stock is
 #:              loaded then frozen; journals and sheets are the live objects.
 #: ANALYSIS     everything from the counting phase is frozen; adjustments and
-#:              human analysis are the only writable objects.
+#:              human analysis are the only writable objects. L'analyse humaine,
+#:              elle, était déjà ouverte au comptage — voir le champ.
 #: CLOSED       everything is frozen.
 _EDITABILITY: dict[CampaignStatus, Editable] = {
     CampaignStatus.PREPARATION: Editable(
@@ -228,7 +241,10 @@ _EDITABILITY: dict[CampaignStatus, Editable] = {
         count_sheets=True,
         count_entries=True,
         adjustments=False,
-        analysis=False,
+        # Voir le champ : un écart se commente quand on l'a sous les yeux, et
+        # c'est le jour J qu'on l'a. Ce que cela n'ouvre pas : les ajustements,
+        # qui déplacent des quantités et attendent que le comptage soit clos.
+        analysis=True,
     ),
     CampaignStatus.ANALYSIS: Editable(
         managers=True,

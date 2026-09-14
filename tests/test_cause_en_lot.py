@@ -209,6 +209,34 @@ class TestUnLot:
 
 
 class TestLaGarde:
+    @pytest.mark.parametrize(
+        "statut", [CampaignStatus.COUNTING, CampaignStatus.ANALYSIS]
+    )
+    def test_la_cause_s_affecte_des_le_comptage(self, service, ctx, campaign, statut):
+        """Le jour J, la cause est sous les yeux de celui qui compte.
+
+        La garde passe par le domaine, mais c'est ici qu'on vérifie qu'elle
+        atteint bien l'écriture : ouvrir l'aspect sans que le service la laisse
+        passer aurait rendu une porte peinte à l'écran.
+        """
+        en_cours = _campaign(campaign.id, statut)
+
+        service.save(en_cours, item_number=A, cause_code=SAISIE, comment="allée 3")
+        service.save_many(en_cours, item_numbers=[B, C], cause_code=AUTRE)
+
+        posees = _posees(ctx, campaign)
+        assert posees[A] == (SAISIE, "allée 3")
+        assert posees[B][0] == AUTRE and posees[C][0] == AUTRE
+
+    def test_mais_pas_avant_qu_il_y_ait_un_ecart_a_commenter(self, service, campaign):
+        """La borne basse : en préparation, il n'y a rien à expliquer."""
+        with pytest.raises(FrozenError):
+            service.save(
+                _campaign(campaign.id, CampaignStatus.PREPARATION),
+                item_number=A,
+                cause_code=AUTRE,
+            )
+
     def test_le_lot_se_ferme_a_la_cloture(self, service, campaign):
         with pytest.raises(FrozenError):
             service.save_many(

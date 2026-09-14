@@ -1223,6 +1223,11 @@ cause et un commentaire libre. C'est en regardant les chiffres qu'on sait quoi
 de ne pas le noter. Les deux se retrouvent dans **Analyses et causes → Causes**,
 où ils restent modifiables.
 
+**Dès le comptage.** Cette affectation n'attend pas la phase d'analyse : elle est
+ouverte le jour J, au moment où l'on parcourt les allées et où l'on sait encore
+que la palette était en zone B. Les ajustements, eux, restent fermés jusqu'à la
+clôture du comptage — ils déplacent des quantités, une cause n'en déplace aucune.
+
 **En lot.** Cochez plusieurs lignes et le même bouton les affecte d'un coup. Sur
 un lot, le formulaire s'ouvre à blanc : la cause choisie remplace celle des
 lignes sélectionnées, et un commentaire laissé vide ne touche pas à ceux qui sont
@@ -1277,7 +1282,9 @@ restent au-dessus, parce qu'aucun ne s'exprime comme un filtre de colonne — le
 lignes *non affectées*, celles *à valider* (l'IA propose, personne n'a tranché) et
 le *sens* de l'écart. Ce sont les trois files de travail de cet écran.
 
-Choisissez une cause dans le référentiel de site (14 causes standard).
+Choisissez une cause dans le référentiel de site (14 causes standard). Cet écran
+est celui où l'on reprend et complète ; le premier jet se pose souvent plus tôt,
+depuis la grille **Écarts**, ouverte à l'affectation dès le comptage.
 Le graphique de répartition affiche explicitement la **part non affectée** :
 c'est elle qui alimente le plan d'action de la campagne suivante.
 

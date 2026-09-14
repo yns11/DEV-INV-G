@@ -19,6 +19,17 @@ import { FLAGS_COLUMN } from './varianceFlags'
 // Variances
 // --------------------------------------------------------------------------- //
 
+/**
+ * Pourquoi l'affectation d'une cause n'est pas ouverte.
+ *
+ * Deux raisons possibles, et la même phrase les couvre : la campagne n'est pas
+ * en analyse, ou celui qui regarde n'est pas gestionnaire. Les distinguer
+ * demanderait de dire à quelqu'un qu'il lui manque un droit sans qu'il ait rien
+ * demandé ; nommer la condition suffit à savoir quoi faire.
+ */
+const CAUSE_CLOSED =
+  'L’affectation des causes s’ouvre en phase Analyse & ajustements, pour les gestionnaires de la campagne.'
+
 const DIMENSIONS = [
   { id: 'item_type', label: 'Type d’article' },
   { id: 'category', label: 'Catégorie' },
@@ -370,11 +381,17 @@ export function VariancesTab({
             variant={row.causeCode ? 'primary' : 'ghost'}
             size="sm"
             icon={<Icons.clipboard size={13} />}
+            // Même garde que le lot. Sans elle, le bouton invitait à remplir
+            // une fenêtre dont l'enregistrement était refusé par le serveur :
+            // une porte peinte sur un mur.
+            disabled={!editable}
             onClick={() => setAssigning([row])}
             title={
-              row.causeCode
-                ? `Cause : ${row.causeCode}${row.comment ? ` — ${row.comment}` : ''}`
-                : 'Affecter une cause'
+              !editable
+                ? CAUSE_CLOSED
+                : row.causeCode
+                  ? `Cause : ${row.causeCode}${row.comment ? ` — ${row.comment}` : ''}`
+                  : 'Affecter une cause'
             }
             aria-label="Affecter une cause"
           />
@@ -530,7 +547,13 @@ export function VariancesTab({
               selected={selected}
               onSelectedChange={setSelected}
               toolbar={
-                selected.size > 0 ? (
+                // Trois états, et le troisième est celui qui manquait : la
+                // sélection absente ne s'expliquait nulle part, et « je ne vois
+                // pas comment sélectionner un lot » est la question qu'elle
+                // posait. Une ligne, à l'endroit où le bouton apparaîtrait.
+                !editable ? (
+                  <span className="subtle">{CAUSE_CLOSED}</span>
+                ) : selected.size > 0 ? (
                   <Button
                     size="sm"
                     variant="primary"
@@ -545,9 +568,13 @@ export function VariancesTab({
                       )
                     }
                   >
-                    Affecter une cause
+                    Affecter une cause aux {selected.size} ligne(s)
                   </Button>
-                ) : null
+                ) : (
+                  <span className="subtle">
+                    Cochez des lignes pour leur affecter une cause commune.
+                  </span>
+                )
               }
               searchPlaceholder="Filtrer par article, désignation, programme…"
               maxHeight={640}

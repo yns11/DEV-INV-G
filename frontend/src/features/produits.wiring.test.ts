@@ -160,6 +160,36 @@ describe('la cause se pose là où on regarde les chiffres', () => {
     expect(barre.slice(0, 900)).toContain('setAssigning(')
   })
 
+  it('les trois états de la barre d’outils sont couverts', () => {
+    /* Le troisième est celui qui manquait, et il a coûté une question : sur une
+       campagne hors phase d'analyse, la colonne de cases à cocher disparaît —
+       c'est la garde qui le veut — et **rien** ne le disait. « Je ne vois pas
+       comment sélectionner un lot » était la seule conclusion possible.
+
+       Les trois : la raison quand c'est fermé, l'invitation quand c'est ouvert
+       et que rien n'est coché, le bouton quand quelque chose l'est. */
+    const barre = VARIANCES.slice(VARIANCES.indexOf('toolbar={'))
+    expect(barre.slice(0, 1400)).toContain('!editable ? (')
+    expect(barre.slice(0, 1400)).toContain('CAUSE_CLOSED')
+    expect(barre.slice(0, 1400)).toContain('Cochez des lignes')
+  })
+
+  it('et le bouton de ligne suit la même garde que le lot', () => {
+    /* Sans elle, il invitait à remplir une fenêtre dont l'enregistrement était
+       refusé par le serveur : une porte peinte sur un mur. */
+    const colonne = VARIANCES.slice(VARIANCES.indexOf("key: 'explain',"))
+    const bouton = colonne.slice(colonne.indexOf('Icons.clipboard'))
+    expect(bouton.slice(0, 500)).toContain('disabled={!editable}')
+  })
+
+  it('la raison est écrite une fois, et sert aux deux endroits', () => {
+    /* Deux formulations divergeraient, et l'une des deux finirait par décrire
+       une règle que le serveur n'applique plus. */
+    expect(VARIANCES).toContain('const CAUSE_CLOSED')
+    const occurrences = VARIANCES.match(/CAUSE_CLOSED/g) ?? []
+    expect(occurrences.length).toBeGreaterThanOrEqual(3)
+  })
+
   it('les deux passent par la même fenêtre', () => {
     for (const source of [VARIANCES, CAUSES]) {
       expect(source).toContain("from '../components/CauseDialog'")

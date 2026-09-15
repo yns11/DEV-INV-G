@@ -1288,6 +1288,15 @@ depuis la grille **Écarts**, ouverte à l'affectation dès le comptage.
 Le graphique de répartition affiche explicitement la **part non affectée** :
 c'est elle qui alimente le plan d'action de la campagne suivante.
 
+**Le stock ERP est affiché**, à gauche du compté et du physique, et se décompose
+d'un clic comme eux. Il change la lecture de l'écart : « −40 » ne se raconte pas
+de la même façon selon qu'il manque 40 pièces sur 45 ou sur 4 000.
+
+**Le commentaire se saisit directement dans la grille**, comme la cause juste à
+côté : tapez, puis `Entrée` ou sortez du champ. Les deux colonnes s'enregistrent
+ensemble — changer l'une n'efface jamais l'autre — et ce que vous écrivez ici est
+ce que la vue Écarts montre, et réciproquement.
+
 Le bouton **Proposer des causes par IA** analyse les plus gros écarts et propose
 un diagnostic avec sa confiance et sa justification. La proposition apparaît
 **à côté** de la décision, jamais à sa place : vous l'acceptez ou non.

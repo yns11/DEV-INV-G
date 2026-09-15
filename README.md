@@ -218,7 +218,7 @@ make check           # les deux
 make dev-api         # API avec rechargement, port 8000
 make dev-ui          # Vite avec proxy vers l'API, port 5173
 
-npm --prefix frontend run test   # 660 contrôles navigateur (vitest + jsdom)
+npm --prefix frontend run test   # 686 contrôles navigateur (vitest + jsdom)
 npm --prefix frontend run e2e    # le parcours complet, Playwright, app démarrée
 ```
 

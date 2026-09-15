@@ -301,3 +301,69 @@ describe('les trois onglets de Gestion lisent le drapeau des gestionnaires', () 
     expect(lectures.length).toBe(1)
   })
 })
+
+// --------------------------------------------------------------------------- //
+// 8. Aucune grille cochable n'identifie ses lignes par leur rang
+// --------------------------------------------------------------------------- //
+
+/**
+ * Le cliquet qui ferme la classe de défaut, et pas seulement l'occurrence.
+ *
+ * Une grille cochable rend des identifiants que l'écran doit pouvoir résoudre
+ * dans **sa** liste. Or les deux ne comptent pas dans la même : `DataGrid`
+ * numérote ce qu'elle affiche — après recherche, filtre de colonne et tri — et
+ * l'écran a devant lui la liste brute reçue du serveur. Un identifiant qui
+ * porte un rang n'est donc valable que tant que personne n'a trié, c'est-à-dire
+ * jamais.
+ *
+ * C'est ce qui s'est produit sur la vue Écarts : le lot partait vide, la
+ * validation d'entrée refusait une liste de références vide, et l'utilisateur
+ * lisait « Requête mal formée » — exact, et sans rapport visible avec le geste
+ * qu'il venait de faire.
+ *
+ * Le contrôle lit **tous** les écrans plutôt que celui-là : une grille cochable
+ * ajoutée demain avec un rang dans sa clé ferait revenir le même défaut, et
+ * rien d'autre ne le dirait.
+ */
+describe('une clé de sélection désigne la ligne, jamais sa place', () => {
+  const ECRANS = import.meta.glob<string>('./*.tsx', { query: '?raw', import: 'default', eager: true })
+
+  /**
+   * Une grille à la fois, et non un fichier à la fois.
+   *
+   * `Counting.tsx` porte les deux : des grilles cochables, et une liste de
+   * contrôles qui n'a d'autre identité que le rang de ses lignes — ce qui est
+   * légitime tant que personne ne coche. Lire le fichier entier aurait
+   * condamné la seconde pour les péchés de la première.
+   */
+  const GRILLES = Object.entries(ECRANS).flatMap(([chemin, source]) =>
+    source
+      .split('<DataGrid')
+      .slice(1)
+      .map((bloc) => bloc.slice(0, bloc.indexOf('/>')))
+      .map((bloc) => ({
+        chemin,
+        cle: /getRowId=\{([^}]*(?:\}[^}]*)?)\}/.exec(bloc)?.[1] ?? '',
+        cochable: /\bselectable[=\s>]/.test(bloc),
+      })),
+  )
+  const COCHABLES = GRILLES.filter((grille) => grille.cochable && grille.cle)
+
+  it('il y a bien des grilles à contrôler', () => {
+    // Sans quoi la boucle ci-dessous passerait en ne lisant rien — la façon la
+    // plus discrète pour un cliquet de cesser de servir.
+    expect(GRILLES.length).toBeGreaterThan(20)
+    expect(COCHABLES.length).toBeGreaterThanOrEqual(6)
+  })
+
+  it.each(COCHABLES.map((grille) => [grille.chemin, grille.cle]))(
+    '%s : %s',
+    (_chemin, cle) => {
+      // `index` est le second paramètre que `DataGrid` passe : une clé qui le
+      // nomme le lit, et une clé qui le lit porte un rang. Les grilles non
+      // cochables gardent le droit de s'en servir comme repli — `row.id ??
+      // index` — puisque rien n'y résout d'identifiant.
+      expect(cle).not.toMatch(/\bindex\b/)
+    },
+  )
+})

@@ -166,9 +166,24 @@ describe('la cause se pose là où on regarde les chiffres', () => {
        à cocher ne dit pas ce qu'on peut en faire — c'est ce silence qui avait
        coûté une question (« je ne vois pas comment sélectionner un lot »). */
     const barre = VARIANCES.slice(VARIANCES.indexOf('toolbar={'))
-    expect(barre.slice(0, 1400)).toContain('selected.size > 0 ? (')
+    expect(barre.slice(0, 1400)).toContain('picked.length > 0 ? (')
     expect(barre.slice(0, 1400)).toContain(') : editable ? (')
     expect(barre.slice(0, 1400)).toContain('Cochez des lignes')
+  })
+
+  it('et le bouton compte ce qu’il enverra, pas ce qui est coché', () => {
+    /* Les deux nombres ne sont pas toujours le même : une coche peut désigner
+       une ligne que la liste ne porte plus — on change de granularité, on coupe
+       au seuil, le portefeuille se referme. Annoncer « 12 lignes » pour en
+       envoyer 9 est un mensonge que seul l'écran peut éviter, et n'en envoyer
+       aucune est le 422 qu'on vient de réparer. */
+    const barre = VARIANCES.slice(VARIANCES.indexOf('toolbar={'))
+    expect(barre.slice(0, 1400)).toContain('{picked.length} ligne(s)')
+    expect(barre.slice(0, 1400)).not.toContain('{selected.size}')
+    expect(VARIANCES).toContain(
+      'const picked = rows.filter((row) => selected.has(varianceRowKey(row)))',
+    )
+    expect(VARIANCES).toContain('setAssigning(picked)')
   })
 
   it('et le bouton de ligne suit la même garde que le lot', () => {

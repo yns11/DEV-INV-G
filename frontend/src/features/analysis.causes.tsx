@@ -224,16 +224,33 @@ export function CausesTab({ campaignId, overview }: { campaignId: string; overvi
     onError: (error) => showError(error, 'Génération impossible'),
   })
 
+  /**
+   * Une ligne, ses deux colonnes de décision, ensemble.
+   *
+   * Elle ne portait que la cause et postait `comment: ''`. Or le serveur fait
+   * foi du formulaire, commentaire vidé compris — c'est ce qui permet
+   * d'effacer un commentaire en effaçant le champ — donc changer une cause
+   * depuis cette grille effaçait sans rien dire le commentaire écrit depuis la
+   * vue Écarts. Le défaut ne se voyait pas ici : la colonne était en lecture
+   * seule, et le texte disparaissait de la ligne d'à côté.
+   *
+   * Chaque champ envoie donc la valeur courante de l'autre. Ce qui part est
+   * toujours la ligne entière telle qu'elle est à l'écran.
+   */
   const save = useMutation({
-    mutationFn: ({ itemNumber, causeCode }: { itemNumber: string; causeCode: string | null }) =>
+    mutationFn: ({ itemNumber, causeCode, comment }: {
+      itemNumber: string
+      causeCode: string | null
+      comment: string
+    }) =>
       api.saveVarianceAnalysis(campaignId, itemNumber, {
         causeCode,
-        comment: '',
+        comment,
         accepted: causeCode !== null,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries()
-      toast.success('Cause enregistrée')
+      toast.success('Ligne enregistrée')
     },
     onError: (error) => showError(error, 'Enregistrement impossible'),
   })
@@ -282,6 +299,25 @@ export function CausesTab({ campaignId, overview }: { campaignId: string; overvi
       value: (row) => row.name },
     { key: 'manufacturedProduct', label: 'Produit fabriqué', filterOnly: true,
       filter: 'choice', choiceSingle: true, value: (row) => row.manufacturedProduct },
+    // Le terme de comparaison, à gauche de ce qu'on lui oppose. Affecter une
+    // cause sans voir ce que l'ERP annonçait revient à juger un écart sur sa
+    // seule valeur : « −40 » ne se raconte pas de la même façon selon qu'il
+    // manque 40 pièces sur 45 ou sur 4 000.
+    {
+      key: 'bookQty',
+      label: 'Stock ERP',
+      numeric: true,
+      width: 120,
+      render: (row) => (
+        <DrillCell
+          disabled={row.bookQty === 0}
+          onOpen={() => setDrill({ itemNumber: row.itemNumber, aspect: 'book' })}
+        >
+          <span className="num">{qty(row.bookQty)}</span>
+        </DrillCell>
+      ),
+      value: (row) => row.bookQty,
+    },
     {
       key: 'countedQty',
       label: 'Compté',
@@ -343,6 +379,7 @@ export function CausesTab({ campaignId, overview }: { campaignId: string; overvi
             save.mutate({
               itemNumber: row.itemNumber,
               causeCode: event.target.value || null,
+              comment: row.comment,
             })
           }
         >
@@ -359,9 +396,40 @@ export function CausesTab({ campaignId, overview }: { campaignId: string; overvi
     {
       key: 'comment',
       label: 'Commentaire',
-      width: 220,
+      width: 260,
       filter: 'text',
-      render: (row) => <span className="subtle">{row.comment}</span>,
+      render: (row) => (
+        <input
+          className="input"
+          /* Non contrôlé, et remonté quand la valeur du serveur change.
+             Contrôlé, chaque frappe rerendrait la grille entière ; non
+             contrôlé sans clé, le champ garderait à l'écran ce qu'on y a tapé
+             même après qu'une affectation en lot l'a remplacé. */
+          key={`${row.itemNumber}:${row.comment}`}
+          defaultValue={row.comment}
+          disabled={!editable}
+          placeholder="Ce qui a été constaté…"
+          title={row.comment}
+          /* Entrée enregistre sans quitter le clavier : on descend la colonne
+             ligne à ligne, et aller chercher la souris entre deux saisies est
+             ce qui fait qu'on n'en saisit qu'une. */
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur()
+          }}
+          onBlur={(event) => {
+            const comment = event.target.value
+            // Sortir d'un champ sans l'avoir touché n'est pas une écriture.
+            // Sans ce garde, parcourir la grille au clavier réécrirait chaque
+            // ligne et signerait chacune au journal d'audit.
+            if (comment === row.comment) return
+            save.mutate({
+              itemNumber: row.itemNumber,
+              causeCode: row.causeCode ?? null,
+              comment,
+            })
+          }}
+        />
+      ),
       value: (row) => row.comment,
     },
     {
@@ -385,6 +453,7 @@ export function CausesTab({ campaignId, overview }: { campaignId: string; overvi
                     save.mutate({
                       itemNumber: row.itemNumber,
                       causeCode: row.aiSuggestedCause,
+                      comment: row.comment,
                     })
                   }
                 >

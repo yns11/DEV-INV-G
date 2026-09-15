@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, download, downloads } from '../lib/api'
 import type { Overview, VarianceRow } from '../lib/types'
+import { compositeKey } from '../lib/rowKey'
 import { DASH, ITEM_TYPE_LABELS, moneyShort, qty, signClass, signedMoney, signedNum } from '../lib/format'
 import { Pareto, VarianceBars } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
@@ -26,6 +27,34 @@ const DIMENSIONS = [
   { id: 'warehouse', label: 'Entrepôt' },
   { id: 'location', label: 'Emplacement' },
 ]
+
+/**
+ * Ce qui désigne une ligne d'écart, et rien d'autre.
+ *
+ * Écrite ici, au singulier, parce que deux endroits s'en servent et qu'ils
+ * doivent tomber d'accord : la grille l'appelle pour étiqueter les cases à
+ * cocher, l'écran pour retrouver les lignes cochées. Elle a porté la **position**
+ * de la ligne en plus du triplet, et ces deux appels ne comptaient pas dans la
+ * même liste — la grille numérote ce qu'elle affiche, c'est-à-dire après
+ * recherche, filtre et tri ; l'écran renumérotait la liste brute. Trier une
+ * colonne suffisait alors à ce qu'aucun identifiant ne se retrouve : le lot
+ * partait vide et le serveur répondait « requête mal formée », ce qui était vrai
+ * et n'expliquait rien.
+ *
+ * La position n'apportait rien à quoi que ce soit : `build_variances` agrège par
+ * `(article, entrepôt, emplacement)`, donc le triplet est unique par
+ * construction, aux deux granularités — en vue par article, entrepôt et
+ * emplacement valent la chaîne vide pour tout le monde.
+ *
+ * Le séparateur vient de `compositeKey` et non d'un caractère choisi ici : un
+ * emplacement peut porter une espace, un tiret ou une barre, et cette question
+ * a déjà été tranchée une fois pour toutes les grilles.
+ */
+export const varianceRowKey = (row: {
+  itemNumber: string
+  warehouseId: string
+  locationId: string
+}) => compositeKey(row.itemNumber, compositeKey(row.warehouseId, row.locationId))
 
 export function VariancesTab({
   campaignId,
@@ -523,13 +552,22 @@ export function VariancesTab({
             )
           }
         >
-          {(rows) => (
+          {(rows) => {
+            // Les lignes réellement visées, résolues **avant** d'annoncer quoi
+            // que ce soit. Une coche peut désigner une ligne que la liste ne
+            // porte plus — on change de granularité, on coupe au seuil, le
+            // portefeuille se referme — et annoncer « 12 lignes » pour en
+            // envoyer 9 est un mensonge que l'écran est seul à pouvoir éviter.
+            // Le bouton compte donc ce qu'il enverra, et disparaît quand il
+            // n'enverrait rien.
+            const picked = rows.filter((row) => selected.has(varianceRowKey(row)))
+            return (
             <DataGrid
               columns={columns}
               rows={rows}
               exportTitle="Écarts"
               campaignId={campaignId}
-              getRowId={(row, index) => `${row.itemNumber}-${row.warehouseId}-${row.locationId}-${index}`}
+              getRowId={varianceRowKey}
               selectable={editable}
               selected={selected}
               onSelectedChange={setSelected}
@@ -537,22 +575,14 @@ export function VariancesTab({
                 // L'invitation compte autant que le bouton : sans elle, une
                 // colonne de cases à cocher ne dit pas ce qu'on peut en faire,
                 // et le bouton n'apparaît qu'une fois quelque chose de coché.
-                selected.size > 0 ? (
+                picked.length > 0 ? (
                   <Button
                     size="sm"
                     variant="primary"
                     icon={<Icons.clipboard size={13} />}
-                    onClick={() =>
-                      setAssigning(
-                        rows.filter((row, index) =>
-                          selected.has(
-                            `${row.itemNumber}-${row.warehouseId}-${row.locationId}-${index}`,
-                          ),
-                        ),
-                      )
-                    }
+                    onClick={() => setAssigning(picked)}
                   >
-                    Affecter une cause aux {selected.size} ligne(s)
+                    Affecter une cause aux {picked.length} ligne(s)
                   </Button>
                 ) : editable ? (
                   <span className="subtle">
@@ -574,7 +604,8 @@ export function VariancesTab({
                 </span>
               }
             />
-          )}
+            )
+          }}
         </AsyncBoundary>
       </Card>
 

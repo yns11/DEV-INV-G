@@ -2,13 +2,13 @@
 
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, downloads } from '../lib/api'
 import type { ConsolidationLine, Finding, Overview } from '../lib/types'
 import { moneyShort, qty } from '../lib/format'
 import { CompositionBar } from '../components/charts'
 import { DataGrid, type Column } from '../components/DataGrid'
 import { BreakdownModal, DrillCell, type BreakdownAspect } from '../components/BreakdownModal'
-import { Alert, AsyncBoundary, Button, Card, EmptyState, Icons, Modal, Skeleton, useErrorToast, useToast } from '../components/ui'
+import { Alert, AsyncBoundary, Button, Card, EmptyState, Icons, Modal, Skeleton, useDownload, useErrorToast, useToast } from '../components/ui'
 
 /**
  * Ce que la consolidation a écarté, ou ajouté de sa propre initiative.
@@ -42,6 +42,11 @@ const EXCEPTION_PILLS: Array<{ code: string; label: string; hint: string }> = [
     label: 'Soldés à zéro',
     hint: 'Stock ERP en GENERIQUE que personne n’a compté : le journal le solde explicitement.',
   },
+  {
+    code: 'UNKNOWN_ITEM',
+    label: 'Hors référentiel',
+    hint: 'Comptés dans GENERIQUE mais absents du référentiel articles : écartés du journal, sans désignation ni prix, ils n’y seraient valorisables par rien. La quantité est ici pour être corrigée — sur la feuille, ou en complétant le référentiel.',
+  },
 ]
 
 // --------------------------------------------------------------------------- //
@@ -58,6 +63,7 @@ export function ConsolidationTab({
   const queryClient = useQueryClient()
   const toast = useToast()
   const showError = useErrorToast()
+  const startDownload = useDownload()
   const [wipItem, setWipItem] = useState<string | null>(null)
 
   const preview = useQuery({
@@ -156,14 +162,31 @@ export function ConsolidationTab({
             : undefined
         }
         actions={
-          <Button
-            variant="primary"
-            icon={<Icons.refresh size={14} />}
-            disabled={!overview.permissions.countSheets || run.isPending || blocking.length > 0}
-            onClick={() => run.mutate()}
-          >
-            {run.isPending ? 'Consolidation…' : 'Consolider et alimenter le journal'}
-          </Button>
+          <div className="row" style={{ gap: 'var(--space-2)' }}>
+            {/* Le repli se télécharge d'ici aussi, et pas seulement depuis
+                l'export de la campagne : c'est en regardant cet écran qu'on
+                se demande ce qu'on ferait si l'application ne répondait pas. */}
+            <Button
+              icon={<Icons.download size={14} />}
+              title={
+                'La même consolidation, en un classeur qui se recalcule : une ' +
+                'feuille par zone, une feuille Data, et le journal en formules'
+              }
+              onClick={() =>
+                startDownload(downloads.consolidationFallback(campaignId))
+              }
+            >
+              Classeur de repli
+            </Button>
+            <Button
+              variant="primary"
+              icon={<Icons.refresh size={14} />}
+              disabled={!overview.permissions.countSheets || run.isPending || blocking.length > 0}
+              onClick={() => run.mutate()}
+            >
+              {run.isPending ? 'Consolidation…' : 'Consolider et alimenter le journal'}
+            </Button>
+          </div>
         }
       >
         <AsyncBoundary query={preview} skeleton={<Skeleton height={160} />}>
@@ -333,7 +356,7 @@ function ConsolidationResult({
       render: (row) => (
         <DrillCell
           disabled={row.qty === 0}
-          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'counted' })}
+          onOpen={() => setDrill({ itemNumber: row.item_number, aspect: 'generic' })}
         >
           <strong className="num">{qty(row.qty)}</strong>
         </DrillCell>

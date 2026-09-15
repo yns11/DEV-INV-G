@@ -12,8 +12,11 @@ from .mappers import (
     map_items,
     map_journal_lines,
     map_locations,
+    map_portfolios,
+    map_products,
     map_stock_flow_inputs,
     map_zones,
+    sheet_lines_from_rows,
 )
 from .parser import (
     ParseResult,
@@ -31,5 +34,6 @@ __all__ = [
     "parse_tabular_bytes", "read_table",
     "ImportedJournalLine", "PreparedSheetRow", "map_adjustments", "map_backflush",
     "map_bom_links", "map_book_stock", "map_count_sheets", "map_items",
-    "map_journal_lines", "map_locations", "map_stock_flow_inputs", "map_zones",
+    "map_journal_lines", "map_locations", "map_portfolios", "map_products", "map_stock_flow_inputs", "map_zones",
+    "sheet_lines_from_rows",
 ]

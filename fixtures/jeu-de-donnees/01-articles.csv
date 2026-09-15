@@ -1,0 +1,11 @@
+Numéro d'article;Nom du produit;Type produit;Catégorie;Programme;Unité;Prix standard (€);Exclusion
+P-100;Aimant permanent;Composant;ROTOR;M3;PCE;10,00;
+P-200;Tôle magnétique;Composant;STATOR;M3;PCE;20,00;
+P-300;Fil de cuivre;Composant;STATOR;M3;KG;5,00;
+P-400;Roulement à billes;Composant;ROTOR;M4;PCE;50,00;
+P-500;Vis M6;Composant;VISSERIE;;PCE;0,00;
+P-600;Carton de calage;Emballage;EMBALLAGE;;PCE;2,00;
+P-700;Colle époxy;Composant;CHIMIE;;KG;100,00;ALL
+P-800;Huile de coupe;Composant;CHIMIE;;LITRE;8,00;GENERIC
+SF-10;Stator nu;Semi-fini;STATOR;M3;PCE;300,00;
+PF-01;Moteur assemblé;Produit fini;MOTEUR;M3;PCE;1000,00;

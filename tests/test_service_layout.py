@@ -8,7 +8,7 @@ que c'était déjà l'endroit où tout se trouvait.
 
 Ce qui en est sorti, et pourquoi ceux-là
 ----------------------------------------
-Trois concerns s'en détachaient d'eux-mêmes, et le reste non :
+Quatre concerns s'en détachaient d'eux-mêmes, et le reste non :
 
 * **La lecture des scans** parle à un modèle hébergé quand tout le reste parle
   à la base. Elle est la seule partie du service à pouvoir échouer parce qu'un
@@ -18,6 +18,11 @@ Trois concerns s'en détachaient d'eux-mêmes, et le reste non :
   n'emploient jamais.
 * **La provenance des imports** — d'où vient un chiffre, l'a-t-on déjà chargé,
   peut-on le relire — accompagne les six importeurs sans appartenir à aucun.
+* **L'administration des zones** — les créer, les régler, les retirer — se fait
+  en préparation ; la saisie des feuilles se fait le jour du comptage. C'est la
+  frontière que la campagne trace elle-même, et les deux gestes n'ont jamais
+  lieu le même jour ni par les mêmes personnes. Le collage d'un lot de quarante
+  zones l'a rendue visible en poussant le module au-dessus du plafond.
 
 Les six importeurs, eux, restent ensemble : ce sont six variantes d'une même
 chose. Les séparer aurait produit six classes partageant une base, c'est-à-dire
@@ -57,6 +62,7 @@ EXTRACTED = {
     "consolidation_service.py": "ConsolidationService",
     "import_parsing.py": "ImportParser",
     "import_batches.py": "ImportBatches",
+    "zone_service.py": "ZoneService",
 }
 
 
@@ -133,6 +139,31 @@ class TestTheVisionModelIsReachedFromOnePlace:
         assert "SheetExtractor" not in imported_names(name), name
 
 
+class TestZonesAndSheetsStayApart:
+    """La frontière est la campagne : préparer d'un côté, compter de l'autre.
+
+    Un service extrait a une pente — redevenir une méthode de celui d'où il
+    vient, « parce qu'on avait la campagne sous la main ». Ces deux-là écrivent
+    dans la même table, ce qui rend la pente plus raide encore.
+    """
+
+    def test_the_zones_service_does_not_import_the_sheets_one(self):
+        assert "GenericService" not in imported_names("zone_service.py")
+
+    def test_the_sheets_service_does_not_import_the_zones_one(self):
+        assert "ZoneService" not in imported_names("generic_service.py")
+
+    def test_the_zones_service_writes_no_sheet_line(self):
+        """C'est ce qui le sépare : il pose des feuilles vides, il n'y écrit pas.
+
+        ``ensure_sheets`` reste — une zone sans feuille est une zone que rien ne
+        permet de compter — mais une quantité relevée n'a rien à faire ici.
+        """
+        text = source("zone_service.py")
+        for writing in ("upsert_sheet_lines", "replace_sheet_lines", "qty_manual"):
+            assert writing not in text, writing
+
+
 class TestConsolidationDoesNotReachBack:
     def test_the_zones_service_does_not_import_it(self):
         """« C'est là qu'on avait la campagne sous la main » est exactement la
@@ -189,7 +220,10 @@ class TestTheImportServiceComposes:
 
 @pytest.mark.parametrize(
     "name",
-    ["ConsolidationService", "GenericService", "ImportService", "ScanService"],
+    [
+        "ConsolidationService", "GenericService", "ImportService",
+        "ScanService", "ZoneService",
+    ],
 )
 def test_the_services_package_exports_it(name: str) -> None:
     import inventory.services as services

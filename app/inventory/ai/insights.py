@@ -169,6 +169,8 @@ class InsightEngine:
         causes: Sequence[AssignableCause],
         items: dict[str, Item],
         features: dict[str, dict[str, Any]] | None = None,
+        products: dict[str, str] | None = None,
+        compensations: Sequence[dict[str, Any]] = (),
         max_items: int = 40,
     ) -> list[CauseSuggestion]:
         """Propose a root cause for the largest variances.
@@ -180,6 +182,12 @@ class InsightEngine:
         :param features: optional per-article signals computed by
             :mod:`inventory.analytics` (WIP share, anomaly score, digit
             preference…). They measurably sharpen the diagnosis.
+        :param products: le produit fabriqué de chaque référence.
+        :param compensations: les produits dont les écarts s'annulent, calculés
+            par :mod:`inventory.domain.inversion`. Le rapprochement est fait
+            **avant** l'appel, et pas demandé au modèle : c'est une soustraction,
+            elle a une réponse exacte, et la lui faire chercher dans quarante
+            lignes de JSON revenait à tirer au sort qu'il la trouve.
         """
         ranked = sorted(
             (v for v in variances if v.variance_value != 0),
@@ -194,13 +202,27 @@ class InsightEngine:
             for c in causes
         )
         payload_lines = [
-            _variance_payload(v, items.get(v.item_number), (features or {}).get(v.item_number))
+            _variance_payload(
+                v,
+                items.get(v.item_number),
+                (features or {}).get(v.item_number),
+                (products or {}).get(v.item_number, ""),
+            )
             for v in ranked
         ]
+
+        offsets = (
+            "Produits fabriqués dont les écarts se compensent — un excédent sur "
+            "une référence et un manque du même ordre sur une autre du même "
+            "assemblage est la signature d'une inversion au comptage :\n"
+            f"{json.dumps(list(compensations)[:20], ensure_ascii=False, indent=1)}\n\n"
+            if compensations else ""
+        )
 
         user = (
             "Référentiel des causes :\n"
             f"{cause_catalogue}\n\n"
+            f"{offsets}"
             "Écarts à diagnostiquer :\n"
             f"{json.dumps(payload_lines, ensure_ascii=False, indent=1)}\n\n"
             'Renvoie : {"suggestions": [{"item_number": "...", "cause_code": "...", '
@@ -324,6 +346,8 @@ class InsightEngine:
         backflush: BackflushLine | None = None,
         counting: dict[str, Any] | None = None,
         thresholds: dict[str, Any] | None = None,
+        product: str = "",
+        siblings: Sequence[dict[str, Any]] = (),
     ) -> str:
         """A short, focused explanation of one article's variance.
 
@@ -336,9 +360,16 @@ class InsightEngine:
             comptée telle quelle contre la part reconstituée par nomenclature.
         :param thresholds: ce que « significatif » veut dire sur cette campagne,
             pour que le modèle ne le devine pas à l'échelle de ses exemples.
+        :param product: le produit fabriqué de la référence.
+        :param siblings: les autres références du même produit et leur écart.
+            C'est ce qui permet de voir qu'un excédent ici répond à un manque
+            là : deux pièces d'un même assemblage se ressemblent et voisinent,
+            et l'une comptée à la place de l'autre rend deux anomalies qui n'en
+            sont qu'une. Sans elles, le modèle n'avait aucun moyen de le savoir
+            — la ligne d'écart ne parle que d'elle-même.
         """
         facts: dict[str, Any] = {
-            "article": _variance_payload(line, item, None),
+            "article": _variance_payload(line, item, None, product),
             "compositionWip": [dict(b) for b in wip_breakdown[:20]],
             "mouvements": [dict(m) for m in movements[:30]],
         }
@@ -348,11 +379,20 @@ class InsightEngine:
             facts["comptage"] = dict(counting)
         if thresholds:
             facts["seuilsDeMaterialite"] = dict(thresholds)
+        if siblings:
+            facts["memeProduitFabrique"] = {
+                "produit": product,
+                "autresReferences": [dict(s) for s in siblings[:20]],
+            }
         user = (
             f"{json.dumps(facts, ensure_ascii=False, indent=1, default=str)}\n\n"
             "Explique cet écart en 3 à 5 puces factuelles, puis propose la "
             "vérification terrain ou informatique la plus rentable à mener en "
-            "premier. Pas d'introduction, pas de conclusion."
+            "premier. Pas d'introduction, pas de conclusion.\n"
+            "Si une autre référence du même produit fabriqué porte un écart de "
+            "sens opposé et d'ordre comparable, dis-le : c'est la signature "
+            "d'une inversion de références au comptage, et la vérification à "
+            "mener n'est alors pas la même."
         )
         try:
             return self._client.complete(
@@ -368,7 +408,10 @@ class InsightEngine:
 # --------------------------------------------------------------------------- #
 
 def _variance_payload(
-    line: VarianceLine, item: Item | None, features: dict[str, Any] | None
+    line: VarianceLine,
+    item: Item | None,
+    features: dict[str, Any] | None,
+    product: str = "",
 ) -> dict[str, Any]:
     """Compact, fact-only description of one variance line."""
     payload: dict[str, Any] = {
@@ -377,6 +420,10 @@ def _variance_payload(
         "type": str(line.item_type),
         "categorie": line.category,
         "programme": line.program,
+        # Distinct du programme : celui-ci dit de quel assemblage la pièce fait
+        # partie. C'est la seule découpe qui rapproche deux références confondues
+        # au comptage — elles se ressemblent et voisinent sur le même produit.
+        "produitFabrique": product,
         "unite": line.unit,
         "stockErpQte": float(line.book_qty),
         "stockErpValeur": float(line.book_value),

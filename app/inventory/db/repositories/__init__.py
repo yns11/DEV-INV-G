@@ -27,19 +27,23 @@ sous les mêmes noms, si bien qu'aucun appelant n'a été touché.
 
 from ._base import new_id
 from .analysis import AdjustmentRepository, AnalysisRepository
+from .arbitration import ArbitrationRepository
 from .audit import AuditRepository, ImportBatchRepository
 from .backflush import BackflushRepository
 from .book_stock import BookStockRepository
 from .campaign import CampaignRepository
 from .consolidation import ConsolidationRepository
-from .erp_journal import (
-    EarlyCountBatchRepository,
+from .early_count import (
     EarlyCountDriftRepository,
+)
+from .erp_journal import (
     ErpJournalRepository,
 )
 from .evidence import EvidenceBlobRepository
 from .journal import JournalRepository
 from .operations import OperationsRepository
+from .portfolio import PortfolioRepository
+from .product import ProductRepository
 from .referential import ReferentialRepository
 from .scan_job import ScanJobRepository
 from .sheet import SheetRepository
@@ -52,8 +56,10 @@ __all__ = [
     "BookStockRepository",
     "JournalRepository",
     "ErpJournalRepository",
-    "EarlyCountBatchRepository",
     "EarlyCountDriftRepository",
+    "ArbitrationRepository",
+    "PortfolioRepository",
+    "ProductRepository",
     "SheetRepository",
     "ConsolidationRepository",
     "EvidenceBlobRepository",

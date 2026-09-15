@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from ..domain.models import Campaign
 from ..errors import NotFoundError
+from ..evidence import deposited_at, readable_name
 from .context import ServiceContext
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,43 @@ class EvidenceService:
         return ArchivedEvidence(
             content=ctx.evidence.get(row["storage_path"]), filename=filename
         )
+
+    def scans(self, campaign: Campaign) -> list[dict]:
+        """Les scans archivés de la campagne, tels qu'un onglet d'audit les liste.
+
+        L'archive existait et se téléchargeait déjà — une pièce à la fois, et à
+        condition de connaître l'identifiant de la feuille qui la porte.
+        Autrement dit : elle n'était atteignable que par quelqu'un qui savait
+        déjà où regarder. Une archive qu'on ne peut pas énumérer ne se contrôle
+        pas, et c'est pourtant tout son objet.
+
+        **Une pièce par document, pas par feuille.** Une pile déposée d'un coup
+        est un seul document, et les dix feuilles qu'on y a lues pointent
+        dessus ; les lister une par une rendrait dix fois le même PDF sous dix
+        noms, et laisserait croire à dix originaux.
+
+        Le contenu n'est pas lu : cette liste dit le poids, l'empreinte et ce
+        que chaque pièce justifie. Le fichier lui-même se demande ensuite, une
+        pièce à la fois, par :meth:`of_sheet` — et donc par la barrière de
+        campagne, sans qu'un second chemin de lecture ait à la réappliquer.
+        """
+        ctx = self.ctx
+        return [
+            {
+                "sheetId": row["sheet_id"],
+                # Le nom reçu, sans l'horodatage ni l'empreinte que le chemin
+                # déposé y ajoute. Le téléchargement, lui, sert toujours le nom
+                # déposé : c'est celui qui identifie la pièce dans l'archive.
+                "filename": readable_name(str(row["evidence_path"])),
+                "mime": row["mime"] or "",
+                "sha256": row["sha256"] or "",
+                "sizeBytes": int(row["size_bytes"] or 0),
+                "archivedAt": deposited_at(str(row["evidence_path"])),
+                "sheetCount": int(row["sheet_count"] or 0),
+                "sheets": [s for s in (row["sheets"] or []) if s.strip(" —n°")],
+            }
+            for row in ctx.sheets.list_evidence(campaign.id)
+        ]
 
     def of_sheet(self, campaign: Campaign, sheet_id: str) -> ArchivedEvidence:
         """Le scan qui a produit les quantités lues par l'IA.

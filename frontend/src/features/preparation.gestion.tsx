@@ -302,7 +302,9 @@ export function ManagersTab({
   })
 
   const rows = draft ?? query.data?.managers ?? []
-  const editable = overview.permissions.thresholds
+  // `managers`, et non `thresholds` : ces deux-là partageaient une garde, et
+  // la règle des seuils n'était pas la leur. Voir `Editable.managers`.
+  const editable = overview.permissions.managers
 
   const update = (index: number, key: 'label' | 'actor', value: string) => {
     const next = [...rows]
@@ -343,7 +345,8 @@ export function ManagersTab({
         {!editable && (
           <div style={{ padding: 'var(--space-4)' }}>
             <Alert tone="info" title="Gestionnaires gelés">
-              Figés au passage en comptage, comme le reste de la configuration.
+              La campagne est close : son dossier ne bouge plus, et qui a compté
+              quoi en fait partie.
             </Alert>
           </div>
         )}
@@ -438,7 +441,7 @@ export function JournalScopeTab({
     onError: (error) => showError(error, 'Affectation impossible'),
   })
 
-  const editable = overview.permissions.thresholds
+  const editable = overview.permissions.managers
   const managers = query.data?.managers ?? []
 
   return (
@@ -450,6 +453,14 @@ export function JournalScopeTab({
       </Alert>
 
       <Card title="Affectation des entrepôts" flush>
+        {!editable && (
+          <div style={{ padding: 'var(--space-4)' }}>
+            <Alert tone="info" title="Affectations gelées">
+              La campagne est close : son dossier ne bouge plus, et qui a compté
+              quoi en fait partie.
+            </Alert>
+          </div>
+        )}
         <AsyncBoundary query={query} skeleton={<Skeleton height={240} />}>
           {(data) => (
             <div className="table-wrap" style={{ maxHeight: 560 }}>
@@ -531,15 +542,26 @@ export function ZoneScopeTab({
     queryFn: () => api.managers(campaignId),
   })
 
+  // Deux gardes, parce que ce sont deux choses. La zone — son nom, ses
+  // comptages, ses lignes vierges — se fige à l'analyse : elle porte des
+  // quantités relevées sur le terrain. Son gestionnaire, lui, n'est qu'un
+  // filtre, et le réaffecter reste tout l'enjeu quand l'analyse se répartit.
+  const structural = overview.permissions.zones
+  const assignable = overview.permissions.managers
+
   return (
     <div className="stack">
       <Alert tone="info" title="Rattacher les zones à leur gestionnaire">
         Sélectionnez des zones, puis choisissez un gestionnaire dans la barre d’outils.
+        {structural
+          ? ''
+          : ' Les zones elles-mêmes sont figées à ce statut : seule l’affectation reste ouverte.'}
       </Alert>
 
       <ZonesAdminGrid
         campaignId={campaignId}
-        editable={overview.permissions.zones}
+        editable={structural}
+        assignable={assignable}
         managers={managers.data?.managers ?? []}
       />
     </div>

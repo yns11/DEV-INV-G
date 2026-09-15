@@ -34,7 +34,13 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from .bom import BomCycleError, BomIndex, ExplosionResult
-from .enums import ControlSeverity, CountSection, ItemType, SheetPass
+from .enums import (
+    ControlSeverity,
+    CountLineKind,
+    CountSection,
+    ItemType,
+    SheetPass,
+)
 from .models import (
     ArbitrationLine,
     ConsolidatedLine,
@@ -51,8 +57,10 @@ __all__ = [
     "ZoneCounts",
     "ConsolidationInput",
     "ConsolidationResult",
+    "ZonePassLine",
     "build_arbitration_lines",
     "resolve_zone_quantities",
+    "zone_pass_lines",
     "consolidate_generic",
 ]
 
@@ -145,15 +153,131 @@ def _index_lines(
     """Sum a sheet's lines per (item, section).
 
     A sheet may legitimately list the same article twice (two pallets, two
-    sub-areas), so quantities are summed rather than de-duplicated. Lines with
-    no value at all are skipped: a blank cell is *not* a counted zero.
+    sub-areas), so quantities are summed rather than de-duplicated.
+
+    Une case laissée vide compte **zéro**. La feuille énumère ce qu'on s'attend
+    à trouver dans la zone ; ne rien écrire en face d'une référence dit qu'il
+    n'y en avait pas, et c'est un écart à expliquer. L'écarter du total la
+    faisait disparaître du stock compté : l'article gardait son stock ERP en
+    face de rien, sans jamais apparaître nulle part comme manquant.
+
+    Les intertitres et les lignes vides, eux, ne sont pas des articles : ils ne
+    portent aucune quantité, et leur référence vide en agrégerait une sous la
+    clé ``("", …)``.
     """
     out: dict[tuple[str, CountSection], Decimal] = defaultdict(Decimal)
     for line in lines:
-        if not line.is_counted:
+        if line.line_kind is not CountLineKind.ARTICLE or not line.item_number:
             continue
         out[(line.item_number, line.section)] += line.qty
     return {k: quantize_qty(v) for k, v in out.items()}
+
+
+def _pass_totals(
+    zone: ZoneCounts,
+) -> tuple[
+    dict[tuple[str, CountSection], Decimal],
+    dict[tuple[str, CountSection], Decimal],
+]:
+    """Les deux passages d'une zone, chacun sommé par (article, section).
+
+    Une seule lecture pour les trois usages — la comparaison à arbitrer, la
+    quantité retenue, et le classeur de repli. Ils lisaient auparavant les
+    feuilles chacun de leur côté, avec le même code recopié : une différence
+    d'un caractère entre deux de ces copies aurait fait diverger l'écran de
+    l'arbitrage et le chiffre posté, sans que rien ne le dise.
+
+    Une clé absente d'un passage y est **absente**, pas nulle. C'est la
+    distinction qui sépare « une seule équipe a compté cette référence » de
+    « les deux ont compté, l'une a trouvé zéro » : la première est un
+    avertissement, la seconde une divergence à arbitrer.
+    """
+    by_pass: dict[SheetPass, dict[tuple[str, CountSection], Decimal]] = {}
+    for sheet in zone.sheets:
+        totals = _index_lines(zone.lines_by_sheet.get(sheet.id, ()))
+        existing = by_pass.setdefault(sheet.pass_no, {})
+        for key, qty in totals.items():
+            existing[key] = quantize_qty(existing.get(key, ZERO) + qty)
+    return by_pass.get(SheetPass.PASS_1, {}), by_pass.get(SheetPass.PASS_2, {})
+
+
+@dataclass(slots=True, frozen=True)
+class ZonePassLine:
+    """Une ligne de zone telle qu'on la relit : deux comptages et une décision.
+
+    Ce qu'elle porte est ce dont on a besoin pour **refaire** le calcul, pas son
+    résultat : la quantité retenue s'en déduit par les règles de
+    :func:`resolve_zone_quantities`, et le classeur de repli la recalcule par
+    formule plutôt que de la recopier.
+    """
+
+    item_number: str
+    section: CountSection
+    #: ``None`` quand le passage ne porte pas la référence — voir
+    #: :func:`_pass_totals`.
+    qty_pass_1: Decimal | None
+    qty_pass_2: Decimal | None
+    #: La quantité tranchée, et seulement si elle l'a été.
+    qty_arbitrated: Decimal | None
+    #: La désignation que la feuille impose, vide quand elle suit le référentiel.
+    #:
+    #: Portée jusqu'ici parce que le classeur de repli montre **le document**,
+    #: pas le référentiel : la feuille de zone qu'il écrit doit nommer les
+    #: articles comme le papier les nomme.
+    designation: str = ""
+
+
+def zone_pass_lines(zone: ZoneCounts) -> list[ZonePassLine]:
+    """Ce qu'une zone porte, une ligne par (article, section).
+
+    Ordonné par référence puis section, donc reproductible : deux exécutions
+    sur les mêmes données donnent le même document.
+    """
+    p1, p2 = _pass_totals(zone)
+    decisions = _resolved_decisions(zone)
+    names = _sheet_designations(zone)
+    keys = set(p1) | set(p2) | set(decisions)
+    return [
+        ZonePassLine(
+            item_number=item_number,
+            section=section,
+            qty_pass_1=p1.get((item_number, section)),
+            qty_pass_2=p2.get((item_number, section)),
+            qty_arbitrated=decisions.get((item_number, section)),
+            designation=names.get((item_number, section), ""),
+        )
+        for item_number, section in sorted(keys, key=lambda k: (k[0], str(k[1])))
+    ]
+
+
+def _sheet_designations(zone: ZoneCounts) -> dict[tuple[str, CountSection], str]:
+    """Les désignations que les feuilles de la zone imposent.
+
+    Le passage 1 tranche quand les deux en portent une : c'est lui qui porte le
+    document, et le passage 2 en est la copie.
+    """
+    out: dict[tuple[str, CountSection], str] = {}
+    for sheet in sorted(zone.sheets, key=lambda s: str(s.pass_no)):
+        for line in zone.lines_by_sheet.get(sheet.id, ()):
+            if line.name and (line.item_number, line.section) not in out:
+                out[(line.item_number, line.section)] = line.name
+    return out
+
+
+def _resolved_decisions(
+    zone: ZoneCounts,
+) -> dict[tuple[str, CountSection], Decimal]:
+    """Les arbitrages **tranchés**, et eux seuls.
+
+    Une quantité préremplie en lot est une suggestion posée dans un champ ;
+    la poster comme si quelqu'un l'avait choisie viderait de son sens le fait
+    de demander.
+    """
+    return {
+        (a.item_number, a.section): a.qty_arbitrated
+        for a in zone.arbitrations
+        if a.is_resolved and a.qty_arbitrated is not None
+    }
 
 
 def build_arbitration_lines(
@@ -170,19 +294,7 @@ def build_arbitration_lines(
 
     :param id_factory: callable returning a fresh identifier per line.
     """
-    by_pass: dict[SheetPass, dict[tuple[str, CountSection], Decimal]] = {}
-    for sheet in zone.sheets:
-        lines = zone.lines_by_sheet.get(sheet.id, ())
-        totals = _index_lines(lines)
-        existing = by_pass.get(sheet.pass_no)
-        if existing is None:
-            by_pass[sheet.pass_no] = totals
-        else:  # duplicate sheet for a pass: merge defensively
-            for key, qty in totals.items():
-                existing[key] = quantize_qty(existing.get(key, ZERO) + qty)
-
-    p1 = by_pass.get(SheetPass.PASS_1, {})
-    p2 = by_pass.get(SheetPass.PASS_2, {})
+    p1, p2 = _pass_totals(zone)
     existing_decisions = {
         (a.item_number, a.section): a for a in zone.arbitrations
     }
@@ -191,6 +303,25 @@ def build_arbitration_lines(
     for key in sorted(set(p1) | set(p2), key=lambda k: (k[0], str(k[1]))):
         item_number, section = key
         prior = existing_decisions.get(key)
+        # **Une référence absente d'un passage y vaut zéro, pas « inconnu ».**
+        # Les deux passages portent le même document : si la ligne n'est pas sur
+        # la feuille n°2, c'est que l'équipe n'y a rien inscrit — et une case
+        # vide compte zéro partout ailleurs. Le tiret qui s'affichait à la place
+        # n'était pas qu'un détail d'affichage : il laissait la ligne sans
+        # quantité à reprendre, donc sans rien à valider, et l'arbitrage de la
+        # zone restait ouvert sur une ligne que personne ne pouvait trancher.
+        q1 = p1.get(key, ZERO)
+        q2 = p2.get(key, ZERO)
+        # **Une décision porte sur deux chiffres, et meurt avec eux.** Un
+        # arbitrage dit « entre 12 et 15, je retiens 12 » ; si le comptage n°2
+        # passe ensuite de 15 à 40, la phrase ne veut plus rien dire. Elle
+        # restait pourtant, et la consolidation postait 12 contre un comptage
+        # que plus personne n'avait regardé. La ligne redevient donc ouverte —
+        # avec sa proposition, pour ne pas faire retaper le chiffre, mais sans
+        # la signature qui la validait.
+        moved = prior is not None and (
+            prior.qty_pass_1 != q1 or prior.qty_pass_2 != q2
+        )
         out.append(
             ArbitrationLine(
                 id=prior.id if prior else id_factory(),
@@ -198,12 +329,15 @@ def build_arbitration_lines(
                 zone_id=zone.zone.id,
                 item_number=item_number,
                 section=section,
-                qty_pass_1=p1.get(key),
-                qty_pass_2=p2.get(key),
+                qty_pass_1=q1,
+                qty_pass_2=q2,
                 qty_arbitrated=prior.qty_arbitrated if prior else None,
-                decided_by=prior.decided_by if prior else None,
-                decided_at=prior.decided_at if prior else None,
-                comment=prior.comment if prior else "",
+                decided_by=None if moved else (prior.decided_by if prior else None),
+                decided_at=None if moved else (prior.decided_at if prior else None),
+                comment=(
+                    "Un comptage a changé depuis l'arbitrage : à revoir."
+                    if moved else (prior.comment if prior else "")
+                ),
             )
         )
     return out
@@ -235,23 +369,8 @@ def resolve_zone_quantities(
     if passes_required is None:
         passes_required = zone.passes_required
     findings: list[ControlFinding] = []
-    by_pass: dict[SheetPass, dict[tuple[str, CountSection], Decimal]] = {}
-    for sheet in zone.sheets:
-        totals = _index_lines(zone.lines_by_sheet.get(sheet.id, ()))
-        existing = by_pass.setdefault(sheet.pass_no, {})
-        for key, qty in totals.items():
-            existing[key] = quantize_qty(existing.get(key, ZERO) + qty)
-
-    p1 = by_pass.get(SheetPass.PASS_1, {})
-    p2 = by_pass.get(SheetPass.PASS_2, {})
-    # Only *decided* arbitrations count. A quantity pre-filled in bulk is a
-    # suggestion sitting in a field; posting it as if somebody had chosen it
-    # would defeat the point of asking.
-    decisions = {
-        (a.item_number, a.section): a.qty_arbitrated
-        for a in zone.arbitrations
-        if a.is_resolved and a.qty_arbitrated is not None
-    }
+    p1, p2 = _pass_totals(zone)
+    decisions = _resolved_decisions(zone)
 
     retained: dict[tuple[str, CountSection], Decimal] = {}
     for key in set(p1) | set(p2) | set(decisions):
@@ -445,18 +564,41 @@ def consolidate_generic(payload: ConsolidationInput) -> ConsolidationResult:
             continue
 
         if item is None:
+            # **Hors référentiel, hors journal.** La ligne partait quand même,
+            # et c'était la seule quantité du journal que rien ne pouvait
+            # valoriser : ni désignation, ni prix, ni type, donc aucun écart
+            # calculable et aucune règle de matérialité applicable. Postée dans
+            # l'ERP, elle y désigne un article qui n'existe pas dans le
+            # référentiel de la campagne — un import qui échoue à la ligne près,
+            # ou pire, un article homonyme.
+            #
+            # La règle est la même que partout ailleurs : le référentiel fait
+            # foi, et une référence inconnue est une erreur de ligne, jamais un
+            # article créé par effet de bord. La quantité n'est pas perdue pour
+            # autant — elle est nommée, chiffrée, rattachée à ses zones, et la
+            # pastille « Hors référentiel » de l'écran la montre.
             result.findings.append(
                 ControlFinding(
                     code="UNKNOWN_ITEM",
                     severity=ControlSeverity.WARNING,
                     message=(
                         f"{item_number} est compté dans GENERIQUE mais absent du "
-                        "référentiel articles de la campagne."
+                        "référentiel articles de la campagne : sa quantité est "
+                        "écartée du journal consolidé. Ajoutez-le au référentiel, "
+                        "ou corrigez la référence sur la feuille."
                     ),
                     entity_type="consolidation",
                     item_number=item_number,
+                    context={
+                        "qty": str(total),
+                        "zone": ", ".join(sorted(contributors.get(item_number, ()))),
+                        "lineSide": str(qty_ls),
+                        "wipOk": str(qty_ok),
+                        "wipExploded": str(qty_wip),
+                    },
                 )
             )
+            continue
 
         result.lines.append(
             ConsolidatedLine(
@@ -517,7 +659,7 @@ def _sheets_carrying(
     for sheet in zone_counts.sheets:
         lines = zone_counts.lines_by_sheet.get(sheet.id, ())
         if any(
-            l.item_number == item_number and l.section is section and l.is_counted
+            l.item_number == item_number and l.section is section
             for l in lines
         ):
             out.append(

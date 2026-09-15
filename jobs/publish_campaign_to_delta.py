@@ -129,14 +129,13 @@ QUERIES: dict[str, str] = {
         FROM inventory.bom_link
         WHERE campaign_id = %(campaign_id)s AND deleted_at IS NULL
     """,
-    # `reference_date` : sans elle, une archive relue dans deux ans laisserait
-    # croire que tout le stock ERP a été photographié le même jour. Une campagne
-    # qui précompte a une référence composite — le jour J pour la plupart des
-    # emplacements, la date du précomptage pour les emplacements scellés.
+    # `reference_date` : la référence est unique — le stock ERP du jour J, gelé,
+    # pour tout emplacement — et cette colonne dit de quel jour. Sans elle, une
+    # archive relue dans deux ans ne pourrait plus se rapprocher d'un état ERP
+    # tiré à une date précise.
     "book_stock_snapshot": """
         SELECT campaign_id::text, item_number, warehouse_id, location_id, qty, unit,
-               unit_cost, (qty * unit_cost) AS value,
-               reference_date, early_batch_id::text
+               unit_cost, (qty * unit_cost) AS value, reference_date
         FROM inventory.book_stock
         WHERE campaign_id = %(campaign_id)s
     """,
@@ -149,25 +148,23 @@ QUERIES: dict[str, str] = {
                j.journal_number, l.qty_imported, l.qty_manual,
                COALESCE(l.qty_manual, l.qty_imported, 0) AS qty, l.unit, l.source,
                l.qty_on_hand, l.erp_journal_number, l.label_count,
-               j.sealed_at, j.early_batch_id::text
+               j.sealed_at, j.sealed_by
         FROM inventory.count_journal_line l
         JOIN inventory.count_journal j ON j.id = l.journal_id
         WHERE l.campaign_id = %(campaign_id)s AND l.deleted_at IS NULL
     """,
-    # Les lots avancés et leurs dérives. Sans la table des dérives, l'issue
-    # donnée à chacune n'existerait nulle part et le raisonnement ne serait plus
-    # rejouable : c'est précisément ce qu'une archive doit permettre.
-    "early_count_batch": """
-        SELECT campaign_id::text, id::text AS batch_id, code, label, counted_on,
-               opened_at, opened_by, closed_at, closed_by, sealed_at, sealed_by
-        FROM inventory.early_count_batch
-        WHERE campaign_id = %(campaign_id)s AND deleted_at IS NULL
-    """,
+    # Les dérives : ce que l'ERP dit d'un emplacement précompté le jour J, face
+    # à ce que ce précomptage avait compté. Elles n'appellent aucune décision —
+    # le journal a été posté dans l'ERP avant que la photo du jour J ne soit
+    # prise, qui l'a donc déjà intégré — et ce qui subsiste est ce qui a bougé
+    # entre les deux dates. C'est cela que l'archive garde.
+    #
+    # La table des issues d'étiquette est partie avec les décisions qu'elle
+    # portait : une étiquette scellée retrouvée ailleurs se regarde, elle ne se
+    # tranche plus.
     "early_count_drift": """
-        SELECT campaign_id::text, batch_id::text, warehouse_id, location_id,
-               item_number, qty_erp_t0, qty_physical_t0, qty_erp_j, drift_qty,
-               drift_value, is_material, resolution, cause_code, comment,
-               resolved_at, resolved_by
+        SELECT campaign_id::text, erp_journal_id::text, warehouse_id, location_id,
+               item_number, qty_counted_t0, qty_erp_j, drift_qty, drift_value
         FROM inventory.early_count_drift
         WHERE campaign_id = %(campaign_id)s
     """,

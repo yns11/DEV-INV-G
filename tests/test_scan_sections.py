@@ -155,7 +155,7 @@ class TestWhenTheSectionIsMissing:
     def test_the_refusal_says_what_to_do(self):
         result, _ = read([{"item_number": "MASS-1", "qty": 10, "confidence": 0.9}])
         note = result.unexpected[0]["note"]
-        assert "figure deux fois" in note
+        assert "figure plusieurs fois" in note
         assert "bord de ligne" in note and "WIP" in note
         assert "à la main" in note
 
@@ -190,7 +190,7 @@ class TestTheModelIsAskedForTheSection:
     def test_the_prompt_says_a_reference_may_appear_twice(self):
         """Sans cette phrase, le modèle rend une entrée par référence."""
         _, client = read([])
-        assert "DEUX lignes" in client.prompts[0]
+        assert "PLUSIEURS lignes" in client.prompts[0]
 
     def test_the_expected_listing_carries_the_section(self):
         _, client = read([])

@@ -21,10 +21,13 @@ Notation des quantités :
 
 | Symbole | Quantité |
 |---|---|
-| `ERP@T0` | Colonne « Stock ERP » du journal avancé, agrégée sur son périmètre |
-| `compté@T0` | Colonne « Qté Comptée » du même journal |
-| `physique@T0` | `compté@T0 + ajusté@T0` |
-| `ERP@J` | Snapshot ERP général, gelé le jour J |
+| `compté@T0` | Colonne « Qté Comptée » du journal avancé, agrégée sur son périmètre |
+| `ERP@J` | Snapshot ERP général, gelé le jour J — **la référence, et la seule** |
+
+> `ERP@T0` — la colonne « Stock ERP » du journal avancé — a été une référence
+> dans une version précédente. Elle ne l'est plus : le journal est posté dans
+> l'ERP avant que la photo du jour J ne soit prise, donc la photo l'intègre déjà,
+> et mesurer contre l'état antérieur comptait deux fois la même correction.
 
 ---
 
@@ -152,63 +155,59 @@ cinquante.
 
 ---
 
-## 4. Les trois quantités dans le temps
+## 4. Les deux quantités dans le temps
 
 ```mermaid
 flowchart LR
     subgraph T0 ["J-2 · le journal avancé"]
-        A1["ERP@T0<br/>colonne ERP du journal"]
         A2["compté@T0<br/>colonne Qté Comptée"]
-        A3["ajusté@T0"]
-        A4["physique@T0<br/>= compté + ajusté"]
     end
 
     subgraph POST ["J-2 · postage ERP"]
-        A5["L'ERP se réaligne<br/>sur physique@T0"]
+        A5["L'ERP se réaligne<br/>sur compté@T0"]
     end
 
     subgraph JJ ["Jour J · chargement général"]
-        B1["ERP@J"]
+        B1["ERP@J<br/>la référence, et la seule"]
     end
 
     subgraph R ["Ce qu'on en tire"]
-        C1["ÉCART D'INVENTAIRE<br/>physique@T0 − ERP@T0"]
-        C2["DÉRIVE<br/>ERP@J − physique@T0<br/>attendue nulle"]
+        C1["ÉCART D'INVENTAIRE<br/>compté@T0 − ERP@J<br/>≈ 0, et c'est juste"]
+        C2["DÉRIVE<br/>ERP@J − compté@T0<br/>affichage seul"]
     end
 
-    A2 --> A4
-    A3 --> A4
-    A4 --> A5
-    A1 --> C1
-    A4 --> C1
-    A4 --> C2
+    A2 --> A5
+    A5 --> B1
+    A2 --> C1
+    B1 --> C1
+    A2 --> C2
     B1 --> C2
-    A5 -.->|"si rien ne bouge"| B1
 
     classDef q fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
     classDef erp fill:#e5e7eb,stroke:#6b7280,color:#374151
     classDef r fill:#dcfce7,stroke:#15803d,color:#14532d
-    class A1,A2,A3,A4,B1 q
+    class A2,B1 q
     class A5 erp
     class C1,C2 r
 ```
 
-**Le point clé : `ERP@T0` et `compté@T0` sortent du même fichier.** Un lot avancé
-ne demande aucun chargement séparé — le journal apporte à la fois le comptage et
-ce contre quoi il se compare.
-
-**La règle de référence**, qui est déjà celle du code — la référence est *ce
-contre quoi la campagne a été comptée* :
+**Le point clé : l'ERP se réaligne avant la photo.** Poster le journal du
+précomptage inscrit sa correction dans l'ERP, et la photo du jour J la reprend.
+La référence est donc unique pour tout le monde :
 
 | Emplacement | Référence |
 |---|---|
-| Ordinaire | `ERP@J` — rien n'était compté quand la photo a été prise |
-| Précompté et scellé | `ERP@T0` — c'est contre lui que le comptage a eu lieu |
+| Ordinaire | `ERP@J` |
+| Précompté et scellé | `ERP@J` — la même, parce que la photo a déjà intégré son précomptage |
 
-Sans cette règle, l'écart d'un emplacement précompté vaudrait
-`physique@T0 − ERP@J`, c'est-à-dire **zéro** dans le cas nominal : le résultat de
-l'inventaire disparaîtrait, et l'IRA tendrait vers 100 % à mesure qu'on
-précompte.
+**Conséquence, et il faut l'annoncer** : l'écart d'un emplacement précompté vaut
+zéro dans le cas nominal, et c'est exact. Le résultat de son inventaire n'est
+pas perdu — il a été enregistré plus tôt, dans l'ERP, avant la campagne. Plus on
+précompte, meilleur est l'IRA de la campagne, et c'est la vérité de ce qu'elle
+mesure : ce qui restait à corriger le jour J.
+
+C'est aussi pourquoi **rien ne s'affiche avant le gel** : un écart a besoin
+d'une référence, et elle arrive le jour J.
 
 ---
 
@@ -216,51 +215,44 @@ précompte.
 
 ```mermaid
 flowchart TD
-    A([Créer la campagne]) --> B[PRÉPARATION] --> C{Passer en comptage ?}
-    C -->|oui| D[COMPTAGE<br/>référentiels gelés]
+    A([Créer la campagne]) --> B[PRÉPARATION]
 
-    D --> E{Des emplacements<br/>à précompter ?}
-    E -->|non| GEN
+    B --> E{Des emplacements<br/>à précompter ?}
+    E -->|non| C
 
     E -->|oui| L1[Compter et POSTER le journal<br/>dans l'ERP]
-    L1 --> L2[Exécuter le notebook<br/>sur la fenêtre du lot]
-    L2 --> L3{Sélectionner le périmètre<br/>du ou des journaux}
-    L3 --> L4[/"ERP@T0 et compté@T0 agrégés<br/>depuis le journal, par emplacement et article"/]
-    L4 --> L5[Ajustement du lot<br/>si nécessaire]
-    L5 --> L6{Journaux postés<br/>dans l'ERP ?}
-    L6 -->|non| L6X[Scellement refusé]
-    L6X --> L1
-    L6 -->|oui| L7[Créer le lot, le clore<br/>et le SCELLER]
-    L7 --> L8[Baliser physiquement]
+    L1 --> L2[Exécuter le notebook<br/>sur la fenêtre du comptage]
+    L2 --> L3{Sélectionner le périmètre<br/>du journal}
+    L3 --> L4[/"Déclarer SCELLE : le comptage du journal est posé,<br/>aucune référence n'est écrite"/]
+    L4 --> L8[Baliser physiquement]
     L8 --> E
 
-    GEN[Ouvrir le comptage général] --> G1{Des lots non scellés ?}
-    G1 -->|oui| G1W[Avertissement] --> G2
-    G1 -->|non| G2[Charger l'ERP général]
+    C{Passer en comptage ?} -->|oui| D[COMPTAGE<br/>référentiels gelés]
+    D --> GEN[Ouvrir le comptage général]
+    GEN --> G2[Charger l'ERP général]
 
-    G2 --> G3[/"Référence remplacée partout<br/>SAUF sur les emplacements scellés"/]
+    G2 --> G3[/"Référence remplacée PARTOUT,<br/>emplacements scellés compris"/]
     G3 --> G3B[Désactiver INV / 01<br/>lignes conservées]
-    G3B --> G4["dérive = ERP@J − physique@T0"]
+    G3B --> G4["dérive = ERP@J − compté@T0"]
     G4 --> G5[Geler l'ERP]
+    G5 --> G6[/"Les écarts et les indicateurs<br/>s'affichent — pas avant"/]
 
-    G5 --> CNT[Compter le reste]
+    G6 --> CNT[Compter le reste]
     CNT --> IMP[Réexécuter le notebook<br/>très régulièrement]
     IMP --> IMP2[/Remplacement par numéro de journal<br/>écarts recalculés · heure affichée/]
-    IMP2 --> DRIFT{Dérives matérielles<br/>ou étiquettes signalées ?}
-    DRIFT -->|oui| DISP[Traiter · voir §6]
-    DRIFT -->|non| CNT2
-    DISP --> CNT2
+    IMP2 --> DRIFT[Regarder dérives et étiquettes<br/>dans les Contrôles · voir §6]
+    DRIFT --> CNT2
 
     CNT2[Clore les zones<br/>vérifier que tout est posté] --> T{Contrôles de passage<br/>en analyse}
-    T -->|"ERP non gelé · journaux non postés<br/>zones non closes · DÉRIVE SANS ISSUE"| TX[Transition refusée]
-    TX --> DISP
+    T -->|"ERP non gelé · journaux non postés<br/>zones non closes"| TX[Transition refusée]
+    TX --> CNT2
     T -->|tout est vert| AN[ANALYSE]
 
-    AN --> V[Écart = physique − référence<br/>chacune à sa date]
+    AN --> V[Écart = physique − ERP@J<br/>une seule référence, une seule date]
     V --> W[Ajustements, causes,<br/>backflush, analyse IA]
     W --> Y{Écarts matériels<br/>tous expliqués ?}
     Y -->|non| YX[Clôture refusée] --> W
-    Y -->|oui| Z[Publier l'archive Delta<br/>+ lots + dérives + périmètres]
+    Y -->|oui| Z[Publier l'archive Delta<br/>+ dérives + périmètres]
     Z --> ZZ([CLÔTURÉE])
 
     classDef existant fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
@@ -277,43 +269,38 @@ flowchart TD
 
 ---
 
-## 6. La dérive : une quantité, deux issues
+## 6. La dérive : une quantité, aucune issue
 
 ```mermaid
 flowchart TD
-    A[/"Emplacement scellé<br/>ERP@T0 · physique@T0 · ERP@J"/] --> B["dérive = ERP@J − physique@T0"]
-    B --> C{"Matérielle ?<br/>seuils de la campagne"}
-    C -->|non| OK[Consignée, non bloquante]
-    C -->|oui| D{"Quelle quantité<br/>fait foi au jour J ?"}
+    A[/"Emplacement scellé<br/>compté@T0 · ERP@J"/] --> B["dérive = ERP@J − compté@T0"]
+    B --> C{"Nulle ?"}
+    C -->|oui| OK[Conservée en base,<br/>non affichée : c'est le cas normal]
+    C -->|non| D[/"Affichée dans Contrôles → Dérives"/]
 
-    D --> E[CONSERVER<br/>le comptage avancé]
-    D --> F[RECOMPTER<br/>le jour J]
+    D --> D1["Ce qui a bougé entre le précomptage<br/>et le jour J : sortie, réception,<br/>correction saisie entre-temps"]
+    D1 --> D2["Aucune action requise<br/>Aucun constat bloquant"]
+    D2 --> Z([Regardée, ou pas])
 
-    E --> E1["physique@T0 est retenu<br/>cause et commentaire obligatoires"]
-    E1 --> E2["L'écart de la campagne<br/>reste celui de T0"]
-
-    F --> F1[Descellement tracé<br/>motif obligatoire]
-    F1 --> F2["L'emplacement rejoint le comptage général<br/>sa référence redevient ERP@J"]
-
-    E2 --> Z([Dérive traitée])
-    F2 --> Z
-
-    C -->|oui| NO[Aucune issue choisie]
-    NO --> BLOC[Passage en ANALYSE refusé<br/>EARLY_COUNT_DRIFT_UNRESOLVED]
+    D2 -.->|"si on veut recompter"| U["Desceller le journal<br/>motif obligatoire"]
+    U --> U1["L'emplacement rejoint<br/>le comptage du jour J"]
 
     classDef nouveau fill:#dcfce7,stroke:#15803d,color:#14532d
     classDef dec fill:#fef3c7,stroke:#b45309,color:#78350f
-    classDef bloc fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d
-    class A,B,E,F,E1,E2,F1,F2,OK,Z nouveau
-    class C,D dec
-    class NO,BLOC bloc
+    classDef gris fill:#e5e7eb,stroke:#6b7280,color:#374151
+    class A,B,D,D1,D2,OK,Z nouveau
+    class C dec
+    class U,U1 gris
 ```
 
-Deux issues, pas quatre. Les deux qui figuraient dans les versions précédentes
-ont disparu pour de bonnes raisons : **« rejouer le postage »** parce qu'on ne
-scelle qu'un journal déjà posté dans l'ERP, donc le réalignement est acquis par
-construction ; **« ajuster »** parce qu'un mouvement réel se saisit par le
-mécanisme d'ajustement existant et n'a pas à être une branche de la dérive.
+Aucune issue, là où il y en avait deux — *conserver le comptage avancé* et
+*recompter le jour J* — et quatre avant elles. Les quatre reposaient sur la même
+prémisse : qu'un emplacement scellé porte sa propre référence, et qu'il faille
+arbitrer entre deux vérités. Cette prémisse est tombée avec `ERP@T0`.
+
+Ce qui reste existe toujours, à sa place, et se déclenche pour ses raisons
+propres : le **descellement** pour un emplacement qu'on veut recompter, la
+colonne d'**ajustement** pour un mouvement réel.
 
 ---
 
@@ -402,8 +389,9 @@ stateDiagram-v2
 
     OUVERT --> OUVERT : réimport, remplacement par numéro de journal
     OUVERT --> POSTE : posté dans l'ERP
-    POSTE --> SCELLE : sceller le lot avancé
-    SCELLE --> POSTE : desceller, motif obligatoire
+    PERIMETRE_A_DECLARER --> SCELLE : déclarer le périmètre SCELLE
+    SCELLE --> SCELLE : réimport, référence recalculée
+    SCELLE --> PERIMETRE_A_DECLARER : desceller, motif obligatoire
 
     POSTE --> [*] : passage en ANALYSE
     SCELLE --> [*] : passage en ANALYSE

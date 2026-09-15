@@ -15,9 +15,18 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from ...errors import ValidationError
 from ...ingest import get_contract, list_contracts
 from ...services import ImportService, ReferentialService
-from ..deps import CampaignDep, import_service, referential_service
+from ...services.campaign_source import SUPPORTED as CAMPAIGN_SOURCE_GRIDS
+from ...services.campaign_source import candidates as campaign_candidates
+from ...services.import_replay import (
+    PERIOD_TARGETS,
+)
+from ...services.import_replay import (
+    resolve_target as _resolve,
+)
+from ...services.portfolio_service import portfolio_filter
+from ..deps import CampaignDep, Ctx, import_service, referential_service
 from ..paging import MAX_PAGE, page
-from ..responses import GridContractResponse
+from ..responses import CampaignSourceResponse, GridContractResponse
 from ..schemas import (
     BomActivationRequest,
     BomLinkPatch,
@@ -55,18 +64,6 @@ def _write_options(target: str, *, replace: bool, allow_partial: bool) -> dict:
     return options
 
 
-#: Import targets and the service method that handles each. Declaring the map
-#: here keeps the routes thin and makes an unsupported target a clean 422.
-_TARGETS = {
-    "items": "import_items",
-    "boms": "import_boms",
-    "book_stock": "import_book_stock",
-    "count_journal_lines": "import_journal_lines",
-    "count_sheets": "import_count_sheets",
-    "adjustments": "import_adjustments",
-    "backflush": "import_backflush",
-    "locations": "import_locations",
-}
 
 
 # --------------------------------------------------------------------------- #
@@ -158,6 +155,27 @@ async def import_file(
 
 
 @router.post(
+    "/campaigns/{campaign_id}/imports/{batch_id}/replay",
+    summary="Rejouer un chargement déjà fait",
+)
+def replay_import(
+    campaign: CampaignDep, batch_id: str, importer: Importer
+) -> dict[str, Any]:
+    """Repasser le fichier d'un chargement archivé par le même importeur.
+
+    Il n'y a pas d'annulation d'import — une ligne mise à jour en place ne garde
+    pas son image d'avant. Ce qui existe, c'est le fichier d'origine, et comme
+    l'import remplace, le rejouer remet ce qu'il portait. Cette route ne fait
+    donc rien de neuf : elle retire les quatre gestes qui séparaient
+    l'exploitant d'un retour en arrière que l'application savait déjà faire.
+
+    Les gardes sont celles de la cible rejouée, franchies par la méthode
+    appelée : rejouer n'est pas un droit de plus.
+    """
+    return importer.replay(campaign, batch_id).as_dict()
+
+
+@router.post(
     "/campaigns/{campaign_id}/import/{target}/paste",
     summary="Importer un collage depuis Excel",
 )
@@ -188,10 +206,17 @@ def import_paste(
 #: picture of "now" rather than of the moment the count began.
 ERP_TARGETS = ("items", "boms", "book_stock", "backflush")
 
+#: Les grilles qu'une campagne existante sait redonner.
+#:
+#: Importée du service plutôt que recopiée : c'est lui qui sait ce qu'une
+#: campagne peut ressortir, et deux listes auraient fini par répondre
+#: différemment — une route qui accepte une grille que le service refuse, ou
+#: l'inverse.
+CAMPAIGN_TARGETS = CAMPAIGN_SOURCE_GRIDS
+
 #: Grids read from a *fact* table, which therefore need a period. A referential
 #: has a state; a fact table has a history, and one cannot be read without
 #: saying over what.
-PERIOD_TARGETS = ("backflush",)
 
 
 def _period(
@@ -290,6 +315,71 @@ def import_erp(
         "mode": "erp",
         **_period(target, borne_debut, borne_fin),
         **({"snapshot_date": snapshot_date} if target == "book_stock" else {}),
+    }
+    if dry_run:
+        return importer.preview(target, **kwargs)
+    extra = _write_options(target, replace=replace, allow_partial=allow_partial)
+    return getattr(importer, method)(campaign, **kwargs, **extra).as_dict()
+
+
+@router.get(
+    "/campaigns/{campaign_id}/import/{target}/campaign-sources",
+    summary="Campagnes dont cette grille peut être reprise",
+    responses={200: {"model": list[CampaignSourceResponse]}},
+)
+def campaign_sources(
+    campaign: CampaignDep, target: str, ctx: Ctx
+) -> list[dict[str, Any]]:
+    """Les campagnes candidates, **et ce que chacune porte sur cette grille**.
+
+    Le décompte est ce qui fait choisir : sans lui, l'écran offre une liste de
+    codes et de dates, on désigne au jugé, et on découvre après coup que la
+    campagne ne portait rien.
+    """
+    if target not in CAMPAIGN_TARGETS:
+        return []
+    return campaign_candidates(ctx, campaign, target)
+
+
+@router.post(
+    "/campaigns/{campaign_id}/import/{target}/campaign",
+    summary="Reprendre une grille d'une autre campagne",
+)
+def import_from_campaign(
+    campaign: CampaignDep,
+    target: str,
+    importer: Importer,
+    source_campaign_id: Annotated[str, Query(alias="sourceCampaignId")],
+    dry_run: Annotated[bool, Query(alias="dryRun")] = False,
+    replace: Annotated[bool, Query()] = False,
+    allow_partial: Annotated[bool, Query(alias="allowPartial")] = False,
+) -> dict[str, Any]:
+    """Relire une campagne existante à la forme de cette grille.
+
+    Le référentiel articles d'un trimestre est celui du suivant à quelques
+    lignes près, un stock ERP de contrôle se rejoue, et les journaux de
+    comptage avancés d'une campagne annulée n'ont aucune raison d'être
+    ressaisis. La duplication de campagne couvre le cas où l'on repart de
+    zéro ; celui-ci couvre le cas — bien plus fréquent — où la campagne existe
+    déjà et où il ne manque qu'une grille.
+
+    Comme la lecture ERP, les lignes rentrent **au même point** qu'un fichier :
+    mêmes validations, même essai à blanc, même grille modifiable ensuite. Ce
+    n'est pas une porte dérobée dans le référentiel.
+    """
+    if target not in CAMPAIGN_TARGETS:
+        raise ValidationError(
+            f"La grille « {target} » ne se reprend pas d'une autre campagne.",
+            allowed=sorted(CAMPAIGN_TARGETS),
+        )
+    if source_campaign_id == campaign.id:
+        raise ValidationError(
+            "La campagne source est la campagne courante : il n'y a rien à "
+            "reprendre d'elle-même."
+        )
+    method = _resolve(target)
+    kwargs: dict[str, Any] = {
+        "mode": "campaign", "source_campaign_id": source_campaign_id,
     }
     if dry_run:
         return importer.preview(target, **kwargs)
@@ -480,12 +570,16 @@ def bom_health(campaign: CampaignDep, service: Referentials) -> dict[str, Any]:
 def book_stock(
     campaign: CampaignDep,
     service: Referentials,
+    ctx: Ctx,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 1000,
     offset: Annotated[int, Query(ge=0)] = 0,
     top: Annotated[int | None, Query(ge=1, le=1000)] = None,
+    mine: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     """The ERP snapshot, and what the biggest lines of it weigh."""
-    view = service.book_stock(campaign, top=top)
+    view = service.book_stock(
+        campaign, top=top, only_items=portfolio_filter(ctx, campaign, mine=mine)
+    )
     return {
         "total": len(view.lines),
         "totalValue": view.total_value,
@@ -527,10 +621,4 @@ def list_locations(campaign: CampaignDep, service: Referentials) -> dict[str, An
     }
 
 
-def _resolve(target: str) -> str:
-    method = _TARGETS.get(target)
-    if method is None:
-        raise ValidationError(
-            f"Cible d'import inconnue : {target!r}.", allowed=sorted(_TARGETS)
-        )
-    return method
+

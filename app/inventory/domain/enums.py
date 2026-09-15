@@ -25,19 +25,21 @@ __all__ = [
     "LocationStatus",
     "JournalKind",
     "JournalStatus",
+    "SealStatus",
     "SheetPass",
     "ZoneStatus",
     "CountSection",
+    "CountLineKind",
     "DataSource",
     "AdjustmentKind",
     "CountingStage",
-    "DriftResolution",
     "FlowKind",
     "FlowSource",
     "StockBasis",
     "ControlSeverity",
     "AuditAction",
     "legacy_section_alias",
+    "section_of",
 ]
 
 
@@ -145,6 +147,29 @@ class JournalStatus(StrEnum):
     BOOK_ENFORCED = "BOOK_ENFORCED"
 
 
+class SealStatus(StrEnum):
+    """Ce qu'un emplacement a vécu avant le jour J, en trois valeurs.
+
+    La grille des journaux de comptage montrait le statut de comptage — en
+    attente, en cours, posté — et rien d'autre. Un emplacement précompté et
+    scellé y ressemblait donc à tous les autres, alors que son comptage est déjà
+    fait, daté et figé : c'est exactement ce qu'on cherche à savoir le jour J,
+    quand on répartit les équipes.
+
+    Trois valeurs, parce qu'une dérive change ce qu'on fait de l'emplacement
+    sans changer ce qu'on lui demande : rien n'est requis, mais quelqu'un
+    voudra peut-être aller voir avant de clore.
+    """
+
+    #: Comptage général : personne n'est passé avant.
+    UNSEALED = "UNSEALED"
+    #: Précompté et scellé, et l'ERP du jour J dit la même chose.
+    SEALED_CLEAN = "SEALED_CLEAN"
+    #: Précompté et scellé, mais quelque chose a bougé depuis. À regarder, pas
+    #: à trancher : voir :class:`EarlyCountDrift`.
+    SEALED_DRIFTING = "SEALED_DRIFTING"
+
+
 class SheetPass(StrEnum):
     """Which of the two independent counts a sheet materialises."""
 
@@ -195,6 +220,29 @@ class CountSection(StrEnum):
     WIP_OK = "WIP_OK"
 
 
+class CountLineKind(StrEnum):
+    """Ce qu'une ligne de feuille **est**, au-delà de ce qu'elle porte.
+
+    Une feuille de comptage n'est pas une liste, c'est un document : les
+    feuilles Excel qu'elle remplace alternent des intertitres — « Stock physique
+    B6EST », « Stock physique B15 », « Stock physique chez Maldaner » — et des
+    lignes vides qui aèrent la page. Ce découpage n'est pas décoratif : il dit
+    au compteur *où aller*, et c'est lui qui fait qu'un même article revient
+    trois fois sur la même feuille sans être un doublon.
+
+    * ``ARTICLE``    — une référence à compter, la seule qui porte une quantité.
+    * ``SUBSECTION`` — un intertitre, son texte dans ``label``. Les articles qui
+      le suivent lui appartiennent, et leur clé d'unicité le porte.
+    * ``SPACER``     — une ligne vide. **Pas** une sous-section : elle ne
+      regroupe rien, elle sépare. Deux articles identiques séparés par une
+      simple ligne vide restent un doublon.
+    """
+
+    ARTICLE = "ARTICLE"
+    SUBSECTION = "SUBSECTION"
+    SPACER = "SPACER"
+
+
 class DataSource(StrEnum):
     """Provenance of a quantity — always kept next to the value it produced."""
 
@@ -231,32 +279,6 @@ class CountingStage(StrEnum):
     EARLY = "EARLY"
     #: Après : le stock ERP général est chargé, le reste se compte.
     GENERAL = "GENERAL"
-
-
-class DriftResolution(StrEnum):
-    """Ce qu'un exploitant décide d'une dérive matérielle.
-
-    Une dérive est l'écart entre le stock ERP du jour J et le physique posté au
-    précomptage, sur un emplacement scellé. Elle est attendue nulle ; quand elle
-    ne l'est pas, **une seule question se pose** : quelle quantité fait foi au
-    jour J ?
-
-    Deux réponses, et pas quatre. « Rejouer le postage » n'en est pas une :
-    on ne scelle qu'un journal déjà posté dans l'ERP, si bien que le
-    réalignement est acquis par construction plutôt que diagnostiqué après coup.
-    « Ajuster » non plus : un mouvement réel se saisit par le mécanisme
-    d'ajustement, qui a déjà son sens, sa table et sa place dans le calcul —
-    en faire une issue de la dérive aurait dupliqué une fonction et forcé à
-    choisir entre deux gestes qui ne s'excluent pas.
-    """
-
-    #: Le comptage avancé fait foi. Cause et commentaire obligatoires : la
-    #: campagne et l'ERP restent alors en désaccord de la valeur de la dérive,
-    #: et personne ne doit le découvrir plus tard.
-    KEEP_EARLY = "KEEP_EARLY"
-    #: L'emplacement est descellé et rejoint le comptage général ; sa référence
-    #: redevient le stock ERP du jour J.
-    RECOUNT = "RECOUNT"
 
 
 class FlowKind(StrEnum):
@@ -386,3 +408,34 @@ def legacy_section_alias(label: str | None) -> CountSection | None:
         return None
     key = " ".join(label.strip().upper().split())
     return _LEGACY_SECTIONS.get(key)
+
+
+def section_of(value: Any) -> CountSection:
+    """Resolve anything a file or a form calls a section onto the enum.
+
+    Le pendant strict de :func:`legacy_section_alias` : là où l'alias rend
+    ``None`` pour laisser l'appelant décider, celui-ci refuse. C'est ce qu'il
+    faut partout où la section vient d'un humain ou d'un fichier — un libellé
+    mal lu n'y devient jamais silencieusement du bord de ligne.
+
+    Vide vaut le bord de ligne, qui est la section par défaut d'une feuille.
+
+    >>> section_of("")
+    <CountSection.LINE_SIDE: 'LINE_SIDE'>
+    >>> section_of("wip ok")
+    <CountSection.WIP_OK: 'WIP_OK'>
+    """
+    from ..errors import ValidationError
+
+    if value in (None, ""):
+        return CountSection.LINE_SIDE
+    text = str(value).strip().upper().replace(" ", "_").replace("-", "_")
+    if text in CountSection.__members__:
+        return CountSection[text]
+    resolved = legacy_section_alias(str(value))
+    if resolved is None:
+        raise ValidationError(
+            f"Section inconnue : {value!r}. Attendu LINE_SIDE, WIP ou WIP_OK.",
+            section=str(value),
+        )
+    return resolved

@@ -17,7 +17,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { quantityToSend } from './generic.sheet'
+import { isArticle, quantityToSend } from './generic.sheet'
 
 describe('une valeur numérique', () => {
   it('part comme un nombre', () => {
@@ -70,5 +70,29 @@ describe('ce qui ne peut pas être une quantité', () => {
   it('un NaN déjà numérique ne devient pas une quantité', () => {
     expect(quantityToSend(Number.NaN)).toBeNull()
     expect(quantityToSend(Number.POSITIVE_INFINITY)).toBeNull()
+  })
+})
+
+/**
+ * Un intertitre reste un intertitre après un enregistrement.
+ *
+ * Le formulaire de saisie renvoie **toute** la feuille — le serveur remplace.
+ * Il ne renvoyait que référence, section, quantité, unité et commentaire : un
+ * intertitre repassé par là revenait en ligne d'article sans référence, c'est-
+ * à-dire en ligne à jeter. La feuille perdait sa forme au premier
+ * « Enregistrer », sans un mot, et la réimpression ne ressemblait plus au
+ * papier que le compteur avait tenu.
+ */
+describe('les lignes de mise en page dans le formulaire de saisie', () => {
+  it('sont reconnues à leur genre', () => {
+    expect(isArticle({ line_kind: 'ARTICLE' })).toBe(true)
+    expect(isArticle({ line_kind: 'SUBSECTION' })).toBe(false)
+    expect(isArticle({ line_kind: 'SPACER' })).toBe(false)
+  })
+
+  it('une ligne sans genre est un article', () => {
+    /* Le défaut compte : tout ce qui existait avant la mise en page continue
+       d'être une ligne d'article sans avoir rien à déclarer. */
+    expect(isArticle({})).toBe(true)
   })
 })

@@ -36,7 +36,7 @@ vi.mock('../lib/api', () => ({
   },
 }))
 
-function overview(frozen: string | null): Overview {
+function overview(frozen: string | null, sealed = 0): Overview {
   return {
     campaign: {
       id: 'camp-1',
@@ -44,11 +44,12 @@ function overview(frozen: string | null): Overview {
       status: 'PREPARATION',
       book_stock_frozen_at: frozen,
     },
+    counts: { items: 0, bookStockLines: 0, sealedLocations: sealed },
     permissions: {},
   } as unknown as Overview
 }
 
-function show(view: AnalysisView, frozen: string | null) {
+function show(view: AnalysisView, frozen: string | null, sealed = 0) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
@@ -57,7 +58,7 @@ function show(view: AnalysisView, frozen: string | null) {
       <ToastProvider>
         <MemoryRouter>
           <Routes>
-            <Route path="/" element={<Outlet context={overview(frozen)} />}>
+            <Route path="/" element={<Outlet context={overview(frozen, sealed)} />}>
               <Route index element={<Analysis view={view} />} />
             </Route>
           </Routes>
@@ -78,7 +79,7 @@ describe('sans stock ERP gelé', () => {
   it('les écarts sont refusés, en disant quoi faire', () => {
     show('variances', null)
     expect(refused()).not.toBeNull()
-    expect(screen.getByText(/gelez-le/)).toBeTruthy()
+    expect(screen.getByText(/Chargez-le puis/)).toBeTruthy()
   })
 
   it.each(['variances', 'causes', 'adjustments'] as const)('%s est refusée', (view) => {
@@ -95,4 +96,30 @@ describe('une fois le stock gelé', () => {
       expect(refused()).toBeNull()
     },
   )
+})
+
+
+describe('un précomptage scellé n’ouvre plus l’analyse avant le gel', () => {
+  /**
+   * L'écran affichait des « écarts partiels » sur les emplacements précomptés
+   * et scellés, en tenant leur référence pour figée. Elle ne l'était pas : un
+   * précomptage est **posté dans l'ERP** avant que la photo du jour J ne soit
+   * prise, donc la photo l'a déjà intégré. L'écart affiché comptait ainsi deux
+   * fois la même correction, dans le sens qui flatte.
+   *
+   * La référence est unique — le stock ERP du jour J, gelé — et tant qu'elle
+   * n'est pas posée, il n'y a rien à afficher, pas même partiellement.
+   */
+  it.each(['variances', 'causes', 'adjustments'] as const)(
+    '%s reste refusée, même avec trois emplacements scellés',
+    (view) => {
+      show(view, null, 3)
+      expect(refused()).not.toBeNull()
+    },
+  )
+
+  it('ne parle plus d’écarts partiels', () => {
+    show('variances', '2026-06-13T08:00:00Z', 3)
+    expect(screen.queryByText(/Écarts partiels/)).toBeNull()
+  })
 })

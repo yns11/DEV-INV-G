@@ -1,4 +1,5 @@
 
+import type { ComponentType } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api } from '../lib/api'
@@ -11,6 +12,8 @@ import { BomsTab } from './preparation.boms'
 import { BookStockTab } from './preparation.bookStock'
 import { CountSheetsTab } from './preparation.sheets'
 import { JournalScopeTab, ManagersTab, SettingsTab, ZoneScopeTab } from './preparation.gestion'
+import { PortfoliosTab } from './preparation.portfolios'
+import { ProductsTab } from './preparation.products'
 
 /**
  * The screens this file serves, one per navigation entry.
@@ -28,11 +31,42 @@ export type PreparationView =
   | 'count_sheets'
   | 'gestion'
 
-type GestionTab = 'managers' | 'zone_scope' | 'journal_scope' | 'settings'
+type GestionTab =
+  | 'managers'
+  | 'zone_scope'
+  | 'journal_scope'
+  | 'portfolios'
+  | 'products'
+  | 'settings'
 
 const GESTION_TABS: GestionTab[] = [
-  'managers', 'zone_scope', 'journal_scope', 'settings',
+  'managers', 'zone_scope', 'journal_scope', 'portfolios', 'products', 'settings',
 ]
+
+/**
+ * Les onglets, rangés par ce dont ils ont besoin pour se rendre.
+ *
+ * Deux tables plutôt que dix branches `{tab === … && <…>}` : chacune répétait
+ * la même forme à un nom près, et l'aiguillage grossissait d'une demi-douzaine
+ * de lignes à chaque onglet ajouté — ce que son plafond de taille est là pour
+ * empêcher. Un onglet s'ajoute maintenant en écrivant son nom une fois.
+ *
+ * La coupure entre les deux est réelle et pas arbitraire : les grilles qui se
+ * chargent par le panneau d'import ont besoin du contrat que le serveur décrit,
+ * et attendent qu'il soit arrivé ; les formulaires n'en ont pas.
+ */
+type TabProps = { campaignId: string; overview: Overview }
+type GridProps = TabProps & { contract: GridContract }
+
+const WITH_CONTRACT: Partial<Record<string, ComponentType<GridProps>>> = {
+  items: ItemsTab, boms: BomsTab, book_stock: BookStockTab,
+  count_sheets: CountSheetsTab, portfolios: PortfoliosTab, products: ProductsTab,
+}
+
+const WITHOUT_CONTRACT: Partial<Record<string, ComponentType<TabProps>>> = {
+  managers: ManagersTab, zone_scope: ZoneScopeTab,
+  journal_scope: JournalScopeTab, settings: SettingsTab,
+}
 
 export function Preparation({ view }: { view: PreparationView }) {
   const overview = useOutletContext<Overview>()
@@ -41,8 +75,11 @@ export function Preparation({ view }: { view: PreparationView }) {
   const tab = view
 
   const contracts = useQuery({ queryKey: ['contracts'], queryFn: api.contracts })
-  const contract = (key: string): GridContract | undefined =>
-    contracts.data?.find((c) => c.key === key)
+  // Un seul nom d'onglet : la vue, ou sa sous-vue quand la vue est Gestion.
+  const key = tab === 'gestion' ? gestion : tab
+  const Plain = WITHOUT_CONTRACT[key]
+  const Grid = WITH_CONTRACT[key]
+  const grid = contracts.data?.find((c) => c.key === key)
 
   return (
     <div className="stack" style={{ gap: 'var(--space-4)' }}>
@@ -57,37 +94,9 @@ export function Preparation({ view }: { view: PreparationView }) {
         />
       )}
 
-      {tab === 'items' && contract('items') && (
-        <ItemsTab campaignId={campaignId} contract={contract('items')!} overview={overview} />
-      )}
-      {tab === 'boms' && contract('boms') && (
-        <BomsTab campaignId={campaignId} contract={contract('boms')!} overview={overview} />
-      )}
-      {tab === 'book_stock' && contract('book_stock') && (
-        <BookStockTab
-          campaignId={campaignId}
-          contract={contract('book_stock')!}
-          overview={overview}
-        />
-      )}
-      {tab === 'count_sheets' && contract('count_sheets') && (
-        <CountSheetsTab
-          campaignId={campaignId}
-          contract={contract('count_sheets')!}
-          overview={overview}
-        />
-      )}
-      {tab === 'gestion' && gestion === 'settings' && (
-        <SettingsTab campaignId={campaignId} overview={overview} />
-      )}
-      {tab === 'gestion' && gestion === 'managers' && (
-        <ManagersTab campaignId={campaignId} overview={overview} />
-      )}
-      {tab === 'gestion' && gestion === 'journal_scope' && (
-        <JournalScopeTab campaignId={campaignId} overview={overview} />
-      )}
-      {tab === 'gestion' && gestion === 'zone_scope' && (
-        <ZoneScopeTab campaignId={campaignId} overview={overview} />
+      {Plain && <Plain campaignId={campaignId} overview={overview} />}
+      {Grid && grid && (
+        <Grid campaignId={campaignId} contract={grid} overview={overview} />
       )}
     </div>
   )

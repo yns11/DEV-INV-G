@@ -49,8 +49,12 @@ describe('la classe des zones de collage', () => {
   })
 })
 
-describe('les deux écrans qui collent un bloc', () => {
-  it.each(['components/ImportPanel.tsx', 'features/generic.sheet.tsx'])(
+describe('les écrans qui collent un bloc', () => {
+  it.each([
+    'components/ImportPanel.tsx',
+    'features/generic.sheet.tsx',
+    'features/zones.tsx',
+  ])(
     '%s utilise PasteArea',
     (path) => {
       const source = readFileSync(join(SRC, path), 'utf8')

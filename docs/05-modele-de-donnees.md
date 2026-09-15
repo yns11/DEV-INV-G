@@ -47,14 +47,21 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           ├─ warehouse
           ├─ location                     PK (campaign, warehouse, location)
           │
-          ├─ book_stock                   (snapshot ERP figé)
+          ├─ book_stock                   (snapshot ERP figé du jour J — la
+          │                                référence *unique* de la campagne,
+          │                                pour tout emplacement, précompté
+          │                                ou non)
           │
-          ├─ erp_journal ──┬─ erp_journal_scope   (le périmètre déclaré)
+          ├─ erp_journal ──┬─ erp_journal_scope   (le périmètre déclaré = scellé)
           │    le journal    └─ erp_journal_line    (la ligne brute, par étiquette)
-          │    tel que l'ERP le tient : un entrepôt, plusieurs emplacements
+          │    tel que l'ERP le tient : un entrepôt, plusieurs emplacements.
+          │    C'est *lui* le précomptage : il porte la date de comptage et le
+          │    scellement, et il n'y a pas d'objet « lot » entre les deux.
           │
-          ├─ early_count_batch            (lots de comptage avancé)
-          ├─ early_count_drift            (ERP@J − physique@T0, et son issue)
+          ├─ early_count_drift            (ERP@J − compté@T0 : ce qui a bougé
+          │                                entre le précomptage et le jour J.
+          │                                Un indice en affichage seul, sans
+          │                                action requise ni blocage.)
           │
           ├─ count_journal ──── count_journal_line
           │    1 par emplacement actif      qty_imported / qty_manual séparées
@@ -72,6 +79,8 @@ campaign ─┬─ threshold                    (seuils par type d'article)
           │
           ├─ manager                      (5 postes, avec l'identité de chacun)
           ├─ warehouse_manager            (entrepôt → gestionnaire, clé AUTRES)
+          ├─ item_portfolio               (article → personne qui le suit)
+          ├─ item_product                 (article → produit fabriqué)
           │
           ├─ consolidation_run ─┬─ consolidation_line   (journal GENERIQUE produit)
           │                     └─ wip_breakdown        (traçabilité de l'éclatement)
@@ -114,6 +123,25 @@ CHECK (qty_imported IS NOT NULL OR qty_manual IS NOT NULL)
 C'est ce qui permet de recharger l'export ERP autant de fois qu'on veut pendant
 la journée sans jamais détruire une correction. Une colonne unique obligerait à
 choisir entre « je perds les corrections » et « je ne rafraîchis plus ».
+
+**Le rechargement rapproche sur (journal, article)** — migration 032. Il ne le
+faisait pas : il supprimait les lignes sans valeur manuelle, puis réinsérait
+toutes celles du fichier avec un identifiant neuf, sans jamais retrouver celle
+qui portait déjà l'article. La ligne corrigée à la main survivait au ménage
+— c'est ce qui la protège, et c'est juste — et l'import lui en ajoutait une
+seconde à côté. Les deux vivaient, et la somme les additionnait. Le journal
+GENERIQUE, rempli par la consolidation avec des valeurs *manuelles*, y était
+exposé en entier : sur une campagne terrain, ses 245 articles ont été comptés
+deux fois après son retour de l'ERP.
+
+**Aucun index unique ne porte (journal, article)**, et c'est délibéré : l'écran
+permet d'ajouter deux lignes pour un même article — deux relevés distincts au
+même endroit, qui s'additionnent légitimement. Ce qui ne doit pas coexister,
+c'est une ligne *importée* à côté d'une ligne qui porte déjà une valeur : les
+deux décrivent la même mesure. Quand plusieurs lignes manuelles existent, l'écho
+de l'ERP se pose sur une seule d'entre elles, choisie par son identifiant — un
+tri par `updated_at` se déplacerait à chaque rechargement, puisque le
+rechargement met justement cette colonne à jour.
 
 ### 3.2 Pourquoi le nombre de comptages appartient à la zone
 
@@ -167,7 +195,103 @@ la préparation.
 Le périmètre est un **filtre, jamais une permission** : aucune écriture n'en
 dépend, et la matrice de gel reste la seule autorité sur ce qui est modifiable.
 
-### 3.5 Pourquoi l'audit est protégé au niveau du moteur
+### 3.5 Portefeuilles : la seconde découpe, sur les articles
+
+```sql
+item_portfolio (campaign_id, item_number, actor)    -- la même identité
+```
+
+Deux découpes cohabitent parce qu'elles répondent à deux questions. Le
+**périmètre** d'un gestionnaire porte sur des *emplacements* : quels journaux,
+quelles zones sont à lui. Le **portefeuille** porte sur des *articles* : un
+acheteur suit ses références partout où elles sont, quel que soit l'entrepôt
+qui les range, et le périmètre ne l'aide en rien. Elles se cumulent sans se
+connaître — on peut suivre des références dans un entrepôt qu'on ne pilote pas.
+
+**Plusieurs propriétaires par référence**, l'identité faisant partie de la clé
+(migration 034). La 033 l'avait mise en colonne — un propriétaire et un seul,
+sans ambiguïté — et cette forme décrivait mal l'organisation : un acheteur et un
+contrôleur de gestion suivent les mêmes articles, aucun n'étant le propriétaire
+de l'autre.
+
+Trois décomptes en découlent, et ils ne comptent pas la même chose :
+
+| Question | Compte |
+|---|---|
+| Combien X en suit-il ? | des **lignes** — la somme dépasse le nombre de références dès qu'une est partagée, et c'est exact |
+| Combien de références sont couvertes ? | des `item_number` **distincts** |
+| Combien sont orphelines ? | référentiel moins les précédentes |
+
+Prendre la hauteur de la table pour le deuxième ferait passer une référence
+suivie à deux pour deux références couvertes, et l'écran annoncerait moins
+d'orphelines qu'il n'y en a — l'erreur qui rassure au lieu d'alerter.
+
+`actor` n'est pas une clé étrangère vers `manager`, et délibérément : une
+référence peut être suivie par quelqu'un qui ne pilote aucun emplacement — un
+acheteur, un contrôleur de gestion — et lier les deux obligerait à inventer un
+poste de gestionnaire pour lui donner des articles.
+
+Table à part plutôt que colonne sur `item` : le référentiel articles **gèle à
+l'entrée en comptage**, alors que la répartition du travail bouge — quelqu'un
+tombe malade le matin du jour J, l'analyse se répartit autrement trois semaines
+plus tard. Le portefeuille suit donc la garde `managers`, ouverte jusqu'à la
+clôture.
+
+Comme le périmètre, c'est un **filtre et jamais une permission** : la bascule
+« Mes références » du stock ERP, de l'écart backflush et des écarts n'interdit
+rien, elle cache.
+
+Le chargement a **deux portées**. Entre les références, il fusionne : un fichier
+de trente références ne dit rien des quatre cent cinquante autres. Sur une
+référence qu'il cite, il remplace : ses lignes sont la liste complète de ceux qui
+la suivent. C'est ce qui permet de retirer *une* personne d'une référence
+partagée — on recharge la référence avec la liste voulue — là où une fusion pure
+ne saurait qu'ajouter et obligerait à tout vider pour enlever quelqu'un. Une
+adresse vide est le cas limite de cette règle : une référence citée sans personne
+n'est à personne.
+
+### 3.6 Produits fabriqués : la découpe qui rapproche
+
+```sql
+item_product (campaign_id, item_number) + product
+```
+
+Une troisième découpe, et elle ne répartit rien. Le **périmètre** répartit des
+emplacements entre gestionnaires ; le **portefeuille** répartit des articles
+entre personnes ; celle-ci dit ce que l'usine fait de la référence, et elle sert
+à *rapprocher*.
+
+Ce qu'elle fait voir et que rien d'autre ne montre : deux références du même
+produit dont les écarts se compensent à peu près ne sont pas deux anomalies
+indépendantes. C'est la signature d'une **inversion au comptage** — un plus ici,
+un moins là, sur deux pièces qui se ressemblent et voisinent sur le même
+assemblage. Ni la catégorie, ni le programme, ni l'emplacement ne rapprochent ces
+deux lignes : l'emplacement les sépare même aussi mal que la référence, puisque
+les deux pièces sont justement au même endroit.
+
+`Programme` existe déjà et répond à une autre question : pour quel marché la
+pièce est produite, pas de quel assemblage elle fait partie. Les deux colonnes
+sont côte à côte dans l'export Excel, ce qui est la façon la plus courte de
+rendre leur différence lisible.
+
+Le rapprochement lui-même est un calcul, pas une intuition :
+`inventory.domain.inversion` le pose sur des quantités, sans base et sans modèle.
+Deux conditions — au moins deux références, et un solde faible devant ce qui a
+bougé. C'est un **indice** : deux écarts qui se compensent peuvent être deux
+erreurs indépendantes tombant du bon côté, et rien n'est corrigé automatiquement.
+
+Une référence appartient à **un** produit : la clé le dit, et la recharger la
+déplace. Là où le portefeuille a dû s'élargir — plusieurs personnes suivent
+légitimement la même référence — ce rattachement-ci n'a pas de raison de le
+faire, et une clé large ferait compter deux fois le même écart dans deux
+produits.
+
+Table à part, et pour la même raison que les portefeuilles : sa place est une
+colonne du référentiel articles, et c'est là qu'elle ira. Mais `item` **gèle à
+l'entrée en comptage**, donc sur les campagnes déjà gelées — celles précisément
+qu'on analyse — une colonne d'`item` serait arrivée trop tard pour servir.
+
+### 3.7 Pourquoi l'audit est protégé au niveau du moteur
 
 ```sql
 CREATE OR REPLACE RULE audit_event_no_update AS ON UPDATE TO audit_event DO INSTEAD NOTHING;
@@ -177,7 +301,7 @@ CREATE OR REPLACE RULE audit_event_no_delete AS ON DELETE TO audit_event DO INST
 Une convention de code se contourne par accident. Une règle SQL, non : même un
 bug dans la couche service ne peut pas réécrire l'histoire.
 
-### 3.6 Concurrence
+### 3.8 Concurrence
 
 Toutes les tables mutables portent `row_version BIGINT`. Les écritures qui
 peuvent entrer en conflit (correction d'une ligne de comptage) comparent la
@@ -185,7 +309,7 @@ version attendue et renvoient un **409** plutôt qu'un dernier-arrivé-gagne
 silencieux. Le jour J, dix personnes travaillent en parallèle : c'est le moment
 où ça compte.
 
-### 3.7 Index
+### 3.9 Index
 
 Ils suivent les chemins réellement empruntés :
 
@@ -196,9 +320,23 @@ Ils suivent les chemins réellement empruntés :
 | `book_stock_uq (campaign, item, warehouse, location)` | Réconciliation |
 | `item_name_idx (campaign, lower(name) text_pattern_ops)` | Recherche par désignation |
 | `audit_campaign_idx (campaign, at DESC)` | Journal d'audit paginé |
+| `erp_journal_line_uq (journal, site, entrepôt, emplacement, étiquette, article)` | Ce qui identifie une ligne ERP — voir ci-dessous |
 
 Les index partiels (`WHERE deleted_at IS NULL`) évitent d'indexer les lignes
 logiquement supprimées, qui ne sont jamais lues.
+
+**`erp_journal_line_uq` porte les coordonnées, pas le numéro de ligne.** Il a
+porté « journal + numéro de ligne » jusqu'à la migration 031. Quatre extractions
+réelles du même jour ont montré que ce numéro n'est pas celui de l'ERP : la
+chaîne d'extraction l'invente pour départager des lignes que l'ERP numérote
+pareil — un journal par étiquette y descend « 1, -1, -2, … -79 », un autre porte
+un « 13,5 ». Il dépend donc de l'ordre des lignes : une étiquette saisie entre
+deux extractions décale tout ce qui suit, et la même palette change de clé d'un
+quart d'heure à l'autre. Comme clé d'unicité il manquait des deux côtés — trop
+strict, « 13,5 » faisait refuser la ligne entière ; trop lâche, la colonne était
+nullable et Postgres tient deux NULL pour distincts. La colonne a été supprimée
+plutôt que laissée vide ; l'export la contient toujours, et l'écran d'import
+l'annonce parmi les colonnes non utilisées.
 
 ### 3.1 Les clés composites, et pourquoi elles existent
 

@@ -94,6 +94,13 @@ export function ItemsTab({
   const columns: Column[] = [
     { key: 'item_number', label: 'Article', width: 170 },
     { key: 'name', label: 'Désignation', width: 280 },
+    // Le groupe fonctionnel de l'ERP (`item_group_label`), qui arrive déjà dans
+    // la charge utile et n'était affiché nulle part : il ne se lisait que dans
+    // le classeur exporté. C'est pourtant lui qui distingue une visserie d'un
+    // stator quand la désignation ne le dit pas, et c'est la maille sur
+    // laquelle on décide une exclusion pour toute une famille d'un coup — d'où
+    // le filtre par valeurs plutôt qu'une recherche de texte.
+    { key: 'item_group', label: 'Groupe', width: 160, filter: 'choice' },
     {
       key: 'item_type',
       label: 'Type',

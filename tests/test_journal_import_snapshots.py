@@ -17,6 +17,7 @@ comptage :
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -92,7 +93,6 @@ def _feed(service, monkeypatch, rows: list[dict[str, Any]]) -> None:
 def _row(**kwargs) -> dict[str, Any]:
     base = {
         "journal_number": "NPEM-1",
-        "erp_line_number": 1,
         "warehouse_id": "ATP",
         "location_id": "SOL",
         "item_number": "MASS-1",
@@ -108,7 +108,7 @@ def _row(**kwargs) -> dict[str, Any]:
 class TestOneLinePerArticleAndLocation:
     def test_ten_labels_become_one_counted_line(self, service, campaign, monkeypatch):
         _feed(service, monkeypatch, [
-            _row(erp_line_number=n, label_id=f"0016092{n:02d}",
+            _row(label_id=f"0016092{n:02d}",
                  counted_quantity=1, qty_on_hand=1)
             for n in range(1, 11)
         ])
@@ -125,8 +125,8 @@ class TestOneLinePerArticleAndLocation:
 
     def test_two_articles_stay_two_lines(self, service, campaign, monkeypatch):
         _feed(service, monkeypatch, [
-            _row(erp_line_number=1, item_number="MASS-1"),
-            _row(erp_line_number=2, item_number="MASS-2"),
+            _row(item_number="MASS-1"),
+            _row(item_number="MASS-2"),
         ])
         service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
         counted = [
@@ -138,8 +138,8 @@ class TestOneLinePerArticleAndLocation:
 
     def test_two_locations_stay_two_lines(self, service, campaign, monkeypatch):
         _feed(service, monkeypatch, [
-            _row(erp_line_number=1, location_id="SOL"),
-            _row(erp_line_number=2, location_id="STK P FI"),
+            _row(location_id="SOL"),
+            _row(location_id="STK P FI"),
         ])
         service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
         journals = service.ctx.journals.list(campaign.id)
@@ -151,9 +151,9 @@ class TestEveryRawLineIsKept:
         self, service, campaign, monkeypatch
     ):
         _feed(service, monkeypatch, [
-            _row(erp_line_number=1, label_id="001609231", counted_quantity=0,
+            _row(label_id="001609231", counted_quantity=0,
                  qty_on_hand=1),
-            _row(erp_line_number=2, warehouse_id="QUAL", location_id="APQP C0",
+            _row(warehouse_id="QUAL", location_id="APQP C0",
                  label_id="001609231", counted_quantity=1, qty_on_hand=0),
         ])
         service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
@@ -167,8 +167,8 @@ class TestEveryRawLineIsKept:
     def test_the_buffer_lines_are_kept_too(self, service, campaign, monkeypatch):
         """« Les lignes doivent néanmoins être importées et conservées. »"""
         _feed(service, monkeypatch, [
-            _row(erp_line_number=1),
-            _row(erp_line_number=2, warehouse_id="INV", location_id="01",
+            _row(),
+            _row(warehouse_id="INV", location_id="01",
                  counted_quantity=5, qty_on_hand=0),
         ])
         service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
@@ -194,13 +194,13 @@ class TestAReplacementIsPerJournal:
         rapporte pas les journaux de J-2. Un remplacement global les effacerait.
         """
         _feed(service, monkeypatch, [
-            _row(journal_number="NPEM-AVANCE", erp_line_number=1, counted_quantity=7),
+            _row(journal_number="NPEM-AVANCE", counted_quantity=7),
         ])
         service.import_journal_lines(campaign, payload=b"x", filename="j2.csv")
 
         _feed(service, monkeypatch, [
-            _row(journal_number="NPEM-JOURJ", erp_line_number=1,
-                 location_id="STK P FI", counted_quantity=3),
+            _row(journal_number="NPEM-JOURJ", location_id="STK P FI",
+                 counted_quantity=3),
         ])
         service.import_journal_lines(campaign, payload=b"x", filename="jj.csv")
 
@@ -212,9 +212,9 @@ class TestAReplacementIsPerJournal:
     def test_reimporting_the_same_journal_refreshes_it(
         self, service, campaign, monkeypatch
     ):
-        _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=3)])
+        _feed(service, monkeypatch, [_row(counted_quantity=3)])
         service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
-        _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=8)])
+        _feed(service, monkeypatch, [_row(counted_quantity=8)])
         service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
 
         journals = service.ctx.erp_journals.list(campaign.id)
@@ -222,41 +222,60 @@ class TestAReplacementIsPerJournal:
         assert [line.qty_counted for line in raw] == [Decimal(8)]
 
 
-class TestASealedLocationIsNotReloaded:
-    def test_its_counted_lines_survive_the_import(
-        self, service, campaign, monkeypatch
-    ):
-        _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=7)])
+class TestASealedLocationIsReloaded:
+    """La règle a changé, et pour une bonne raison.
+
+    Une première version protégeait l'emplacement scellé du rechargement : son
+    comptage était une preuve datée, et la réimporter l'aurait remplacée par la
+    photographie du jour. Le métier a tranché autrement — un réimport du journal,
+    ou l'import d'un autre journal de précomptage qui touche l'emplacement,
+    **remplace et met à jour**. La dernière lecture de l'ERP est la plus juste,
+    et une preuve qu'on ne peut plus corriger n'est pas une preuve mais une
+    impasse.
+
+    Ce que le chargement du **stock ERP général** fait, lui, est l'inverse et le
+    reste : il préserve les emplacements scellés, sans quoi le résultat de leur
+    inventaire disparaîtrait le jour J. Deux imports, deux règles, et elles ne se
+    contredisent pas.
+    """
+
+    def test_its_counted_lines_are_replaced(self, service, campaign, monkeypatch):
+        _feed(service, monkeypatch, [_row(counted_quantity=7)])
         service.import_journal_lines(campaign, payload=b"x", filename="j2.csv")
         service.ctx.journals.seal(
             campaign.id, [("ATP", "SOL")], actor="alice"
         )
 
-        # Le jour J, la même référence est comptée autrement.
-        _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=2)])
-        outcome = service.import_journal_lines(campaign, payload=b"x", filename="jj.csv")
+        _feed(service, monkeypatch, [_row(counted_quantity=2)])
+        service.import_journal_lines(campaign, payload=b"x", filename="jj.csv")
 
         counted = [
             line
             for group in service.ctx.journals.lines_by_journal(campaign.id).values()
             for line in group
         ]
-        assert [line.qty for line in counted] == [Decimal(7)], (
-            "le comptage avancé fait foi ; le recharger effacerait la dérive"
+        assert [line.qty for line in counted] == [Decimal(2)], (
+            "le rechargement remplace : c'est la règle métier"
         )
-        assert any("scellé" in w.message for w in outcome.warnings)
-        assert outcome.details["sealedLocationsKept"] == ["ATP / SOL"]
+
+    def test_nothing_is_reported_as_kept(self, service, campaign, monkeypatch):
+        """Le rapport ne doit plus annoncer une protection qui n'existe plus."""
+        _feed(service, monkeypatch, [_row(counted_quantity=7)])
+        outcome = service.import_journal_lines(
+            campaign, payload=b"x", filename="j2.csv"
+        )
+        assert "sealedLocationsKept" not in outcome.details
 
     def test_its_raw_lines_are_still_recorded(self, service, campaign, monkeypatch):
         """Sans quoi le contrôle par étiquette n'aurait rien à rapprocher."""
-        _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=7)])
+        _feed(service, monkeypatch, [_row(counted_quantity=7)])
         service.import_journal_lines(campaign, payload=b"x", filename="j2.csv")
         service.ctx.journals.seal(
             campaign.id, [("ATP", "SOL")], actor="alice"
         )
         _feed(service, monkeypatch, [
-            _row(journal_number="NPEM-JOURJ", erp_line_number=1,
-                 label_id="001609231", counted_quantity=2),
+            _row(journal_number="NPEM-JOURJ", label_id="001609231",
+                 counted_quantity=2),
         ])
         service.import_journal_lines(campaign, payload=b"x", filename="jj.csv")
 
@@ -267,9 +286,9 @@ class TestASealedLocationIsNotReloaded:
     def test_an_unsealed_location_is_reloaded_normally(
         self, service, campaign, monkeypatch
     ):
-        _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=7)])
+        _feed(service, monkeypatch, [_row(counted_quantity=7)])
         service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
-        _feed(service, monkeypatch, [_row(erp_line_number=1, counted_quantity=2)])
+        _feed(service, monkeypatch, [_row(counted_quantity=2)])
         service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
         counted = [
             line
@@ -297,3 +316,185 @@ class TestTheReportNamesWhatIsUndeclared:
         _feed(service, monkeypatch, [_row()])
         outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
         assert outcome.details["scopeUndeclared"] == []
+
+
+class TestTheCountingDateComesFromTheLines:
+    """L'ERP la donne sur chaque ligne ; elle n'a plus à être retapée.
+
+    Elle a longtemps été lue au contrat, portée par l'objet importé, puis
+    **jetée** : aucune colonne ne la recevait. L'application redemandait donc à
+    l'exploitant une date que le fichier contenait déjà. Or c'est elle qui date
+    la référence d'un emplacement scellé, donc l'inventaire de cet emplacement.
+    """
+
+    # Le contrat déclare la colonne en `datetime` et le lecteur la convertit :
+    # ces contrôles alimentent donc ce que le lecteur produit, pas la chaîne
+    # brute du fichier — sinon ils décriraient un pipeline qui n'existe pas.
+    def test_the_header_carries_it(self, service, campaign, monkeypatch):
+        _feed(service, monkeypatch, [
+            _row(counting_date=dt.datetime(2026, 6, 10, 6, 30, tzinfo=dt.UTC)),
+        ])
+        service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        journal = service.ctx.erp_journals.get_by_number(campaign.id, "NPEM-1")
+        assert journal.counted_on == dt.date(2026, 6, 10)
+
+    def test_the_latest_line_wins(self, service, campaign, monkeypatch):
+        """Un journal se compte sur une journée ; si les lignes divergent, la
+        plus récente reste un fait, et un fait vaut mieux qu'un champ vide."""
+        _feed(service, monkeypatch, [
+            _row(label_id="001609231",
+                 counting_date=dt.datetime(2026, 6, 10, 6, 30, tzinfo=dt.UTC)),
+            _row(label_id="001609232",
+                 counting_date=dt.datetime(2026, 6, 11, 17, 5, tzinfo=dt.UTC)),
+        ])
+        service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        journal = service.ctx.erp_journals.get_by_number(campaign.id, "NPEM-1")
+        assert journal.counted_on == dt.date(2026, 6, 11)
+
+    def test_an_export_without_it_does_not_erase_it(
+        self, service, campaign, monkeypatch
+    ):
+        """Un export qui omet la colonne ne doit pas effacer ce qu'un
+        précédent portait : l'absence n'est pas une correction."""
+        _feed(service, monkeypatch, [
+            _row(counting_date=dt.datetime(2026, 6, 10, 6, 30, tzinfo=dt.UTC)),
+        ])
+        service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+        _feed(service, monkeypatch, [_row()])
+        service.import_journal_lines(campaign, payload=b"x", filename="j2.csv")
+
+        journal = service.ctx.erp_journals.get_by_number(campaign.id, "NPEM-1")
+        assert journal.counted_on == dt.date(2026, 6, 10)
+
+
+class TestLAllerEtLeRetourDoiventCoincider:
+    """Ce que l'application a calculé doit revenir tel quel de l'ERP.
+
+    Vu sur une campagne terrain, et jamais signalé. La consolidation GENERIQUE
+    avait produit 1 336,92 kg de résine ; l'exploitant l'a portée dans l'ERP,
+    qui l'a acceptée telle quelle. Mais une analyse rapide sous Power Query,
+    entre l'extraction et l'import, avait typé la colonne en entier : 1 337 est
+    revenu. Soixante-quatre quantités pesées ou mesurées — des kilos, des
+    mètres — ont été arrondies de la même façon, et l'import les a acceptées
+    sans un mot. L'écart ne s'est vu que des jours plus tard.
+
+    Le contrôle ne suppose rien de la cause. Arrondi en amont, collage partiel,
+    ligne oubliée, correction faite dans l'ERP et pas ici : il constate que les
+    deux chiffres diffèrent et les nomme. C'est ce qui le rend utile — les
+    causes, on ne les connaît qu'après.
+    """
+
+    def _avec_une_valeur_calculee(self, service, campaign, qty):
+        """Poser une valeur que l'application tient pour sienne."""
+        from inventory.db import new_id
+        from inventory.domain.enums import DataSource
+        from inventory.domain.models import CountJournalLine, LocationKey
+
+        key = LocationKey(warehouse_id="ATP", location_id="SOL")
+        service.ctx.journals.ensure_journals(campaign.id, [key], actor="test")
+        journal = next(
+            j for j in service.ctx.journals.list(campaign.id) if j.key == key
+        )
+        service.ctx.journals.replace_lines_for_journal(
+            journal.id, campaign.id,
+            [CountJournalLine(
+                id=new_id(), journal_id=journal.id, campaign_id=campaign.id,
+                item_number="MASS-1", qty_manual=qty, unit="PCE",
+                source=DataSource.CONSOLIDATION,
+            )],
+            actor="test",
+        )
+        return journal
+
+    def test_un_retour_arrondi_est_signale(self, service, campaign, monkeypatch):
+        self._avec_une_valeur_calculee(service, campaign, Decimal("1336.92"))
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(1337))])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        assert outcome.details["roundTripMismatches"] == 1
+        message = " ".join(w.message for w in outcome.warnings)
+        assert "1336.92" in message and "1337" in message
+
+    def test_le_message_nomme_l_article(self, service, campaign, monkeypatch):
+        """Un constat qu'on ne peut pas rattacher à une ligne ne sert à rien."""
+        self._avec_une_valeur_calculee(service, campaign, Decimal("1336.92"))
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(1337))])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+        assert any("MASS-1" in w.message for w in outcome.warnings)
+
+    def test_un_retour_identique_ne_dit_rien(self, service, campaign, monkeypatch):
+        """Le cas nominal, et de loin le plus fréquent : le silence."""
+        self._avec_une_valeur_calculee(service, campaign, Decimal(40))
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(40))])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+        assert outcome.details["roundTripMismatches"] == 0
+        assert outcome.warnings == []
+
+    def test_la_valeur_de_lapplication_est_conservee(
+        self, service, campaign, monkeypatch
+    ):
+        """Signaler, pas écraser. C'est elle qui prime, et le contrôle ne fait
+        que demander qu'on regarde pourquoi elles diffèrent."""
+        self._avec_une_valeur_calculee(service, campaign, Decimal("1336.92"))
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(1337))])
+        service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        compte = {
+            r["item_number"]: r["qty"]
+            for r in service.ctx.journals.counted_quantities(campaign.id)
+        }
+        assert compte["MASS-1"] == Decimal("1336.92")
+
+    def test_une_ligne_sans_valeur_calculee_ne_diverge_de_rien(
+        self, service, campaign, monkeypatch
+    ):
+        """L'immense majorité des journaux : l'ERP est la seule source, il n'y
+        a pas d'aller à comparer au retour."""
+        _feed(service, monkeypatch, [_row(counted_quantity=Decimal(30))])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+        assert outcome.details["roundTripMismatches"] == 0
+
+    def test_le_compte_reste_entier_meme_quand_la_liste_est_tronquee(
+        self, service, campaign, monkeypatch
+    ):
+        """Quand c'est le fichier entier qui a dérivé, c'est le compte qui le dit.
+
+        Les nommer toutes recopierait le fichier dans le rapport ; n'en garder
+        que vingt sans dire combien il y en a ferait passer une dérive générale
+        pour une poignée d'accidents.
+        """
+        from inventory.db import new_id
+        from inventory.domain.enums import DataSource
+        from inventory.domain.models import CountJournalLine, LocationKey
+        from inventory.services.import_round_trip import ROUND_TRIP_REPORTED
+
+        key = LocationKey(warehouse_id="ATP", location_id="SOL")
+        service.ctx.journals.ensure_journals(campaign.id, [key], actor="test")
+        journal = next(
+            j for j in service.ctx.journals.list(campaign.id) if j.key == key
+        )
+        articles = [f"MASS-{n}" for n in range(1, ROUND_TRIP_REPORTED + 6)]
+        service.ctx.journals.replace_lines_for_journal(
+            journal.id, campaign.id,
+            [CountJournalLine(
+                id=new_id(), journal_id=journal.id, campaign_id=campaign.id,
+                item_number=article, qty_manual=Decimal("10.5"), unit="PCE",
+                source=DataSource.CONSOLIDATION,
+            ) for article in articles],
+            actor="test",
+        )
+        _feed(service, monkeypatch, [
+            _row(item_number=article, counted_quantity=Decimal(11))
+            for article in articles
+        ])
+
+        outcome = service.import_journal_lines(campaign, payload=b"x", filename="j.csv")
+
+        assert outcome.details["roundTripMismatches"] == len(articles)
+        assert len(outcome.warnings) == ROUND_TRIP_REPORTED

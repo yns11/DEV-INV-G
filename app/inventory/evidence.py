@@ -98,7 +98,7 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "LAKEBASE_ROOT", "ArchivedFile", "EvidenceStore", "archive_advice",
-    "safe_name", "volume_of",
+    "deposited_at", "readable_name", "safe_name", "volume_of",
 ]
 
 #: Racine des chemins des pièces gardées dans la base. Un préfixe et non un
@@ -121,6 +121,68 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 #: chemin moins lisible.
 _DIGEST_CHARS = 8
 
+
+
+# --------------------------------------------------------------------------- #
+# Relire un chemin
+# --------------------------------------------------------------------------- #
+#
+# Le chemin déposé par :meth:`EvidenceStore.path_for` porte trois choses dans
+# son dernier segment : l'instant du dépôt, les huit premiers caractères de
+# l'empreinte, et le nom du fichier tel qu'il a été reçu. Les deux fonctions
+# ci-dessous les relisent, et elles vivent **ici**, contre celle qui les écrit :
+# un lecteur rangé ailleurs finirait par décrire un format qui a changé.
+#
+# Les deux sont défensives et ne lèvent jamais. Une base d'inventaire porte les
+# pièces des campagnes passées, déposées sous des versions antérieures ; un
+# chemin qu'on ne sait plus lire doit rendre une liste incomplète, jamais un
+# écran en erreur.
+
+#: L'horodatage puis l'empreinte, tels que ``path_for`` les compose.
+_STAMPED = re.compile(
+    rf"^(\d{{8}}T\d{{6}})-([0-9a-f]{{{_DIGEST_CHARS}}})-(.+)$"
+)
+
+
+def deposited_at(path: str) -> dt.datetime | None:
+    """L'instant du dépôt, lu dans le chemin — ou ``None`` s'il n'y est pas.
+
+    C'est la seule date de dépôt dont on dispose des **deux** côtés de
+    l'archive : la table qui garde les pièces en base porte bien un
+    ``created_at``, le volume n'en a pas, et la feuille ne garde que la date de
+    sa dernière modification — laquelle bouge à chaque correction de quantité et
+    ne dirait donc pas quand le scan est arrivé.
+
+    >>> deposited_at("/Volumes/x/INV/scans/20260630T183000-a1b2c3d4-pile.pdf")
+    datetime.datetime(2026, 6, 30, 18, 30, tzinfo=datetime.timezone.utc)
+    >>> deposited_at("/Volumes/x/INV/scans/pile.pdf") is None
+    True
+    """
+    found = _STAMPED.match(path.rsplit("/", 1)[-1])
+    if found is None:
+        return None
+    try:
+        stamp = dt.datetime.strptime(found.group(1), "%Y%m%dT%H%M%S")
+    except ValueError:
+        return None
+    return stamp.replace(tzinfo=dt.UTC)
+
+
+def readable_name(path: str) -> str:
+    """Le nom du fichier tel qu'il a été reçu, sans l'horodatage ni l'empreinte.
+
+    Ce que l'écran affiche. Le nom déposé, lui, reste celui que le
+    téléchargement sert : c'est celui qui identifie la pièce dans l'archive, et
+    le raccourcir dans l'un des deux endroits seulement les ferait diverger.
+
+    >>> readable_name("/Volumes/x/INV/scans/20260630T183000-a1b2c3d4-pile.pdf")
+    'pile.pdf'
+    >>> readable_name("/Volumes/x/INV/scans/pile.pdf")
+    'pile.pdf'
+    """
+    tail = path.rsplit("/", 1)[-1]
+    found = _STAMPED.match(tail)
+    return found.group(3) if found else tail
 
 @dataclass(frozen=True, slots=True)
 class ArchivedFile:

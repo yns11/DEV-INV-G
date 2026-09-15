@@ -7,32 +7,52 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from ...errors import ValidationError
-from ...services import ConsolidationService, GenericService, ScanJobService
+from ...services import (
+    ArbitrationService,
+    ConsolidationService,
+    GenericService,
+    ScanJobService,
+    ZoneService,
+)
 from ..deps import (
     CampaignDep,
     Ctx,
+    arbitration_service,
     consolidation_service,
     generic_service,
     resolve_perimeter,
     scan_job_service,
+    zone_service,
 )
 from ..paging import MAX_PAGE, page
+from ..responses import BulkArbitrationResponse, SectionLabelsResponse
 from ..schemas import (
     ArbitrationDecisionRequest,
+    BulkArbitrationRequest,
     ReclassifyRequest,
     SheetLineDeleteRequest,
     SheetLinesRequest,
+    ZoneBlankRowsRequest,
+    ZoneBulkRequest,
     ZoneClosureRequest,
     ZoneDeleteRequest,
     ZoneNegativeRequest,
     ZonePassesRequest,
+    ZoneRenameRequest,
     ZoneRequest,
+    ZoneSectionLabelsRequest,
 )
 from ..uploads import offload, read_upload
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/generic", tags=["GENERIQUE"])
 
 Service = Annotated[GenericService, Depends(generic_service)]
+
+#: L'administration des zones a son propre service : décider *ce qu'on va
+#: compter* se fait en préparation, saisir une quantité relevée se fait le
+#: jour J, et les deux n'ont jamais lieu par les mêmes personnes.
+Zones = Annotated[ZoneService, Depends(zone_service)]
+Arbitration = Annotated[ArbitrationService, Depends(arbitration_service)]
 
 #: La consolidation a son propre service : elle lit les feuilles, elle ne les
 #: écrit pas, et elle est la seule à parler d'ERP, de nomenclatures et de valeur.
@@ -68,7 +88,7 @@ def list_zones(
 
 @router.post("/zones", status_code=201, summary="Créer une zone")
 def create_zone(
-    campaign: CampaignDep, payload: ZoneRequest, service: Service
+    campaign: CampaignDep, payload: ZoneRequest, service: Zones
 ) -> dict[str, Any]:
     """Create a zone and its counting sheets.
 
@@ -88,13 +108,77 @@ def create_zone(
         passes=payload.passes,
         free_entry=payload.free_entry,
         manager_code=payload.manager_code,
+        blank_rows=payload.blank_rows,
+    )
+    return zone.model_dump(mode="json")
+
+
+@router.post("/zones/bulk", status_code=201, summary="Créer un lot de zones")
+def create_zones(
+    campaign: CampaignDep, payload: ZoneBulkRequest, service: Zones
+) -> dict[str, Any]:
+    """Créer d'un coup toutes les zones d'un bloc collé.
+
+    Une campagne réelle en compte quarante à soixante, chacune avec son nombre
+    de lignes par section. Les créer une par une, c'est autant d'allers-retours
+    dans une fenêtre modale, alors que la liste existe déjà dans un tableur.
+
+    **Tout ou rien** : les zones sont validées avant la première écriture, et le
+    refus les nomme. Un lot à moitié créé laisserait un état que personne n'a
+    voulu et que rien ne dit comment défaire.
+    """
+    zones = service.create_zones(
+        campaign, [z.model_dump() for z in payload.zones]
+    )
+    return {
+        "created": len(zones),
+        "zones": [z.model_dump(mode="json") for z in zones],
+    }
+
+
+@router.post("/zones/{zone_id}/blank-rows", summary="Lignes vierges d'une zone")
+def set_zone_blank_rows(
+    campaign: CampaignDep,
+    zone_id: str,
+    payload: ZoneBlankRowsRequest,
+    service: Zones,
+) -> dict[str, Any]:
+    """Combien de lignes vierges chaque section de cette zone imprime.
+
+    Une section absente — ou à zéro — ne s'imprime pas. C'est le geste qui
+    retire de la page un bandeau sous lequel la zone n'a rien à faire compter,
+    et celui qui donne enfin des lignes d'en-cours à une zone qui en compte.
+    """
+    zone = service.set_blank_rows(campaign, zone_id, payload.blank_rows)
+    return zone.model_dump(mode="json")
+
+
+@router.post("/zones/{zone_id}/rename", summary="Renommer une zone")
+def rename_zone(
+    campaign: CampaignDep,
+    zone_id: str,
+    payload: ZoneRenameRequest,
+    service: Zones,
+) -> dict[str, Any]:
+    """Changer le code d'une zone — et, s'il le faut, son libellé et son secteur.
+
+    Le code se décide avant de connaître le terrain et se révèle faux une fois
+    sur place. Le seul recours était de supprimer la zone et de la recréer, ce
+    qui emporte ses feuilles avec leur liste d'articles et leurs quantités.
+
+    Rien d'autre ne bouge : feuilles, lignes, comptages et arbitrages sont
+    rattachés à l'identifiant de la zone, jamais à son code.
+    """
+    zone = service.rename_zone(
+        campaign, zone_id,
+        code=payload.code, label=payload.label, sector=payload.sector,
     )
     return zone.model_dump(mode="json")
 
 
 @router.post("/zones/passes", summary="Changer le nombre de comptages de zones")
 def set_zone_passes(
-    campaign: CampaignDep, payload: ZonePassesRequest, service: Service
+    campaign: CampaignDep, payload: ZonePassesRequest, service: Zones
 ) -> dict[str, int]:
     """Bulk switch between one and two independent counts.
 
@@ -107,7 +191,7 @@ def set_zone_passes(
 
 @router.post("/zones/negative", summary="Autoriser les quantités négatives")
 def set_zone_negative(
-    campaign: CampaignDep, payload: ZoneNegativeRequest, service: Service
+    campaign: CampaignDep, payload: ZoneNegativeRequest, service: Zones
 ) -> dict[str, int]:
     """Lift the no-negative rule on the zones that legitimately need it.
 
@@ -122,9 +206,31 @@ def set_zone_negative(
     }
 
 
+@router.post(
+    "/zones/{zone_id}/section-labels",
+    summary="Textes imprimés en tête des sections d'une zone",
+    responses={200: {"model": SectionLabelsResponse}},
+)
+def set_section_labels(
+    campaign: CampaignDep,
+    zone_id: str,
+    payload: ZoneSectionLabelsRequest,
+    service: Zones,
+) -> dict[str, str]:
+    """Remplacer le texte par défaut d'une ou plusieurs sections.
+
+    Un texte vide remet le défaut : c'est ce que veut dire un champ qu'on vide,
+    et une bannière vide laisserait le compteur sans la règle sous laquelle il
+    compte.
+    """
+    return service.set_section_labels(
+        campaign, zone_id, {str(k): v for k, v in payload.labels.items()}
+    )
+
+
 @router.post("/zones/delete", summary="Supprimer des zones et leurs feuilles")
 def delete_zones(
-    campaign: CampaignDep, payload: ZoneDeleteRequest, service: Service
+    campaign: CampaignDep, payload: ZoneDeleteRequest, service: Zones
 ) -> dict[str, int]:
     """Retirer une zone, ou toute une sélection, pendant la préparation.
 
@@ -209,18 +315,26 @@ def upsert_sheet_lines(
     payload: SheetLinesRequest,
     service: Service,
 ) -> dict[str, int]:
-    rows = [
-        {
-            "id": line.id,
-            "item_number": line.item_number,
-            "section": str(line.section),
-            "qty": line.qty,
-            "unit": line.unit,
-            "comment": line.comment,
-            "display_order": line.display_order,
-        }
-        for line in payload.lines
-    ]
+    # Le schéma est recopié **par lui-même**, et non champ par champ à la main.
+    #
+    # Il l'était à la main, et la désignation de feuille y a été oubliée : le
+    # schéma l'acceptait, le service la lisait, et entre les deux personne ne la
+    # transmettait. L'écran annonçait « ligne enregistrée » — tout le reste
+    # l'était — et le nom restait celui d'avant, à l'écran comme sur le papier.
+    #
+    # Une liste de champs recopiée ne tient que ce qu'on a pensé à y mettre,
+    # c'est-à-dire jamais celui qu'on vient d'ajouter.
+    #
+    # ``exclude_unset`` transmet **ce que l'écran a dit**, et non ce que le
+    # contrat aurait mis à sa place. Un champ absent reste absent jusqu'au
+    # service, qui sait alors que cette écriture n'en parle pas et laisse en
+    # place ce que la ligne portait. Sans cela, l'aperçu de mise en page — qui
+    # envoie l'ordre des lignes et les intertitres, jamais les quantités —
+    # écrivait la valeur par défaut du contrat sur chaque ligne, c'est-à-dire
+    # effaçait les comptages relevés en atelier. La valeur par défaut d'un champ
+    # rend par ailleurs exactement ce que son absence rend : le contrat a été
+    # écrit pour, et `test_ecriture_partielle_de_feuille.py` le tient.
+    rows = [line.model_dump(exclude_unset=True) for line in payload.lines]
     written = service.upsert_sheet_lines(
             campaign,
             sheet_id,
@@ -363,22 +477,27 @@ def get_scan_job(
 @router.get("/arbitrations", summary="Écarts entre comptage n°1 et n°2")
 def list_arbitrations(
     campaign: CampaignDep,
-    service: Service,
+    service: Arbitration,
     zone_id: Annotated[str | None, Query(alias="zoneId")] = None,
+    divergent_only: Annotated[bool, Query(alias="divergentOnly")] = False,
 ) -> list[dict[str, Any]]:
     """Every (item, section) present in either pass, valued and sorted.
 
     Sorted with the decisions that still need a human first, then by the euro
     impact of the gap — so the most expensive disagreement is dealt with first.
+
+    ``divergentOnly`` ne garde que les lignes où les deux comptages ne disent
+    pas la même chose : c'est ce que l'écran demande, une ligne en accord
+    n'appelant aucune décision.
     """
-    return service.list_arbitrations(campaign, zone_id)
+    return service.list(campaign, zone_id, divergent_only=divergent_only)
 
 
 @router.post("/zones/{zone_id}/arbitrations/refresh", summary="Recalculer les écarts")
 def refresh_arbitrations(
-    campaign: CampaignDep, zone_id: str, service: Service
+    campaign: CampaignDep, zone_id: str, service: Arbitration
 ) -> list[dict[str, Any]]:
-    return service.refresh_arbitrations(campaign, zone_id)
+    return service.refresh(campaign, zone_id)
 
 
 @router.post("/arbitrations/{arbitration_id}", summary="Arbitrer un écart")
@@ -386,28 +505,37 @@ def decide_arbitration(
     campaign: CampaignDep,
     arbitration_id: str,
     payload: ArbitrationDecisionRequest,
-    service: Service,
+    service: Arbitration,
 ) -> dict[str, bool]:
-    service.decide_arbitration(
+    service.decide(
         campaign, arbitration_id, payload.qty, comment=payload.comment
     )
     return {"decided": True}
 
 
 @router.post(
-    "/zones/{zone_id}/arbitrations/prefill-pass-2",
-    summary="Pré-remplir les écarts d'une zone avec le comptage n°2",
+    "/zones/{zone_id}/arbitrations/decide-all",
+    summary="Valider en lot les quantités affichées",
+    responses={200: {"model": BulkArbitrationResponse}},
 )
-def prefill_with_pass_2(
-    campaign: CampaignDep, zone_id: str, service: Service
+def decide_arbitrations(
+    campaign: CampaignDep,
+    zone_id: str,
+    payload: BulkArbitrationRequest,
+    service: Arbitration,
 ) -> dict[str, int]:
-    """Copy pass 2 into the open arbitrations — a shortcut, not a decision.
+    """Valider d'un geste ce que l'écran affiche.
 
-    The quantities land in the fields; each one still has to be validated (or
-    changed) before the consolidation will use it. Lines already decided are
-    left untouched.
+    Le corps porte les quantités visibles, ligne par ligne : c'est la seule
+    façon qu'un « Valider tout » valide ce que l'utilisateur a sous les yeux
+    plutôt que ce que le serveur recalculerait de son côté.
+
+    Une ligne déjà tranchée n'est pas retouchée : un lot ne défait pas un
+    jugement pris une par une.
     """
-    return {"proposed": service.prefill_with_pass_2(campaign, zone_id)}
+    return service.decide_many(
+        campaign, zone_id, {d.id: d.qty for d in payload.decisions}
+    )
 
 
 # --------------------------------------------------------------------------- #

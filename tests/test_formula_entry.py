@@ -190,11 +190,14 @@ class TestWhatCountsAsAChangedQuantity:
     plutôt que de discuter la syntaxe de ce qu'on tente d'y écrire.
     """
 
-    def previous(self, qty: str | None, formula: str = "") -> CountSheetLine:
+    def previous(
+        self, qty: str | None, formula: str = "", *, imported: str | None = None
+    ) -> CountSheetLine:
         return CountSheetLine(
             id="ligne-1", sheet_id="sheet-1", campaign_id="camp-1",
             item_number="P-00001", section=CountSection.LINE_SIDE,
             qty_manual=None if qty is None else Decimal(qty),
+            qty_imported=None if imported is None else Decimal(imported),
             qty_formula=formula,
         )
 
@@ -237,6 +240,44 @@ class TestWhatCountsAsAChangedQuantity:
     def test_renvoyer_une_case_deja_vide_n_en_est_pas_un(self):
         assert "count_entries" not in self.guards(
             [row("", line_id="ligne-1")], [self.previous(None)]
+        )
+
+    def test_renvoyer_une_quantite_importee_n_en_est_pas_un(self):
+        """L'écho se compare à ce que la ligne **porte**, pas à sa seule saisie.
+
+        Une quantité venue de l'import est ce que l'écran affiche et ce qu'il
+        renvoie. Comparée à ``qty_manual`` — ``None`` sur une telle ligne — elle
+        passait pour une saisie neuve, et gelait un écran qui n'avait touché à
+        aucun chiffre.
+        """
+        assert "count_entries" not in self.guards(
+            [row(151, line_id="ligne-1")], [self.previous(None, imported="151")]
+        )
+
+    def test_changer_une_quantite_importee_en_est_un(self):
+        assert "count_entries" in self.guards(
+            [row(150, line_id="ligne-1")], [self.previous(None, imported="151")]
+        )
+
+    def test_ecraser_une_quantite_importee_par_zero_en_est_un(self):
+        assert "count_entries" in self.guards(
+            [row(0, line_id="ligne-1")], [self.previous(None, imported="12")]
+        )
+
+    def test_taper_zero_sur_une_ligne_jamais_comptee_en_est_un(self):
+        """« Bac vide » est un constat de comptage, pas une mise en page.
+
+        C'est la limite que le correctif ne doit pas franchir : une ligne sans
+        entrée ne porte **aucune** quantité, et lui en écrire une — fût-elle
+        zéro — est un comptage. Rendre cet écrit anodin aurait échangé un écran
+        gelé contre une garde ouverte.
+
+        C'est pour cela que le correctif de l'écran est côté écran : la grille
+        de préparation cesse de renvoyer un zéro qu'elle n'a fait qu'afficher,
+        au lieu que la garde cesse de le lire.
+        """
+        assert "count_entries" in self.guards(
+            [row(0, line_id="ligne-1")], [self.previous(None)]
         )
 
 

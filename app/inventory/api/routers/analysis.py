@@ -7,8 +7,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Query
 
 from ...services import AnalysisService
-from ..deps import CampaignDep, analysis_service
-from ..schemas import AdjustmentRowRequest, AnalysisRequest
+from ...services.portfolio_service import portfolio_filter
+from ..deps import CampaignDep, Ctx, analysis_service
+from ..schemas import AdjustmentRowRequest, AnalysisRequest, BulkAnalysisRequest
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/analysis", tags=["analyse"])
 
@@ -34,9 +35,11 @@ def kpis(campaign: CampaignDep, service: Service) -> dict[str, Any]:
 def variances(
     campaign: CampaignDep,
     service: Service,
+    ctx: Ctx,
     limit: Annotated[int, Query(ge=1, le=100_000)] = 200,
     material_only: Annotated[bool, Query(alias="materialOnly")] = False,
     granularity: Annotated[str, Query(pattern="^(item|item_location)$")] = "item",
+    mine: Annotated[bool, Query()] = False,
 ) -> list[dict[str, Any]]:
     """The exception list.
 
@@ -45,7 +48,8 @@ def variances(
     and recount).
     """
     return service.top_variances(
-        campaign, limit=limit, material_only=material_only, granularity=granularity
+        campaign, limit=limit, material_only=material_only, granularity=granularity,
+        only_items=portfolio_filter(ctx, campaign, mine=mine),
     )
 
 
@@ -99,6 +103,7 @@ def breakdown(
     aspect: Annotated[str, Query()] = "counted",
     warehouse_id: Annotated[str, Query(alias="warehouseId")] = "",
     location_id: Annotated[str, Query(alias="locationId")] = "",
+    include_disabled: Annotated[bool, Query(alias="includeDisabled")] = False,
 ) -> dict[str, Any]:
     """The lines behind one figure, whichever figure it is.
 
@@ -113,18 +118,26 @@ def breakdown(
         aspect,
         warehouse_id=warehouse_id,
         location_id=location_id,
+        include_disabled=include_disabled,
     )
 
 
 @router.get("/backflush", summary="Écart backflush de la campagne")
-def backflush(campaign: CampaignDep, service: Service) -> dict[str, Any]:
+def backflush(
+    campaign: CampaignDep,
+    service: Service,
+    ctx: Ctx,
+    mine: Annotated[bool, Query()] = False,
+) -> dict[str, Any]:
     """One line per article: what production explains, and what it does not.
 
     The period header travels with the rows rather than being fetched apart:
     a backflush figure without its bounds is not interpretable, and the two
     arriving in separate responses is how they end up disagreeing on screen.
     """
-    return service.backflush(campaign)
+    return service.backflush(
+        campaign, only_items=portfolio_filter(ctx, campaign, mine=mine)
+    )
 
 
 @router.get("/backflush/period", summary="Période proposée pour l'écart backflush")
@@ -185,14 +198,38 @@ def cause_split(campaign: CampaignDep, service: Service) -> dict[str, Any]:
     return service.cause_split(campaign)
 
 
+@router.post("/variances/causes", summary="Affecter une cause à un lot d'écarts")
+def save_analyses(
+    campaign: CampaignDep, payload: BulkAnalysisRequest, ctx: Ctx
+) -> dict[str, int]:
+    """Vingt lignes, une cause, une transaction.
+
+    Vingt appels donneraient vingt transactions, vingt lignes d'audit et un
+    échec possible au douzième — la moitié du lot posée, l'autre non, et rien
+    pour dire où ça s'est arrêté.
+    """
+    from ...services.cause_service import CauseService
+
+    return {
+        "updated": CauseService(ctx).save_many(
+            campaign,
+            item_numbers=payload.item_numbers,
+            cause_code=payload.cause_code,
+            comment=payload.comment,
+        )
+    }
+
+
 @router.put("/variances/{item_number}", summary="Affecter une cause à un écart")
 def save_analysis(
     campaign: CampaignDep,
     item_number: str,
     payload: AnalysisRequest,
-    service: Service,
+    ctx: Ctx,
 ) -> dict[str, Any]:
-    analysis = service.save_analysis(
+    from ...services.cause_service import CauseService
+
+    analysis = CauseService(ctx).save(
         campaign,
         item_number=item_number,
         cause_code=payload.cause_code,

@@ -14,11 +14,13 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any
 
 from ..db import new_id
 from ..domain.enums import (
     AuditAction,
+    CountLineKind,
     DataSource,
     JournalKind,
     JournalStatus,
@@ -28,7 +30,6 @@ from ..domain.enums import (
 from ..domain.models import (
     Campaign,
     CountJournalLine,
-    CountSheetLine,
     ErpJournalLine,
     LocationKey,
     Warehouse,
@@ -50,20 +51,28 @@ from ..ingest import (
     map_items,
     map_journal_lines,
     map_locations,
+    sheet_lines_from_rows,
 )
+from .arbitration_service import refresh_after_sheet_writes
 from .context import ServiceContext, utcnow
 from .import_batches import (
+    UNKNOWN_ITEMS_KEPT,
     ImportBatches,
     ImportOutcome,
     _hash_of,
     _source_of,
 )
+from .import_locations_retired import retire_stale_locations
 from .import_parsing import (
     ImportParser,
     InputMode,
     _base_outcome,
     _require_period,
 )
+from .import_replay import replay_batch
+from .import_round_trip import round_trip_findings
+from .portfolio_service import import_portfolios
+from .product_service import import_products
 
 log = logging.getLogger(__name__)
 
@@ -71,20 +80,6 @@ __all__ = [
     "ImportOutcome", "ImportService", "InputMode", "monday_of",
     "suggested_period",
 ]
-
-#: Combien de références écartées sont **nommées** dans le rapport d'un lot.
-#:
-#: Le rapport part en JSONB dans ``import_batch`` et se relit à chaque affichage
-#: des contrôles. Un fichier ERP chargé contre un référentiel vide en produirait
-#: des dizaines de milliers : ce n'est plus un constat, c'est une copie du
-#: fichier. Deux cents suffisent à reconnaître ce qui manque et à décider.
-#:
-#: Le **compte**, lui, n'est jamais tronqué : ``unknownItems`` et
-#: ``outOfScopeItems`` portent le total, et la vue Contrôles dit explicitement
-#: qu'elle n'en détaille qu'une partie. Une liste tronquée qui se lirait comme
-#: complète ferait croire le référentiel à jour à deux cents références près.
-UNKNOWN_ITEMS_KEPT = 200
-
 
 
 class ImportService:
@@ -101,81 +96,23 @@ class ImportService:
 
     # ---------------------------------------------------------------- parsing
 
-    def _retire_stale_locations(
-        self,
-        campaign: Campaign,
-        stale: Sequence[LocationKey],
-        *,
-        outcome: ImportOutcome,
-        conn: Any,
-    ) -> tuple[int, set[LocationKey]]:
-        """Close the locations a new ERP snapshot no longer knows about.
-
-        Returns how many journals were removed, and the locations kept back.
-
-        A journal nobody has opened is a leftover and goes with its location. A
-        journal that carries a line, or that somebody has already posted, is
-        *work*: reloading the snapshot is not a decision to throw it away. Those
-        locations stay active and the import says so — an emplacement counted
-        under a snapshot that no longer lists it is exactly the sort of thing
-        that has to be looked at, not cleaned up in silence.
-        """
-        ctx = self.ctx
-        if not stale:
-            return 0, set()
-
-        untouched = ctx.journals.untouched_journal_keys(campaign.id, stale, conn=conn)
-        existing_journals = ctx.journals.journal_keys(campaign.id, stale, conn=conn)
-        kept = {
-            k for k in stale
-            if (k.warehouse_id, k.location_id) in existing_journals - untouched
-        }
-        # GENERIQUE ne porte pas de ligne de journal : son comptage vit dans les
-        # feuilles. Le juger sur ses lignes de journal le déclarerait vierge
-        # alors qu'une zone entière y a été comptée, et le rechargement d'un
-        # snapshot emporterait tout ce travail sans le dire.
-        generic = campaign.config.generic_key
-        if generic in stale and ctx.sheets.count_counted_lines(campaign.id, conn=conn):
-            kept.add(generic)
-        removable = [
-            k for k in stale
-            if (k.warehouse_id, k.location_id) in untouched and k not in kept
-        ]
-
-        removed = ctx.journals.delete_journals_for_locations(
-            campaign.id, removable, conn=conn
-        )
-        # L'emplacement suit son journal : le désactiver alors qu'un comptage y
-        # est encore ouvert le ferait disparaître des écrans où ce comptage doit
-        # rester visible.
-        closing = [k for k in stale if k not in kept]
-        if closing:
-            ctx.referentials.set_location_status(
-                campaign.id, closing, LocationStatus.DISABLED,
-                actor=ctx.actor, conn=conn,
-            )
-
-        outcome.details["locationsRetired"] = len(closing)
-        outcome.details["journalsRemoved"] = removed
-        if kept:
-            outcome.details["locationsKept"] = sorted(
-                f"{k.warehouse_id} / {k.location_id}" for k in kept
-            )[:50]
-            outcome.warnings.append(
-                RowError(
-                    line=0,
-                    column="",
-                    value="",
-                    message=(
-                        f"{len(kept)} emplacement(s) absents du nouveau stock ERP "
-                        "portent déjà un comptage : leur journal est conservé. "
-                        "Vérifiez-les avant la clôture."
-                    ),
-                )
-            )
-        return removed, kept
-
     # ---------------------------------------------------------------- parsing
+
+    def replay(self, campaign: Campaign, batch_id: str) -> ImportOutcome:
+        """Repasser le fichier d'un chargement déjà fait — voir :mod:`import_replay`.
+
+        Le travail est à côté ; le point d'entrée est ici parce que c'est ce
+        service que la route connaît, et que le rejeu appelle ses méthodes.
+        """
+        return replay_batch(self, campaign, batch_id)
+
+    def import_portfolios(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
+        """Charger les attributions d'articles — voir :mod:`portfolio_service`."""
+        return import_portfolios(self, campaign, **kwargs)
+
+    def import_products(self, campaign: Campaign, **kwargs: Any) -> ImportOutcome:
+        """Charger les produits fabriqués — voir :mod:`product_service`."""
+        return import_products(self, campaign, **kwargs)
 
     def parse(self, *args: Any, **kwargs: Any) -> tuple[GridContract, ParseResult]:
         """Lit une entrée — voir :class:`ImportParser`.
@@ -493,8 +430,8 @@ class ImportService:
         batch_id = new_id()
         with ctx.db.transaction() as conn:
             ctx.book_stock.replace(campaign.id, lines, batch_id=batch_id, conn=conn)
-            removed, kept = self._retire_stale_locations(
-                campaign, stale, outcome=outcome, conn=conn
+            removed, kept = retire_stale_locations(
+                ctx, campaign, stale, outcome=outcome, conn=conn
             )
             if warehouses:
                 ctx.referentials.upsert_warehouses(
@@ -732,9 +669,25 @@ class ImportService:
           created — unless its location is disabled, in which case the lines are
           rejected with an explicit message rather than silently dropped;
         * a journal whose lines are all flagged posted becomes ``POSTED``.
+
+        Gardé par ``early_counts`` et non ``count_journals``, ce qui déplace le
+        prérequis du stock ERP chargé vers le seul référentiel articles.
+
+        Cet import est le point d'entrée des deux comptages, et le comptage
+        avancé passe **avant** le chargement général : exiger le stock ERP ici
+        rendait impossible d'importer le journal d'un lot avancé, donc de
+        déclarer son périmètre, donc de le sceller — tout l'écran restait fermé
+        jusqu'au jour J, c'est-à-dire jusqu'après le moment où il sert.
+
+        Rien ne se perd du séquencement. Ce que cet import fait est **refléter
+        l'ERP** : le fichier apporte le comptage et, dans sa colonne « Stock
+        ERP », ce contre quoi il se compare. Ce qui s'*écrit* dans l'application
+        — corriger une ligne à la main, changer un statut, forcer au stock ERP —
+        reste gardé par ``count_journals``, et le postage, seul geste
+        irréversible, exige toujours un stock chargé **et** gelé.
         """
         ctx = self.ctx
-        ctx.guard(campaign, "count_journals")
+        ctx.guard(campaign, "early_counts")
         _, parsed = self.parser.parse("count_journal_lines", **kwargs)
         outcome = _base_outcome("count_journal_lines", parsed)
         outcome.storage_path = self.batches.archive(campaign, "count_journal_lines", kwargs)
@@ -751,6 +704,16 @@ class ImportService:
         locations = ctx.referentials.locations_by_key(campaign.id)
         journals = {j.key: j for j in ctx.journals.list(campaign.id)}
 
+        # Ce que l'application tient *avant* de recharger, lu maintenant parce
+        # qu'après il sera trop tard : c'est le terme de comparaison du contrôle
+        # aller-retour, plus bas.
+        held: dict[tuple[str, str], Decimal] = {
+            (journal_id, line.item_number): line.qty_manual
+            for journal_id, group in ctx.journals.lines_by_journal(campaign.id).items()
+            for line in group
+            if line.qty_manual is not None
+        }
+
         keys_in_file = {
             LocationKey(warehouse_id=l.warehouse_id, location_id=l.location_id)
             for l in imported
@@ -759,21 +722,38 @@ class ImportService:
             k for k in keys_in_file
             if k in locations and locations[k].status is LocationStatus.DISABLED
         }
-        # Un emplacement scellé ne se recharge pas. Son comptage est une preuve
-        # datée : le réimporter le remplacerait par la photographie du jour, et
-        # la dérive qu'on cherche justement à mesurer disparaîtrait avec.
+        # Un emplacement scellé **se recharge**, et c'est la règle métier : la
+        # dernière lecture de l'ERP est la plus juste, et une preuve qu'on ne
+        # peut plus corriger n'est pas une preuve mais une impasse. Le
+        # rechargement rescelle et recalcule la référence dans la foulée — voir
+        # `EarlyCountService.reseal_after_import`.
         #
-        # Ses lignes ERP, elles, sont conservées comme toutes les autres — c'est
-        # ce qui permet au contrôle par étiquette de les rapprocher.
-        sealed = {
-            LocationKey(warehouse_id=warehouse, location_id=location)
-            for warehouse, location in ctx.journals.sealed_keys(campaign.id)
+        # Ce que le chargement du **stock ERP général** fait, lui, est l'inverse
+        # et le reste : il préserve les emplacements scellés, sans quoi le
+        # résultat de leur inventaire disparaîtrait le jour J. Deux imports,
+        # deux règles, et elles ne se contredisent pas — l'un rafraîchit le
+        # précomptage, l'autre ne doit pas l'écraser.
+        # Les lignes de passage ne créent pas de comptage. Un journal ERP porte
+        # des lignes sur des emplacements qu'il ne couvre pas — elles
+        # matérialisent un déplacement, 1 932 sur 58 345 dans l'export analysé.
+        # Tant que son périmètre n'est pas déclaré, on ne sait pas lesquelles :
+        # tout entre, et la déclaration fera le tri. Une fois déclaré, on sait,
+        # et une ligne hors périmètre reste ce qu'elle est — une trace dans
+        # `erp_journal_line`, que le contrôle par étiquette relit, et rien de
+        # plus.
+        # Importé ici : les deux services se citent l'un l'autre — l'import
+        # rescelle, le comptage avancé lit ce que l'import a écrit.
+        from .early_count_service import EarlyCountService
+
+        counts = EarlyCountService(ctx).counting_filter(
+            campaign.id, disabled=disabled
+        )
+        counted_keys = {
+            LocationKey(warehouse_id=l.warehouse_id, location_id=l.location_id)
+            for l in imported
+            if counts(l)
         }
-        skipped = disabled | sealed
-        to_create = [
-            k for k in keys_in_file
-            if k not in journals and k not in skipped
-        ]
+        to_create = [k for k in counted_keys if k not in journals]
 
         for line_no, line in enumerate(imported, start=2):
             key = LocationKey(
@@ -785,15 +765,6 @@ class ImportService:
                         line_no, "location_id", str(key),
                         f"L'emplacement {key} est désactivé : la ligne est "
                         "ignorée. Réactivez-le pour l'inclure.",
-                    )
-                )
-            elif key in sealed:
-                outcome.warnings.append(
-                    RowError(
-                        line_no, "location_id", str(key),
-                        f"L'emplacement {key} est scellé : son comptage avancé "
-                        "fait foi et n'est pas remplacé. La ligne reste "
-                        "consultable dans le journal ERP.",
                     )
                 )
 
@@ -832,7 +803,7 @@ class ImportService:
                 key = LocationKey(
                     warehouse_id=line.warehouse_id, location_id=line.location_id
                 )
-                if key in skipped:
+                if not counts(line):
                     continue
                 journal = journals.get(key)
                 if journal is None:  # pragma: no cover - defensive
@@ -869,6 +840,9 @@ class ImportService:
                 )
                 for (_key, item_number), bucket in grouped.items()
             ]
+
+            findings, divergences = round_trip_findings(held, lines)
+            outcome.warnings.extend(findings)
 
             touched = sorted(posted_flags)
             ctx.journals.replace_imported_lines(
@@ -920,11 +894,14 @@ class ImportService:
                     "journalsCreated": len(to_create),
                     "journalsPosted": len(fully_posted),
                     "disabledLocationsSkipped": sorted(str(k) for k in disabled),
-                    "sealedLocationsKept": sorted(str(k) for k in sealed),
                     "erpJournals": len(erp_journals),
                 },
                 conn=conn,
             )
+
+        # Hors transaction, et après elle : rescellez d'abord ce que l'import
+        # vient de rafraîchir, sinon la référence resterait celle de la veille.
+        resealed = EarlyCountService(ctx).reseal_after_import(campaign)
 
         undeclared = [
             journal.journal_number
@@ -937,12 +914,16 @@ class ImportService:
             "journalsPosted": len(fully_posted),
             "journalsInProgress": len(partially) + len(in_progress),
             "disabledLocationsSkipped": sorted(str(k) for k in disabled),
-            "sealedLocationsKept": sorted(str(k) for k in sealed),
+            "resealed": resealed,
             "erpJournals": len(erp_journals),
             # Le périmètre se déclare, il ne se devine pas. Tant qu'il manque,
-            # aucun lot avancé ne peut être ouvert sur ce journal — d'où la
-            # liste, en tête du rapport plutôt qu'à découvrir plus tard.
+            # les emplacements du journal restent au comptage général et ses
+            # lignes ne produisent aucune référence — d'où la liste, en tête du
+            # rapport plutôt qu'à découvrir plus tard.
             "scopeUndeclared": undeclared,
+            # Le compte est entier même quand la liste est tronquée : c'est lui
+            # qui distingue l'accident du fichier entier qui a dérivé.
+            "roundTripMismatches": divergences,
         }
         return outcome
 
@@ -962,7 +943,11 @@ class ImportService:
 
         Le remplacement se fait **par journal**. Un journal absent de la
         photographie garde ses lignes, ce qui est exactement ce qu'il faut pour
-        que les lots avancés survivent aux imports du jour J.
+        que les précomptages survivent aux imports du jour J.
+
+        La **date de comptage** de l'en-tête vient d'ici : la plus récente des
+        dates portées par ses lignes. L'ERP la donne sur chacune ; l'application
+        la lisait et la jetait, puis la redemandait à l'utilisateur.
         """
         ctx = self.ctx
         by_number: dict[str, list[Any]] = {}
@@ -988,6 +973,11 @@ class ImportService:
                     (line.posted_at for line in lines if line.posted_at), None
                 ),
                 line_count=len(lines),
+                counted_on=max(
+                    (line.counting_date.date() for line in lines
+                     if line.counting_date is not None),
+                    default=None,
+                ),
                 conn=conn,
             )
             ctx.erp_journals.replace_lines(
@@ -998,7 +988,6 @@ class ImportService:
                         id=new_id(),
                         erp_journal_id=erp_journal_id,
                         campaign_id=campaign.id,
-                        erp_line_number=line.erp_line_number,
                         site_id=line.site_id,
                         warehouse_id=line.warehouse_id,
                         location_id=line.location_id,
@@ -1107,29 +1096,24 @@ class ImportService:
                     campaign.id, zone_id=zone.id, conn=conn
                 ):
                     existing = ctx.sheets.list_sheet_lines(sheet.id, conn=conn)
-                    known = {(l.item_number, l.section) for l in existing}
-                    order = max((l.display_order for l in existing), default=-1)
-                    new_lines: list[CountSheetLine] = []
-                    for row in rows:
-                        if row.key in known:
-                            continue
-                        known.add(row.key)
-                        order += 1
-                        new_lines.append(
-                            CountSheetLine(
-                                id=new_id(),
-                                sheet_id=sheet.id,
-                                campaign_id=campaign.id,
-                                item_number=row.item_number,
-                                section=row.section,
-                                # Both quantities left unset: a prepared line is
-                                # not a counted line, and a blank cell is not a
-                                # zero anywhere in this application.
-                                unit=row.unit,
-                                source=source,
-                                display_order=order,
-                            )
-                        )
+                    new_lines = sheet_lines_from_rows(
+                        rows,
+                        sheet_id=sheet.id,
+                        campaign_id=campaign.id,
+                        source=source,
+                        known={
+                            (l.item_number, l.section, l.subsection)
+                            for l in existing
+                        },
+                        headings={
+                            (l.section, l.label) for l in existing
+                            if l.line_kind is CountLineKind.SUBSECTION
+                        },
+                        first_order=max(
+                            (l.display_order for l in existing), default=-1
+                        ) + 1,
+                        id_factory=new_id,
+                    )
                     if new_lines:
                         lines_created += ctx.sheets.upsert_sheet_lines(
                             new_lines, actor=ctx.actor, conn=conn
@@ -1156,6 +1140,12 @@ class ImportService:
                 after=outcome.details,
                 conn=conn,
             )
+        # L'import pose des lignes sur les **deux** passages : la comparaison
+        # d'une zone déjà comptée change donc de contenu. Recalculée ici, elle
+        # ne décrit plus une feuille d'avant l'import.
+        refresh_after_sheet_writes(
+            ctx, campaign, [s.id for s in ctx.sheets.list_sheets(campaign.id)]
+        )
         return outcome
 
     # --------------------------------------------------------------- helpers

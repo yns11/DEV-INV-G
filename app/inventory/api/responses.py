@@ -50,16 +50,20 @@ from ..ingest.contracts import FieldType
 
 __all__ = [
     "ScopeLocation",
+    "CampaignSourceResponse",
+    "ErpJournalLineResponse",
     "ErpJournalResponse",
     "ScopeCandidate",
     "ScopeDeclared",
-    "EarlyBatchResponse",
     "DriftResponse",
-    "DriftsResolved",
     "LabelAlert",
+    "RecountedInPlace",
     "CampaignPage",
     "ClosureChecklistResponse",
     "DeletedResponse",
+    "BulkDeletedResponse",
+    "BulkArbitrationResponse",
+    "SectionLabelsResponse",
     "GridContractResponse",
     "HealthResponse",
     "MeResponse",
@@ -74,10 +78,22 @@ class Payload(BaseModel):
     ``extra="allow"`` parce que ces modèles **décrivent** une réponse au lieu de
     la contraindre : un service qui ajoute une clé sans la déclarer ici doit
     faire échouer un contrôle, pas perdre la clé en vol.
+
+    ``populate_by_name`` parce que l'entrée et la sortie n'ont pas la même
+    forme, et que c'est voulu. Le fil parle ``camelCase`` — c'est l'alias, et
+    FastAPI sérialise par lui. Mais ce qui *arrive* dans le modèle est souvent
+    le ``model_dump`` d'un modèle de domaine, qui parle ``snake_case`` : sans ce
+    drapeau, Pydantic exige l'alias, ne le trouve pas, et la route répond 500
+    dès qu'elle a une ligne à rendre — c'est arrivé sur les trois routes des
+    comptages avancés, en production, au premier journal importé.
+
+    Le drapeau n'élargit que l'entrée. La sortie reste en alias, donc l'écran
+    lit toujours les mêmes clés.
     """
 
     model_config = ConfigDict(
         extra="allow",
+        populate_by_name=True,
         # Un champ à valeur par défaut est toujours émis : le déclarer
         # facultatif obligerait l'interface à le tester pour rien.
         json_schema_serialization_defaults_required=True,
@@ -220,6 +236,43 @@ class DeletedResponse(Payload):
     deleted: bool
 
 
+class BulkDeletedResponse(Payload):
+    """Ce qu'une suppression en lot a retiré.
+
+    Les codes et non seulement le compte : c'est ce qui permet au message de
+    dire *quoi*, et à qui vient d'en supprimer douze de reconnaître la
+    treizième qui n'y est pas.
+    """
+
+    deleted: int
+    codes: list[str]
+
+
+class BulkArbitrationResponse(Payload):
+    """Ce qu'un arbitrage en lot a tranché, et ce qu'il a laissé ouvert.
+
+    Les deux comptes, parce qu'ils ne disent pas la même chose : une ligne
+    laissée de côté — aucune des deux équipes n'a rien trouvé à retenir — reste
+    à traiter, et un écran qui n'annoncerait que les tranchées ferait croire la
+    zone finie.
+    """
+
+    decided: int
+    skipped: int
+
+
+class SectionLabelsResponse(Payload):
+    """Les en-têtes de section retenus pour une zone, après nettoyage.
+
+    Ce que la route rend est ce qui est **enregistré**, pas ce qui a été
+    envoyé : un texte vide n'est pas stocké — il remet le défaut — et l'écran
+    doit voir cette différence tout de suite plutôt qu'au prochain
+    rechargement.
+    """
+
+    labels: dict[str, str]
+
+
 class Permissions(Payload):
     """La matrice de gel, telle que l'écran la lit pour désactiver un bouton."""
 
@@ -230,6 +283,7 @@ class Permissions(Payload):
     book_stock: bool = Field(alias="bookStock")
     zones: bool
     count_journals: bool = Field(alias="countJournals")
+    early_counts: bool = Field(alias="earlyCounts")
     count_sheets: bool = Field(alias="countSheets")
     count_entries: bool = Field(alias="countEntries")
     adjustments: bool
@@ -240,6 +294,10 @@ class Permissions(Payload):
     #: réglage « Accepter des formules dans les comptages ». Ouvert plus
     #: longtemps que ``thresholds``, et délibérément : voir ``Editable``.
     settings: bool
+    #: Les gestionnaires et leurs deux périmètres. Ouverts jusqu'à la clôture —
+    #: comptage et analyse compris — parce qu'un périmètre n'est pas une
+    #: habilitation et ne fige aucun chiffre : voir ``Editable``.
+    managers: bool
 
 
 class Access(Payload):
@@ -270,6 +328,9 @@ class GenericProgress(Payload):
 class CampaignCounts(Payload):
     items: int
     book_stock_lines: int = Field(alias="bookStockLines")
+    #: Emplacements précomptés et scellés. Non nul, l'analyse s'ouvre même sans
+    #: gel : leur référence est déjà posée et ne bougera plus.
+    sealed_locations: int = Field(default=0, alias="sealedLocations")
 
 
 class Sequence(Payload):
@@ -372,6 +433,49 @@ class ScopeLocation(Payload):
     location_id: str = Field(alias="locationId")
 
 
+class ErpJournalLineResponse(Payload):
+    """Une ligne de journal ERP, au grain où l'ERP la produit.
+
+    ``inScope`` est la seule chose que l'application ajoute, et c'est celle qui
+    décide de tout : hors périmètre, la ligne est conservée comme trace d'un
+    déplacement et **ne compte pas**.
+    """
+
+    id: str
+    erp_journal_id: str = Field(alias="erpJournalId")
+    site_id: str = Field(default="", alias="siteId")
+    warehouse_id: str = Field(alias="warehouseId")
+    location_id: str = Field(default="", alias="locationId")
+    #: Un identifiant se transporte : ni majuscules, ni zéros de tête retirés.
+    label_id: str = Field(default="", alias="labelId")
+    serial_number: str = Field(default="", alias="serialNumber")
+    item_number: str = Field(alias="itemNumber")
+    unit: str = "PCE"
+    inventory_status_id: str = Field(default="", alias="inventoryStatusId")
+    qty_on_hand: float = Field(alias="qtyOnHand")
+    qty_counted: float = Field(alias="qtyCounted")
+    variance_qty: float = Field(alias="varianceQty")
+    in_scope: bool = Field(alias="inScope")
+
+
+class CampaignSourceResponse(Payload):
+    """Une campagne dont on pourrait reprendre une grille, et ce qu'elle porte.
+
+    ``rows`` est l'information qui fait choisir : sans elle, l'écran offre une
+    liste de codes et de dates, on désigne au jugé, et on découvre après coup
+    que la campagne ne portait rien sur cette grille.
+    """
+
+    id: str
+    code: str
+    label: str = ""
+    status: str
+    count_date: str = Field(alias="countDate")
+    created_at: str | None = Field(default=None, alias="createdAt")
+    created_by: str = Field(default="", alias="createdBy")
+    rows: int
+
+
 class ErpJournalResponse(Payload):
     """Un journal tel que l'ERP le tient, avec son périmètre déclaré."""
 
@@ -391,6 +495,12 @@ class ErpJournalResponse(Payload):
     #: Faux tant que personne n'a désigné les emplacements du journal — et tant
     #: qu'il l'est, aucun lot ne peut s'ouvrir dessus.
     scope_declared: bool = Field(alias="scopeDeclared")
+    #: Déclarer le périmètre scelle : les deux gestes n'en font qu'un.
+    is_sealed: bool = Field(default=False, alias="isSealed")
+    sealed_at: str | None = Field(default=None, alias="sealedAt")
+    sealed_by: str = Field(default="", alias="sealedBy")
+    #: La date du relevé physique, lue dans les lignes du journal.
+    counted_on: str | None = Field(default=None, alias="countedOn")
     warehouses: list[str] = Field(default_factory=list)
 
 
@@ -409,58 +519,34 @@ class ScopeDeclared(Payload):
     locations: int
 
 
-class EarlyBatchResponse(Payload):
-    id: str
-    campaign_id: str = Field(alias="campaignId")
-    code: str
-    label: str = ""
-    counted_on: str | None = Field(default=None, alias="countedOn")
-    opened_at: str | None = Field(default=None, alias="openedAt")
-    opened_by: str = Field(default="", alias="openedBy")
-    closed_at: str | None = Field(default=None, alias="closedAt")
-    sealed_at: str | None = Field(default=None, alias="sealedAt")
-    sealed_by: str = Field(default="", alias="sealedBy")
-    is_closed: bool = Field(default=False, alias="isClosed")
-    is_sealed: bool = Field(default=False, alias="isSealed")
-    locations: list[ScopeLocation] = Field(default_factory=list)
-
-
 class DriftResponse(Payload):
-    """``ERP@J − physique@T0`` sur un emplacement scellé, attendue nulle."""
+    """``ERP@J − compté@T0`` sur un emplacement scellé, attendue nulle.
+
+    Un indice, pas un écart : le précomptage a été posté dans l'ERP avant la
+    photo du jour J, donc ce qui subsiste est ce qui a bougé entre les deux
+    dates. Aucune décision ne s'y attache, et rien n'est bloqué.
+    """
 
     id: str
     campaign_id: str = Field(alias="campaignId")
-    batch_id: str | None = Field(default=None, alias="batchId")
+    erp_journal_id: str | None = Field(default=None, alias="erpJournalId")
     warehouse_id: str = Field(alias="warehouseId")
     location_id: str = Field(alias="locationId")
     item_number: str = Field(alias="itemNumber")
-    #: La référence de l'emplacement — le stock ERP d'avant son précomptage.
-    qty_erp_t0: float = Field(alias="qtyErpT0")
-    qty_physical_t0: float = Field(alias="qtyPhysicalT0")
+    #: Ce que le précomptage a compté.
+    qty_counted_t0: float = Field(alias="qtyCountedT0")
+    #: La référence unique de la campagne : le stock ERP du jour J, gelé.
     qty_erp_j: float = Field(alias="qtyErpJ")
     drift_qty: float = Field(alias="driftQty")
     drift_value: float = Field(alias="driftValue")
-    is_material: bool = Field(alias="isMaterial")
-    resolution: str | None = None
-    cause_code: str = Field(default="", alias="causeCode")
-    comment: str = ""
-    resolved_at: str | None = Field(default=None, alias="resolvedAt")
-    resolved_by: str = Field(default="", alias="resolvedBy")
-    is_resolved: bool = Field(alias="isResolved")
-    #: Vrai tant qu'une dérive matérielle n'a pas d'issue : le passage en
-    #: analyse est alors refusé.
-    blocks_analysis: bool = Field(alias="blocksAnalysis")
-
-
-class DriftsResolved(Payload):
-    resolved: int
 
 
 class LabelAlert(Payload):
     """Une étiquette d'un emplacement scellé, comptée dans un autre journal.
 
-    Le seul contrôle qui descende au grain de l'étiquette, et celui qui rattrape
-    ce que la dérive ne voit pas.
+    Le seul regard qui descende au grain de l'étiquette, et celui qui montre ce
+    que la dérive ne voit pas. En affichage seul : la ligne n'exclut rien
+    d'aucune agrégation et n'appelle aucune décision.
     """
 
     label_id: str = Field(alias="labelId")
@@ -471,3 +557,19 @@ class LabelAlert(Payload):
     other_location_id: str = Field(alias="otherLocationId")
     other_journal_number: str = Field(alias="otherJournalNumber")
     other_qty_counted: float = Field(alias="otherQtyCounted")
+
+
+class RecountedInPlace(Payload):
+    """Un emplacement scellé qu'un second journal a recompté **sur place**.
+
+    Distinct de :class:`LabelAlert`, et la distinction porte : là, l'étiquette
+    est où elle doit être, il n'y a pas de nouvel emplacement, et il n'y a donc
+    rien à signaler d'un déplacement. Ce qui se joue est un second comptage du
+    même emplacement — seul le journal qui le possède est retenu.
+    """
+
+    sealed_warehouse_id: str = Field(alias="sealedWarehouseId")
+    sealed_location_id: str = Field(alias="sealedLocationId")
+    owner_journal_number: str = Field(alias="ownerJournalNumber")
+    other_journal_number: str = Field(alias="otherJournalNumber")
+    label_count: int = Field(alias="labelCount")

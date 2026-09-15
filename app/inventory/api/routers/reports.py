@@ -9,8 +9,9 @@ from fastapi.responses import Response
 
 from ...domain.printing import PrintMode
 from ...services import ReportService
+from ...services.portfolio_service import portfolio_filter
 from ...services.report_service import MAX_BLANK_LINES
-from ..deps import CampaignDep, report_service
+from ..deps import CampaignDep, Ctx, report_service
 from ..downloads import attachment
 from ..schemas import TableExportRequest
 
@@ -19,6 +20,22 @@ router = APIRouter(prefix="/campaigns/{campaign_id}/reports", tags=["rapports"])
 Service = Annotated[ReportService, Depends(report_service)]
 
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_PDF = "application/pdf"
+
+
+def _file(media_type: str, description: str) -> dict:
+    """Dire dans le contrat qu'une route rend un fichier, et lequel.
+
+    Sans cela le contrat annonce du JSON — ce que ces routes ne rendent
+    jamais — et le client généré propose de désérialiser un classeur.
+    """
+    return {
+        200: {
+            "description": description,
+            "content": {media_type: {"schema": {"type": "string",
+                                                "format": "binary"}}},
+        }
+    }
 
 
 #: Shared print options. Printing is available from the first phase — paper is
@@ -28,7 +45,11 @@ _WithSources = Annotated[bool, Query(alias="withSources")]
 _BlankLines = Annotated[int, Query(ge=0, le=MAX_BLANK_LINES, alias="blankLines")]
 
 
-@router.get("/counting-sheets/{sheet_id}.pdf", summary="Imprimer une feuille")
+@router.get(
+    "/counting-sheets/{sheet_id}.pdf",
+    summary="Imprimer une feuille",
+    responses=_file(_PDF, "Une feuille de comptage imprimable"),
+)
 def counting_sheet(
     campaign: CampaignDep,
     sheet_id: str,
@@ -52,7 +73,11 @@ def counting_sheet(
     return attachment(payload, filename, "application/pdf")
 
 
-@router.get("/counting-sheets.pdf", summary="Imprimer toutes les feuilles d'un passage")
+@router.get(
+    "/counting-sheets.pdf",
+    summary="Imprimer toutes les feuilles d'un passage",
+    responses=_file(_PDF, "Toutes les feuilles d’un passage, en un document"),
+)
 def all_counting_sheets(
     campaign: CampaignDep,
     service: Service,
@@ -81,7 +106,11 @@ def all_counting_sheets(
     return attachment(payload, filename, "application/pdf")
 
 
-@router.get("/journals/{journal_id}.xlsx", summary="Exporter un journal pour l'ERP")
+@router.get(
+    "/journals/{journal_id}.xlsx",
+    summary="Exporter un journal pour l'ERP",
+    responses=_file(_XLSX, "Un journal au format d’import ERP"),
+)
 def journal_export(
     campaign: CampaignDep, journal_id: str, service: Service
 ) -> Response:
@@ -94,7 +123,11 @@ def journal_export(
     return attachment(payload, filename, _XLSX)
 
 
-@router.post("/table.xlsx", summary="Exporter un tableau affiché")
+@router.post(
+    "/table.xlsx",
+    summary="Exporter un tableau affiché",
+    responses=_file(_XLSX, "Le tableau affiché, en classeur"),
+)
 def table_export(
     campaign: CampaignDep, payload: TableExportRequest, service: Service
 ) -> Response:
@@ -119,14 +152,24 @@ _Granularity = Annotated[
     Literal["item", "item_location"], Query(alias="granularity")
 ]
 _MaterialOnly = Annotated[bool, Query(alias="materialOnly")]
+#: « Uniquement mes références ». Résolu côté serveur, à partir de l'identité que
+#: la plateforme transmet : le fichier suit la bascule de l'écran, et personne ne
+#: peut demander le portefeuille d'un autre en changeant un paramètre d'URL.
+_Mine = Annotated[bool, Query()]
 
 
-@router.get("/variances.xlsx", summary="Exporter les écarts en Excel")
+@router.get(
+    "/variances.xlsx",
+    summary="Exporter les écarts en Excel",
+    responses=_file(_XLSX, "Les écarts, une colonne par chiffre"),
+)
 def variance_export(
     campaign: CampaignDep,
     service: Service,
+    ctx: Ctx,
     granularity: _Granularity = "item",
     material_only: _MaterialOnly = False,
+    mine: _Mine = False,
 ) -> Response:
     """The variance view, with each figure in its own column.
 
@@ -136,30 +179,45 @@ def variance_export(
     cells hold two figures cannot be summed or pivoted.
     """
     payload, filename = service.variance_export(
-        campaign, granularity=granularity, material_only=material_only
+        campaign, granularity=granularity, material_only=material_only,
+        only_items=portfolio_filter(ctx, campaign, mine=mine),
     )
     return attachment(payload, filename, _XLSX)
 
 
-@router.get("/variances.pdf", summary="Imprimer les écarts")
+@router.get(
+    "/variances.pdf",
+    summary="Imprimer les écarts",
+    responses=_file(_PDF, "Les écarts, en document à remettre"),
+)
 def variance_pdf(
     campaign: CampaignDep,
     service: Service,
+    ctx: Ctx,
     granularity: _Granularity = "item",
     material_only: _MaterialOnly = False,
+    mine: _Mine = False,
 ) -> Response:
     """The same table as a document, biggest variances first.
 
-    Capped: past a few hundred rows a PDF stops being read. The page says how
-    many lines it left out, and the Excel export carries them all.
+    Deux réductions, annoncées l'une et l'autre sur la page. Les lignes **sans
+    écart de quantité** ne sont pas imprimées : elles n'appellent aucune
+    décision, et sur papier elles repoussent ce qui en demande une. Et le
+    document est **plafonné** : passé quelques centaines de rangées, un PDF
+    cesse d'être lu. L'export Excel, lui, porte tout.
     """
     payload, filename = service.variance_pdf(
-        campaign, granularity=granularity, material_only=material_only
+        campaign, granularity=granularity, material_only=material_only,
+        only_items=portfolio_filter(ctx, campaign, mine=mine),
     )
     return attachment(payload, filename, "application/pdf")
 
 
-@router.get("/campaign.xlsx", summary="Exporter le dossier complet de la campagne")
+@router.get(
+    "/campaign.xlsx",
+    summary="Exporter le dossier complet de la campagne",
+    responses=_file(_XLSX, "Le dossier complet de la campagne"),
+)
 def campaign_workbook(campaign: CampaignDep, service: Service) -> Response:
     """The full dossier: KPIs, variances, snapshot, journals, WIP, causes, audit.
 
@@ -170,7 +228,28 @@ def campaign_workbook(campaign: CampaignDep, service: Service) -> Response:
     return attachment(payload, filename, _XLSX)
 
 
-@router.get("/grids/{contract_key}.xlsx", summary="Exporter une grille ou son modèle")
+@router.get(
+    "/consolidation-fallback.xlsx",
+    summary="Exporter le classeur de repli de la consolidation GENERIQUE",
+    responses=_file(_XLSX, "Le classeur de repli de la consolidation GENERIQUE"),
+)
+def consolidation_fallback(campaign: CampaignDep, service: Service) -> Response:
+    """Le second classeur : la consolidation GENERIQUE **refaite par formules**.
+
+    Le dossier de campagne est une photo ; celui-ci porte les données —
+    référentiel, nomenclatures, une feuille par zone — et recalcule le journal
+    consolidé à chaque correction. C'est le repli du jour où l'application n'est
+    pas joignable et où le journal doit partir quand même.
+    """
+    payload, filename = service.consolidation_fallback(campaign)
+    return attachment(payload, filename, _XLSX)
+
+
+@router.get(
+    "/grids/{contract_key}.xlsx",
+    summary="Exporter une grille ou son modèle",
+    responses=_file(_XLSX, "Une grille, ou son modèle quand elle est vide"),
+)
 def grid_export(
     campaign: CampaignDep, contract_key: str, service: Service
 ) -> Response:

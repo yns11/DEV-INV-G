@@ -13,6 +13,7 @@ from ..domain.models import Campaign
 from ..errors import UnauthenticatedError
 from ..services import (
     AnalysisService,
+    ArbitrationService,
     CampaignService,
     ConsolidationService,
     CountingService,
@@ -27,6 +28,7 @@ from ..services import (
     ReportService,
     ScanJobService,
     ServiceContext,
+    ZoneService,
 )
 
 log = logging.getLogger(__name__)
@@ -41,7 +43,9 @@ __all__ = [
     "campaign_service",
     "counting_service",
     "evidence_service",
+    "arbitration_service",
     "generic_service",
+    "zone_service",
     "analysis_service",
     "import_service",
     "manager_service",
@@ -143,8 +147,16 @@ def drift_service(ctx: Ctx) -> DriftService:
     return DriftService(ctx)
 
 
+def arbitration_service(ctx: Ctx) -> ArbitrationService:
+    return ArbitrationService(ctx)
+
+
 def generic_service(ctx: Ctx) -> GenericService:
     return GenericService(ctx)
+
+
+def zone_service(ctx: Ctx) -> ZoneService:
+    return ZoneService(ctx)
 
 
 def consolidation_service(ctx: Ctx) -> ConsolidationService:

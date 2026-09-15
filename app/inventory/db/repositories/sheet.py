@@ -1,25 +1,28 @@
-"""Les zones GENERIQUE, leurs feuilles de comptage et les arbitrages entre deux passages.
+"""Les zones GENERIQUE et leurs feuilles de comptage.
 
 Voir :mod:`inventory.db.repositories` pour les trois règles que
 tous les dépôts appliquent.
+
+L'arbitrage a quitté ce module pour :mod:`~inventory.db.repositories.arbitration`
+— il porte sur la zone et non sur une feuille, la couche au-dessus le disait déjà
+par son propre service, et ce module était plein.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Mapping, Sequence
-from decimal import Decimal
+from collections.abc import Sequence
 from typing import Any
 
 import psycopg
 
 from ...domain.enums import (
+    CountLineKind,
     CountSection,
     DataSource,
     SheetPass,
 )
 from ...domain.models import (
-    ArbitrationLine,
     CountSheet,
     CountSheetLine,
     Zone,
@@ -36,7 +39,8 @@ class SheetRepository(_Base):
 
     _ZONE_COLUMNS = (
         "id, campaign_id, code, label, sector, display_order, passes, free_entry, "
-        "manager_code, allow_negative, closed_at, closed_by"
+        "manager_code, allow_negative, closed_at, closed_by, section_labels, "
+        "blank_rows"
     )
 
     def list_zones(
@@ -54,16 +58,67 @@ class SheetRepository(_Base):
     def create_zone(
         self, zone: Zone, *, actor: str, conn: psycopg.Connection | None = None
     ) -> Zone:
+        from psycopg.types.json import Jsonb
+
         self._execute(
             "INSERT INTO zone (id, campaign_id, code, label, sector, display_order, "
-            "passes, free_entry, manager_code, allow_negative, updated_by, updated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())",
+            "passes, free_entry, manager_code, allow_negative, blank_rows, "
+            "updated_by, updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())",
             (zone.id, zone.campaign_id, zone.code, zone.label, zone.sector,
              zone.display_order, zone.passes, zone.free_entry, zone.manager_code,
-             zone.allow_negative, actor),
+             zone.allow_negative, Jsonb(zone.blank_rows), actor),
             conn=conn,
         )
         return zone
+
+    def set_blank_rows(
+        self,
+        campaign_id: str,
+        zone_id: str,
+        rows: dict[str, int],
+        *,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Combien de lignes vierges chaque section de cette zone imprime.
+
+        Écrit en entier plutôt que fusionné : le formulaire montre les trois
+        sections à la fois, et une fusion ferait qu'une section ramenée à zéro
+        garderait son ancien nombre — c'est-à-dire que le geste le plus utile du
+        réglage, retirer une section de la page, serait le seul sans effet.
+        """
+        from psycopg.types.json import Jsonb
+
+        self._execute(
+            "UPDATE zone SET blank_rows = %s, updated_by = %s, updated_at = now() "
+            "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
+            (Jsonb(rows), actor, campaign_id, zone_id),
+            conn=conn,
+        )
+
+    def set_section_labels(
+        self,
+        campaign_id: str,
+        zone_id: str,
+        labels: dict[str, str],
+        *,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Les en-têtes de section personnalisés de cette zone.
+
+        Une section absente du dictionnaire garde le texte par défaut : c'est ce
+        qui permet d'en personnaliser une sans avoir à recopier les deux autres.
+        """
+        from psycopg.types.json import Jsonb
+
+        self._execute(
+            "UPDATE zone SET section_labels = %s, updated_by = %s, updated_at = now() "
+            "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
+            (Jsonb(labels), actor, campaign_id, zone_id),
+            conn=conn,
+        )
 
     def set_zone_closed(
         self,
@@ -143,6 +198,82 @@ class SheetRepository(_Base):
             "AND id = ANY(%s::uuid[]) AND deleted_at IS NULL",
             params,
             conn=conn,
+        )
+
+    def rename_zone(
+        self,
+        campaign_id: str,
+        zone_id: str,
+        *,
+        code: str,
+        label: str,
+        sector: str,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> int:
+        """Renommer une zone — son code, son libellé, son secteur.
+
+        Séparé de :meth:`update_zones`, qui pose **un** attribut sur un lot :
+        un renommage porte sur une zone et sur trois champs à la fois, et le
+        faire entrer dans le poseur en lot aurait rendu celui-ci capable de
+        donner le même code à quarante zones d'un coup.
+        """
+        return self._execute(
+            "UPDATE zone SET code = %s, label = %s, sector = %s, "
+            "updated_by = %s, updated_at = now() "
+            "WHERE campaign_id = %s AND id = %s AND deleted_at IS NULL",
+            (code, label, sector, actor, campaign_id, zone_id),
+            conn=conn,
+        )
+
+    def list_evidence(self, campaign_id: str) -> list[dict[str, Any]]:
+        """Les scans archivés de la campagne, **un par document déposé**.
+
+        Lu sur ``count_sheet`` et non sur la table des pièces, et c'est la seule
+        lecture qui vaille pour les deux archives : le volume Unity Catalog ne
+        tient aucune table, et une liste bâtie sur celle de la base rendrait
+        « aucun scan » sur une installation qui archive au volume — c'est-à-dire
+        mentirait exactement là où l'on vient contrôler. L'empreinte, le poids
+        et le type, eux, sont posés sur la feuille dans les deux cas.
+
+        **Une pile est un document.** Déposée d'un coup, elle justifie toutes
+        les feuilles qu'on y a lues, et chacune pointe sur elle ; les lister une
+        par une rendrait dix fois le même PDF sous dix noms, et laisserait
+        croire à dix originaux.
+
+        L'identifiant de feuille rendu sert à construire l'adresse de
+        téléchargement, qui passe par la feuille et donc par la barrière de
+        campagne déjà en place. N'importe laquelle des feuilles couvertes fait
+        l'affaire — c'est le même fichier — et c'est la première dans l'ordre du
+        document qui est retenue, pour que deux appels rendent la même adresse.
+        """
+        return self._fetch_all(
+            "SELECT s.evidence_path, "
+            "       MIN(s.evidence_sha256) AS sha256, "
+            "       MIN(s.evidence_bytes)  AS size_bytes, "
+            "       MIN(s.evidence_mime)   AS mime, "
+            "       MIN(s.id::text)        AS sheet_id, "
+            "       COUNT(*)               AS sheet_count, "
+            "       ARRAY_AGG(COALESCE(z.code, '') || ' — n°' || "
+            "                 CASE s.pass_no WHEN 'PASS_1' THEN '1' ELSE '2' END "
+            "                 ORDER BY z.display_order, z.code, s.pass_no) AS sheets "
+            "FROM count_sheet s "
+            # La zone peut avoir été retirée depuis : la pièce reste, et la
+            # colonne des feuilles qu'elle justifie le dit plutôt que de nommer
+            # une zone disparue.
+            "LEFT JOIN zone z ON z.id = s.zone_id AND z.deleted_at IS NULL "
+            "WHERE s.campaign_id = %s "
+            "  AND s.evidence_path IS NOT NULL AND s.evidence_path <> '' "
+            "GROUP BY s.evidence_path "
+            # Le chemin commence par l'instant du dépôt (voir
+            # `EvidenceStore.path_for`), et toutes les pièces d'une campagne
+            # partagent le préfixe qui le précède : trier le chemin à l'envers
+            # revient donc à trier par date décroissante — ce qu'on cherche dans
+            # une archive est presque toujours le dernier dépôt. Sans cela il
+            # faudrait relire la date en Python pour trier, c'est-à-dire trier
+            # une page après l'avoir choisie.
+            "ORDER BY s.evidence_path DESC",
+            (campaign_id,),
         )
 
     def list_sheets(
@@ -300,8 +431,9 @@ class SheetRepository(_Base):
     # -- sheet lines ---------------------------------------------------------
 
     _SHEET_LINE_COLUMNS = (
-        "id, sheet_id, campaign_id, item_number, section, qty_imported, qty_manual, "
-        "unit, source, confidence, qty_formula, comment, display_order, row_version"
+        "id, sheet_id, campaign_id, item_number, section, line_kind, label, "
+        "subsection, name, qty_imported, qty_manual, unit, source, confidence, "
+        "qty_formula, comment, display_order, row_version"
     )
 
     def list_sheet_lines(
@@ -365,17 +497,49 @@ class SheetRepository(_Base):
         )
         return (row or {}).get("at")
 
-    def lines_by_sheet(self, campaign_id: str) -> dict[str, list[CountSheetLine]]:
+    def lines_by_sheet(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> dict[str, list[CountSheetLine]]:
         rows = self._fetch_all(
             f"SELECT {self._SHEET_LINE_COLUMNS} FROM count_sheet_line "
             "WHERE campaign_id = %s AND deleted_at IS NULL "
             "ORDER BY sheet_id, display_order",
             (campaign_id,),
+            conn=conn,
         )
         out: dict[str, list[CountSheetLine]] = {}
         for r in rows:
             out.setdefault(str(r["sheet_id"]), []).append(self._sheet_line(r))
         return out
+
+    def sheet_designations(
+        self, campaign_id: str, *, conn: psycopg.Connection | None = None
+    ) -> dict[tuple[str, str, str], str]:
+        """Les désignations que les feuilles imposent, par (zone, article, section).
+
+        Une requête, et seulement les lignes qui portent réellement un
+        écrasement : sur une campagne où personne n'en a posé, elle ne ramène
+        rien. C'est ce qui permet à l'arbitrage — qui lit des lignes
+        d'arbitrage, pas des lignes de feuille — de nommer les articles comme la
+        feuille les nomme sans relire toutes les feuilles de la campagne.
+
+        Le passage 1 tranche quand les deux diffèrent : c'est lui qui porte le
+        document, et le passage 2 en est la copie.
+        """
+        rows = self._fetch_all(
+            "SELECT DISTINCT ON (s.zone_id, l.item_number, l.section) "
+            "s.zone_id, l.item_number, l.section, l.name "
+            "FROM count_sheet_line l "
+            "JOIN count_sheet s ON s.id = l.sheet_id "
+            "WHERE l.campaign_id = %s AND l.deleted_at IS NULL AND l.name <> '' "
+            "ORDER BY s.zone_id, l.item_number, l.section, s.pass_no",
+            (campaign_id,),
+            conn=conn,
+        )
+        return {
+            (str(r["zone_id"]), r["item_number"], r["section"]): r["name"]
+            for r in rows
+        }
 
     def upsert_sheet_lines(
         self, lines: Sequence[CountSheetLine], *, actor: str,
@@ -383,11 +547,15 @@ class SheetRepository(_Base):
     ) -> int:
         return self._execute_many(
             "INSERT INTO count_sheet_line (id, sheet_id, campaign_id, item_number, "
-            "section, qty_imported, qty_manual, unit, source, confidence, "
+            "section, line_kind, label, subsection, name, qty_imported, qty_manual, "
+            "unit, source, confidence, "
             "qty_formula, comment, display_order, updated_by, updated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
             "ON CONFLICT (id) DO UPDATE SET item_number = EXCLUDED.item_number, "
-            "section = EXCLUDED.section, qty_imported = EXCLUDED.qty_imported, "
+            "section = EXCLUDED.section, line_kind = EXCLUDED.line_kind, "
+            "label = EXCLUDED.label, subsection = EXCLUDED.subsection, "
+            "name = EXCLUDED.name, "
+            "qty_imported = EXCLUDED.qty_imported, "
             "qty_manual = EXCLUDED.qty_manual, unit = EXCLUDED.unit, "
             "source = EXCLUDED.source, confidence = EXCLUDED.confidence, "
             "qty_formula = EXCLUDED.qty_formula, "
@@ -396,6 +564,7 @@ class SheetRepository(_Base):
             "row_version = count_sheet_line.row_version + 1, deleted_at = NULL",
             [
                 (l.id, l.sheet_id, l.campaign_id, l.item_number, str(l.section),
+                 str(l.line_kind), l.label, l.subsection, l.name,
                  l.qty_imported, l.qty_manual, l.unit, str(l.source), l.confidence,
                  l.qty_formula, l.comment, l.display_order, actor)
                 for l in lines
@@ -460,6 +629,7 @@ class SheetRepository(_Base):
     def replace_sheet_lines(
         self, sheet_id: str, lines: Sequence[CountSheetLine], *, actor: str,
         conn: psycopg.Connection | None = None,
+        keep_layout: bool = False,
     ) -> int:
         """Make the sheet's content exactly *lines* — grid save, AI extraction.
 
@@ -472,6 +642,12 @@ class SheetRepository(_Base):
         lines that are *no longer* there, and upsert the ones that are. Ids stay
         stable across saves, which is what the grid and optimistic concurrency
         both rely on, and a line that leaves the sheet keeps its audit trail.
+
+        ``keep_layout`` dit que l'appelant ne décrit **que** des articles.
+        L'extraction IA est dans ce cas : elle lit des quantités sur une photo,
+        elle ne connaît pas la mise en page de la feuille. Sans ce drapeau, un
+        scan effaçait tous les intertitres et toutes les lignes vides — la
+        feuille réimprimée ne ressemblait plus au papier qu'on venait de scanner.
         """
         # `sheet_id` is authoritative: the AI extractor builds lines without
         # knowing which sheet they will land on.
@@ -487,120 +663,13 @@ class SheetRepository(_Base):
                 "UPDATE count_sheet_line SET deleted_at = now(), updated_by = %s "
                 "WHERE sheet_id = %s AND deleted_at IS NULL "
                 # ::uuid[] — the ids arrive as text and the column is uuid.
-                "AND NOT (id = ANY(%s::uuid[]))",
+                "AND NOT (id = ANY(%s::uuid[]))"
+                + (" AND line_kind = 'ARTICLE'" if keep_layout else ""),
                 (actor, sheet_id, kept),
             )
             if owned:
                 self.upsert_sheet_lines(owned, actor=actor, conn=connection)
         return len(owned)
-
-    # -- arbitration ---------------------------------------------------------
-
-    def list_arbitrations(
-        self, campaign_id: str, *, zone_id: str | None = None
-    ) -> list[ArbitrationLine]:
-        clauses = ["campaign_id = %s"]
-        params: list[Any] = [campaign_id]
-        if zone_id:
-            clauses.append("zone_id = %s")
-            params.append(zone_id)
-        rows = self._fetch_all(
-            "SELECT id, campaign_id, zone_id, item_number, section, qty_pass_1, "
-            "qty_pass_2, qty_arbitrated, decided_by, decided_at, comment "
-            f"FROM arbitration WHERE {' AND '.join(clauses)} ORDER BY item_number",
-            params,
-        )
-        return [
-            ArbitrationLine(
-                id=str(r["id"]), campaign_id=str(r["campaign_id"]),
-                zone_id=str(r["zone_id"]), item_number=r["item_number"],
-                section=CountSection(r["section"]), qty_pass_1=r["qty_pass_1"],
-                qty_pass_2=r["qty_pass_2"], qty_arbitrated=r["qty_arbitrated"],
-                decided_by=r["decided_by"], decided_at=r["decided_at"],
-                comment=r["comment"],
-            )
-            for r in rows
-        ]
-
-    def upsert_arbitrations(
-        self, lines: Sequence[ArbitrationLine], *,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        return self._execute_many(
-            "INSERT INTO arbitration (id, campaign_id, zone_id, item_number, section, "
-            "qty_pass_1, qty_pass_2, qty_arbitrated, decided_by, decided_at, comment, "
-            "updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now()) "
-            "ON CONFLICT (zone_id, item_number, section) DO UPDATE SET "
-            "qty_pass_1 = EXCLUDED.qty_pass_1, qty_pass_2 = EXCLUDED.qty_pass_2, "
-            "qty_arbitrated = COALESCE(EXCLUDED.qty_arbitrated, "
-            "arbitration.qty_arbitrated), "
-            "decided_by = COALESCE(EXCLUDED.decided_by, arbitration.decided_by), "
-            "decided_at = COALESCE(EXCLUDED.decided_at, arbitration.decided_at), "
-            "comment = EXCLUDED.comment, updated_at = now()",
-            [
-                (l.id, l.campaign_id, l.zone_id, l.item_number, str(l.section),
-                 l.qty_pass_1, l.qty_pass_2, l.qty_arbitrated, l.decided_by,
-                 l.decided_at, l.comment)
-                for l in lines
-            ],
-            conn=conn,
-        )
-
-    def delete_arbitrations(
-        self, campaign_id: str, zone_ids: Sequence[str],
-        *, conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Drop a zone's pass-1/pass-2 comparison.
-
-        Called when a zone drops to a single count: the comparison no longer has
-        two sides, and leaving the rows behind would keep the zone showing
-        "arbitrages en attente" for a decision that cannot be made.
-        """
-        if not zone_ids:
-            return 0
-        return self._execute(
-            "DELETE FROM arbitration WHERE campaign_id = %s "
-            "AND zone_id = ANY(%s::uuid[])",
-            (campaign_id, list(zone_ids)),
-            conn=conn,
-        )
-
-    def propose_arbitrations(
-        self,
-        campaign_id: str,
-        proposals: Mapping[str, Decimal],
-        *,
-        comment: str = "",
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Pre-fill quantities without deciding anything.
-
-        ``decided_at`` is deliberately left NULL — and cleared if a previous
-        proposal set it, which it never does. The value lands in the field the
-        user is about to look at; confirming it is still a separate gesture, and
-        the consolidation ignores it until then.
-        """
-        if not proposals:
-            return 0
-        return self._execute_many(
-            "UPDATE arbitration SET qty_arbitrated = %s, comment = %s, "
-            "decided_by = NULL, decided_at = NULL, updated_at = now() "
-            "WHERE id = %s AND campaign_id = %s",
-            [(qty, comment, arbitration_id, campaign_id)
-             for arbitration_id, qty in proposals.items()],
-            conn=conn,
-        )
-
-    def decide_arbitration(
-        self, arbitration_id: str, qty: Decimal, *, actor: str, comment: str = ""
-    ) -> None:
-        n = self._execute(
-            "UPDATE arbitration SET qty_arbitrated = %s, decided_by = %s, "
-            "decided_at = now(), comment = %s, updated_at = now() WHERE id = %s",
-            (qty, actor, comment, arbitration_id),
-        )
-        if n == 0:
-            raise NotFoundError("Arbitrage introuvable.", arbitrationId=arbitration_id)
 
     @staticmethod
     def _zone(row: dict[str, Any]) -> Zone:
@@ -611,6 +680,8 @@ class SheetRepository(_Base):
             free_entry=row["free_entry"], manager_code=row["manager_code"],
             allow_negative=row["allow_negative"],
             closed_at=row["closed_at"], closed_by=row["closed_by"] or "",
+            section_labels=row.get("section_labels") or {},
+            blank_rows=row.get("blank_rows") or {},
         )
 
     @staticmethod
@@ -633,7 +704,12 @@ class SheetRepository(_Base):
         return CountSheetLine(
             id=str(row["id"]), sheet_id=str(row["sheet_id"]),
             campaign_id=str(row["campaign_id"]), item_number=row["item_number"],
-            section=CountSection(row["section"]), qty_imported=row["qty_imported"],
+            section=CountSection(row["section"]),
+            line_kind=CountLineKind(row.get("line_kind") or "ARTICLE"),
+            label=row.get("label") or "",
+            subsection=row.get("subsection") or "",
+            name=row.get("name") or "",
+            qty_imported=row["qty_imported"],
             qty_manual=row["qty_manual"], unit=row["unit"],
             source=DataSource(row["source"]), confidence=row["confidence"],
             qty_formula=row.get("qty_formula") or "",

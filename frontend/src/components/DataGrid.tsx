@@ -52,6 +52,19 @@ export interface Column<T extends Row = Record<string, unknown>> {
   width?: number
   sortable?: boolean
   editable?: boolean
+  /**
+   * La colonne a-t-elle un sens **sur cette ligne** ?
+   *
+   * Une cellule sans objet ne montre rien : ni valeur, ni champ de saisie, ni
+   * tiret. Sur une feuille de comptage, un intertitre et une ligne vide ne
+   * portent ni référence, ni quantité, ni unité, ni provenance — les afficher
+   * mettait « Bord de ligne · 0 · PCE · Saisie manuelle » en face d'un titre,
+   * et offrir un champ de saisie invitait à en faire un article.
+   *
+   * Rendue vide plutôt qu'absente : la ligne garde ses colonnes, donc son
+   * alignement avec les lignes d'articles au-dessus et au-dessous.
+   */
+  appliesTo?: (row: T) => boolean
   /** Values offered when the cell is edited. */
   choices?: string[]
   render?: (row: T, index: number) => ReactNode
@@ -88,6 +101,31 @@ export interface Column<T extends Row = Record<string, unknown>> {
    * numérique, une recherche de texte.
    */
   filter?: 'choice' | 'range' | 'text' | false
+  /**
+   * Une donnée qui se filtre sans occuper de colonne.
+   *
+   * Le cas qui l'a demandée : la vue Écarts montre la référence **et** sa
+   * désignation dans une seule cellule, l'une au-dessus de l'autre, et c'est
+   * délibéré — deux colonnes prendraient la moitié de la largeur pour la même
+   * information. Mais la désignation n'avait alors ni filtre propre, ni prise
+   * sur la recherche libre, qui lit les colonnes : la barre annonçait
+   * « article, désignation, programme » et ne trouvait pas les désignations.
+   *
+   * Une colonne déclarée ainsi n'a ni en-tête, ni cellule, ni case dans le
+   * sélecteur de colonnes, ni place dans le fichier exporté — elle n'existe que
+   * dans la barre de filtres et dans la recherche.
+   */
+  filterOnly?: boolean
+  /**
+   * Une valeur à la fois dans la liste de choix.
+   *
+   * Par défaut une liste coche ce qu'on veut et retient les lignes qui portent
+   * l'une des valeurs cochées. Certaines questions ne se posent pas ainsi :
+   * « le produit fabriqué MOTEUR M3 » sert à isoler un ensemble pour le
+   * comparer à lui-même, et cocher trois produits rendrait un mélange dont on
+   * ne tire rien. Cocher une valeur remplace alors la précédente.
+   */
+  choiceSingle?: boolean
   /**
    * Comment nommer une valeur dans la liste de filtres.
    *
@@ -407,7 +445,10 @@ export function DataGrid<T extends Row>({
   const { hidden, toggle: toggleColumn, reset: showAllColumns } =
     useHiddenColumns(exportTitle ?? null)
   const visible = useMemo(
-    () => columns.filter((column) => !hidden.has(column.key)),
+    // `filterOnly` sort ici, et une seule fois : `visible` sert l'en-tête, les
+    // cellules, le sélecteur de colonnes et l'export. Filtrer à ces quatre
+    // endroits aurait fait quatre occasions d'en oublier un.
+    () => columns.filter((column) => !column.filterOnly && !hidden.has(column.key)),
     [columns, hidden],
   )
 
@@ -491,13 +532,17 @@ export function DataGrid<T extends Row>({
 
   const filterable = useMemo(
     () =>
-      visible
+      columns
         .filter((column) => column.filter !== false && column.label)
+        // Une colonne masquée par l'utilisateur perd son filtre : le résumé
+        // serait posé sur une colonne qu'il ne voit plus. Une colonne de filtre
+        // seul, elle, n'a jamais été visible et garde le sien.
+        .filter((column) => column.filterOnly || !hidden.has(column.key))
         .map((column) => ({
           column,
           kind: filterKind(column, distinct[column.key]?.length ?? 0, rows.length),
         })),
-    [visible, distinct, rows.length],
+    [columns, hidden, distinct, rows.length],
   )
 
   const setFilter = (key: string, filter: ColumnFilter | null) => {
@@ -1061,6 +1106,13 @@ export function DataGrid<T extends Row>({
                     )}
                     {visible.map((column) => {
                       const sticky = column.sticky === 'right' ? ' sticky-right' : ''
+                      // Une colonne sans objet sur cette ligne ne montre rien.
+                      // Avant `render`, parce que c'est vrai des deux modes :
+                      // une valeur affichée en lecture et un champ de saisie en
+                      // modification sont deux façons de la même erreur.
+                      if (column.appliesTo?.(row) === false) {
+                        return <td key={column.key} className={sticky || undefined} />
+                      }
                       if (column.render) {
                         return (
                           <td
@@ -1238,7 +1290,9 @@ function ColumnPicker<T extends Row>({
             onClick={() => setOpen(false)}
           />
           <div className="colpicker__menu" role="group" aria-label="Colonnes affichées">
-            {columns.map((column) => {
+            {/* Une colonne de filtre seul n'a jamais de cellule : proposer de
+                l'afficher promettrait quelque chose qui n'arriverait pas. */}
+            {columns.filter((column) => !column.filterOnly).map((column) => {
               const shown = !hidden.has(column.key)
               return (
                 <label key={column.key} className="colpicker__row">
@@ -1360,10 +1414,15 @@ function ColumnFilterField<T extends Row>({
               choices={choices}
               needle={needle}
               onNeedle={setNeedle}
+              single={column.choiceSingle}
               picked={value?.kind === 'choice' ? value.values : []}
-              onChange={(values) =>
+              onChange={(values) => {
                 onChange(values.length ? { kind: 'choice', values } : null)
-              }
+                // Un choix unique ferme le panneau : le geste est fini, et le
+                // laisser ouvert invite à cocher une seconde valeur qui
+                // décocherait la première sans qu'on comprenne pourquoi.
+                if (column.choiceSingle) setOpen(false)
+              }}
             />
           )}
           {kind === 'range' && (
@@ -1418,24 +1477,35 @@ function ChoicePanel({
   needle,
   onNeedle,
   picked,
+  single = false,
   onChange,
 }: {
   choices: Choice[]
   needle: string
   onNeedle: (value: string) => void
   picked: string[]
+  /** Une valeur à la fois — voir `Column.choiceSingle`. */
+  single?: boolean
   onChange: (values: string[]) => void
 }) {
   const term = needle.trim().toLowerCase()
   const shown = term
     ? choices.filter((choice) => choice.label.toLowerCase().includes(term))
     : choices
-  const toggle = (value: string) =>
+  const toggle = (value: string) => {
+    if (single) {
+      // Recocher la valeur déjà retenue retire le filtre : c'est le seul geste
+      // qui reste pour revenir à « tous », le bouton « Tout décocher » n'ayant
+      // pas de sens sur une liste qui n'en retient qu'un.
+      onChange(picked.includes(value) ? [] : [value])
+      return
+    }
     onChange(
       picked.includes(value)
         ? picked.filter((v) => v !== value)
         : [...picked, value],
     )
+  }
   return (
     <>
       {/* La recherche n'apparaît qu'au-delà de ce qui se parcourt à l'œil. */}
@@ -1449,14 +1519,18 @@ function ChoicePanel({
         />
       )}
       <div className="filter__actions">
-        <button
-          type="button"
-          className="filter__action"
-          disabled={shown.length === 0}
-          onClick={() => onChange([...new Set([...picked, ...shown.map((c) => c.value)])])}
-        >
-          Tout cocher{term && ` (${shown.length})`}
-        </button>
+        {/* « Tout cocher » n'existe pas sur une liste qui n'en retient qu'un :
+            le bouton ferait la seule chose que la liste refuse. */}
+        {!single && (
+          <button
+            type="button"
+            className="filter__action"
+            disabled={shown.length === 0}
+            onClick={() => onChange([...new Set([...picked, ...shown.map((c) => c.value)])])}
+          >
+            Tout cocher{term && ` (${shown.length})`}
+          </button>
+        )}
         <button
           type="button"
           className="filter__action"

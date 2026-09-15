@@ -37,6 +37,19 @@ from ..errors import ValidationError
 from ..ingest import RowError
 from .context import ServiceContext
 
+#: Combien de références écartées sont **nommées** dans le rapport d'un lot.
+#:
+#: Le rapport part en JSONB dans ``import_batch`` et se relit à chaque affichage
+#: des contrôles. Un fichier ERP chargé contre un référentiel vide en produirait
+#: des dizaines de milliers : ce n'est plus un constat, c'est une copie du
+#: fichier. Deux cents suffisent à reconnaître ce qui manque et à décider.
+#:
+#: Le **compte**, lui, n'est jamais tronqué : ``unknownItems`` et
+#: ``outOfScopeItems`` portent le total, et la vue Contrôles dit explicitement
+#: qu'elle n'en détaille qu'une partie. Une liste tronquée qui se lirait comme
+#: complète ferait croire le référentiel à jour à deux cents références près.
+UNKNOWN_ITEMS_KEPT = 200
+
 
 @dataclass(slots=True)
 class ImportOutcome:

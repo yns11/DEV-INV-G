@@ -32,7 +32,14 @@ def campaign() -> Any:
         Any,
         SimpleNamespace(
             id="camp-1",
-            config=SimpleNamespace(generic_key=GENERIC),
+            config=SimpleNamespace(
+                generic_key=GENERIC,
+                generic_warehouse=GENERIC.warehouse_id,
+                generic_location=GENERIC.location_id,
+                max_bom_depth=5,
+                arbitration_tolerance=0,
+                refuse_negative_quantities=False,
+            ),
         ),
     )
 
@@ -89,10 +96,26 @@ def service(
     book: list[BookStockLine] | None = None,
     adjustments: list[AdjustmentLine] | None = None,
     wip: list[dict[str, Any]] | None = None,
+    locations: dict[Any, Any] | None = None,
+    counted: list[dict[str, Any]] | None = None,
 ) -> AnalysisService:
     ctx = SimpleNamespace(
+        journals=SimpleNamespace(
+            counted_quantities=lambda cid: counted or [],
+            list=lambda cid: [],
+        ),
+        sheets=SimpleNamespace(
+            list_zones=lambda cid: [],
+            list_sheets=lambda cid: [],
+            lines_by_sheet=lambda cid: {},
+        ),
+        arbitrations=SimpleNamespace(list_arbitrations=lambda cid: []),
         referentials=SimpleNamespace(
-            items_by_number=lambda cid: items if items is not None else {"ART-1": item()}
+            items_by_number=lambda cid: items if items is not None else {"ART-1": item()},
+            list_bom_links=lambda cid: [],
+            # Le stock ERP écarte les emplacements désactivés : sans ce
+            # référentiel, la décomposition ne sait pas lesquels le sont.
+            locations_by_key=lambda cid: locations or {},
         ),
         book_stock=SimpleNamespace(list=lambda cid: book or []),
         adjustments=SimpleNamespace(list=lambda cid, **kw: adjustments or []),
@@ -293,3 +316,147 @@ class TestThePhysicalColumn:
         """Il ne dénotait plus rien de distinct : l'écart *est* le post-ajustement."""
         with pytest.raises(ValidationError):
             service().breakdown(campaign(), "ART-1", "residual")
+
+
+class TestLesLignesNullesNeSontPasMontrees:
+    """« D'où vient ce chiffre ? » — une ligne à zéro n'en vient pas.
+
+    Ce n'est pas une gêne de confort. Depuis qu'une case vide vaut zéro, une
+    référence listée dans quarante zones et trouvée dans deux produit quarante
+    lignes : les deux qui expliquent le total, et trente-huit qui ne
+    l'expliquent pas. La fenêtre ouverte pour comprendre un chiffre devenait
+    l'endroit où le chiffre se perdait.
+
+    Écartées après le calcul de la valeur et avant les totaux : le total reste
+    la somme de ce qui est affiché, ce que le reste de ce fichier vérifie déjà
+    et qu'un filtre mal placé casserait.
+    """
+
+    def test_une_ligne_a_zero_disparait(self):
+        result = service(
+            book=[book_line("ALLEE-A", "12"), book_line("ALLEE-VIDE", "0")]
+        ).breakdown(campaign(), "ART-1", "book")
+        assert [r["where"] for r in result["rows"]] == ["B06 / ALLEE-A"]
+
+    def test_le_total_ne_bouge_pas_pour_autant(self):
+        """Une ligne nulle n'apportait rien : la retirer n'enlève rien."""
+        result = service(
+            book=[book_line("ALLEE-A", "12"), book_line("ALLEE-VIDE", "0")]
+        ).breakdown(campaign(), "ART-1", "book")
+        assert result["total"] == 12
+        assert sum(r["qty"] for r in result["rows"]) == result["total"]
+
+    def test_une_quantite_negative_reste(self):
+        """« Non nulle » et « positive » ne sont pas la même chose : un écart
+        négatif est précisément ce qu'on ouvre la fenêtre pour comprendre."""
+        result = service(
+            book=[book_line("RETOURS", "-4"), book_line("ALLEE-A", "12")]
+        ).breakdown(campaign(), "ART-1", "book")
+        assert sorted(r["qty"] for r in result["rows"]) == [-4.0, 12.0]
+
+    def test_une_ligne_sans_quantite_mais_avec_une_valeur_reste(self):
+        """Le cas qu'un filtre sur la seule quantité aurait fait disparaître —
+        avec la valeur qu'il portait, et le total s'en serait trouvé faux."""
+        analysis = service(book=[book_line("ALLEE-A", "0")])
+        analysis._book_rows = lambda c, i: [  # type: ignore[method-assign]
+            {"origin": "Stock ERP", "where": "B06 / A", "warehouseId": "B06",
+             "locationId": "A", "detail": "", "qty": 0.0, "value": 30.0},
+        ]
+        result = analysis.breakdown(campaign(), "ART-1", "book")
+        assert len(result["rows"]) == 1
+        assert result["totalValue"] == 30
+
+    def test_une_fenetre_qui_n_a_que_des_zeros_est_vide(self):
+        """Et l'écran le dit — « aucune ligne » vaut mieux qu'une liste de
+        zéros dont le total est zéro."""
+        result = service(book=[book_line("ALLEE-A", "0")]).breakdown(
+            campaign(), "ART-1", "book"
+        )
+        assert result["rows"] == [] and result["total"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Les emplacements désactivés
+# --------------------------------------------------------------------------- #
+
+
+class TestLesEmplacementsDesactives:
+    """Un emplacement désactivé n'existe plus pour la campagne.
+
+    Il ne porte aucun journal, il n'entre dans aucun indicateur — mais ses
+    lignes de stock ERP restent en base, et la décomposition les montrait au
+    milieu des autres. Sur une référence rangée dans deux allées dont une a été
+    fermée entre deux photos ERP, la fenêtre annonçait un total que la grille
+    derrière elle ne portait pas.
+    """
+
+    def _service(self, **kwargs):
+        from inventory.domain.enums import LocationStatus, LocationType
+        from inventory.domain.models import Location
+
+        def location(place: str, status: LocationStatus) -> Location:
+            return Location(
+                campaign_id="camp-1",
+                warehouse_id="B06",
+                location_id=place,
+                type=LocationType.LABEL,
+                status=status,
+            )
+
+        fermee = location("ALLEE-B", LocationStatus.DISABLED)
+        ouverte = location("ALLEE-A", LocationStatus.ACTIVE)
+        return service(
+            book=[book_line("ALLEE-A", "12"), book_line("ALLEE-B", "30")],
+            locations={ouverte.key: ouverte, fermee.key: fermee},
+            **kwargs,
+        )
+
+    def test_ils_sont_masques_par_defaut(self):
+        result = self._service().breakdown(campaign(), "ART-1", "book")
+
+        assert [r["locationId"] for r in result["rows"]] == ["ALLEE-A"]
+
+    def test_et_le_total_suit(self):
+        """Le filtre est côté serveur pour cette raison : masquer à l'affichage
+        aurait laissé un total qui contredit ce qu'on lit en dessous."""
+        result = self._service().breakdown(campaign(), "ART-1", "book")
+
+        assert result["total"] == 12
+
+    def test_la_fenetre_sait_combien_elle_en_a_ecarte(self):
+        """Sans ce nombre, elle ne peut pas proposer de les montrer — et laisse
+        croire qu'il n'y a rien de plus."""
+        result = self._service().breakdown(campaign(), "ART-1", "book")
+
+        assert result["hiddenDisabled"] == 1
+
+    def test_ils_reviennent_sur_demande(self):
+        result = self._service().breakdown(
+            campaign(), "ART-1", "book", include_disabled=True
+        )
+
+        assert {r["locationId"] for r in result["rows"]} == {"ALLEE-A", "ALLEE-B"}
+        assert result["total"] == 42
+
+    def test_une_decomposition_sans_desactive_n_annonce_rien(self):
+        result = service(book=[book_line("ALLEE-A", "12")]).breakdown(
+            campaign(), "ART-1", "book"
+        )
+
+        assert result["hiddenDisabled"] == 0
+
+    def test_la_quantite_comptee_sur_un_emplacement_ferme_reste_visible(self):
+        """Elle est l'anomalie qu'on veut voir, pas du bruit à masquer : quelqu'un
+        a compté là où la campagne dit qu'il n'y a plus rien. Le filtre ne porte
+        donc que sur le stock ERP, où une ligne survivante n'apprend rien."""
+        result = self._service(
+            counted=[
+                {
+                    "item_number": "ART-1", "warehouse_id": "B06",
+                    "location_id": "ALLEE-B", "qty": 7,
+                }
+            ]
+        ).breakdown(campaign(), "ART-1", "counted")
+
+        assert [r["locationId"] for r in result["rows"]] == ["ALLEE-B"]
+        assert result["hiddenDisabled"] == 0

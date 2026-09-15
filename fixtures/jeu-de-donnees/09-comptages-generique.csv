@@ -1,0 +1,11 @@
+Feuille;Passage;Numéro d'article;Section;Quantité comptée
+ZONE-1;1;P-100;Bord de ligne;30
+ZONE-1;1;P-300;Bord de ligne;100
+ZONE-1;1;P-800;Bord de ligne;20
+ZONE-1;1;PF-01;Bord de ligne;1
+ZONE-1;1;SF-10;WIP (à éclater);5
+ZONE-1;2;P-100;Bord de ligne;30
+ZONE-1;2;P-300;Bord de ligne;110
+ZONE-1;2;P-800;Bord de ligne;20
+ZONE-1;2;PF-01;Bord de ligne;1
+ZONE-1;2;SF-10;WIP (à éclater);5

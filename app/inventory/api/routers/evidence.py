@@ -44,3 +44,20 @@ def sheet_evidence(campaign: CampaignDep, sheet_id: str, service: Evidence) -> A
     """Le scan qui a produit les quantités lues par l'IA."""
     found = service.of_sheet(campaign, sheet_id)
     return attachment(found.content, found.filename, _guess_type(found.filename))
+
+
+@router.get("/scans", summary="Les scans archivés de la campagne")
+def archived_scans(campaign: CampaignDep, service: Evidence) -> list[dict[str, Any]]:
+    """Ce que l'archive contient, pièce par pièce.
+
+    L'archive existait et se téléchargeait déjà, mais seulement pour qui
+    connaissait l'identifiant de la feuille qui la porte : impossible de savoir
+    ce qu'elle contient, ni si elle contient quelque chose. Une archive qu'on ne
+    peut pas énumérer ne se contrôle pas.
+
+    La liste ne porte pas les octets — une pile de deux cents pages en pèse
+    trente mégaoctets. Chaque ligne dit ce qu'il faut pour décider de l'ouvrir,
+    et le téléchargement passe ensuite par la feuille, donc par la barrière de
+    campagne déjà en place.
+    """
+    return service.scans(campaign)

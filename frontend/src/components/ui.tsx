@@ -94,6 +94,7 @@ export const Icons = {
   chevronRight: svg(<><path d="m9 6 6 6-6 6" /></>),
   chevronLeft: svg(<><path d="m15 6-6 6 6 6" /></>),
   chevronDown: svg(<><path d="m6 9 6 6 6-6" /></>),
+  chevronUp: svg(<><path d="m18 15-6-6-6 6" /></>),
   sparkles: svg(<><path d="m12 3 1.8 4.9L19 9.6l-4.4 2.6L13.4 17 12 13.2 10.6 17 9.4 12.2 5 9.6l5.2-1.7L12 3Z" /><path d="M18 16.5 18.7 18l1.5.7-1.5.7L18 21l-.7-1.6-1.5-.7 1.5-.7L18 16.5Z" /></>),
   printer: svg(<><path d="M6 9V3h12v6" /><rect x="3" y="9" width="18" height="8" rx="2" /><path d="M7 17h10v4H7z" /></>),
   trash: svg(<><path d="M4 7h16" /><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /><path d="M6 7v13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7" /></>),

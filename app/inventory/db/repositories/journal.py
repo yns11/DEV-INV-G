@@ -35,7 +35,7 @@ class JournalRepository(_Base):
     _COLUMNS = (
         "id, campaign_id, warehouse_id, location_id, kind, status, journal_number, "
         "description, posted_at, auto_created, updated_at, row_version, "
-        "early_batch_id, sealed_at, sealed_by"
+        "sealed_at, sealed_by"
     )
 
     def list(
@@ -215,6 +215,71 @@ class JournalRepository(_Base):
             conn=conn,
         )
 
+    def delete_pass_through_journals(
+        self,
+        campaign_id: str,
+        erp_journal_number: str,
+        keep: Sequence[LocationKey],
+        *,
+        conn: psycopg.Connection | None = None,
+    ) -> list[str]:
+        """Retirer les journaux nés des lignes de passage d'un journal ERP.
+
+        Un journal ERP porte des lignes sur des emplacements qu'il ne couvre
+        pas : elles matérialisent un déplacement — 1 932 sur 58 345 dans
+        l'export analysé. L'import créait un journal de comptage pour chacune,
+        avec ses quantités, sur des emplacements que personne n'avait
+        sélectionnés. Déclarer le périmètre est le moment où l'on sait
+        lesquels : ceux qui restent s'en vont.
+
+        Trois conditions, et elles sont là pour ne jamais emporter du travail :
+        toutes les lignes du journal viennent de **ce** journal ERP, aucune ne
+        porte de quantité manuelle, et l'emplacement n'est pas dans le périmètre
+        qu'on vient de déclarer. Un emplacement recompté à la main, ou touché par
+        un autre journal, reste.
+
+        Rend les emplacements retirés, pour que l'appelant puisse le dire.
+        """
+        rows = self._fetch_all(
+            """
+            SELECT j.id, j.warehouse_id, j.location_id
+            FROM count_journal j
+            WHERE j.campaign_id = %(cid)s
+              AND (j.warehouse_id, j.location_id) <> ALL (
+                    SELECT * FROM unnest(%(wh)s::text[], %(loc)s::text[]))
+              AND EXISTS (
+                    SELECT 1 FROM count_journal_line l
+                    WHERE l.journal_id = j.id AND l.deleted_at IS NULL)
+              AND NOT EXISTS (
+                    SELECT 1 FROM count_journal_line l
+                    WHERE l.journal_id = j.id
+                      AND l.deleted_at IS NULL
+                      AND (l.qty_manual IS NOT NULL
+                           OR l.erp_journal_number <> %(num)s))
+            """,
+            {
+                "cid": campaign_id,
+                "num": erp_journal_number,
+                "wh": [k.warehouse_id for k in keep] or [""],
+                "loc": [k.location_id for k in keep] or [""],
+            },
+            conn=conn,
+        )
+        if not rows:
+            return []
+        ids = [str(row["id"]) for row in rows]
+        self._execute(
+            "DELETE FROM count_journal_line WHERE journal_id = ANY(%s::uuid[])",
+            (ids,),
+            conn=conn,
+        )
+        self._execute(
+            "DELETE FROM count_journal WHERE id = ANY(%s::uuid[])",
+            (ids,),
+            conn=conn,
+        )
+        return [f"{row['warehouse_id']} / {row['location_id']}" for row in rows]
+
     # -- lines ---------------------------------------------------------------
 
     _LINE_COLUMNS = (
@@ -256,6 +321,33 @@ class JournalRepository(_Base):
         Reloading the ERP export replaces ``qty_imported`` but **preserves**
         ``qty_manual``: the whole point of keeping the two columns apart is that
         a re-import never silently discards a human correction.
+
+        Le rapprochement se fait sur (journal, article), et il manquait
+        -----------------------------------------------------------
+        La préservation marchait ; le remplacement, non. Les lignes sans valeur
+        manuelle étaient supprimées puis toutes les lignes du fichier réinsérées
+        avec un identifiant neuf — sans jamais retrouver celle qui portait déjà
+        cet article. Une ligne à valeur manuelle survivait donc au ménage, et
+        l'import lui en ajoutait une seconde à côté. Les deux vivaient, et
+        :meth:`counted_quantities` les additionnait : l'article était compté
+        deux fois.
+
+        Vu en vrai, sur une campagne terrain. Le journal GENERIQUE est rempli
+        par la consolidation — une valeur *manuelle* pour chacun de ses articles
+        — puis posté dans l'ERP ; l'extraction suivante le rapporte, et ses 245
+        articles se sont retrouvés doublés. Le même mécanisme frappait n'importe
+        quelle ligne corrigée à la main avant un rechargement.
+
+        Le même article deux fois reste possible, et c'est voulu
+        -------------------------------------------------------
+        L'écran permet d'ajouter deux lignes pour un même article — deux relevés
+        distincts au même endroit, qui s'additionnent légitimement. Interdire le
+        doublon par un index unique aurait donc retiré un geste que le métier
+        utilise. Ce qui ne doit pas coexister, c'est **une ligne importée à côté
+        d'une ligne qui porte déjà une valeur** : les deux décrivent la même
+        mesure, et la manuelle prime. Quand plusieurs lignes manuelles existent
+        pour un article, l'écho de l'ERP se pose sur une seule d'entre elles —
+        la plus ancienne — pour que le total reste celui des saisies.
         """
         owns = conn is None
         ctx = self.db.transaction() if owns else _NullContext(conn)
@@ -271,45 +363,73 @@ class JournalRepository(_Base):
                 )
             if not lines:
                 return 0
-            cur.executemany(
-                "INSERT INTO count_journal_line (id, journal_id, campaign_id, "
-                "item_number, qty_imported, unit, source, updated_by, updated_at, "
-                "qty_on_hand, erp_journal_number, label_count) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now(), %s,%s,%s) "
-                "ON CONFLICT (id) DO NOTHING",
-                [
-                    (l.id, l.journal_id, campaign_id, l.item_number, l.qty_imported,
-                     l.unit, str(l.source), l.updated_by or "import",
-                     l.qty_on_hand, l.erp_journal_number, l.label_count)
-                    for l in lines
-                ],
-            )
+
+            # Ce qui a survécu au ménage : les lignes à valeur manuelle. Ce sont
+            # elles qu'il faut retrouver plutôt que doubler.
+            #
+            # Le tri porte sur `id`, et sur lui seul. Trier par `updated_at`
+            # semblait plus parlant — « la plus ancienne » — mais cette
+            # écriture-ci le met à jour : la ligne choisie devenait la plus
+            # récente, et le rechargement suivant portait l'écho sur l'autre.
+            # Au bout de deux imports les deux lignes annonçaient chacune le
+            # chiffre de l'ERP. Le jour J, avec une extraction tous les quarts
+            # d'heure, l'écho aurait fait des allers-retours toute la journée.
+            #
+            # Un identifiant, lui, ne bouge jamais. Laquelle est choisie importe
+            # peu — c'est toujours la même, et c'est la seule propriété dont
+            # dépendent la migration 032 et ce code.
+            survivors: dict[tuple[str, str], str] = {}
+            if journal_ids:
+                cur.execute(
+                    "SELECT id, journal_id, item_number FROM count_journal_line "
+                    "WHERE journal_id = ANY(%s::uuid[]) AND deleted_at IS NULL "
+                    "ORDER BY id",
+                    (list(journal_ids),),
+                )
+                for row in cur.fetchall():
+                    survivors.setdefault(
+                        (str(row["journal_id"]), str(row["item_number"])), str(row["id"])
+                    )
+
+            updates, inserts = [], []
+            for line in lines:
+                existing = survivors.get((line.journal_id, line.item_number))
+                if existing is None:
+                    inserts.append(line)
+                else:
+                    updates.append((existing, line))
+
+            if updates:
+                cur.executemany(
+                    "UPDATE count_journal_line SET qty_imported = %s, unit = %s, "
+                    "updated_by = %s, updated_at = now(), "
+                    "row_version = row_version + 1, qty_on_hand = %s, "
+                    "erp_journal_number = %s, label_count = %s "
+                    "WHERE id = %s",
+                    [
+                        (l.qty_imported, l.unit, l.updated_by or "import",
+                         l.qty_on_hand, l.erp_journal_number, l.label_count, line_id)
+                        for line_id, l in updates
+                    ],
+                )
+            if inserts:
+                cur.executemany(
+                    "INSERT INTO count_journal_line (id, journal_id, campaign_id, "
+                    "item_number, qty_imported, unit, source, updated_by, updated_at, "
+                    "qty_on_hand, erp_journal_number, label_count) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now(), %s,%s,%s) "
+                    "ON CONFLICT (id) DO NOTHING",
+                    [
+                        (l.id, l.journal_id, campaign_id, l.item_number,
+                         l.qty_imported, l.unit, str(l.source),
+                         l.updated_by or "import", l.qty_on_hand,
+                         l.erp_journal_number, l.label_count)
+                        for l in inserts
+                    ],
+                )
         return len(lines)
 
     # -------------------------------------------------------------- scellement
-
-    def assign_batch(
-        self,
-        campaign_id: str,
-        keys: Sequence[tuple[str, str]],
-        *,
-        batch_id: str,
-        actor: str,
-        conn: psycopg.Connection | None = None,
-    ) -> int:
-        """Rattacher des emplacements à un lot avancé, sans encore les sceller.
-
-        Le périmètre d'un lot n'a pas de table à lui : c'est l'ensemble des
-        journaux qui portent son identifiant. Il est donc posé à l'ouverture du
-        lot, et non au scellement — une première version l'écrivait au moment de
-        sceller, si bien que le scellement cherchait un périmètre que lui seul
-        pouvait créer, et ne scellait rien.
-        """
-        return self._mark(
-            campaign_id, keys, actor=actor,
-            assignments=("early_batch_id = %(batch)s",), batch_id=batch_id,
-            conn=conn,
-        )
 
     def seal(
         self,
@@ -319,7 +439,7 @@ class JournalRepository(_Base):
         actor: str,
         conn: psycopg.Connection | None = None,
     ) -> int:
-        """Sceller les journaux d'un lot avancé.
+        """Sceller les emplacements d'un journal de précomptage.
 
         Le scellement ne fait que **restreindre** : il s'ajoute à la matrice de
         mutabilité, qui reste consultée en premier et garde le dernier mot pour
@@ -348,7 +468,7 @@ class JournalRepository(_Base):
         return self._mark(
             campaign_id, keys, actor=actor,
             assignments=(
-                "sealed_at = NULL", "sealed_by = NULL", "early_batch_id = NULL",
+                "sealed_at = NULL", "sealed_by = NULL",
             ),
             conn=conn,
         )
@@ -541,9 +661,6 @@ class JournalRepository(_Base):
             posted_at=row["posted_at"],
             auto_created=row["auto_created"],
             updated_at=row["updated_at"],
-            early_batch_id=(
-                str(row["early_batch_id"]) if row.get("early_batch_id") else None
-            ),
             sealed_at=row.get("sealed_at"),
             sealed_by=row.get("sealed_by") or "",
         )

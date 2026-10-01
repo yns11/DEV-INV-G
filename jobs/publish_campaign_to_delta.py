@@ -129,14 +129,13 @@ QUERIES: dict[str, str] = {
         FROM inventory.bom_link
         WHERE campaign_id = %(campaign_id)s AND deleted_at IS NULL
     """,
-    # `reference_date` : sans elle, une archive relue dans deux ans laisserait
-    # croire que tout le stock ERP a été photographié le même jour. Une campagne
-    # qui précompte a une référence composite — le jour J pour la plupart des
-    # emplacements, la date du précomptage pour les emplacements scellés.
+    # `reference_date` : la référence est unique — le stock ERP du jour J, gelé,
+    # pour tout emplacement — et cette colonne dit de quel jour. Sans elle, une
+    # archive relue dans deux ans ne pourrait plus se rapprocher d'un état ERP
+    # tiré à une date précise.
     "book_stock_snapshot": """
         SELECT campaign_id::text, item_number, warehouse_id, location_id, qty, unit,
-               unit_cost, (qty * unit_cost) AS value,
-               reference_date, early_batch_id::text
+               unit_cost, (qty * unit_cost) AS value, reference_date
         FROM inventory.book_stock
         WHERE campaign_id = %(campaign_id)s
     """,
@@ -149,25 +148,23 @@ QUERIES: dict[str, str] = {
                j.journal_number, l.qty_imported, l.qty_manual,
                COALESCE(l.qty_manual, l.qty_imported, 0) AS qty, l.unit, l.source,
                l.qty_on_hand, l.erp_journal_number, l.label_count,
-               j.sealed_at, j.early_batch_id::text
+               j.sealed_at, j.sealed_by
         FROM inventory.count_journal_line l
         JOIN inventory.count_journal j ON j.id = l.journal_id
         WHERE l.campaign_id = %(campaign_id)s AND l.deleted_at IS NULL
     """,
-    # Les lots avancés et leurs dérives. Sans la table des dérives, l'issue
-    # donnée à chacune n'existerait nulle part et le raisonnement ne serait plus
-    # rejouable : c'est précisément ce qu'une archive doit permettre.
-    "early_count_batch": """
-        SELECT campaign_id::text, id::text AS batch_id, code, label, counted_on,
-               opened_at, opened_by, closed_at, closed_by, sealed_at, sealed_by
-        FROM inventory.early_count_batch
-        WHERE campaign_id = %(campaign_id)s AND deleted_at IS NULL
-    """,
+    # Les dérives : ce que l'ERP dit d'un emplacement précompté le jour J, face
+    # à ce que ce précomptage avait compté. Elles n'appellent aucune décision —
+    # le journal a été posté dans l'ERP avant que la photo du jour J ne soit
+    # prise, qui l'a donc déjà intégré — et ce qui subsiste est ce qui a bougé
+    # entre les deux dates. C'est cela que l'archive garde.
+    #
+    # La table des issues d'étiquette est partie avec les décisions qu'elle
+    # portait : une étiquette scellée retrouvée ailleurs se regarde, elle ne se
+    # tranche plus.
     "early_count_drift": """
-        SELECT campaign_id::text, batch_id::text, warehouse_id, location_id,
-               item_number, qty_erp_t0, qty_physical_t0, qty_erp_j, drift_qty,
-               drift_value, is_material, resolution, cause_code, comment,
-               resolved_at, resolved_by
+        SELECT campaign_id::text, erp_journal_id::text, warehouse_id, location_id,
+               item_number, qty_counted_t0, qty_erp_j, drift_qty, drift_value
         FROM inventory.early_count_drift
         WHERE campaign_id = %(campaign_id)s
     """,
@@ -194,17 +191,71 @@ QUERIES: dict[str, str] = {
         FROM inventory.adjustment_line
         WHERE campaign_id = %(campaign_id)s AND deleted_at IS NULL
     """,
+    # Le libellé de la cause, et pas seulement son code.
+    #
+    # La table ne portait que `cause_code` — « 1 », « 11 », « 99 » — et le
+    # référentiel qui les traduit vivait uniquement dans Lakebase. Un lecteur du
+    # catalogue, humain ou génératif, voyait donc des causes qu'il lui était
+    # impossible de nommer : « 11 » plutôt que « écart consommation
+    # (backflush) ». Une archive qui ne se comprend pas sans sa base
+    # opérationnelle n'est pas une archive.
+    #
+    # Le libellé est **recopié** ici plutôt que laissé à une jointure, et c'est
+    # délibéré : le référentiel est de site, il n'est pas gelé avec la campagne,
+    # et reformuler la cause 7 l'an prochain changerait rétroactivement ce que
+    # dit un dossier clos. Ce qui est écrit est le libellé tel qu'il était quand
+    # la décision a été prise. Le référentiel est publié à part, pour le
+    # vocabulaire courant — voir `REFERENTIAL`.
+    #
+    # Les deux jointures sont externes et ne peuvent manquer que sur un code
+    # absent : la décision humaine est une clé étrangère vers le référentiel, et
+    # la proposition du modèle est validée contre lui avant d'être écrite. Un
+    # libellé vide à côté d'un code renseigné serait donc un signal, pas du
+    # bruit.
     "variance_analysis": """
-        SELECT campaign_id::text, item_number, cause_code, comment, analyst, accepted,
-               ai_suggested_cause, ai_confidence, ai_rationale
-        FROM inventory.variance_analysis
-        WHERE campaign_id = %(campaign_id)s
+        SELECT a.campaign_id::text, a.item_number, a.cause_code,
+               c.label  AS cause_label,
+               c.family AS cause_family,
+               a.comment, a.analyst, a.accepted,
+               a.ai_suggested_cause,
+               s.label  AS ai_suggested_cause_label,
+               a.ai_confidence, a.ai_rationale
+        FROM inventory.variance_analysis a
+        LEFT JOIN inventory.assignable_cause c ON c.code = a.cause_code
+        LEFT JOIN inventory.assignable_cause s ON s.code = a.ai_suggested_cause
+        WHERE a.campaign_id = %(campaign_id)s
     """,
     "audit_event": """
         SELECT campaign_id::text, id::text AS event_id, at, actor, action,
                entity_type, entity_id, summary
         FROM inventory.audit_event
         WHERE campaign_id = %(campaign_id)s
+    """,
+}
+
+
+#: Le vocabulaire des causes, publié à côté des campagnes.
+#:
+#: Il n'est pas dans :data:`QUERIES` parce qu'il n'appartient à aucune campagne :
+#: c'est un référentiel de site, et la boucle qui parcourt `QUERIES` écrit des
+#: tranches partitionnées par `campaign_id`. Celui-ci est réécrit en entier à
+#: chaque publication.
+#:
+#: Ce qu'il apporte en plus des libellés recopiés sur les lignes d'analyse : la
+#: `description`, la famille, l'ordre d'affichage, et surtout **les causes que
+#: personne n'a retenues**. « Quelles causes le site reconnaît-il, et lesquelles
+#: n'ont jamais servi » est une question de synthèse que les seules lignes
+#: d'analyse ne peuvent pas trancher.
+#:
+#: Les deux ne disent donc pas la même chose, et aucun des deux ne rend l'autre
+#: inutile : les lignes portent le libellé **de l'époque**, cette table porte
+#: celui **d'aujourd'hui**. Une campagne close reste lisible telle qu'elle a été
+#: décidée même si le référentiel a bougé depuis.
+REFERENTIAL: dict[str, str] = {
+    "assignable_cause": """
+        SELECT code, label, family, description, display_order, active
+        FROM inventory.assignable_cause
+        ORDER BY display_order, code
     """,
 }
 
@@ -286,7 +337,7 @@ def main() -> int:
     # l'échec le plus coûteux possible, puisqu'il arrive au bout du travail
     # utile. Le job de synchronisation vérifie la forme du miroir avant de lire
     # l'ERP, pour exactement cette raison ; celui-ci ne vérifiait rien.
-    missing = _missing_tables(spark, args, [*QUERIES, "publication"])
+    missing = _missing_tables(spark, args, [*QUERIES, *REFERENTIAL, "publication"])
     if missing:
         log.error(
             "Tables absentes de %s.%s : %s. Le schéma Unity Catalog n'est pas à "
@@ -355,6 +406,24 @@ def main() -> int:
             )
             published[table] = len(enriched)
 
+        # ---- les référentiels de site -------------------------------------
+        #
+        # Réécrits en entier, sans prédicat : ils n'ont pas de tranche de
+        # campagne à remplacer. Les publier à chaque campagne les tient à jour
+        # sans second job à ordonnancer, et le contenu est le même quelle que
+        # soit la campagne qui vient de passer.
+        for table, query in REFERENTIAL.items():
+            rows = fetch(cur, query, {})
+            _write(
+                spark,
+                args,
+                table,
+                [{**row, "published_at": published_at} for row in rows],
+                partition_column=None,
+                replace_predicate=None,
+            )
+            published[table] = len(rows)
+
         # ---- le manifeste, écrit en dernier -------------------------------
         #
         # C'est lui qui rend la publication visible. Tant qu'il n'est pas écrit,
@@ -421,13 +490,16 @@ def _write(
     rows: list[dict[str, Any]],
     *,
     partition_column: str | None,
-    replace_predicate: str,
+    replace_predicate: str | None,
 ) -> None:
     """Overwrite exactly this campaign's slice of *table*.
 
     :param partition_column: documents which column the predicate filters on;
         the predicate itself does the scoping, and Delta prunes the partition
         when the column is the table's partition key.
+    :param replace_predicate: ``None`` pour une table de site, qui n'a pas de
+        tranche de campagne : elle est réécrite en entier. Tout ce qui porte un
+        `campaign_id` doit, lui, passer par un prédicat.
 
     ``replaceWhere`` scopes the overwrite to one partition, which is what makes
     the job idempotent and safe to re-run: other campaigns are never touched,
@@ -436,16 +508,16 @@ def _write(
     fqn = f"{args.catalog}.{args.schema}.{table}"
     target_schema = spark.table(fqn).schema
 
+    def written(frame: Any) -> None:
+        writer = frame.write.format("delta").mode("overwrite")
+        if replace_predicate is not None:
+            writer = writer.option("replaceWhere", replace_predicate)
+        writer.saveAsTable(fqn)
+
     if not rows:
         # An empty slice still has to *clear* what was published before, or a
         # deleted line would survive forever in the archive.
-        empty = spark.createDataFrame([], target_schema)
-        (
-            empty.write.format("delta")
-            .mode("overwrite")
-            .option("replaceWhere", replace_predicate)
-            .saveAsTable(fqn)
-        )
+        written(spark.createDataFrame([], target_schema))
         return
 
     # Une colonne vide partout n'a pas de type déductible, et Spark refuse la
@@ -484,12 +556,7 @@ def _write(
             projected = projected.withColumn(name, F.lit(None).cast(field.dataType))
     projected = projected.select(*[f.name for f in target_schema.fields])
 
-    (
-        projected.write.format("delta")
-        .mode("overwrite")
-        .option("replaceWhere", replace_predicate)
-        .saveAsTable(fqn)
-    )
+    written(projected)
 
 
 def _missing_tables(spark: Any, args: Any, tables: list[str]) -> list[str]:

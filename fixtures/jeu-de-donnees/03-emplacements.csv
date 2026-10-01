@@ -1,0 +1,11 @@
+Entrepôt;Emplacement;Zone logistique;Type;Statut
+ATP;SOL;ATELIER;Étiquettes;Actif
+ATP;SE2;ATELIER;Étiquettes;Actif
+ATP;QUAI;EXPEDITION;Étiquettes;Actif
+ATP;NOUVEAU;ATELIER;Étiquettes;Actif
+B06;PAL01;MAGASIN;Vrac;Actif
+B06;PAL02;MAGASIN;Vrac;Actif
+B06;FORCE;EXTERIEUR;Vrac;Actif
+B06;VIDE;MAGASIN;Vrac;Actif
+B06VRAC;GENERIQUE;GENERIQUE;Vrac;Actif
+INV;01;TAMPON;Vrac;Désactivé

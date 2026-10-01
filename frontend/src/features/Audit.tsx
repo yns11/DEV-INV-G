@@ -7,7 +7,7 @@
  */
 
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api, download, downloads } from '../lib/api'
 import type { Overview } from '../lib/types'
@@ -21,15 +21,19 @@ import {
 import {
   AsyncBoundary,
   Badge,
+  Button,
   Card,
+  Modal,
   EmptyState,
   Icons,
   Skeleton,
   ViewTabs,
+  useErrorToast,
+  useToast,
 } from '../components/ui'
 import { DataGrid, type Column } from '../components/DataGrid'
 
-type Tab = 'events' | 'imports'
+type Tab = 'events' | 'imports' | 'scans'
 
 const ACTION_TONE: Record<string, string> = {
   CREATE: 'success',
@@ -56,9 +60,12 @@ export function Audit() {
         tabs={[
           { id: 'events', label: 'Journal d’audit' },
           { id: 'imports', label: 'Historique des imports' },
+          { id: 'scans', label: 'Scans archivés' },
         ]}
       />
-      {tab === 'events' ? <Events campaignId={campaignId} /> : <Imports campaignId={campaignId} />}
+      {tab === 'events' && <Events campaignId={campaignId} />}
+      {tab === 'imports' && <Imports campaignId={campaignId} />}
+      {tab === 'scans' && <Scans campaignId={campaignId} />}
     </div>
   )
 }
@@ -132,9 +139,31 @@ function Events({ campaignId }: { campaignId: string }) {
 }
 
 function Imports({ campaignId }: { campaignId: string }) {
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const showError = useErrorToast()
+  const [replaying, setReplaying] = useState<Record<string, unknown> | null>(null)
   const query = useQuery({
     queryKey: ['import-history', campaignId],
     queryFn: () => api.importHistory(campaignId),
+  })
+
+  // Rejouer, c'est réimporter : la même écriture, les mêmes gardes, et donc la
+  // même invalidation qu'un chargement ordinaire.
+  const replay = useMutation({
+    mutationFn: (batchId: string) => api.replayImport(campaignId, batchId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries()
+      setReplaying(null)
+      toast.success(
+        'Chargement rejoué',
+        `${Number(result.rowsAccepted).toLocaleString('fr-FR')} ligne(s) reprises du fichier d’origine.`,
+      )
+    },
+    onError: (error) => {
+      setReplaying(null)
+      showError(error, 'Rejeu impossible')
+    },
   })
 
   const columns: Column[] = [
@@ -200,6 +229,28 @@ function Imports({ campaignId }: { campaignId: string }) {
       value: (row) => Number(row.rows_rejected),
     },
     { key: 'imported_by', label: 'Par', width: 200 },
+    {
+      key: 'replay',
+      label: '',
+      width: 120,
+      sortable: false,
+      filter: false as const,
+      // Offert seulement quand l'original existe. Un collage ou une lecture ERP
+      // n'a pas de fichier à repasser : proposer le bouton partout ferait
+      // découvrir la règle par un refus.
+      render: (row) =>
+        row.archived ? (
+          <Button
+            size="sm"
+            icon={<Icons.history size={13} />}
+            disabled={replay.isPending}
+            title="Repasser ce fichier par le même importeur"
+            onClick={() => setReplaying(row)}
+          >
+            Rejouer
+          </Button>
+        ) : null,
+    },
   ]
 
   return (
@@ -223,6 +274,203 @@ function Imports({ campaignId }: { campaignId: string }) {
             searchPlaceholder="Filtrer les imports…"
             maxHeight={620}
             initialSort={{ key: 'imported_at', direction: 'desc' }}
+          />
+        )}
+      </AsyncBoundary>
+
+      {replaying && (
+        <Modal
+          title="Rejouer ce chargement ?"
+          width={560}
+          onClose={() => setReplaying(null)}
+          footer={
+            <>
+              <Button
+                variant="ghost"
+                onClick={() => setReplaying(null)}
+                disabled={replay.isPending}
+              >
+                Annuler
+              </Button>
+              <Button
+                variant="primary"
+                disabled={replay.isPending}
+                onClick={() => replay.mutate(String(replaying.id))}
+              >
+                Rejouer
+              </Button>
+            </>
+          }
+        >
+          <p>
+            <strong>{String(replaying.filename || 'le fichier archivé')}</strong>{' '}
+            va repasser par l’importeur <strong>{String(replaying.target)}</strong>,
+            tel qu’il a été reçu le {dateTime(String(replaying.imported_at))}.
+          </p>
+          <p className="subtle">
+            Les quantités que ce fichier portait remplacent celles d’aujourd’hui.
+            Ce qu’un humain a saisi ou corrigé depuis n’est pas touché, et le
+            statut des journaux ne revient pas en arrière.
+          </p>
+        </Modal>
+      )}
+    </Card>
+  )
+}
+
+/** Ce que pèse une pièce, dit comme on le dit à l'oral. */
+function weight(bytes: number): string {
+  if (!bytes) return DASH
+  if (bytes < 1024) return `${bytes} o`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} ko`
+  return `${(bytes / (1024 * 1024)).toFixed(1).replace('.', ',')} Mo`
+}
+
+/**
+ * Les scans archivés — l'onglet qui rend l'archive consultable.
+ *
+ * Chaque scan déposé est conservé *avant* d'être lu : c'est la pièce qui
+ * justifie les quantités, et sans elle une valeur contestée six mois plus tard
+ * n'a plus rien derrière elle, la feuille manuscrite étant repartie à l'atelier.
+ *
+ * Le fichier se téléchargeait déjà, mais seulement pour qui connaissait
+ * l'identifiant de la feuille qui le porte : rien ne disait ce que l'archive
+ * contenait, ni même si elle contenait quelque chose. Une archive qu'on ne peut
+ * pas énumérer ne se contrôle pas, et c'est pourtant tout son objet.
+ *
+ * **Une ligne par document, pas par feuille.** Une pile déposée d'un coup est un
+ * seul document, et les dix feuilles qu'on y a lues pointent dessus ; les lister
+ * une par une rendrait dix fois le même PDF sous dix noms.
+ */
+function Scans({ campaignId }: { campaignId: string }) {
+  const query = useQuery({
+    queryKey: ['archived-scans', campaignId],
+    queryFn: () => api.archivedScans(campaignId),
+  })
+
+  const columns: Column[] = [
+    {
+      key: 'archivedAt',
+      label: 'Déposé le',
+      width: 180,
+      render: (row) => <span className="num">{dateTime(String(row.archivedAt))}</span>,
+      value: (row) => String(row.archivedAt),
+    },
+    {
+      key: 'filename',
+      label: 'Fichier',
+      width: 300,
+      // Le nom devient le lien, comme dans l'historique des imports : le même
+      // geste pour la même chose, et un seul chemin de téléchargement — celui
+      // qui passe par la feuille, donc par la barrière de campagne.
+      render: (row) =>
+        row.sheetId ? (
+          <button
+            className="drill filelink"
+            title="Télécharger le scan tel qu'il a été déposé"
+            onClick={() =>
+              void download(downloads.sheetEvidence(campaignId, String(row.sheetId)))
+            }
+          >
+            <Icons.download size={12} />
+            {String(row.filename || 'scan')}
+          </button>
+        ) : (
+          // La pièce reste, ses feuilles non : la zone a été supprimée. On le
+          // montre plutôt que de faire disparaître une pièce de l'archive.
+          <span title="Les feuilles qu'il justifiait ont été supprimées">
+            {String(row.filename || DASH)}
+          </span>
+        ),
+      value: (row) => String(row.filename ?? ''),
+    },
+    {
+      key: 'sheets',
+      label: 'Feuilles justifiées',
+      width: 320,
+      render: (row) => {
+        const sheets = (row.sheets as string[] | undefined) ?? []
+        if (sheets.length === 0) return <span className="subtle">{DASH}</span>
+        return (
+          <span title={sheets.join(' · ')}>
+            {sheets.length > 3
+              ? `${sheets.slice(0, 3).join(' · ')} +${sheets.length - 3}`
+              : sheets.join(' · ')}
+          </span>
+        )
+      },
+      value: (row) => ((row.sheets as string[] | undefined) ?? []).join(' '),
+    },
+    {
+      key: 'sheetCount',
+      label: 'Feuilles',
+      numeric: true,
+      width: 110,
+      value: (row) => Number(row.sheetCount),
+    },
+    {
+      key: 'sizeBytes',
+      label: 'Poids',
+      numeric: true,
+      width: 110,
+      render: (row) => <span className="num">{weight(Number(row.sizeBytes))}</span>,
+      value: (row) => Number(row.sizeBytes),
+    },
+    {
+      key: 'sha256',
+      label: 'Empreinte',
+      width: 180,
+      // Le chemin dit *où*, l'empreinte dit *lequel*. Les douze premiers
+      // caractères suffisent à l'œil ; l'infobulle porte les soixante-quatre,
+      // qui sont ce qu'on recopie dans un rapport.
+      render: (row) =>
+        row.sha256 ? (
+          <span className="num subtle" title={String(row.sha256)}>
+            {String(row.sha256).slice(0, 12)}…
+          </span>
+        ) : (
+          <span className="subtle">{DASH}</span>
+        ),
+      value: (row) => String(row.sha256 ?? ''),
+    },
+  ]
+
+  return (
+    <Card
+      title="Scans archivés"
+      message="Chaque scan est conservé avant d’être lu : c’est la pièce qui justifie les quantités lues par le modèle. Une pile déposée d’un coup est un seul document, et justifie toutes les feuilles qu’on y a lues."
+      flush
+    >
+      <AsyncBoundary
+        query={query}
+        skeleton={<Skeleton count={6} height={20} />}
+        isEmpty={(rows) => rows.length === 0}
+        empty={
+          <EmptyState title="Aucun scan archivé">
+            Les quantités de cette campagne ont été saisies à la main, ou ses
+            feuilles ont été lues avant la mise en service de l’archive.
+          </EmptyState>
+        }
+      >
+        {(rows) => (
+          <DataGrid
+            columns={columns}
+            rows={rows}
+            exportTitle="Scans archivés"
+            campaignId={campaignId}
+            getRowId={(row, index) => String(row.sha256 ?? index)}
+            searchPlaceholder="Filtrer par fichier, zone, empreinte…"
+            maxHeight={620}
+            initialSort={{ key: 'archivedAt', direction: 'desc' }}
+            footer={
+              <span>
+                {rows.length} pièce(s) ·{' '}
+                {weight(
+                  rows.reduce((n, r) => n + Number(r.sizeBytes ?? 0), 0),
+                )}{' '}
+                au total
+              </span>
+            }
           />
         )}
       </AsyncBoundary>

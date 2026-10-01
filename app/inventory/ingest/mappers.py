@@ -17,6 +17,7 @@ from typing import Any
 
 from ..domain.enums import (
     AdjustmentKind,
+    CountLineKind,
     CountSection,
     DataSource,
     ExclusionScope,
@@ -34,7 +35,10 @@ from ..domain.models import (
     BackflushLine,
     BomLink,
     BookStockLine,
+    CountSheetLine,
     Item,
+    ItemPortfolio,
+    ItemProduct,
     Location,
     StockFlowInput,
     Zone,
@@ -47,6 +51,7 @@ from .parser import RowError
 __all__ = [
     "ImportedJournalLine",
     "PreparedSheetRow",
+    "sheet_lines_from_rows",
     "map_items",
     "map_bom_links",
     "map_book_stock",
@@ -246,6 +251,62 @@ def map_locations(
     return locations, errors
 
 
+def map_portfolios(
+    campaign_id: str, rows: Iterable[Mapping[str, Any]]
+) -> tuple[list[ItemPortfolio], list[RowError]]:
+    """Qui suit quelle référence.
+
+    Une adresse vide est **acceptée** et veut dire « plus personne » : c'est la
+    façon de retirer une attribution depuis le même fichier qui les pose, sans
+    obliger à passer par l'écran ligne à ligne. Le service la traduit en
+    suppression ; ici elle reste une ligne comme les autres.
+    """
+    portfolios: list[ItemPortfolio] = []
+    errors: list[RowError] = []
+    for index, row in enumerate(rows, start=2):
+        try:
+            portfolios.append(
+                ItemPortfolio(
+                    campaign_id=campaign_id,
+                    item_number=row["item_number"],
+                    actor=row.get("actor") or "",
+                )
+            )
+        except (ValueError, KeyError) as exc:
+            errors.append(
+                RowError(index, "item_number", row.get("item_number"), str(exc))
+            )
+    return portfolios, errors
+
+
+def map_products(
+    campaign_id: str, rows: Iterable[Mapping[str, Any]]
+) -> tuple[list[ItemProduct], list[RowError]]:
+    """À quel produit fabriqué chaque référence se rattache.
+
+    Un produit vide est **accepté** et veut dire « rattachée à rien » : c'est la
+    façon de détacher une référence depuis le même fichier qui les rattache. Le
+    service la traduit en suppression ; ici elle reste une ligne comme les
+    autres.
+    """
+    products: list[ItemProduct] = []
+    errors: list[RowError] = []
+    for index, row in enumerate(rows, start=2):
+        try:
+            products.append(
+                ItemProduct(
+                    campaign_id=campaign_id,
+                    item_number=row["item_number"],
+                    product=row.get("product") or "",
+                )
+            )
+        except (ValueError, KeyError) as exc:
+            errors.append(
+                RowError(index, "item_number", row.get("item_number"), str(exc))
+            )
+    return products, errors
+
+
 def map_zones(
     campaign_id: str, rows: Iterable[Mapping[str, Any]], *, id_factory
 ) -> tuple[list[Zone], list[RowError]]:
@@ -389,7 +450,6 @@ class ImportedJournalLine:
     __slots__ = (
         "counting_date",
         "description",
-        "erp_line_number",
         "inventory_status_id",
         "is_posted",
         "item_number",
@@ -420,7 +480,6 @@ class ImportedJournalLine:
         posted_at: dt.datetime | None = None,
         description: str = "",
         counting_date: dt.datetime | None = None,
-        erp_line_number: int | None = None,
         site_id: str = "",
         label_id: str = "",
         serial_number: str = "",
@@ -438,7 +497,6 @@ class ImportedJournalLine:
         self.posted_at = posted_at
         self.description = description
         self.counting_date = counting_date
-        self.erp_line_number = erp_line_number
         self.site_id = site_id
         self.label_id = label_id
         self.serial_number = serial_number
@@ -549,7 +607,6 @@ def map_journal_lines(
                 posted_at=row.get("posted_date_time"),
                 description=str(row.get("description") or "").strip(),
                 counting_date=row.get("counting_date"),
-                erp_line_number=row.get("erp_line_number"),
                 site_id=normalise_key(str(row.get("site_id") or "")),
                 label_id=_identifier(row.get("label_id")),
                 serial_number=_identifier(row.get("serial_number")),
@@ -599,10 +656,22 @@ class PreparedSheetRow:
     item_number: str
     section: CountSection
     unit: str = "PCE"
+    #: L'intertitre sous lequel la ligne se trouve — « Stock physique B15 ».
+    subsection: str = ""
+    #: La désignation que la feuille impose, vide quand elle suit le référentiel.
+    name: str = ""
 
     @property
-    def key(self) -> tuple[str, CountSection]:
-        return (self.item_number, self.section)
+    def key(self) -> tuple[str, CountSection, str]:
+        """Ce qui fait qu'une ligne est *la même* qu'une autre.
+
+        La sous-section en fait partie : la feuille Excel qu'on remplace pose
+        les mêmes trois articles sous « Stock physique B6EST », « Stock physique
+        B15 » et « Stock physique chez Maldaner », et ce sont trois comptages à
+        trois endroits, pas un article répété trois fois. Vide, elle laisse la
+        clé exactement telle qu'elle était.
+        """
+        return (self.item_number, self.section, self.subsection)
 
 
 def map_count_sheets(
@@ -667,9 +736,88 @@ def map_count_sheets(
                 item_number=item_number,
                 section=section,
                 unit=normalise_key(str(row.get("unit") or "PCE")) or "PCE",
+                # Pas de ``normalise_key`` ici : c'est du texte imprimé, pas un
+                # code. « Stock physique chez Maldaner » doit rester lisible sur
+                # la feuille, minuscules et accents compris.
+                subsection=str(row.get("subsection") or "").strip(),
+                # Une désignation identique à celle du référentiel n'est pas un
+                # remplacement : la garder figerait le nom du jour sur toutes
+                # les lignes d'un fichier qui ne fait que le recopier, et le
+                # référentiel corrigé la semaine suivante ne descendrait plus
+                # jusqu'à la feuille.
+                name=_sheet_name(row.get("name"), items.get(item_number)),
             )
         )
     return out, errors
+
+
+def _sheet_name(value: Any, item: Item | None) -> str:
+    """La désignation portée par la feuille, ou rien quand elle n'apporte rien."""
+    text = str(value or "").strip()
+    if not text or (item is not None and text == item.name):
+        return ""
+    return text
+
+
+def sheet_lines_from_rows(
+    rows: Sequence[PreparedSheetRow],
+    *,
+    sheet_id: str,
+    campaign_id: str,
+    source: DataSource,
+    known: set[tuple[str, CountSection, str]],
+    headings: set[tuple[CountSection, str]],
+    first_order: int,
+    id_factory,
+) -> list[CountSheetLine]:
+    """The lines an import adds to one sheet — separators included.
+
+    Two things happen here that the flat file cannot say on its own.
+
+    A **separator** is materialised wherever the sub-section column changes, so
+    the intertitle exists as an object with a place in the document: that is what
+    prints, what the preview screen moves and renames, and what the counting form
+    shows. Deriving it at render time instead would mean deriving it three times,
+    in three screens that would end up disagreeing.
+
+    A row already on the sheet is **skipped**, and its sub-section is part of
+    what "already" means. Reloading a corrected file must complete the sheet, not
+    duplicate it — and the same article under two intertitles is two counts, at
+    two places, not a duplicate.
+
+    ``known`` and ``headings`` carry what that sheet already holds, and are
+    updated as the lines are built — so a file that names the same intertitle in
+    two blocks gets one separator, not two.
+    """
+    lines: list[CountSheetLine] = []
+    order = first_order
+    current: tuple[CountSection, str] | None = None
+    for row in rows:
+        if row.key in known:
+            continue
+        known.add(row.key)
+        heading = (row.section, row.subsection)
+        if row.subsection and heading != current and heading not in headings:
+            headings.add(heading)
+            lines.append(CountSheetLine(
+                id=id_factory(), sheet_id=sheet_id, campaign_id=campaign_id,
+                item_number="", section=row.section,
+                line_kind=CountLineKind.SUBSECTION, label=row.subsection,
+                source=source, display_order=order,
+            ))
+            order += 1
+        current = heading
+        lines.append(CountSheetLine(
+            id=id_factory(), sheet_id=sheet_id, campaign_id=campaign_id,
+            item_number=row.item_number, section=row.section,
+            subsection=row.subsection, name=row.name,
+            # Both quantities left unset: a prepared line is a line nobody has
+            # written on yet. It already weighs zero in every stock computation;
+            # what stays open is whether somebody has been to look.
+            unit=row.unit, source=source, display_order=order,
+        ))
+        order += 1
+    return lines
 
 
 def _resolve_section(value: Any) -> CountSection | None:

@@ -7,7 +7,17 @@ import type { GridContract, Overview } from '../lib/types'
 import { moneyShort, qty, percent } from '../lib/format'
 import { ImportPanel } from '../components/ImportPanel'
 import { DataGrid, type Column } from '../components/DataGrid'
-import { Alert, AsyncBoundary, Button, Card, Icons, useErrorToast, useToast } from '../components/ui'
+import {
+  Alert,
+  AsyncBoundary,
+  Button,
+  Card,
+  EmptyState,
+  Icons,
+  useErrorToast,
+  useToast,
+} from '../components/ui'
+import { MINE_EMPTY, MineToggle } from '../components/MineToggle'
 import { TOP_STOCK_LINES } from './preparation.shared'
 
 // --------------------------------------------------------------------------- //
@@ -29,12 +39,16 @@ export function BookStockTab({
   // La valeur du stock est concentrée : une poignée de lignes en portent
   // l'essentiel, et ce sont celles qu'on recompte en priorité.
   const [top, setTop] = useState(false)
+  // Le filtre est dans la clé : sans lui, la vue filtrée et la vue entière se
+  // partageraient le même cache et l'une servirait les lignes de l'autre.
+  const [mine, setMine] = useState(false)
   const query = useQuery({
-    queryKey: ['book-stock', campaignId, top],
+    queryKey: ['book-stock', campaignId, top, mine],
     queryFn: () =>
       api.bookStock(campaignId, {
         limit: GRID_ROW_CEILING,
         top: top ? TOP_STOCK_LINES : undefined,
+        mine: mine || undefined,
       }),
   })
 
@@ -121,19 +135,32 @@ export function BookStockTab({
         }
         flush
       >
-        <AsyncBoundary query={query} isEmpty={(d) => d.rows.length === 0}>
+        <AsyncBoundary
+          query={query}
+          isEmpty={(d) => d.rows.length === 0}
+          empty={
+            mine ? (
+              <EmptyState title="Rien dans votre portefeuille" icon={<Icons.filter size={20} />}>
+                {MINE_EMPTY}
+              </EmptyState>
+            ) : undefined
+          }
+        >
           {(data) => (
             <DataGrid
               columns={columns}
               rows={data.rows}
               toolbar={
-                <button
-                  className={`chip${top ? ' chip--active' : ''}`}
-                  title={`Les ${TOP_STOCK_LINES} couples article / entrepôt / emplacement les plus lourds en valeur.`}
-                  onClick={() => setTop((value) => !value)}
-                >
-                  Top {TOP_STOCK_LINES}
-                </button>
+                <>
+                  <button
+                    className={`chip${top ? ' chip--active' : ''}`}
+                    title={`Les ${TOP_STOCK_LINES} couples article / entrepôt / emplacement les plus lourds en valeur.`}
+                    onClick={() => setTop((value) => !value)}
+                  >
+                    Top {TOP_STOCK_LINES}
+                  </button>
+                  <MineToggle active={mine} onToggle={() => setMine((value) => !value)} />
+                </>
               }
               exportTitle="Stock ERP"
               campaignId={campaignId}

@@ -32,6 +32,7 @@ from .enums import (
     JournalStatus,
     LocationStatus,
     LocationType,
+    SealStatus,
     SheetPass,
     ZoneStatus,
     legacy_section_alias,
@@ -97,7 +98,8 @@ __all__ = [
     # enums
     "AdjustmentKind", "AuditAction", "CampaignStatus", "ControlSeverity",
     "CountSection", "DataSource", "ExclusionScope", "ItemCommonality", "ItemType",
-    "JournalKind", "JournalStatus", "LocationStatus", "LocationType", "SheetPass",
+    "JournalKind", "JournalStatus", "SealStatus", "LocationStatus", "LocationType",
+    "SheetPass",
     "ZoneStatus", "legacy_section_alias",
     # models
     "AdjustmentLine", "ArbitrationLine", "AssignableCause", "AuditEvent", "BomLink",

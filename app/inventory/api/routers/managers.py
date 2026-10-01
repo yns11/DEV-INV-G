@@ -13,7 +13,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 
 from ...services import ManagerService
-from ..deps import CampaignDep, manager_service
+from ...services.portfolio_service import PortfolioService, clear_portfolios
+from ...services.product_service import ProductService, clear_products
+from ..deps import CampaignDep, Ctx, manager_service
 from ..schemas import (
     ManagerRowsRequest,
     WarehouseAssignmentRequest,
@@ -68,3 +70,57 @@ def assign_zones(
             campaign, payload.zone_ids, payload.manager_code
         )
     }
+
+
+# --------------------------------------------------------------------------- #
+# Portefeuilles — les articles, là où les affectations portent des emplacements
+# --------------------------------------------------------------------------- #
+
+portfolios = APIRouter(
+    prefix="/campaigns/{campaign_id}/portfolios", tags=["portefeuilles"]
+)
+
+
+@portfolios.get("", summary="Qui suit quelle référence")
+def list_portfolios(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
+    """Le tableau d'attribution, et ce qu'il pèse par personne.
+
+    Les deux ensemble : la grille seule ne dit pas si la répartition est
+    complète, et sur cinq cents références c'est la première question.
+    """
+    return PortfolioService(ctx).overview(campaign)
+
+
+@portfolios.delete("", summary="Retirer toutes les attributions")
+def clear_all_portfolios(campaign: CampaignDep, ctx: Ctx) -> dict[str, int]:
+    """Repartir de zéro. Le chargement fusionne, donc ceci est la seule façon
+    de tout défaire d'un coup — et c'est explicite plutôt qu'implicite dans un
+    fichier vide."""
+    return {"removed": clear_portfolios(ctx, campaign)}
+
+
+# --------------------------------------------------------------------------- #
+# Produits fabriqués — ce que l'usine fait de la référence
+# --------------------------------------------------------------------------- #
+
+products = APIRouter(
+    prefix="/campaigns/{campaign_id}/products", tags=["produits fabriqués"]
+)
+
+
+@products.get("", summary="À quel produit fabriqué chaque référence se rattache")
+def list_products(campaign: CampaignDep, ctx: Ctx) -> dict[str, Any]:
+    """Le tableau de rattachement, et ce qu'il pèse par produit.
+
+    Les deux ensemble : la grille seule ne dit pas combien de références
+    restent sans produit, et c'est la première question sur cinq cents.
+    """
+    return ProductService(ctx).overview(campaign)
+
+
+@products.delete("", summary="Détacher toutes les références")
+def clear_all_products(campaign: CampaignDep, ctx: Ctx) -> dict[str, int]:
+    """Repartir de zéro. Le chargement fusionne entre les références, donc ceci
+    est la seule façon de tout défaire d'un coup — et c'est explicite plutôt
+    qu'implicite dans un fichier vide."""
+    return {"removed": clear_products(ctx, campaign)}

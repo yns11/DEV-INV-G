@@ -42,6 +42,7 @@ from ..errors import (
     NotFoundError,
     ValidationError,
 )
+from .arbitration_service import refresh_after_sheet_writes
 from .context import ServiceContext
 
 log = logging.getLogger(__name__)
@@ -204,6 +205,7 @@ class ScanService:
             if free_entry
             else extractor.extract(
                 expected=extractor.expected_from_items(expected_lines, items),
+                known_items=items,
                 **common,
             )
         )
@@ -215,7 +217,11 @@ class ScanService:
         # plus rien ne rattache au papier.
         with ctx.db.transaction() as conn:
             ctx.sheets.replace_sheet_lines(
-                sheet_id, result.lines, actor=ctx.actor, conn=conn
+                # La lecture porte sur des quantités, pas sur la mise en page :
+                # elle ne connaît ni les intertitres ni les lignes vides, et
+                # n'a donc rien à dire sur leur sort.
+                sheet_id, result.lines, actor=ctx.actor, conn=conn,
+                keep_layout=True,
             )
             ctx.sheets.update_sheet(
                 campaign.id,
@@ -242,6 +248,12 @@ class ScanService:
                 after=result.as_report(),
                 conn=conn,
             )
+        # Une lecture change les quantités d'une feuille, donc le désaccord
+        # entre les deux passages : le recalculer ici, comme le fait la saisie
+        # à l'écran. Sans cela l'onglet Arbitrages décrivait la feuille d'avant
+        # le scan, et un arbitrage déjà tranché gardait sa signature sur des
+        # chiffres que le modèle venait de remplacer.
+        refresh_after_sheet_writes(ctx, campaign, [sheet_id])
         say(step="Terminé", sheets_total=1, sheets_done=1)
         return {
             "report": result.as_report(),
@@ -411,6 +423,14 @@ class ScanService:
                 "pass_no": 1 if sheet.pass_no is SheetPass.PASS_1 else 2,
                 "images": [images[p] for p in pages],
                 "image_mime": mime,
+                # Le même réglage que pour une feuille seule. Il manquait ici, et
+                # `allow_formulas` valant `False` par défaut, « 3*48+7 » écrit
+                # sur une feuille d'une pile devenait une case vide — sans
+                # erreur, sans avertissement, et sans que rien ne distingue ce
+                # cas d'une ligne que personne n'avait comptée. La pile est
+                # justement la voie normale : c'est elle qui perdait les
+                # quantités, pas la feuille seule qu'on scanne pour vérifier.
+                "allow_formulas": campaign.config.allow_formulas,
                 "id_factory": new_id,
             }
             return (
@@ -418,6 +438,7 @@ class ScanService:
                 if not expected_lines
                 else extractor.extract(
                     expected=extractor.expected_from_items(expected_lines, items),
+                    known_items=items,
                     **common,
                 )
             )
@@ -474,7 +495,8 @@ class ScanService:
                 # preuve qui les justifie.
                 with ctx.db.transaction() as conn:
                     ctx.sheets.replace_sheet_lines(
-                        sheet_id, result.lines, actor=ctx.actor, conn=conn
+                        sheet_id, result.lines, actor=ctx.actor, conn=conn,
+                        keep_layout=True,
                     )
                     ctx.sheets.update_sheet(
                         campaign.id,
@@ -501,6 +523,10 @@ class ScanService:
                     "overwroteCorrections": len(corrected),
                 })
 
+        # Même règle pour la pile, en une fois : chaque feuille lue a bougé.
+        refresh_after_sheet_writes(
+            ctx, campaign, [str(row["sheetId"]) for row in processed]
+        )
         report = {
             "pages": len(images),
             "sheetsProcessed": processed,

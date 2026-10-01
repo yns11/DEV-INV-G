@@ -36,7 +36,7 @@ from .import_batches import (
 
 #: Les quatre origines d'une entrée. Le mode dit d'où viennent les lignes, et
 #: seulement cela : ce qu'on en fait ensuite est identique pour les quatre.
-InputMode = Literal["file", "paste", "rows", "erp"]
+InputMode = Literal["file", "paste", "rows", "erp", "campaign"]
 
 __all__ = ["ImportParser", "InputMode", "_base_outcome", "_require_period"]
 
@@ -60,6 +60,7 @@ class ImportParser:
         sheet: str | None = None,
         text: str | None = None,
         rows: Sequence[dict[str, Any]] | None = None,
+        source_campaign_id: str | None = None,
         period_start: dt.date | None = None,
         period_end: dt.date | None = None,
         snapshot_date: dt.date | None = None,
@@ -102,12 +103,58 @@ class ImportParser:
                 if not text:
                     raise ValidationError("Le presse-papiers est vide.")
                 result = parse_clipboard(contract, text, max_rows=limit)
+            case "campaign":
+                # Une campagne porte déjà ce que ses grilles savent charger.
+                # Ses lignes rentrent **par la même porte** que le fichier et le
+                # collage : même validation, même essai à blanc, mêmes mappeurs,
+                # même audit, même grille modifiable ensuite. Un article absent
+                # du référentiel y reste une erreur de ligne, et un chargement
+                # qui remplace refuse toujours d'écrire un ensemble amputé.
+                result = parse_rows(
+                    contract,
+                    self._read_campaign(contract_key, source_campaign_id, limit=limit),
+                    max_rows=limit,
+                )
             case "rows":
                 result = parse_rows(contract, rows or [], max_rows=limit)
             case _:
                 raise ValidationError(f"Mode d'import inconnu : {mode!r}")
 
         return contract, result
+
+    def _read_campaign(
+        self, contract_key: str, source_campaign_id: str | None, *, limit: int
+    ) -> list[dict[str, Any]]:
+        """Les lignes d'une **autre** campagne, dans la forme de cette grille."""
+        from ..errors import NotFoundError, ValidationError
+        from .campaign_source import SUPPORTED, grid_dicts
+
+        if not source_campaign_id:
+            raise ValidationError("Aucune campagne source désignée.")
+        if contract_key not in SUPPORTED:
+            raise ValidationError(
+                "Cette grille ne se reprend pas d'une autre campagne.",
+                grid=contract_key,
+                supported=sorted(SUPPORTED),
+            )
+        source = self.ctx.campaigns.get(source_campaign_id)
+        if source is None:
+            raise NotFoundError(
+                "Campagne source introuvable.", sourceCampaignId=source_campaign_id
+            )
+        rows = grid_dicts(self.ctx, source, contract_key)
+        if len(rows) > limit:
+            # Même règle que les lectures ERP : une source plus grande que le
+            # plafond est **refusée en le disant**, jamais tronquée. Une grille
+            # amputée en silence, c'est un comptage contre un référentiel
+            # incomplet, et l'écart qui en sort n'est l'écart de rien.
+            raise ValidationError(
+                f"{source.code} porte {len(rows)} ligne(s) sur cette grille, "
+                f"au-delà du plafond de {limit}.",
+                rows=len(rows),
+                limit=limit,
+            )
+        return rows
 
     def _read_erp(
         self,

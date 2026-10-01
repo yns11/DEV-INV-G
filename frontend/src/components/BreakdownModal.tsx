@@ -11,6 +11,7 @@
  * fenêtres se seraient mises à diverger dès la deuxième.
  */
 
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { moneyShort, qty as fmtQty, signClass, signedMoney, signedNum } from '../lib/format'
@@ -26,6 +27,7 @@ export type BreakdownAspect =
   | 'wip_ok'
   | 'wip'
   | 'variance'
+  | 'generic'
 
 const ASPECT_LABELS: Record<BreakdownAspect, { title: string; hint: string }> = {
   book: {
@@ -35,6 +37,10 @@ const ASPECT_LABELS: Record<BreakdownAspect, { title: string; hint: string }> = 
   counted: {
     title: 'Quantité comptée',
     hint: 'Chaque journal, et la part GENERIQUE ventilée par origine.',
+  },
+  generic: {
+    title: 'Quantité consolidée GENERIQUE',
+    hint: 'Ce que chaque zone apporte au journal consolidé — quantité retenue, arbitrages appliqués.',
   },
   physical: {
     title: 'Stock physique',
@@ -77,10 +83,25 @@ export function BreakdownModal({
   locationId?: string
   onClose: () => void
 }) {
+  // Un emplacement désactivé n'existe plus pour la campagne — aucun journal,
+  // aucun indicateur — mais ses lignes de stock ERP restent en base. Les
+  // montrer au milieu des autres faisait annoncer à la fenêtre un total que la
+  // grille derrière elle ne portait pas. Masqués, donc, et rendus sur demande.
+  const [withDisabled, setWithDisabled] = useState(false)
   const query = useQuery({
-    queryKey: ['breakdown', campaignId, itemNumber, aspect, warehouseId, locationId],
+    queryKey: [
+      'breakdown', campaignId, itemNumber, aspect, warehouseId, locationId,
+      withDisabled,
+    ],
     queryFn: () =>
-      api.breakdown(campaignId, itemNumber, aspect, { warehouseId, locationId }),
+      api.breakdown(campaignId, itemNumber, aspect, {
+        warehouseId,
+        locationId,
+        // Le filtre est côté serveur : le total est la somme des lignes
+        // rendues, et masquer à l'affichage laisserait un total qui contredit
+        // ce qu'on lit en dessous.
+        includeDisabled: withDisabled || undefined,
+      }),
   })
   const label = ASPECT_LABELS[aspect]
   const signed = SIGNED.has(aspect)
@@ -147,6 +168,20 @@ export function BreakdownModal({
                 <span className={`num ${signed ? signClass(data.totalValue) : ''}`}>
                   {signed ? signedMoney(data.totalValue) : moneyShort(data.totalValue)}
                 </span>
+                {/* Le bouton n'apparaît que s'il y a quelque chose derrière :
+                    proposer d'afficher des lignes désactivées là où il n'y en a
+                    aucune ferait cliquer pour ne rien voir changer. */}
+                {(data.hiddenDisabled > 0 || withDisabled) && (
+                  <Button
+                    size="sm"
+                    variant={withDisabled ? 'primary' : 'ghost'}
+                    onClick={() => setWithDisabled((current) => !current)}
+                  >
+                    {withDisabled
+                      ? 'Masquer les emplacements désactivés'
+                      : `Afficher ${data.hiddenDisabled} emplacement(s) désactivé(s)`}
+                  </Button>
+                )}
               </div>
               {data.rows.length === 0 ? (
                 <EmptyState title="Rien à décomposer">

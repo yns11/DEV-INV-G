@@ -20,7 +20,8 @@ from typing import Any, cast
 
 from inventory.domain.enums import DataSource, LocationStatus, LocationType
 from inventory.domain.models import Location, LocationKey
-from inventory.services.import_service import ImportOutcome, ImportService
+from inventory.services.import_locations_retired import retire_stale_locations
+from inventory.services.import_service import ImportOutcome
 
 GENERIC = LocationKey(warehouse_id="B06VRAC", location_id="GENERIQUE")
 CAMPAIGN = cast(Any, SimpleNamespace(
@@ -78,16 +79,16 @@ def service(
             count_counted_lines=lambda cid, conn=None: counted_sheet_lines
         ),
     )
-    return ImportService(cast(Any, ctx)), calls
+    return cast(Any, ctx), calls
 
 
 class TestALocationTheNewSnapshotDroppedAndNobodyCounted:
     def test_its_journal_goes(self):
-        generic, calls = service(
+        ctx, calls = service(
             untouched={("B06", "ALLEE-B")}, journals={("B06", "ALLEE-B")}
         )
         outcome = ImportOutcome(target="book_stock")
-        removed, kept = generic._retire_stale_locations(
+        removed, kept = retire_stale_locations(ctx,
             CAMPAIGN, [key("B06", "ALLEE-B")], outcome=outcome, conn=None
         )
         assert removed == 1
@@ -97,21 +98,21 @@ class TestALocationTheNewSnapshotDroppedAndNobodyCounted:
     def test_the_location_is_disabled_with_it(self):
         """Un emplacement actif sans stock recréerait son journal au prochain
         chargement : le retirer à moitié ne retire rien."""
-        generic, calls = service(
+        ctx, calls = service(
             untouched={("B06", "ALLEE-B")}, journals={("B06", "ALLEE-B")}
         )
-        generic._retire_stale_locations(
+        retire_stale_locations(ctx,
             CAMPAIGN, [key("B06", "ALLEE-B")],
             outcome=ImportOutcome(target="book_stock"), conn=None,
         )
         assert calls["disabled"] == [(key("B06", "ALLEE-B"), LocationStatus.DISABLED)]
 
     def test_the_import_says_how_many(self):
-        generic, _ = service(
+        ctx, _ = service(
             untouched={("B06", "ALLEE-B")}, journals={("B06", "ALLEE-B")}
         )
         outcome = ImportOutcome(target="book_stock")
-        generic._retire_stale_locations(
+        retire_stale_locations(ctx,
             CAMPAIGN, [key("B06", "ALLEE-B")], outcome=outcome, conn=None
         )
         assert outcome.details["journalsRemoved"] == 1
@@ -122,9 +123,9 @@ class TestALocationSomebodyHasAlreadyCounted:
     """Recharger un snapshot n'est pas une décision de jeter du travail."""
 
     def test_its_journal_is_kept(self):
-        generic, calls = service(untouched=set(), journals={("QUAL", "LABO")})
+        ctx, calls = service(untouched=set(), journals={("QUAL", "LABO")})
         outcome = ImportOutcome(target="book_stock")
-        removed, kept = generic._retire_stale_locations(
+        removed, kept = retire_stale_locations(ctx,
             CAMPAIGN, [key("QUAL", "LABO")], outcome=outcome, conn=None
         )
         assert removed == 0
@@ -133,17 +134,17 @@ class TestALocationSomebodyHasAlreadyCounted:
 
     def test_its_location_stays_active(self):
         """Sinon le comptage ouvert disparaîtrait des écrans qui le montrent."""
-        generic, calls = service(untouched=set(), journals={("QUAL", "LABO")})
-        generic._retire_stale_locations(
+        ctx, calls = service(untouched=set(), journals={("QUAL", "LABO")})
+        retire_stale_locations(ctx,
             CAMPAIGN, [key("QUAL", "LABO")],
             outcome=ImportOutcome(target="book_stock"), conn=None,
         )
         assert calls["disabled"] == []
 
     def test_the_import_warns_and_names_it(self):
-        generic, _ = service(untouched=set(), journals={("QUAL", "LABO")})
+        ctx, _ = service(untouched=set(), journals={("QUAL", "LABO")})
         outcome = ImportOutcome(target="book_stock")
-        generic._retire_stale_locations(
+        retire_stale_locations(ctx,
             CAMPAIGN, [key("QUAL", "LABO")], outcome=outcome, conn=None
         )
         assert outcome.details["locationsKept"] == ["QUAL / LABO"]
@@ -152,12 +153,12 @@ class TestALocationSomebodyHasAlreadyCounted:
 
 class TestAMixedReload:
     def test_the_empty_one_goes_and_the_counted_one_stays(self):
-        generic, calls = service(
+        ctx, calls = service(
             untouched={("B06", "ALLEE-B")},
             journals={("B06", "ALLEE-B"), ("QUAL", "LABO")},
         )
         outcome = ImportOutcome(target="book_stock")
-        removed, kept = generic._retire_stale_locations(
+        removed, kept = retire_stale_locations(ctx,
             CAMPAIGN, [key("B06", "ALLEE-B"), key("QUAL", "LABO")],
             outcome=outcome, conn=None,
         )
@@ -167,8 +168,8 @@ class TestAMixedReload:
 
 class TestNothingToDo:
     def test_an_unchanged_snapshot_touches_nothing(self):
-        generic, calls = service(untouched=set(), journals=set())
-        removed, kept = generic._retire_stale_locations(
+        ctx, calls = service(untouched=set(), journals=set())
+        removed, kept = retire_stale_locations(ctx,
             CAMPAIGN, [], outcome=ImportOutcome(target="book_stock"), conn=None
         )
         assert (removed, kept) == (0, set())
@@ -176,8 +177,8 @@ class TestNothingToDo:
 
     def test_a_stale_location_that_never_had_a_journal_is_still_closed(self):
         """Rien à supprimer, mais l'emplacement n'a plus lieu d'être actif."""
-        generic, calls = service(untouched=set(), journals=set())
-        removed, kept = generic._retire_stale_locations(
+        ctx, calls = service(untouched=set(), journals=set())
+        removed, kept = retire_stale_locations(ctx,
             CAMPAIGN, [key("B06", "VIDE")],
             outcome=ImportOutcome(target="book_stock"), conn=None,
         )
@@ -227,13 +228,13 @@ class TestTheGeneriqueLocationWhoseCountingLivesInSheets:
     """
 
     def stale_generic(self, *, counted: int):
-        generic, calls = service(
+        ctx, calls = service(
             untouched={("B06VRAC", "GENERIQUE")},
             journals={("B06VRAC", "GENERIQUE")},
             counted_sheet_lines=counted,
         )
         outcome = ImportOutcome(target="book_stock")
-        removed, kept = generic._retire_stale_locations(
+        removed, kept = retire_stale_locations(ctx,
             CAMPAIGN, [GENERIC], outcome=outcome, conn=None
         )
         return removed, kept, calls, outcome

@@ -11,6 +11,7 @@ from ...domain.models import Campaign, CampaignConfig, Thresholds
 from ...services import CampaignService
 from ..deps import CampaignDep, campaign_service
 from ..responses import (
+    BulkDeletedResponse,
     CampaignPage,
     ClosureChecklistResponse,
     DeletedResponse,
@@ -20,6 +21,7 @@ from ..schemas import (
     CampaignSettingsRequest,
     CloneCampaignRequest,
     CreateCampaignRequest,
+    DeleteCampaignsRequest,
     TransitionRequest,
     UpdateThresholdsRequest,
 )
@@ -95,6 +97,24 @@ def clone_campaign(payload: CloneCampaignRequest, service: Service) -> dict[str,
         include_sheet_lines=payload.include_sheet_lines,
     )
     return campaign.model_dump(mode="json")
+
+
+@router.post(
+    "/bulk-delete", summary="Supprimer un lot de campagnes",
+    responses={200: {"model": BulkDeletedResponse}},
+)
+def delete_campaigns(
+    payload: DeleteCampaignsRequest, service: Service
+) -> dict[str, Any]:
+    """Retirer plusieurs campagnes d'un geste, sous les règles de l'unitaire.
+
+    **Tout ou rien** : le lot est vérifié en entier avant qu'une ligne ne
+    bouge, et une seule campagne qui n'appartient pas à l'appelant l'arrête en
+    la nommant. Une suppression à moitié appliquée laisserait à relire la liste
+    pour savoir ce qui a disparu.
+    """
+    codes = service.delete_many(payload.ids)
+    return {"deleted": len(codes), "codes": codes}
 
 
 @router.get(

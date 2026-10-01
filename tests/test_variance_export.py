@@ -167,3 +167,163 @@ class TestNumbersOnPaper:
         assert "par référence et emplacement" in detailed
         assert "par référence" in aggregated
         assert "et emplacement" not in aggregated
+
+
+# --------------------------------------------------------------------------- #
+# Le papier ne porte que ce qui s'écarte
+# --------------------------------------------------------------------------- #
+
+
+def _service(rows):
+    """Un `ReportService` dont les lignes sont données, sans base.
+
+    Ce qui est en cause est le tri que fait `variance_pdf` entre ce qui mérite
+    une rangée de papier et ce qui n'en mérite pas. D'où viennent les lignes est
+    une autre question, déjà tenue ailleurs : la faire intervenir ici ferait
+    dépendre ce contrôle du moteur d'écarts, et le ferait tomber le jour où
+    celui-ci bouge pour une raison qui n'est pas la sienne.
+    """
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from inventory.services.report_service import ReportService
+
+    ctx = SimpleNamespace(record=lambda **kwargs: "", settings=None)
+    service = ReportService(cast(Any, ctx))
+    service._variance_rows = lambda campaign, **kwargs: list(rows)  # type: ignore[method-assign]
+    return service
+
+
+def _campaign():
+    from inventory.domain.models import Campaign
+
+    return Campaign(
+        id="00000000-0000-0000-0000-000000000001",
+        code="INV-2026",
+        label="Inventaire annuel 2026",
+        count_date=dt.date(2026, 8, 31),
+        created_by="test",
+        created_at=dt.datetime(2026, 8, 1, tzinfo=dt.UTC),
+    )
+
+
+#: Une ligne qui tombe juste : comptée exactement comme l'ERP l'annonce.
+JUSTE = {
+    **ROW,
+    "itemNumber": "P-00099999",
+    "name": "Rondelle M6",
+    "countedQty": ROW["bookQty"],
+    "countedValue": ROW["bookValue"],
+    "varianceQty": 0.0,
+    "varianceValue": 0.0,
+    "physicalQty": ROW["bookQty"],
+    "countedVarianceQty": 0.0,
+    "countedVarianceValue": 0.0,
+}
+
+
+def _texte(payload: bytes) -> str:
+    pdfium = pytest.importorskip("pypdfium2")
+    document = pdfium.PdfDocument(payload)
+    return "\n".join(p.get_textpage().get_text_range() for p in document)
+
+
+class TestLePdfNImprimePasLesLignesSansEcart:
+    """Demandé tel quel, et pour une raison qui tient au support.
+
+    Une ligne qui tombe juste n'appelle aucune décision. Sur un écran elle se
+    fait oublier ; sur papier elle occupe une rangée, repousse d'autant ce qui en
+    demande une, et fait d'un document qu'on lit une liste qu'on parcourt. Sur
+    une campagne de cinq cents références dont la plupart tombent juste, le
+    document utile tenait sur deux pages noyées dans dix.
+    """
+
+    def test_la_ligne_sans_ecart_ne_figure_pas(self):
+        payload, _ = _service([ROW, JUSTE]).variance_pdf(_campaign())
+
+        texte = _texte(payload)
+        assert "P-00012345" in texte
+        assert "P-00099999" not in texte
+
+    def test_le_document_dit_combien_il_en_a_écartées(self):
+        """Un document qui retire des lignes en silence se lit comme complet."""
+        payload, _ = _service([ROW, JUSTE, JUSTE]).variance_pdf(_campaign())
+
+        texte = _texte(payload)
+        assert "2 ligne(s) sans écart de quantité" in texte
+        assert "Excel" in texte
+
+    def test_et_ne_le_confond_pas_avec_la_troncature(self):
+        """Deux omissions, deux phrases.
+
+        Le plafond coupe des écarts **réels**, qu'il faut aller chercher dans le
+        classeur ; les lignes sans écart, elles, n'appellent rien. Les additionner
+        sous une seule phrase ferait croire à des centaines d'écarts non imprimés
+        là où il n'y a que des lignes qui tombent juste.
+        """
+        texte = _texte(_service([ROW, JUSTE]).variance_pdf(_campaign())[0])
+
+        assert "sans écart de quantité" in texte
+        assert "d'écart plus faible" not in texte
+
+    def test_le_total_ne_compte_que_ce_qui_est_imprimé(self):
+        """Sinon le total du bas ne tombe pas sur la somme des rangées — le seul
+        chiffre d'un document qu'un lecteur peut vérifier lui-même."""
+        payload, _ = _service([ROW, JUSTE, JUSTE]).variance_pdf(_campaign())
+
+        assert "Total des 1 ligne(s) imprimée(s)" in _texte(payload)
+
+    def test_l_en_tête_ne_promet_plus_tous_les_écarts(self):
+        """« Tous les écarts » ferait chercher sur la page une référence qui n'y
+        est pas."""
+        texte = _texte(_service([ROW, JUSTE]).variance_pdf(_campaign())[0])
+
+        assert "écarts non nuls" in texte
+        assert "tous les écarts" not in texte
+
+    def test_le_filtre_passe_avant_le_plafond(self):
+        """Sans cela, les trois cents rangées imprimables pourraient être mangées
+        par des lignes à zéro, et le document annoncerait une troncature en
+        n'ayant rien à montrer."""
+        from inventory.services.report_service import VARIANCE_PDF_CEILING
+
+        lignes = [JUSTE] * VARIANCE_PDF_CEILING + [ROW]
+        payload, _ = _service(lignes).variance_pdf(_campaign())
+
+        texte = _texte(payload)
+        assert "P-00012345" in texte
+        assert "d'écart plus faible" not in texte
+
+    def test_une_campagne_qui_tombe_juste_partout_le_dit(self):
+        """Et ne rend pas un document d'une seule ligne de total."""
+        from inventory.errors import ValidationError
+
+        with pytest.raises(ValidationError) as refus:
+            _service([JUSTE, JUSTE]).variance_pdf(_campaign())
+
+        assert "aucune ligne ne présente d'écart" in str(refus.value)
+
+
+class TestLeClasseurLesGardeToutes:
+    """La contrepartie, et la raison pour laquelle le PDF peut se permettre de
+    filtrer : le classeur reste l'exhaustif. Les deux fichiers ont deux usages —
+    l'un se traite, l'autre se recoupe — et retirer les lignes des deux ferait
+    disparaître la preuve que le comptage a bien couvert ces références."""
+
+    def test_la_ligne_sans_ecart_est_dans_le_classeur(self):
+        import io
+
+        openpyxl = pytest.importorskip("openpyxl")
+
+        payload, _ = _service([ROW, JUSTE]).variance_export(_campaign())
+        classeur = openpyxl.load_workbook(io.BytesIO(payload))
+        texte = "\n".join(
+            str(cell.value)
+            for sheet in classeur.worksheets
+            for row in sheet.iter_rows()
+            for cell in row
+            if cell.value is not None
+        )
+
+        assert "P-00099999" in texte
+        assert "P-00012345" in texte

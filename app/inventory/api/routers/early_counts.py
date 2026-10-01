@@ -6,7 +6,7 @@ analyses entre plusieurs campagnes.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 
@@ -15,19 +15,14 @@ from ...services import DriftService, EarlyCountService
 from ..deps import CampaignDep, drift_service, early_count_service
 from ..responses import (
     DriftResponse,
-    DriftsResolved,
-    EarlyBatchResponse,
+    ErpJournalLineResponse,
     ErpJournalResponse,
     LabelAlert,
+    RecountedInPlace,
     ScopeCandidate,
     ScopeDeclared,
 )
-from ..schemas import (
-    DriftResolutionRequest,
-    EarlyBatchRequest,
-    JournalScopeRequest,
-    UnsealRequest,
-)
+from ..schemas import JournalScopeRequest, UnsealRequest
 
 router = APIRouter(
     prefix="/campaigns/{campaign_id}/early-counts", tags=["comptages avancés"]
@@ -55,6 +50,24 @@ def _keys(payload: JournalScopeRequest) -> list[LocationKey]:
 def list_erp_journals(campaign: CampaignDep, service: Early) -> list[ErpJournalResponse]:
     """Les journaux tels que l'ERP les tient, avec leur périmètre déclaré."""
     return service.list_journals(campaign.id)
+
+
+@router.get(
+    "/journals/{erp_journal_id}/lines",
+    summary="Lignes brutes d'un journal ERP",
+    responses={200: {"model": list[ErpJournalLineResponse]}},
+)
+def erp_journal_lines(
+    campaign: CampaignDep, service: Early, erp_journal_id: str
+) -> list[dict[str, Any]]:
+    """Ce que l'ERP a réellement envoyé, ligne par ligne.
+
+    L'application agrège vers l'emplacement ; l'agrégat ne dit pas d'où il
+    vient. Chaque ligne porte donc son appartenance au périmètre déclaré —
+    hors périmètre, elle est conservée comme trace d'un déplacement et **ne
+    compte pas**.
+    """
+    return service.journal_lines(campaign.id, erp_journal_id)
 
 
 @router.get(
@@ -98,88 +111,28 @@ def declare_scope(
     return {"locations": service.declare_scope(campaign, erp_journal_id, _keys(payload))}
 
 
-# ----------------------------------------------------------------------- lots
-
-
-@router.get(
-    "/batches",
-    summary="Lister les lots de comptage avancé",
-    responses={200: {"model": list[EarlyBatchResponse]}},
-)
-def list_batches(campaign: CampaignDep, service: Early) -> list[EarlyBatchResponse]:
-    return [
-        {
-            **batch.model_dump(mode="json", exclude={"locations"}),
-            "locations": [
-                {"warehouseId": k.warehouse_id, "locationId": k.location_id}
-                for k in batch.locations
-            ],
-            "isClosed": batch.is_closed,
-            "isSealed": batch.is_sealed,
-        }
-        for batch in service.list_batches(campaign.id)
-    ]
+# ----------------------------------------------------- descellement du journal
 
 
 @router.post(
-    "/batches",
-    summary="Ouvrir un lot de comptage avancé",
-    status_code=201,
-    responses={201: {"model": EarlyBatchResponse}},
+    "/journals/{erp_journal_id}/unseal",
+    summary="Desceller un journal de précomptage",
+    responses={200: {"model": ScopeDeclared}},
 )
-def create_batch(
-    campaign: CampaignDep, service: Early, payload: EarlyBatchRequest
-) -> EarlyBatchResponse:
-    batch = service.create_batch(
-        campaign,
-        code=payload.code,
-        label=payload.label,
-        counted_on=payload.counted_on,
-        erp_journal_ids=payload.erp_journal_ids,
-    )
-    return batch.model_dump(mode="json", exclude={"locations"})
+def unseal_journal(
+    campaign: CampaignDep,
+    service: Early,
+    erp_journal_id: str,
+    payload: UnsealRequest,
+) -> ScopeDeclared:
+    """Rendre ses emplacements au comptage général.
 
-
-@router.post(
-    "/batches/{batch_id}/close",
-    summary="Clore un lot",
-    responses={200: {"model": EarlyBatchResponse}},
-)
-def close_batch(
-    campaign: CampaignDep, service: Early, batch_id: str
-) -> EarlyBatchResponse:
-    batch = service.close_batch(campaign, batch_id)
-    return batch.model_dump(mode="json", exclude={"locations"})
-
-
-@router.post(
-    "/batches/{batch_id}/seal",
-    summary="Sceller un lot",
-    responses={200: {"model": EarlyBatchResponse}},
-)
-def seal_batch(
-    campaign: CampaignDep, service: Early, batch_id: str
-) -> EarlyBatchResponse:
-    """Poser la référence des emplacements du lot, et interdire qu'on y touche.
-
-    Refusé si l'un des journaux du périmètre n'est pas posté dans l'ERP : c'est
-    le postage qui réaligne l'ERP sur le physique compté, et le scellement tient
-    ce réalignement pour acquis.
+    Le périmètre part avec le scellement : sans périmètre, le journal n'a plus
+    d'emplacement à couvrir. Redéclarer est le geste qui rescelle.
     """
-    batch = service.seal_batch(campaign, batch_id)
-    return batch.model_dump(mode="json", exclude={"locations"})
-
-
-@router.post(
-    "/batches/{batch_id}/unseal",
-    summary="Desceller un lot",
-    responses={200: {"model": EarlyBatchResponse}},
-)
-def unseal_batch(
-    campaign: CampaignDep, service: Early, batch_id: str, payload: UnsealRequest
-) -> EarlyBatchResponse:
-    batch = service.unseal_batch(campaign, batch_id, reason=payload.reason)
-    return batch.model_dump(mode="json", exclude={"locations"})
+    return {
+        "locations": service.unseal(campaign, erp_journal_id, reason=payload.reason)
+    }
 
 
 # -------------------------------------------------------------------- dérives
@@ -191,45 +144,17 @@ def unseal_batch(
     responses={200: {"model": list[DriftResponse]}},
 )
 def list_drifts(campaign: CampaignDep, service: Drift) -> list[DriftResponse]:
-    """``ERP@J − physique@T0``, par article et emplacement scellé.
+    """``ERP@J − compté@T0``, par article et emplacement scellé.
 
-    Attendue nulle. ``blocksAnalysis`` marque celles qui arrêtent le passage en
-    analyse tant que personne n'a dit laquelle des deux quantités fait foi.
+    Attendue nulle, et seules les non nulles sont rendues. En affichage seul :
+    un précomptage est posté dans l'ERP avant la photo du jour J, donc ce qui
+    subsiste ici est ce qui a bougé entre les deux dates — rien à trancher, et
+    rien qui bloque.
     """
     return [
-        {
-            **drift.model_dump(mode="json"),
-            "driftQty": float(drift.drift_qty),
-            "isResolved": drift.is_resolved,
-            "blocksAnalysis": drift.blocks_analysis,
-        }
+        {**drift.model_dump(mode="json"), "driftQty": float(drift.drift_qty)}
         for drift in service.list_drifts(campaign.id)
     ]
-
-
-@router.post(
-    "/drifts/resolve",
-    summary="Trancher des dérives",
-    responses={200: {"model": DriftsResolved}},
-)
-def resolve_drifts(
-    campaign: CampaignDep, service: Drift, payload: DriftResolutionRequest
-) -> DriftsResolved:
-    """Quelle quantité fait foi au jour J ?
-
-    Deux réponses : conserver le comptage avancé — avec une cause, parce que la
-    campagne et l'ERP resteront alors en désaccord — ou recompter, ce qui rend
-    l'emplacement au comptage général.
-    """
-    return {
-        "resolved": service.resolve(
-            campaign,
-            payload.drift_ids,
-            payload.resolution,
-            cause_code=payload.cause_code,
-            comment=payload.comment,
-        )
-    }
 
 
 # ------------------------------------------------------------------ étiquettes
@@ -241,10 +166,33 @@ def resolve_drifts(
     responses={200: {"model": list[LabelAlert]}},
 )
 def label_alerts(campaign: CampaignDep, service: Early) -> list[LabelAlert]:
-    """Le seul contrôle qui descende au grain de l'étiquette.
+    """Le seul regard qui descende au grain de l'étiquette.
 
-    Il rattrape ce que la dérive ne voit pas : une pièce sortie d'un emplacement
+    Il montre ce que la dérive ne voit pas : une pièce sortie d'un emplacement
     scellé sans aucune transaction ERP laisse une dérive nulle, mais si elle est
     re-scannée ailleurs, son étiquette apparaît dans un second journal.
+
+    En affichage seul. La liste n'exclut rien d'aucune agrégation et n'appelle
+    aucune décision : elle dit ce qui a bougé entre le précomptage et le jour J,
+    à qui veut aller voir.
     """
     return service.label_alerts(campaign.id)
+
+
+@router.get(
+    "/recounted-in-place",
+    summary="Emplacements scellés recomptés par un second journal",
+    responses={200: {"model": list[RecountedInPlace]}},
+)
+def recounted_in_place(
+    campaign: CampaignDep, service: Early
+) -> list[RecountedInPlace]:
+    """Le pendant des étiquettes comptées ailleurs, et ce qui les en sort.
+
+    Deux journaux sur le même emplacement scellé ne décrivent pas un
+    déplacement : l'étiquette est là où elle doit être. Ils remplissaient
+    pourtant la liste des étiquettes comptées ailleurs de lignes dont les deux
+    colonnes d'emplacement portaient la même valeur. Ils sont ici, résumés, avec
+    le journal retenu et celui qui ne l'est pas.
+    """
+    return service.labels_recounted_in_place(campaign.id)

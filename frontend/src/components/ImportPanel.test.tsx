@@ -186,3 +186,58 @@ describe('Les références inconnues du référentiel', () => {
     expect(rejetees?.textContent).toContain('0')
   })
 })
+
+
+describe('Les quantités qui ne reviennent pas telles qu’elles sont parties', () => {
+  /* Le contrôle qui manquait. La consolidation GENERIQUE avait calculé
+     1 336,92 kg ; un typage automatique dans un tableur, entre l'extraction et
+     l'import, a renvoyé 1 337. L'import a accepté sans un mot, et l'écart ne
+     s'est vu que des jours plus tard. */
+
+  it('sont annoncées avec leur décompte', () => {
+    show({ details: { roundTripMismatches: 64 } })
+
+    expect(
+      screen.getByText(/64 quantité\(s\) ne reviennent pas/),
+    ).toBeTruthy()
+  })
+
+  it('disent que la valeur de l’application est conservée', () => {
+    /* Sans quoi le premier réflexe serait de tout recharger pour « réparer »,
+       et le rechargement est précisément ce qui a introduit l'écart. */
+    show({ details: { roundTripMismatches: 64 } })
+
+    expect(screen.getByText(/valeur de l’application est conservée/)).toBeTruthy()
+  })
+
+  it('ne disent rien quand tout coïncide', () => {
+    show({ details: { roundTripMismatches: 0 } })
+
+    expect(screen.queryByText(/ne reviennent pas/)).toBeNull()
+  })
+})
+
+describe('Un constat qui ne porte sur aucune ligne du fichier', () => {
+  it('ne renvoie pas le lecteur chercher une « ligne 0 »', () => {
+    /* Ces constats portent sur la campagne — un aller-retour qui ne coïncide
+       pas, un emplacement conservé — et non sur une ligne du fichier. */
+    show({
+      warnings: [
+        { line: 0, column: '', value: '', message: 'MASS-1 : l’application tient 1336.92' },
+      ],
+    } as never)
+
+    expect(screen.getByText(/MASS-1/)).toBeTruthy()
+    expect(screen.queryByText(/Ligne 0/)).toBeNull()
+  })
+
+  it('mais garde le numéro quand il en a un', () => {
+    show({
+      warnings: [
+        { line: 42, column: 'qty', value: '', message: 'quantité douteuse' },
+      ],
+    } as never)
+
+    expect(screen.getByText(/Ligne 42/)).toBeTruthy()
+  })
+})

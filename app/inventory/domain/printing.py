@@ -25,6 +25,7 @@ from .enums import CampaignStatus
 __all__ = [
     "PrintMode",
     "BLANK_ROWS_PER_SECTION",
+    "MAX_BLANK_ROWS_PER_SECTION",
     "available_print_modes",
     "print_refusal",
 ]
@@ -45,7 +46,22 @@ class PrintMode(StrEnum):
 #: article nobody listed can be written down instead of being remembered. Sized
 #: from what actually turns up: the line side is where surprises happen, the two
 #: WIP sections much less so.
-BLANK_ROWS_PER_SECTION = {"LINE_SIDE": 5, "WIP": 3, "WIP_OK": 2}
+#:
+#: Revu à la baisse — 5 et 3 au départ — sur les feuilles réelles : les lignes
+#: rendues ici sont des lignes qui restent sur la page, et une section qui se
+#: termine sur trois cases vides pousse la suivante sur un second feuillet que
+#: personne ne voulait imprimer.
+BLANK_ROWS_PER_SECTION = {"LINE_SIDE": 4, "WIP": 2, "WIP_OK": 2}
+
+
+#: Le plafond de lignes vierges qu'une section d'une zone en saisie libre peut
+#: demander. Cent vingt lignes remplissent près de trois pages A4 pour une seule
+#: section ; au-delà, ce qu'on imprime n'est plus une feuille de comptage.
+#:
+#: Zéro est une valeur pleine et entière, et c'est la raison d'être du réglage :
+#: une section à zéro **ne s'imprime pas**. Beaucoup de zones n'ont ni WIP ni
+#: WIP assemblé, et la feuille vierge sortait pourtant avec trois bandeaux.
+MAX_BLANK_ROWS_PER_SECTION = 120
 
 
 def available_print_modes(

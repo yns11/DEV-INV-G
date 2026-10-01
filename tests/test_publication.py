@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import ast
 import datetime as dt
+import importlib.util
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -41,6 +43,26 @@ SYNC = ROOT / "jobs" / "sync_erp_mirror.py"
 SHARED = ROOT / "jobs" / "lakebase.py"
 SCHEMA = ROOT / "sql" / "00_unity_catalog.sql"
 BUNDLE = ROOT / "databricks.yml"
+
+
+def load_job() -> Any:
+    """Le module du job, importé.
+
+    Les contrôles de ce fichier lisent du texte — le source, le DDL, le bundle —
+    parce que Spark et un workspace ne sont pas à leur portée. Mais les deux
+    tables de requêtes, elles, sont des données ordinaires : les lire comme des
+    objets plutôt que comme des chaînes évite d'épingler une mise en forme.
+
+    Le module n'importe ni psycopg ni pyspark au chargement ; ils sont demandés
+    dans ``main``, précisément pour que ce genre de lecture reste possible.
+    """
+    spec = importlib.util.spec_from_file_location("publish_campaign_to_delta", JOB)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+publish = load_job()
 
 
 def code_of(path: Path) -> str:
@@ -286,3 +308,181 @@ class TestOneImplementationTwoCallers:
         """Deux copies dérivent, et c'est ainsi que le défaut était né."""
         for job in (JOB, SYNC):
             assert "_read_write_endpoint" not in code_of(job), job.name
+
+
+# --------------------------------------------------------------------------- #
+# La cause publiée se nomme
+# --------------------------------------------------------------------------- #
+
+class TestThePublishedCauseHasAName:
+    """Un code d'écart que le catalogue ne sait pas traduire.
+
+    La table `variance_analysis` ne publiait que `cause_code` : « 1 », « 11 »,
+    « 99 ». Le référentiel qui les nomme — `assignable_cause`, quatorze lignes
+    de code et libellé — vivait uniquement dans Lakebase, et aucune des quatre
+    vues ne portait la cause. Un lecteur du catalogue, humain ou génératif,
+    voyait donc des causes qu'il lui était impossible de nommer, et un rapport
+    de synthèse disait « cause 11 » là où il fallait lire « écart consommation
+    (backflush) ».
+
+    Une archive qui ne se comprend pas sans la base opérationnelle qu'elle est
+    censée survivre n'est pas une archive.
+    """
+
+    def test_le_libelle_part_avec_la_decision(self):
+        assert "cause_label" in publish.QUERIES["variance_analysis"]
+        assert "cause_family" in publish.QUERIES["variance_analysis"]
+
+    def test_la_proposition_du_modele_se_nomme_aussi(self):
+        """Elle est affichée à côté de la décision ; elle se lit comme elle."""
+        assert "ai_suggested_cause_label" in publish.QUERIES["variance_analysis"]
+
+    @pytest.mark.parametrize(
+        "colonne", ["cause_label", "cause_family", "ai_suggested_cause_label"]
+    )
+    def test_les_trois_colonnes_existent_dans_le_ddl(self, colonne: str):
+        """La colonne est **déclarée**, et non simplement citée quelque part.
+
+        Chercher le nom dans le bloc laissait passer le retrait de
+        `cause_label` : `ai_suggested_cause_label` le contient comme sous-chaîne,
+        et la recherche restait vraie sur la mauvaise ligne. Une mutation l'a
+        montré. Ce qui est cherché est donc le début d'une déclaration.
+        """
+        sql = sql_without_comments()
+        bloc = sql[sql.index("CREATE TABLE IF NOT EXISTS variance_analysis ("):]
+        bloc = bloc[: bloc.index(";")]
+        declarations = {
+            ligne.split()[0] for ligne in bloc.splitlines() if ligne.startswith("    ")
+        }
+        assert colonne in declarations
+
+    def test_un_deploiement_existant_les_recoit(self):
+        """`CREATE TABLE IF NOT EXISTS` ne touche pas une table déjà là.
+
+        Sans ces trois `ALTER`, un catalogue déjà déployé garderait l'ancienne
+        forme et la publication y écrirait des libellés absents — le job aligne
+        sur le schéma cible et comble les colonnes manquantes par NULL, donc
+        rien n'échouerait. Une archive muette sur ses causes, sans un message.
+        """
+        sql = sql_without_comments()
+        for colonne in ("cause_label", "cause_family", "ai_suggested_cause_label"):
+            assert f"ADD COLUMNS ({colonne} STRING" in sql, colonne
+
+    def test_le_libelle_est_recopie_et_non_joint(self):
+        """Pourquoi la dénormalisation est ici la forme juste.
+
+        Le référentiel est de site : il n'est pas gelé avec la campagne.
+        Reformuler la cause 7 l'an prochain changerait rétroactivement ce que
+        dit un dossier clos — or un dossier clos est précisément ce qui ne doit
+        plus bouger. La ligne porte le libellé de l'époque ; la table de
+        référentiel porte celui d'aujourd'hui.
+        """
+        requete = publish.QUERIES["variance_analysis"]
+        assert "LEFT JOIN inventory.assignable_cause c" in requete
+        assert "LEFT JOIN inventory.assignable_cause s" in requete
+        # Et la jointure est faite **à la publication**, pas laissée à la vue :
+        # la colonne est matérialisée dans la table Delta.
+        assert "cause_label" in sql_without_comments()
+
+
+class TestTheSiteReferentialIsPublished:
+    """Le vocabulaire, et ce qu'il dit que les lignes ne disent pas."""
+
+    def test_il_a_sa_requete(self):
+        assert "assignable_cause" in publish.REFERENTIAL
+
+    def test_il_porte_la_description_et_la_famille(self):
+        """Ce que les libellés recopiés sur les lignes ne portent pas."""
+        requete = publish.REFERENTIAL["assignable_cause"]
+        for colonne in ("code", "label", "family", "description", "active"):
+            assert colonne in requete, colonne
+
+    def test_il_n_est_pas_dans_les_tables_de_campagne(self):
+        """Il n'appartient à aucune campagne, et sa table n'est pas partitionnée.
+
+        Le mettre dans `QUERIES` l'aurait fait écrire par la boucle qui passe
+        `campaign_id` en paramètre et pose un prédicat de remplacement sur la
+        partition — sur une table qui n'a ni l'un ni l'autre.
+        """
+        assert "assignable_cause" not in publish.QUERIES
+        sql = sql_without_comments()
+        bloc = sql[sql.index("CREATE TABLE IF NOT EXISTS assignable_cause ("):]
+        bloc = bloc[: bloc.index(";")]
+        assert "PARTITIONED BY" not in bloc
+
+    def test_la_table_existe_dans_le_ddl(self):
+        assert "CREATE TABLE IF NOT EXISTS assignable_cause (" in sql_without_comments()
+
+    def test_le_job_verifie_sa_presence_avant_de_lire_la_campagne(self):
+        """Comme les autres : découvrir une table absente au bout du travail
+        utile est l'échec le plus coûteux possible."""
+        arbre = ast.parse(JOB.read_text())
+        principale = next(
+            n for n in ast.walk(arbre)
+            if isinstance(n, ast.FunctionDef) and n.name == "main"
+        )
+        appel = next(
+            n for n in ast.walk(principale)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "_missing_tables"
+        )
+        assert "REFERENTIAL" in ast.unparse(appel.args[2])
+
+    def test_il_est_ecrit_sans_predicat_de_remplacement(self):
+        """Une table de site est réécrite en entier ; elle n'a pas de tranche."""
+        source = code_of(JOB)
+        bloc = source[source.index("for table, query in REFERENTIAL.items()"):][:800]
+        assert "replace_predicate=None" in bloc
+
+    def test_tout_ce_qui_porte_une_campagne_garde_son_predicat(self):
+        """La permission donnée au référentiel ne s'étend pas aux campagnes.
+
+        Un `replace_predicate=None` sur une table partitionnée réécrirait la
+        table entière : toutes les campagnes effacées par la publication d'une
+        seule.
+        """
+        source = code_of(JOB)
+        bloc = source[source.index("for table, query in QUERIES.items()"):]
+        bloc = bloc[: bloc.index("REFERENTIAL")]
+        assert "replace_predicate=campaign_slice" in bloc
+        assert "replace_predicate=None" not in bloc
+
+
+class TestTheVarianceViewCarriesTheCause:
+    """La vue qu'une synthèse atteint en premier, et où la cause manquait.
+
+    `v_variance` joignait le stock, le comptage, les ajustements et le
+    référentiel articles — jamais l'analyse. Demander « quelle est la principale
+    cause d'écart de cette campagne » obligeait donc à connaître une table que
+    la vue ne nomme pas, ce qu'un lecteur génératif ne devine pas.
+    """
+
+    def test_la_vue_joint_l_analyse(self):
+        vue = _view("v_variance")
+        assert "FROM variance_analysis" in vue
+        assert "LEFT JOIN analysis an" in vue
+
+    def test_elle_rend_le_code_le_libelle_et_la_famille(self):
+        vue = _view("v_variance")
+        for colonne in ("an.cause_code", "an.cause_label", "an.cause_family"):
+            assert colonne in vue, colonne
+
+    def test_et_le_commentaire_qui_porte_le_constat(self):
+        """« −412 pièces » est une mesure ; le commentaire est la décision."""
+        assert "an.cause_comment" in _view("v_variance")
+
+    def test_la_jointure_porte_l_identifiant_et_l_article(self):
+        """Sur le code métier, deux campagnes homonymes mélangeraient leurs
+        causes — la règle de toutes les jointures de ce fichier."""
+        vue = _view("v_variance")
+        bloc = vue[vue.index("LEFT JOIN analysis an"):]
+        assert "an.campaign_id" in bloc
+        assert "an.item_number" in bloc
+
+
+def _view(name: str) -> str:
+    """Le corps d'une vue, du CREATE au point-virgule."""
+    sql = sql_without_comments()
+    start = sql.index(f"CREATE OR REPLACE VIEW {name} AS")
+    return sql[start : sql.index(";", start)]

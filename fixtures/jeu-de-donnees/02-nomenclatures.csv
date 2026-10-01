@@ -1,0 +1,5 @@
+Assemblage (parent);Désignation assemblage;Composant (enfant);Quantité par assemblage;Unité;Statut
+SF-10;Stator nu;P-100;4;PCE;Actif
+SF-10;Stator nu;P-300;2;KG;Actif
+PF-01;Moteur assemblé;SF-10;1;PCE;Actif
+PF-01;Moteur assemblé;P-400;2;PCE;Actif

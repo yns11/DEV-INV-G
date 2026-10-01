@@ -118,6 +118,7 @@ structurellement impossible.
 |---|:---:|:---:|:---:|:---:|
 | Seuils | ✅ | ❌ | ❌ | ❌ |
 | Paramètres (formules) | ✅ | ✅ | ❌ | ❌ |
+| Gestionnaires, périmètres, portefeuilles et produits fabriqués | ✅ | ✅ | ✅ | ❌ |
 | Articles, nomenclatures | ✅ | ❌ | ❌ | ❌ |
 | Emplacements | ✅ | ✅ | ❌ | ❌ |
 | Stock ERP | ❌ | ✅ | ❌ | ❌ |
@@ -125,10 +126,58 @@ structurellement impossible.
 | Journaux de comptage | ❌ | ✅ | ❌ | ❌ |
 | Feuilles de comptage | ✅ | ✅ | ❌ | ❌ |
 | Ajustements | ❌ | ❌ | ✅ | ❌ |
-| Analyse des écarts | ❌ | ❌ | ✅ | ❌ |
+| Analyse des écarts | ❌ | ✅ | ✅ | ❌ |
 
 Les zones GENERIQUE restent créables pendant le comptage : une aire physique que
 personne n'avait listée est découverte à chaque campagne.
+
+L'**analyse des écarts** — la cause, le commentaire, la proposition du modèle —
+s'ouvre dès le comptage, et c'est la seule ligne de la matrice qui n'est pas
+alignée sur les ajustements. Un écart se commente quand on l'a sous les yeux, et
+c'est le jour J qu'on l'a : celui qui parcourt l'allée sait, ce jour-là, que la
+palette était en zone B, et il le saura moins bien trois semaines plus tard.
+Attendre le changement de phase pour noter ce qu'on vient de constater revient à
+ne pas le noter. Ce que cela n'ouvre pas est tout aussi net : les **ajustements**
+déplacent des quantités et attendent, eux, que le comptage soit clos. Rien de ce
+que la ligne ouvre n'entre dans les chiffres de la campagne.
+
+Les gestionnaires et leurs deux périmètres — l'affectation des entrepôts, donc
+de leurs journaux, et celle des zones — restent modifiables jusqu'à la clôture.
+Ils ont partagé la garde des seuils, et la règle n'était pas la leur : un seuil
+décide de ce qui sera signalé comme exception, un gestionnaire ne décide de
+rien. C'est un filtre — « mon périmètre » — et chacun garde le droit d'agir
+partout. Le figer ne protégeait aucun chiffre et fermait l'écran au seul moment
+où le personnel bouge : quelqu'un tombe malade le matin du jour J, un renfort
+arrive à midi, un entrepôt apparaît dans un import de l'après-midi.
+
+C'est pourquoi l'affectation d'une zone à un gestionnaire ne suit pas la ligne
+« Zones GENERIQUE » mais celle-ci : la zone se fige à l'analyse parce qu'elle
+porte des quantités relevées sur le terrain ; son gestionnaire, lui, est ce
+qu'on réajuste précisément quand l'analyse se répartit.
+
+Les **portefeuilles** (`item_portfolio`) sont sur la même ligne, et pour la même
+raison. Ils répartissent des *articles* là où les périmètres répartissent des
+*emplacements* — un acheteur suit ses références quel que soit l'entrepôt qui
+les range — et ce sont eux que lit la bascule « Mes références » du stock ERP,
+de l'écart backflush et des écarts. Une colonne sur `item` aurait été plus
+courte et fausse : le référentiel articles gèle à l'entrée en comptage, ce qui
+aurait rendu le portefeuille immodifiable au moment précis où il sert.
+
+Le **produit fabriqué** (`item_product`) est sur la même ligne de la matrice, et
+pour la même raison : le référentiel articles gèle à l'entrée en comptage, et
+c'est là qu'il ira quand les campagnes gelées d'aujourd'hui seront derrière nous.
+Il ne répartit rien — il *rapproche*. Deux références du même assemblage dont les
+écarts se compensent sont la signature d'une inversion au comptage, et
+`inventory.domain.inversion` la calcule : deux conditions sur des quantités, sans
+base et sans modèle. C'est un indice, jamais une correction.
+
+Une référence est suivie par **plusieurs personnes** — l'identité fait partie de
+la clé. La forme d'abord retenue, un propriétaire unique, avait pour elle d'être
+sans ambiguïté et décrivait mal l'organisation : un acheteur et un contrôleur de
+gestion regardent les mêmes articles sans que l'un soit le propriétaire de
+l'autre. Les décomptes s'en ressentent, et c'est le point à ne pas manquer en
+lisant ce modèle : « combien X en suit-il » compte des lignes, « combien sont
+couvertes » compte des références distinctes.
 
 ## 5. Provenance des données
 
@@ -142,9 +191,18 @@ qty_manual    NUMERIC(20,6)   -- ce qu'un humain a décidé
 ```
 
 Recharger l'export ERP dix fois dans la journée rafraîchit `qty_imported` sans
-jamais effacer une correction humaine. L'interface affiche les deux côte à côte
-avec un badge de provenance (`Import ERP`, `Saisie manuelle`, `Extraction IA`,
-`Consolidation`, `Arbitrage`, `Système`).
+jamais effacer une correction humaine, et **sans ajouter une seconde ligne à
+côté d'elle** : le rechargement retrouve la ligne de l'article et la met à jour
+en place. L'interface affiche les deux côte à côte avec un badge de provenance
+(`Import ERP`, `Saisie manuelle`, `Extraction IA`, `Consolidation`,
+`Arbitrage`, `Système`).
+
+Et il **compare**. Quand l'application tient déjà une quantité pour cet article
+— une consolidation, une correction — et que l'export n'en rapporte pas la même,
+le rapport d'import le dit et le compte. Il ne suppose rien de la cause : un
+arrondi dans un tableur en amont, un collage partiel, une correction faite dans
+l'ERP seulement. Il ne corrige rien non plus — la valeur de l'application prime
+et reste en place, l'exploitant tranche.
 
 ### Une commande métier écrit tout, ou rien
 

@@ -13,6 +13,10 @@
 --
 -- Rejouable sans risque : tout est en CREATE ... IF NOT EXISTS ou CREATE OR
 -- REPLACE VIEW. Les tables déjà présentes et leurs données ne sont pas touchées.
+-- Seule exception, les ALTER TABLE ... ADD COLUMNS qui portent une colonne
+-- ajoutée après coup : ADD COLUMNS n'admet pas de IF NOT EXISTS dans Databricks
+-- SQL, et c'est scripts/apply_unity_catalog.py qui les rejoue sans erreur quand
+-- la colonne est déjà là.
 --
 -- The catalog itself is NOT created here: this project only has rights to add
 -- schemas, tables and volumes inside the existing `emotors_data_champions`.
@@ -104,8 +108,7 @@ CREATE TABLE IF NOT EXISTS book_stock_snapshot (
     unit         STRING,
     unit_cost    DECIMAL(20,2) NOT NULL COMMENT 'Coût figé au moment du snapshot',
     value        DECIMAL(20,2) NOT NULL COMMENT 'qty × unit_cost, matérialisé pour l''analyse',
-    reference_date DATE COMMENT 'Date de la référence. Le jour J pour la plupart des lignes, la date du précomptage pour un emplacement scellé : une campagne qui précompte a une référence composite.',
-    early_batch_id STRING COMMENT 'Le lot de comptage avancé dont vient cette référence, s''il y en a un',
+    reference_date DATE COMMENT 'Le jour de la photo. La référence est unique et vaut pour tout emplacement, précompté ou non : un précomptage est posté dans l''ERP avant que la photo ne soit prise, donc elle l''intègre déjà.',
     published_at TIMESTAMP     NOT NULL
 )
 USING DELTA
@@ -163,7 +166,7 @@ CREATE TABLE IF NOT EXISTS count_result (
     erp_journal_number STRING COMMENT 'Le journal ERP d''où vient la ligne',
     label_count   INT COMMENT 'Nombre de lignes ERP — donc d''étiquettes — agrégées ici',
     sealed_at     TIMESTAMP COMMENT 'Renseigné pour un emplacement précompté et scellé',
-    early_batch_id STRING,
+    sealed_by     STRING,
     published_at  TIMESTAMP NOT NULL
 )
 USING DELTA
@@ -174,52 +177,35 @@ COMMENT 'Comptages retenus, avec la valeur importée et la correction humaine c�
 -- Comptages avancés
 -- --------------------------------------------------------------------------
 -- Compter certains emplacements avant le jour J, sans éclater le dossier entre
--- plusieurs campagnes. Ces trois tables sont ce qui rend le raisonnement
--- rejouable : sans elles, l'archive ne dirait ni contre quoi un emplacement
--- précompté a été compté, ni ce qu'on a décidé de l'écart constaté le jour J.
-
-CREATE TABLE IF NOT EXISTS early_count_batch (
-    campaign_id   STRING NOT NULL,
-    campaign_code STRING NOT NULL,
-    batch_id      STRING NOT NULL,
-    code          STRING NOT NULL,
-    label         STRING,
-    counted_on    DATE COMMENT 'La date du comptage physique du lot',
-    opened_at     TIMESTAMP,
-    opened_by     STRING,
-    closed_at     TIMESTAMP,
-    closed_by     STRING,
-    sealed_at     TIMESTAMP COMMENT 'Le scellement : à partir de là, le comptage ne bouge plus sans descellement tracé',
-    sealed_by     STRING,
-    published_at  TIMESTAMP NOT NULL
-)
-USING DELTA
-PARTITIONED BY (campaign_id)
-COMMENT 'Les lots de comptage avancé d''une campagne.';
+-- plusieurs campagnes. Ces deux tables sont ce qui rend le raisonnement
+-- rejouable : sans elles, l'archive ne dirait ni quels emplacements ont été
+-- comptés en avance, ni ce que l'ERP en disait le jour J.
+--
+-- Le précomptage n'a pas d'objet propre : le journal ERP *est* le précomptage,
+-- et c'est `erp_journal_scope` qui dit ce qu'il couvre.
+--
+-- Rien ne s'y calcule. Un précomptage est posté dans l'ERP avant que la photo
+-- du jour J ne soit prise, donc la photo l'a déjà intégré, et la référence de
+-- la campagne reste unique. Ce qui subsiste ici est ce qui a bougé entre les
+-- deux dates — un indice, aucune décision. La table des issues d'étiquette est
+-- partie avec les décisions qu'elle portait.
 
 CREATE TABLE IF NOT EXISTS early_count_drift (
     campaign_id     STRING NOT NULL,
     campaign_code   STRING NOT NULL,
-    batch_id        STRING,
+    erp_journal_id  STRING COMMENT 'Le journal de précomptage dont vient le comptage : une dérive ne parle pas d''un emplacement, elle parle du relevé que ce journal-là porte',
     warehouse_id    STRING NOT NULL,
     location_id     STRING NOT NULL,
     item_number     STRING NOT NULL,
-    qty_erp_t0      DECIMAL(20,6) COMMENT 'La référence : stock ERP d''avant le précomptage',
-    qty_physical_t0 DECIMAL(20,6) COMMENT 'Compté + ajusté à T0',
-    qty_erp_j       DECIMAL(20,6) COMMENT 'Stock ERP du snapshot général, gelé le jour J',
-    drift_qty       DECIMAL(20,6) COMMENT 'ERP@J − physique@T0. Attendue nulle : l''emplacement était balisé, et poster son journal a réaligné l''ERP sur le physique compté.',
+    qty_counted_t0  DECIMAL(20,6) COMMENT 'Ce que le précomptage a compté. Compté, et rien d''autre : l''ajustement des précomptages n''existe pas.',
+    qty_erp_j       DECIMAL(20,6) COMMENT 'Stock ERP du snapshot général, gelé le jour J — la référence unique de la campagne',
+    drift_qty       DECIMAL(20,6) COMMENT 'ERP@J − compté@T0. Attendue nulle : poster le journal du précomptage a réaligné l''ERP avant que la photo du jour J ne soit prise.',
     drift_value     DECIMAL(20,2),
-    is_material     BOOLEAN COMMENT 'Aux seuils de la campagne, pas à un réglage à part',
-    resolution      STRING COMMENT 'KEEP_EARLY (le comptage avancé fait foi) | RECOUNT (l''emplacement rejoint le comptage général)',
-    cause_code      STRING COMMENT 'Obligatoire pour KEEP_EARLY : cette issue laisse la campagne et l''ERP en désaccord',
-    comment         STRING,
-    resolved_at     TIMESTAMP,
-    resolved_by     STRING,
     published_at    TIMESTAMP NOT NULL
 )
 USING DELTA
 PARTITIONED BY (campaign_id)
-COMMENT 'L''écart entre ce que l''ERP dit d''un emplacement scellé le jour J et le physique qui y a été posté.';
+COMMENT 'Ce qui a bougé entre un précomptage et le jour J. Un indice, pas un écart : l''écart d''inventaire se mesure contre le stock ERP du jour J.';
 
 CREATE TABLE IF NOT EXISTS erp_journal_scope (
     campaign_id    STRING NOT NULL,
@@ -273,18 +259,62 @@ CREATE TABLE IF NOT EXISTS variance_analysis (
     campaign_id        STRING NOT NULL,
     campaign_code      STRING NOT NULL,
     item_number        STRING NOT NULL,
-    cause_code         STRING COMMENT 'Décision humaine',
+    cause_code         STRING COMMENT 'Décision humaine : code du référentiel de site (1 à 13, 99)',
+    cause_label        STRING COMMENT 'Libellé de la cause retenue, tel qu''il était à la publication',
+    cause_family       STRING COMMENT 'Famille de la cause retenue, ex. « Counting mistakes »',
     comment            STRING,
     analyst            STRING,
     accepted           BOOLEAN,
     ai_suggested_cause STRING COMMENT 'Proposition IA, jamais confondue avec la décision',
+    ai_suggested_cause_label STRING COMMENT 'Libellé de la proposition IA',
     ai_confidence      FLOAT,
     ai_rationale       STRING,
     published_at       TIMESTAMP NOT NULL
 )
 USING DELTA
 PARTITIONED BY (campaign_id)
-COMMENT 'Analyse des écarts : la cause retenue par un humain et, à côté, ce que l''IA avait proposé.';
+COMMENT 'Analyse des écarts : la cause retenue par un humain, nommée, et à côté ce que l''IA avait proposé.';
+
+-- Les libellés sont **recopiés** sur la ligne, et non laissés à une jointure sur
+-- le référentiel ci-dessous. Le référentiel est de site : il n'est pas gelé avec
+-- la campagne, et reformuler la cause 7 l'an prochain changerait rétroactivement
+-- ce que dit un dossier clos. Une ligne porte donc le libellé de l'époque ; la
+-- table `assignable_cause` porte celui d'aujourd'hui.
+
+-- Les trois colonnes ci-dessus ont été ajoutées après coup. Un déploiement
+-- existant ne les recevrait pas du CREATE, que `IF NOT EXISTS` rend inopérant
+-- dès que la table est là — et publier dans un catalogue qui n'a pas la colonne
+-- écrirait une archive muette sur ses causes sans que rien ne le signale.
+--
+-- `ADD COLUMNS` n'admet pas d'`IF NOT EXISTS` dans Databricks SQL : c'est
+-- `scripts/apply_unity_catalog.py` qui rend ces trois instructions rejouables,
+-- en traitant « la colonne existe déjà » comme un succès pour elles seules.
+ALTER TABLE variance_analysis
+    ADD COLUMNS (cause_label STRING COMMENT 'Libellé de la cause retenue, tel qu''il était à la publication');
+ALTER TABLE variance_analysis
+    ADD COLUMNS (cause_family STRING COMMENT 'Famille de la cause retenue, ex. « Counting mistakes »');
+ALTER TABLE variance_analysis
+    ADD COLUMNS (ai_suggested_cause_label STRING COMMENT 'Libellé de la proposition IA');
+
+-- --------------------------------------------------------------------------
+-- Site referential: the standard root causes, by name
+-- --------------------------------------------------------------------------
+-- Pas de `campaign_id`, et c'est le point : ce vocabulaire est celui du site, et
+-- il est réécrit en entier à chaque publication. Il répond à ce que les lignes
+-- d'analyse ne peuvent pas dire — la description longue d'une cause, et **les
+-- causes que personne n'a retenues**, qui est une information de synthèse à part
+-- entière.
+CREATE TABLE IF NOT EXISTS assignable_cause (
+    code          STRING NOT NULL COMMENT 'Code tel qu''il est saisi : 1 à 13, puis 99',
+    label         STRING NOT NULL COMMENT 'Libellé courant, ex. « Écart consommation (backflush) »',
+    family        STRING COMMENT 'Regroupement, ex. « Goods incoming », « Counting mistakes »',
+    description   STRING COMMENT 'Ce que la cause couvre, quand elle n''est pas évidente',
+    display_order INT COMMENT 'Ordre de présentation à l''écran',
+    active        BOOLEAN COMMENT 'Faux : cause conservée pour l''historique, plus proposée',
+    published_at  TIMESTAMP NOT NULL
+)
+USING DELTA
+COMMENT 'Référentiel de site des causes d''écart — le vocabulaire courant, toutes campagnes confondues. Les campagnes publiées portent, elles, le libellé qui avait cours au moment de la décision.';
 
 CREATE TABLE IF NOT EXISTS audit_event (
     campaign_id   STRING,
@@ -331,6 +361,21 @@ adjusted AS (
     SELECT campaign_id, item_number, SUM(qty) AS adjusted_qty
     FROM adjustment
     GROUP BY campaign_id, item_number
+),
+-- La décision humaine sur l'écart. Seule CTE qui n'agrège rien, et elle n'en a
+-- pas besoin : `variance_analysis` porte une ligne par (campagne, article) —
+-- c'est un index unique côté Lakebase — donc la jointure ne peut pas démultiplier
+-- les écarts.
+--
+-- Cette vue est le point d'entrée naturel de toute synthèse de campagne, et la
+-- cause n'y était pas : ni le code, ni le libellé, ni le commentaire. Demander
+-- « quelle est la principale cause d'écart de cette campagne » obligeait à
+-- connaître une table que la vue ne nomme pas.
+analysis AS (
+    SELECT campaign_id, item_number, cause_code, cause_label, cause_family,
+           comment AS cause_comment, accepted AS cause_accepted,
+           ai_suggested_cause, ai_suggested_cause_label
+    FROM variance_analysis
 )
 SELECT
     COALESCE(b.campaign_id, c.campaign_id)                  AS campaign_id,
@@ -353,7 +398,14 @@ SELECT
     (COALESCE(c.counted_qty, 0) - COALESCE(b.book_qty, 0) - COALESCE(a.adjusted_qty, 0))
         * COALESCE(b.unit_cost, i.std_price, 0)             AS residual_value,
     b.item_number IS NULL                                   AS counted_only,
-    c.item_number IS NULL                                   AS book_only
+    c.item_number IS NULL                                   AS book_only,
+    an.cause_code,
+    an.cause_label,
+    an.cause_family,
+    an.cause_comment,
+    an.cause_accepted,
+    an.ai_suggested_cause,
+    an.ai_suggested_cause_label
 FROM book b
 FULL OUTER JOIN counted c
   ON b.campaign_id = c.campaign_id AND b.item_number = c.item_number
@@ -362,10 +414,13 @@ LEFT JOIN adjusted a
  AND COALESCE(b.item_number, c.item_number) = a.item_number
 LEFT JOIN item_snapshot i
   ON COALESCE(b.campaign_id, c.campaign_id) = i.campaign_id
- AND COALESCE(b.item_number, c.item_number) = i.item_number;
+ AND COALESCE(b.item_number, c.item_number) = i.item_number
+LEFT JOIN analysis an
+  ON COALESCE(b.campaign_id, c.campaign_id) = an.campaign_id
+ AND COALESCE(b.item_number, c.item_number) = an.item_number;
 
 COMMENT ON VIEW v_variance IS
-    'Écarts réconciliés par article. Recalculable à l''identique depuis les snapshots.';
+    'Écarts réconciliés par article, avec la cause retenue et son libellé. Recalculable à l''identique depuis les snapshots.';
 
 -- Campaign-level KPIs. The three reliability measures answer three different
 -- questions and are deliberately kept apart — see docs/02-data-model.md.

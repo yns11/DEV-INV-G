@@ -226,7 +226,7 @@ class ManagerService:
         # d'autres s'accorderait le droit d'en accorder, et rien ne
         # l'empêcherait d'en retirer le propriétaire.
         ctx.require_owner(campaign, "déclarer les gestionnaires")
-        ctx.guard(campaign, "thresholds")  # configuration follows the same gate
+        ctx.guard(campaign, "managers")
         known = {m.code for m in self.list_managers(campaign)}
         managers: list[Manager] = []
         seen_actors: dict[str, str] = {}
@@ -274,7 +274,7 @@ class ManagerService:
     ) -> int:
         """Attach warehouses — and with them their journals — to managers."""
         ctx = self.ctx
-        ctx.guard(campaign, "thresholds")
+        ctx.guard(campaign, "managers")
         known = {m.code for m in self.list_managers(campaign)}
         cleaned: dict[str, str] = {}
         for warehouse, code in assignments.items():
@@ -308,7 +308,11 @@ class ManagerService:
     ) -> int:
         """Attach GENERIQUE zones to a manager; an empty code detaches them."""
         ctx = self.ctx
-        ctx.guard(campaign, "zones")
+        # `managers`, et non `zones` : ce que cette méthode écrit est un
+        # périmètre, pas la zone. Sous la garde des zones, réaffecter une
+        # zone devenait impossible dès l'analyse, où la zone est bien gelée
+        # mais où répartir le travail reste tout l'enjeu.
+        ctx.guard(campaign, "managers")
         code = normalise_key(str(manager_code or "")).replace(" ", "_")
         known = {m.code for m in self.list_managers(campaign)}
         if code and code not in known:

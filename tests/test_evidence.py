@@ -693,19 +693,42 @@ class TestWhichPathsArchive:
     """
 
     def importers(self) -> dict[str, str]:
-        """Le corps de chaque importeur public, par cible."""
+        """Le corps de chaque importeur public, par cible — façade comprise.
+
+        `ImportService` reste la liste qui fait autorité : c'est elle que l'API
+        appelle, et un importeur qui n'y figure pas n'est atteint par personne.
+        Mais le fichier a un plafond de lignes, et un importeur y déménage dans
+        son propre module en ne laissant qu'un renvoi d'une ligne. Lire la seule
+        façade déclarerait alors coupable un importeur qui archive — et, le jour
+        où le renvoi porterait le mot, innocenterait celui qui ne le fait pas.
+
+        On suit donc la délégation : quand le corps ne contient pas l'appel, on
+        cherche la fonction de même nom ailleurs dans `services/` et on l'ajoute.
+        """
         import ast
         from pathlib import Path
 
         import inventory
 
-        path = Path(inventory.__file__).parent / "services" / "import_service.py"
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
+        services = Path(inventory.__file__).parent / "services"
+        source = (services / "import_service.py").read_text(encoding="utf-8")
         out: dict[str, str] = {}
-        for node in ast.walk(tree):
+        for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.FunctionDef) and node.name.startswith("import_"):
                 out[node.name] = ast.get_source_segment(source, node) or ""
+
+        ailleurs: dict[str, str] = {}
+        for path in sorted(services.glob("*.py")):
+            if path.name == "import_service.py":
+                continue
+            texte = path.read_text(encoding="utf-8")
+            for node in ast.walk(ast.parse(texte)):
+                if isinstance(node, ast.FunctionDef) and node.name in out:
+                    ailleurs[node.name] = ast.get_source_segment(texte, node) or ""
+
+        for name, body in out.items():
+            if "batches.archive(" not in body and name in ailleurs:
+                out[name] = body + "\n" + ailleurs[name]
         return out
 
     def test_every_importer_was_found(self):
@@ -715,7 +738,9 @@ class TestWhichPathsArchive:
     def test_every_importer_archives_its_file(self):
         guilty = [
             name for name, body in self.importers().items()
-            if "self.batches.archive(" not in body
+            # `self.` dans une méthode, `service.` dans un importeur déporté :
+            # le receveur change, l'appel est le même.
+            if "batches.archive(" not in body
         ]
         assert not guilty, (
             "Ces importeurs ne déposent jamais leur fichier dans le volume : "

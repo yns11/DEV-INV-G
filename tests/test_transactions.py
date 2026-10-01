@@ -42,6 +42,7 @@ from inventory.domain.models import CountSheetLine, Zone
 from inventory.services.consolidation_service import ConsolidationService
 from inventory.services.counting_service import CountingService
 from inventory.services.generic_service import GenericService
+from inventory.services.zone_service import ZoneService
 
 CAMPAIGN_ID = "camp-1"
 
@@ -91,6 +92,11 @@ def counting_service() -> tuple[CountingService, Any, Any]:
         delete_line=delete_line,
         set_status=set_status,
     )
+    # Le recalcul de l'arbitrage écrit dans sa propre transaction.
+    ctx.arbitrations = SimpleNamespace(
+        list_arbitrations=lambda cid, **kw: [],
+        upsert_arbitrations=lambda lines, **kw: len(lines),
+    )
     ctx.record = lambda **kw: ledger.note("audit") or "evt"
     ctx.forget_progress = lambda cid=None: None
     ctx.progress = lambda c: SimpleNamespace(
@@ -129,6 +135,27 @@ class TestUneSaisieEtSaTrace:
 # --------------------------------------------------------------------------- #
 
 def generic_service() -> tuple[GenericService, Any, Any]:
+    ledger, ctx = _zones_and_sheets()
+    service = GenericService(ctx)
+    service.refresh_arbitrations = (  # type: ignore[method-assign]
+        lambda campaign, zone_id=None: 0
+    )
+    return service, ledger, ctx
+
+
+def zone_service() -> tuple[ZoneService, Any, Any]:
+    """Le même contexte, vu par le service qui administre les zones.
+
+    Les deux écrivent dans la même base et par la même transaction ; ce qui les
+    sépare est le moment où l'on s'en sert, pas la discipline d'écriture — et
+    c'est cette discipline que ce module contrôle.
+    """
+    ledger, ctx = _zones_and_sheets()
+    return ZoneService(ctx), ledger, ctx
+
+
+def _zones_and_sheets() -> tuple[Any, Any]:
+    """Le contexte que les deux services partagent, et son journal d'écritures."""
     ctx = cast(Any, SimpleNamespace(actor="chef@usine"))
     ledger = with_transactions(ctx)
 
@@ -167,17 +194,25 @@ def generic_service() -> tuple[GenericService, Any, Any]:
         source=DataSource.MANUAL,
     )
     ctx.sheets = SimpleNamespace(
-        list_zones=lambda cid: [zone],
+        list_zones=lambda cid, **kw: [zone],
         create_zone=create_zone,
         ensure_sheets=ensure_sheets,
         set_zone_closed=set_zone_closed,
-        list_arbitrations=lambda cid: [],
         get_sheet=lambda sid: sheet,
-        list_sheet_lines=lambda sid: [],
-        lines_by_sheet=lambda cid: {"s-1": [existing]},
+        # Le service relit les feuilles pour savoir de quelles zones les lignes
+        # supprimées viennent : le document se décide sur le passage 1 et vaut
+        # pour les deux.
+        list_sheets=lambda cid, **kw: [sheet],
+        list_sheet_lines=lambda sid, **kw: [],
+        lines_by_sheet=lambda cid, **kw: {"s-1": [existing]},
         delete_sheet_line=delete_sheet_line,
         replace_sheet_lines=replace_sheet_lines,
         upsert_sheet_lines=upsert_sheet_lines,
+    )
+    # Le recalcul de l'arbitrage écrit dans sa propre transaction.
+    ctx.arbitrations = SimpleNamespace(
+        list_arbitrations=lambda cid, **kw: [],
+        upsert_arbitrations=lambda lines, **kw: len(lines),
     )
     ctx.record = lambda **kw: ledger.note("audit") or "evt"
     ctx.forget_progress = lambda cid=None: None
@@ -185,16 +220,14 @@ def generic_service() -> tuple[GenericService, Any, Any]:
         items=10, zones=1, book_stock_lines=5, book_stock_frozen=True
     )
     with_access(ctx)
-    service = GenericService(ctx)
-    service.refresh_arbitrations = lambda campaign, zone_id=None: 0  # type: ignore[method-assign]
-    return service, ledger, ctx
+    return ledger, ctx
 
 
 class TestUneZoneEtSesFeuilles:
     """Une zone sans feuilles est une zone que rien ne permet de compter."""
 
     def test_zone_feuilles_et_audit_partagent_la_transaction(self):
-        service, ledger, _ = generic_service()
+        service, ledger, _ = zone_service()
         service.create_zone(campaign(CampaignStatus.PREPARATION), code="Z9")
         assert list(ledger.writes) == ["zone", "feuilles", "audit"]
         assert ledger.all_writes_inside_one_transaction(), ledger.writes

@@ -152,6 +152,22 @@ class ImportBatchRepository(_Base):
             (batch_id, campaign_id),
         )
 
+    def replayable(self, campaign_id: str, batch_id: str) -> dict[str, Any] | None:
+        """Ce qu'il faut pour repasser ce lot : sa cible, son fichier, son rapport.
+
+        Le rapport vient avec, et pas par curiosité : c'est lui qui porte les
+        bornes de période de l'écart backflush, que la table des lots ne range
+        nulle part. Sans elles, le rejeu porterait sur la période du jour.
+
+        Filtré sur la campagne autant que sur le lot, pour la même raison que
+        `evidence_of` : l'identifiant vient de l'URL.
+        """
+        return self._fetch_one(
+            "SELECT target, filename, storage_path, report FROM import_batch "
+            "WHERE id = %s AND campaign_id = %s AND storage_path IS NOT NULL",
+            (batch_id, campaign_id),
+        )
+
     def list(self, campaign_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
         return self._fetch_all(
             "SELECT id, target, filename, storage_path, rows_received, rows_accepted, "

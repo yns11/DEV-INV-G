@@ -51,6 +51,16 @@ SHIPPED = {
     "023_count_sheet_line_formula": "e7cbaa4c82f9",
     "024_erp_stock_snapshot_not_unique": "94becc3a8b0d",
     "025_comptages_avances": "914deaeedee8",
+    "026_le_journal_est_le_precomptage": "b2d501a6d6b7",
+    "027_feuille_mise_en_page": "ad8ffe2f1340",
+    "028_designation_de_feuille": "fbef81b41ec4",
+    "029_une_seule_reference": "990fd7f3016c",
+    "030_zone_lignes_vierges": "089e21c83682",
+    "031_ligne_erp_sans_numero": "8404b352948a",
+    "032_doublons_de_comptage_fusionnes": "9bfc9907e03e",
+    "033_portefeuilles_d_articles": "dcba49923663",
+    "034_portefeuilles_partages": "a85e2d86e6d2",
+    "035_produit_fabrique": "0ea385f80a59",
 }
 
 

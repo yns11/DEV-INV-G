@@ -52,6 +52,7 @@ import {
   Kpi,
   Skeleton,
 } from '../components/ui'
+import { MINE_EMPTY, MineToggle } from '../components/MineToggle'
 
 /**
  * Les trois lectures d'un écart backflush, et leur pilule.
@@ -75,9 +76,12 @@ export function Backflush() {
   const contract: GridContract | undefined = contracts.data?.find(
     (c) => c.key === 'backflush',
   )
+  // Le filtre est dans la clé : sans lui, la vue filtrée et la vue entière se
+  // partageraient le même cache et l'une servirait les chiffres de l'autre.
+  const [mine, setMine] = useState(false)
   const view = useQuery({
-    queryKey: ['backflush', campaignId],
-    queryFn: () => api.backflush(campaignId),
+    queryKey: ['backflush', campaignId, mine],
+    queryFn: () => api.backflush(campaignId, { mine: mine || undefined }),
   })
   const suggestion = useQuery({
     queryKey: ['backflush-period', campaignId],
@@ -134,17 +138,33 @@ export function Backflush() {
       <AsyncBoundary query={view} skeleton={<Skeleton height={320} />}>
         {(data) =>
           data.rows.length === 0 ? (
-            <Card>
-              <EmptyState title="Aucun écart backflush chargé" icon={<Icons.layers size={20} />}>
-                Lisez la période dans l’ERP, ou chargez un export.
-                L’absence de donnée vaut écart nul : un composant que la
-                production n’a pas touché n’a pas d’écart à expliquer.
-              </EmptyState>
+            <Card
+              actions={<MineToggle active={mine} onToggle={() => setMine((value) => !value)} />}
+            >
+              {mine ? (
+                <EmptyState title="Rien dans votre portefeuille" icon={<Icons.filter size={20} />}>
+                  {MINE_EMPTY}
+                </EmptyState>
+              ) : (
+                <EmptyState title="Aucun écart backflush chargé" icon={<Icons.layers size={20} />}>
+                  Lisez la période dans l’ERP, ou chargez un export.
+                  L’absence de donnée vaut écart nul : un composant que la
+                  production n’a pas touché n’a pas d’écart à expliquer.
+                </EmptyState>
+              )}
             </Card>
           ) : (
             <>
+              {/* Le bandeau suit le filtre : ses trois premières cartes forment
+                  une soustraction — écart − part = inexpliqué — et des totaux
+                  de campagne au-dessus d'une grille filtrée ne tomberaient
+                  plus. Le serveur les recalcule sur la même population. */}
               <BackflushKpis kpis={data.kpis} rows={data.rows} />
-              <Card title="Écart par article" flush>
+              <Card
+                title="Écart par article"
+                actions={<MineToggle active={mine} onToggle={() => setMine((value) => !value)} />}
+                flush
+              >
                 <DataGrid
                   columns={COLUMNS}
                   rows={data.rows}
@@ -157,6 +177,7 @@ export function Backflush() {
                     <span>
                       {data.rows.length.toLocaleString('fr-FR')} article(s) — trié
                       par écart inexpliqué décroissant
+                      {mine && ' — votre portefeuille uniquement'}
                     </span>
                   }
                 />

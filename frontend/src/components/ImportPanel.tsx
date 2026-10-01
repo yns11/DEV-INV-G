@@ -24,15 +24,31 @@ import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
 import { api, downloads } from '../lib/api'
-import type { GridContract, ImportResult, Overview } from '../lib/types'
+import type { CampaignSource, GridContract, ImportResult, Overview } from '../lib/types'
 import {
   Alert, Badge, Button, Card, Icons, useDownload, useErrorToast, useToast,
 } from './ui'
 import { DataGrid, columnsFromContract } from './DataGrid'
 import { PasteArea } from './PasteArea'
+import { CampaignSourcePicker } from './CampaignSourcePicker'
 
 /** Grids the ERP is authoritative for — mirrors `ERP_TARGETS` on the API. */
 const ERP_TARGETS = ['items', 'boms', 'book_stock', 'backflush']
+
+/**
+ * Les grilles qu'une campagne existante sait redonner — la liste `SUPPORTED`
+ * du serveur.
+ *
+ * Recopiée ici plutôt que demandée : c'est un booléen par grille, connu au
+ * rendu, et un aller-retour pour l'apprendre ferait clignoter le bouton.
+ * `tests/test_import_campagne.py` refuse que les deux listes divergent — un
+ * bouton offert sur une grille que le serveur refuse est une impasse, et une
+ * grille reprenable sans bouton est une fonction inatteignable.
+ */
+const CAMPAIGN_TARGETS = [
+  'items', 'boms', 'book_stock', 'locations', 'zones',
+  'count_sheets', 'count_journal_lines', 'adjustments',
+]
 
 type Stage =
   | { kind: 'idle' }
@@ -40,7 +56,7 @@ type Stage =
   | {
       kind: 'preview'
       result: ImportResult
-      source: { file?: File; text?: string; erp?: boolean }
+      source: { file?: File; text?: string; erp?: boolean; campaign?: CampaignSource }
     }
   | { kind: 'importing' }
   | { kind: 'done'; result: ImportResult }
@@ -94,6 +110,11 @@ export function ImportPanel({
   const [stage, setStage] = useState<Stage>({ kind: 'idle' })
   const [pasteText, setPasteText] = useState('')
   const [pasting, setPasting] = useState(false)
+  // Les grilles qu'une campagne sait redonner. Une liste qui vit côté
+  // serveur : la demander pour les autres serait un aller-retour dont la
+  // réponse est toujours vide.
+  const [picking, setPicking] = useState(false)
+  const hasCampaignSource = CAMPAIGN_TARGETS.includes(target)
   // Only the two referential grids have an ERP source; asking for the rest
   // would be a round trip whose answer is always the same.
   const hasErp = ERP_TARGETS.includes(target)
@@ -128,10 +149,16 @@ export function ImportPanel({
   const showError = useErrorToast()
   const startDownload = useDownload()
 
-  const validate = async (source: { file?: File; text?: string; erp?: boolean }) => {
+  const validate = async (
+    source: { file?: File; text?: string; erp?: boolean; campaign?: CampaignSource },
+  ) => {
     setStage({ kind: 'validating' })
     try {
-      const result = source.erp
+      const result = source.campaign
+        ? await api.importFromCampaign(campaignId, target, source.campaign.id, {
+            dryRun: true, replace,
+          })
+        : source.erp
         ? await api.importErp(campaignId, target, { dryRun: true, replace, params: erpParams })
         : source.file
           ? transport
@@ -146,7 +173,14 @@ export function ImportPanel({
               })
       setStage({ kind: 'preview', result, source })
     } catch (error) {
-      showError(error, source.erp ? 'Lecture ERP impossible' : 'Analyse impossible')
+      showError(
+        error,
+        source.campaign
+          ? `Reprise de ${source.campaign.code} impossible`
+          : source.erp
+            ? 'Lecture ERP impossible'
+            : 'Analyse impossible',
+      )
       setStage({ kind: 'idle' })
     }
   }
@@ -156,7 +190,9 @@ export function ImportPanel({
     const { source } = stage
     setStage({ kind: 'importing' })
     try {
-      const result = source.erp
+      const result = source.campaign
+        ? await api.importFromCampaign(campaignId, target, source.campaign.id, { replace })
+        : source.erp
         ? await api.importErp(campaignId, target, { replace, params: erpParams })
         : source.file
           ? transport
@@ -277,6 +313,23 @@ export function ImportPanel({
         >
           Charger un fichier
         </Button>
+        {/* Le référentiel d'un trimestre est celui du suivant à quelques lignes
+            près, et les journaux de comptage avancés d'une campagne annulée
+            n'ont aucune raison d'être ressaisis. La duplication de campagne
+            couvre le départ de zéro ; celui-ci couvre le cas — bien plus
+            fréquent — où la campagne existe déjà et où il ne manque qu'une
+            grille. */}
+        {hasCampaignSource && (
+          <Button
+            size="sm"
+            icon={<Icons.copy size={13} />}
+            disabled={busy}
+            title="Reprendre cette grille d’une campagne existante"
+            onClick={() => setPicking(true)}
+          >
+            Reprendre d’une campagne
+          </Button>
+        )}
         <Button
           size="sm"
           icon={<Icons.download size={13} />}
@@ -360,6 +413,19 @@ export function ImportPanel({
         </Alert>
       )}
 
+      {picking && (
+        <CampaignSourcePicker
+          campaignId={campaignId}
+          target={target}
+          title={contract.title}
+          onClose={() => setPicking(false)}
+          onPick={(source) => {
+            setPicking(false)
+            void validate({ campaign: source })
+          }}
+        />
+      )}
+
       {hasErp && erp.data && !erp.data.available && (
         <Alert tone="info" title="Lecture ERP indisponible">
           {erp.data.reason} Chargez un fichier en attendant.
@@ -418,6 +484,8 @@ export function ImportReport({
   const outOfScopeItems = Number(details.outOfScopeItems ?? 0)
   const unknownLines = Number(details.unknownLines ?? 0)
   const unknownItems = Number(details.unknownItems ?? 0)
+  // Ce que l'application avait calculé et qui ne revient pas tel quel de l'ERP.
+  const roundTrip = Number(details.roundTripMismatches ?? 0)
   // Quelques-unes seulement : le panneau sert à décider tout de suite, pas à
   // relire douze mille références. La liste entière est dans Contrôles.
   const unknownSample = (
@@ -526,12 +594,30 @@ export function ImportReport({
           </Alert>
         )}
 
+        {roundTrip > 0 && (
+          <Alert
+            tone="warning"
+            title={`${roundTrip} quantité(s) ne reviennent pas telles qu’elles sont parties`}
+          >
+            L’application avait calculé ces quantités — une consolidation, une
+            correction — et l’export n’en rapporte pas les mêmes. Quelque chose
+            les a modifiées en chemin : un arrondi dans un tableur, un collage
+            partiel, une correction faite dans l’ERP seulement. <strong>La
+            valeur de l’application est conservée</strong> ; le détail est
+            ci-dessous, ligne par ligne.
+          </Alert>
+        )}
+
         {warnings.length > 0 && (
           <Alert tone="warning" title={`${warnings.length} ligne(s) signalée(s)`}>
             <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
               {warnings.slice(0, 8).map((warning, index) => (
                 <li key={index}>
-                  Ligne {warning.line} — {warning.message}
+                  {/* « Ligne 0 » ne désigne rien : un constat qui porte sur la
+                      campagne, et non sur une ligne du fichier, ne doit pas
+                      renvoyer le lecteur chercher une ligne qui n'existe pas. */}
+                  {warning.line > 0 && <>Ligne {warning.line} — </>}
+                  {warning.message}
                 </li>
               ))}
             </ul>

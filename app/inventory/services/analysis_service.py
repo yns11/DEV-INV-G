@@ -19,6 +19,7 @@ from typing import Any
 import pandas as pd
 
 from ..db import new_id
+from ..domain.consolidation import ZoneCounts, resolve_zone_quantities
 from ..domain.controls import (
     check_book_stock,
     check_items,
@@ -29,12 +30,19 @@ from ..domain.controls import (
     group_findings,
     summarise,
 )
-from ..domain.enums import AuditAction, JournalStatus
+from ..domain.enums import (
+    AuditAction,
+    CountSection,
+    ItemType,
+    JournalStatus,
+    LocationStatus,
+)
 from ..domain.models import (
     AdjustmentLine,
     Campaign,
-    VarianceAnalysis,
+    LocationKey,
     VarianceLine,
+    Zone,
 )
 from ..domain.variance import (
     CountedQty,
@@ -50,6 +58,16 @@ from ..errors import NotFoundError, ValidationError
 from .context import ServiceContext
 
 log = logging.getLogger(__name__)
+
+
+#: Le nom des sections tel que la décomposition l'affiche. Les mêmes mots que
+#: l'écran, sans quoi la fenêtre qui explique un chiffre parlerait une autre
+#: langue que la colonne qui le porte.
+_SECTION_LABELS = {
+    "LINE_SIDE": "Bord de ligne",
+    "WIP_OK": "WIP assemblé",
+    "WIP": "WIP (à éclater)",
+}
 
 __all__ = ["AnalysisService"]
 
@@ -167,8 +185,22 @@ class AnalysisService:
         )
         return kept
 
-    def kpis(self, campaign: Campaign) -> KpiBlock:
-        return compute_kpis(self.variances(campaign, granularity="item"), campaign=campaign)
+    def kpis(
+        self, campaign: Campaign, *, only_items: frozenset[str] | None = None
+    ) -> KpiBlock:
+        """Les totaux de la campagne, ou ceux d'un portefeuille.
+
+        ``only_items`` restreint la population **avant** le calcul, et pas
+        seulement l'affichage : un bandeau de totaux qui resterait celui de la
+        campagne entière au-dessus d'une grille filtrée serait une soustraction
+        qui ne tombe pas, et c'est l'écran de l'écart backflush — trois cartes
+        dont la troisième est la différence des deux premières — qui le rendrait
+        le plus visiblement faux.
+        """
+        lines = self.variances(campaign, granularity="item")
+        if only_items is not None:
+            lines = [line for line in lines if line.item_number in only_items]
+        return compute_kpis(lines, campaign=campaign)
 
     def aggregate(
         self, campaign: Campaign, dimension: str, *, limit: int = 200
@@ -193,12 +225,22 @@ class AnalysisService:
         limit: int = 100,
         material_only: bool = False,
         granularity: str = "item",
+        only_items: frozenset[str] | None = None,
     ) -> list[dict[str, Any]]:
         """The exception list — the screen a manager actually works from."""
         ctx = self.ctx
         items = ctx.referentials.items_by_number(campaign.id)
         analyses = {a.item_number: a for a in ctx.analysis.list_analyses(campaign.id)}
+        # Chargé une fois pour la page entière : la question « de quel produit
+        # est cette référence » se pose à chacune des cinq cents lignes, et un
+        # aller-retour par ligne se paierait sur l'écran qu'on ouvre le plus.
+        products = ctx.products.by_item(campaign.id)
         lines = self.variances(campaign, granularity=granularity)
+        # Avant le tri et avant `limit` : filtrer après aurait rendu « les vingt
+        # plus gros écarts, dont ceux qui sont à moi », c'est-à-dire parfois
+        # aucun, sur une liste où l'on en attend vingt.
+        if only_items is not None:
+            lines = [l for l in lines if l.item_number in only_items]
         if material_only:
             lines = [
                 l for l in lines
@@ -218,6 +260,10 @@ class AnalysisService:
                 "itemType": str(line.item_type),
                 "category": line.category,
                 "program": line.program,
+                # Distinct du programme, qui dit pour quel marché la pièce est
+                # produite : celui-ci dit de quel assemblage elle fait partie,
+                # et c'est lui qui rapproche deux écarts qui se compensent.
+                "manufacturedProduct": products.get(line.item_number, ""),
                 "unit": line.unit,
                 "unitCost": float(line.unit_cost),
                 "bookQty": float(line.book_qty),
@@ -341,7 +387,9 @@ class AnalysisService:
 
     # ------------------------------------------------------------- backflush
 
-    def backflush(self, campaign: Campaign) -> dict[str, Any]:
+    def backflush(
+        self, campaign: Campaign, *, only_items: frozenset[str] | None = None
+    ) -> dict[str, Any]:
         """The backflush view: one line per article, and what it explains.
 
         Sorted by unexplained value rather than by backflush variance. A large
@@ -365,6 +413,8 @@ class AnalysisService:
 
         rows: list[dict[str, Any]] = []
         for line in lines:
+            if only_items is not None and line.item_number not in only_items:
+                continue
             item = items.get(line.item_number)
             if item is not None and item.excluded_everywhere:
                 continue
@@ -414,7 +464,7 @@ class AnalysisService:
         rows.sort(key=lambda r: abs(r["unexplainedValue"] or 0.0), reverse=True)
         return {
             "period": _period_payload(period),
-            "kpis": self.kpis(campaign).as_dict(),
+            "kpis": self.kpis(campaign, only_items=only_items).as_dict(),
             "rows": rows,
         }
 
@@ -500,6 +550,7 @@ class AnalysisService:
     #: The figures a screen can ask "where does this come from?" about.
     BREAKDOWN_ASPECTS = (
         "book", "counted", "physical", "line_side", "wip_ok", "wip", "variance",
+        "generic",
     )
 
     def breakdown(
@@ -510,6 +561,7 @@ class AnalysisService:
         *,
         warehouse_id: str = "",
         location_id: str = "",
+        include_disabled: bool = False,
     ) -> dict[str, Any]:
         """Where one figure comes from, in one shape whatever the figure is.
 
@@ -521,6 +573,18 @@ class AnalysisService:
 
         Totals are computed from the rows returned, not fetched separately: a
         drill-down whose total disagrees with its own lines is worse than none.
+
+        Les **emplacements désactivés** sont écartés du stock ERP, sauf demande
+        explicite. Un emplacement désactivé n'existe plus pour la campagne — il
+        ne porte aucun journal, il n'entre dans aucun indicateur — mais ses
+        lignes de stock restent en base, et la décomposition les montrait au
+        milieu des autres. Sur une référence rangée dans deux allées dont une a
+        été fermée entre deux photos ERP, la fenêtre annonçait un total que la
+        grille derrière elle ne portait pas.
+
+        Le filtre est **côté serveur** et non dans la fenêtre : le total est la
+        somme des lignes rendues, et masquer à l'affichage aurait laissé un
+        total qui contredit ce qu'on lit en dessous.
         """
         if aspect not in self.BREAKDOWN_ASPECTS:
             raise ValidationError(
@@ -543,9 +607,28 @@ class AnalysisService:
             "line_side": lambda c, i: self._sheet_rows(c, i, "LINE_SIDE"),
             "wip_ok": lambda c, i: self._sheet_rows(c, i, "WIP_OK"),
             "wip": self._wip_rows,
+            "generic": self._generic_rows,
             "variance": self._variance_rows_for,
             "physical": self._physical_rows,
         }[aspect](campaign, item_number)
+
+        hidden = 0
+        if aspect == "book" and not include_disabled:
+            disabled = {
+                key for key, location in ctx.referentials.locations_by_key(
+                    campaign.id
+                ).items()
+                if location.status is LocationStatus.DISABLED
+            }
+            if disabled:
+                kept = [
+                    r for r in rows
+                    if LocationKey(
+                        warehouse_id=r["warehouseId"], location_id=r["locationId"]
+                    ) not in disabled
+                ]
+                hidden = len(rows) - len(kept)
+                rows = kept
 
         if warehouse_id:
             rows = [r for r in rows if r.get("warehouseId", warehouse_id) == warehouse_id]
@@ -554,6 +637,15 @@ class AnalysisService:
 
         for row in rows:
             row.setdefault("value", row["qty"] * unit_cost)
+        # Les lignes nulles ne sont pas montrées. La décomposition répond à
+        # « d'où vient ce chiffre ? », et une ligne à zéro n'en vient pas : sur
+        # une référence listée dans quarante zones et trouvée dans deux, elle
+        # noie les deux qui expliquent le total sous trente-huit qui ne
+        # l'expliquent pas. Écartées **après** le calcul de la valeur et
+        # **avant** les totaux, pour que le total reste la somme de ce qui est
+        # affiché — une fenêtre dont le total contredit ses propres lignes est
+        # pire que pas de fenêtre.
+        rows = [r for r in rows if r["qty"] or r["value"]]
         return {
             "itemNumber": item_number,
             "name": item.name,
@@ -562,6 +654,9 @@ class AnalysisService:
             "unitCost": unit_cost,
             "total": sum(r["qty"] for r in rows),
             "totalValue": sum(r["value"] for r in rows),
+            # Combien la fenêtre a écarté, pour qu'elle puisse proposer de les
+            # montrer plutôt que de laisser croire qu'il n'y a rien de plus.
+            "hiddenDisabled": hidden,
             "rows": rows,
         }
 
@@ -632,37 +727,102 @@ class AnalysisService:
                 })
         return out
 
+    def _retained_by_zone(
+        self, campaign: Campaign
+    ) -> list[tuple[Zone, dict[tuple[str, CountSection], Decimal], set[tuple[str, str]]]]:
+        """Ce que chaque zone retient, zone par zone — et ce qui reste à trancher.
+
+        **La décomposition doit dire la même chose que le journal**, sinon elle
+        n'explique rien : elle listait une ligne par feuille, donc deux fois la
+        même quantité sur une zone à double comptage, et elle affichait les deux
+        chiffres bruts là où la consolidation, elle, n'en retient qu'un — celui
+        sur lequel les deux passages s'accordent, ou celui qu'un arbitrage a
+        tranché. Un total de 60 050 se décomposait ainsi en deux lignes de
+        60 050.
+
+        C'est donc la **même fonction** que la consolidation qui répond ici.
+        ``provisional`` pour qu'une zone dont l'arbitrage traîne montre quand
+        même son chiffre le plus probable plutôt qu'un trou ; les clés encore
+        ouvertes sont renvoyées à part, et la fenêtre le dit.
+        """
+        ctx = self.ctx
+        lines_by_sheet = ctx.sheets.lines_by_sheet(campaign.id)
+        sheets = ctx.sheets.list_sheets(campaign.id)
+        out = []
+        for zone in ctx.sheets.list_zones(campaign.id):
+            counts = ZoneCounts(
+                zone=zone,
+                sheets=[s for s in sheets if s.zone_id == zone.id],
+                lines_by_sheet=lines_by_sheet,
+            )
+            retained, findings = resolve_zone_quantities(
+                counts,
+                arbitration_tolerance=campaign.config.arbitration_tolerance,
+                provisional=True,
+            )
+            pending = {
+                (f.item_number, str(f.context.get("section", "")))
+                for f in findings
+                if f.code == "ARBITRATION_PENDING" and f.item_number
+            }
+            out.append((zone, retained, pending))
+        return out
+
     def _sheet_rows(
         self, campaign: Campaign, item_number: str, section: str
     ) -> list[dict[str, Any]]:
-        """The counting-sheet lines behind a GENERIQUE section total."""
-        ctx = self.ctx
-        zones = {z.id: z for z in ctx.sheets.list_zones(campaign.id)}
-        sheets = {s.id: s for s in ctx.sheets.list_sheets(campaign.id)}
+        """Ce que chaque zone GENERIQUE apporte à un total de section."""
         generic = campaign.config.generic_key
+        wanted = CountSection(section)
         out: list[dict[str, Any]] = []
-        for sheet_id, lines in ctx.sheets.lines_by_sheet(campaign.id).items():
-            sheet = sheets.get(sheet_id)
-            if sheet is None:
+        for zone, retained, pending in self._retained_by_zone(campaign):
+            qty = retained.get((item_number, wanted))
+            if qty is None:
                 continue
-            zone = zones.get(sheet.zone_id)
-            for line in lines:
-                if line.item_number != item_number or str(line.section) != section:
-                    continue
-                if not line.is_counted:
-                    continue
-                out.append({
-                    "origin": zone.label or zone.code if zone else "",
-                    "where": f"{generic.warehouse_id} / {generic.location_id}",
-                    "warehouseId": generic.warehouse_id,
-                    "locationId": generic.location_id,
-                    "detail": (
-                        f"zone {zone.code if zone else '?'} · comptage n°"
-                        f"{1 if str(sheet.pass_no) == 'PASS_1' else 2}"
-                    ),
-                    "qty": float(line.qty),
-                })
+            unresolved = (item_number, section) in pending
+            out.append({
+                "origin": zone.label or zone.code,
+                "where": f"{generic.warehouse_id} / {generic.location_id}",
+                "warehouseId": generic.warehouse_id,
+                "locationId": generic.location_id,
+                "detail": (
+                    f"zone {zone.code}"
+                    + (" · arbitrage en attente" if unresolved else "")
+                ),
+                "qty": float(qty),
+            })
         return out
+
+    def _generic_rows(
+        self, campaign: Campaign, item_number: str
+    ) -> list[dict[str, Any]]:
+        """La part GENERIQUE d'une référence, et **elle seule**.
+
+        Le total d'une ligne du journal consolidé ouvrait la décomposition du
+        stock compté de toute la campagne : les treize pièces d'un autre
+        emplacement s'y affichaient à côté des soixante mille de GENERIQUE,
+        alors que le journal consolidé, lui, ne les compte pas — et à raison.
+        Une fenêtre qui explique un chiffre par des quantités qui n'y sont pas
+        est pire qu'aucune fenêtre.
+
+        Les deux règles que la consolidation applique le sont ici aussi, sans
+        quoi le total afficherait des lignes que le journal écarte : un produit
+        fini n'entre que par la porte du WIP, et un article exclu du périmètre
+        GENERIQUE sort après l'éclatement.
+        """
+        items = self.ctx.referentials.items_by_number(campaign.id)
+        item = items.get(item_number)
+        if item is not None and item.excluded_from_generic:
+            return []
+        finished = item is not None and item.item_type is ItemType.FINISHED
+        rows: list[dict[str, Any]] = []
+        if not finished:
+            for section in ("LINE_SIDE", "WIP_OK"):
+                label = _SECTION_LABELS[section]
+                for row in self._sheet_rows(campaign, item_number, section):
+                    rows.append({**row, "detail": f"{row['detail']} · {label}"})
+        rows.extend(self._wip_rows(campaign, item_number))
+        return rows
 
     def _wip_rows(self, campaign: Campaign, item_number: str) -> list[dict[str, Any]]:
         generic = campaign.config.generic_key
@@ -896,43 +1056,6 @@ class AnalysisService:
         return self.insights.explain(campaign, item_number)
 
     # ------------------------------------------------------- human analysis
-
-    def save_analysis(
-        self,
-        campaign: Campaign,
-        *,
-        item_number: str,
-        cause_code: str | None,
-        comment: str = "",
-        accepted: bool = False,
-    ) -> VarianceAnalysis:
-        ctx = self.ctx
-        ctx.guard(campaign, "analysis")
-        existing = {a.item_number: a for a in ctx.analysis.list_analyses(campaign.id)}
-        previous = existing.get(item_number)
-        analysis = VarianceAnalysis(
-            id=previous.id if previous else new_id(),
-            campaign_id=campaign.id,
-            item_number=item_number,
-            cause_code=cause_code,
-            comment=comment,
-            analyst=ctx.actor,
-            accepted=accepted,
-            ai_suggested_cause=previous.ai_suggested_cause if previous else None,
-            ai_confidence=previous.ai_confidence if previous else None,
-            ai_rationale=previous.ai_rationale if previous else "",
-        )
-        ctx.analysis.upsert_analysis(analysis, actor=ctx.actor)
-        ctx.record(
-            campaign_id=campaign.id,
-            action=AuditAction.UPDATE,
-            entity_type="variance_analysis",
-            entity_id=analysis.id,
-            summary=f"{item_number} : cause {cause_code or '—'}",
-            before=previous.model_dump(mode="json") if previous else None,
-            after=analysis.model_dump(mode="json"),
-        )
-        return analysis
 
     def causes(self) -> list[Any]:
         """Le référentiel des causes standard, commun à toutes les campagnes."""

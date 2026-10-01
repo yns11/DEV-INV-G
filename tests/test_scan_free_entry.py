@@ -74,11 +74,19 @@ class TestWhatIsAccepted:
         result, _ = read({"lines": [{"item_number": " p-00001 ", "qty": 3}]})
         assert [l.item_number for l in result.lines] == ["P-00001"]
 
-    def test_a_blank_quantity_stays_uncounted(self):
-        """« non compté » and « compté à zéro » are different facts."""
+    def test_a_blank_quantity_is_not_invented(self):
+        """Le modèle n'a rien lu : il n'écrit rien.
+
+        La ligne compte pour zéro en aval — une case vide vaut zéro — mais
+        `qty_imported` reste vide, et c'est ce qui distingue « le modèle a lu
+        zéro » de « le modèle n'a rien lu ». Écrire un zéro ici ferait passer la
+        seconde pour la première, et l'encodeur ne saurait plus laquelle des
+        deux vérifier sur le papier.
+        """
         result, _ = read({"lines": [{"item_number": "P-00001", "qty": None}]})
-        assert result.lines[0].is_counted is False
+        assert result.lines[0].has_entry is False
         assert result.lines[0].qty_imported is None
+        assert result.lines[0].qty == 0
 
     def test_the_section_written_on_the_sheet_is_kept(self):
         result, _ = read({"lines": [

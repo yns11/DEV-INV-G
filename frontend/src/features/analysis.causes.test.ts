@@ -4,8 +4,13 @@
  * L'écran sert à une seule chose : faire descendre à zéro la part d'écart sans
  * cause affectée. Sur deux cents lignes, celles qui restent à traiter sont
  * noyées parmi celles qui sont déjà faites, et rien ne permettait de ne voir
- * que les premières — pas même de retrouver une référence, la seule recherche
- * de l'application vivant dans `DataGrid`, que ce tableau n'utilise pas.
+ * que les premières.
+ *
+ * Trois filtres, et aucun ne s'exprime comme un filtre de colonne : l'absence
+ * d'une valeur, la comparaison de deux colonnes entre elles, le signe d'un
+ * nombre. La recherche libre, elle, a rejoint `DataGrid` avec le reste du
+ * tableau — deux champs de recherche côte à côte auraient obligé à deviner
+ * lequel cherche quoi.
  *
  * Ce qui est vérifié ici est la décision, pas la mise en page : quelles lignes
  * restent. C'est aussi la seule partie qui se compose — « sans cause **et**
@@ -37,31 +42,6 @@ describe('sans filtre', () => {
   it('tout passe', () => {
     expect(matchesCause(row(), NO_CAUSE_FILTER)).toBe(true)
     expect(matchesCause(row({ causeCode: 'SAISIE' }), NO_CAUSE_FILTER)).toBe(true)
-  })
-})
-
-describe('la recherche', () => {
-  it('trouve par référence', () => {
-    expect(matchesCause(row(), filters({ text: 'art-1' }))).toBe(true)
-  })
-
-  it('trouve par désignation', () => {
-    expect(matchesCause(row(), filters({ text: 'stator' }))).toBe(true)
-  })
-
-  it('écarte ce qui ne correspond ni à l’une ni à l’autre', () => {
-    expect(matchesCause(row(), filters({ text: 'rotor' }))).toBe(false)
-  })
-
-  it('ignore la casse et les espaces autour', () => {
-    expect(matchesCause(row(), filters({ text: '  STATOR ' }))).toBe(true)
-  })
-
-  it('ne se laisse pas piéger par une désignation absente', () => {
-    /* Le serveur peut rendre `name: null` : chercher dessus ne doit pas faire
-       tomber l'écran, ni faire correspondre n'importe quoi. */
-    expect(matchesCause(row({ name: null }), filters({ text: 'art' }))).toBe(true)
-    expect(matchesCause(row({ name: null }), filters({ text: 'stator' }))).toBe(false)
   })
 })
 
@@ -150,8 +130,8 @@ describe('les filtres se composent', () => {
     expect(matchesCause(row({ causeCode: null, aiSuggestedCause: null }), f)).toBe(false)
   })
 
-  it('les quatre à la fois', () => {
-    const f = filters({ text: 'stator', cause: 'none', ai: 'with', sign: 'neg' })
+  it('les trois à la fois', () => {
+    const f = filters({ cause: 'none', ai: 'with', sign: 'neg' })
 
     expect(matchesCause(row({ aiSuggestedCause: 'SAISIE' }), f)).toBe(true)
     // Un seul critère qui bascule suffit à retirer la ligne.
@@ -159,7 +139,7 @@ describe('les filtres se composent', () => {
       matchesCause(row({ aiSuggestedCause: 'SAISIE', varianceValue: 900 }), f),
     ).toBe(false)
     expect(
-      matchesCause(row({ aiSuggestedCause: 'SAISIE', name: 'Rotor' }), f),
+      matchesCause(row({ aiSuggestedCause: 'SAISIE', causeCode: 'VOL' }), f),
     ).toBe(false)
   })
 })

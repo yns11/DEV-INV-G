@@ -121,7 +121,19 @@ class AnalysisRepository(_Base):
             for r in rows
         ]
 
-    def upsert_analysis(self, analysis: VarianceAnalysis, *, actor: str) -> None:
+    def upsert_analysis(
+        self,
+        analysis: VarianceAnalysis,
+        *,
+        actor: str,
+        conn: psycopg.Connection | None = None,
+    ) -> None:
+        """Poser la décision humaine, sans jamais toucher les colonnes du modèle.
+
+        ``conn`` permet d'écrire un lot dans une seule transaction : vingt
+        lignes affectées d'un geste doivent arriver ou ne pas arriver, pas
+        s'arrêter à la douzième en laissant la moitié du travail fait.
+        """
         self._execute(
             "INSERT INTO variance_analysis (id, campaign_id, item_number, cause_code, "
             "comment, analyst, accepted, ai_suggested_cause, ai_confidence, "
@@ -136,6 +148,7 @@ class AnalysisRepository(_Base):
              analysis.cause_code, analysis.comment, analysis.analyst,
              analysis.accepted, analysis.ai_suggested_cause, analysis.ai_confidence,
              analysis.ai_rationale, actor),
+            conn=conn,
         )
 
     def save_ai_suggestions(

@@ -58,12 +58,68 @@ class TestFreezeMatrix:
         assert not editable.items and not editable.boms and not editable.thresholds
         assert editable.zones and editable.count_sheets and editable.count_journals
         assert editable.book_stock
+        assert editable.early_counts
+
+    def test_the_early_count_opens_in_preparation(self):
+        """Un précomptage se fait **avant** le jour J, donc avant le comptage.
+
+        La fenêtre s'ouvrait avec la phase de comptage. Compter deux
+        emplacements obligeait alors à y passer la campagne, c'est-à-dire à
+        geler le référentiel des semaines avant qu'il ne soit prêt : le
+        dispositif exigeait, pour être utilisé, exactement ce qu'il permet
+        d'éviter.
+
+        Elle reste ouverte en comptage — un précomptage se charge encore au
+        petit matin du jour J, et se descelle tant que le stock n'est pas gelé —
+        et se ferme avec lui.
+        """
+        assert mutability_of(CampaignStatus.PREPARATION).early_counts
+        assert mutability_of(CampaignStatus.COUNTING).early_counts
+        assert not mutability_of(CampaignStatus.ANALYSIS).early_counts
+        assert not mutability_of(CampaignStatus.CLOSED).early_counts
+
+    def test_but_it_does_not_open_the_reference_with_it(self):
+        """Ce que la préparation n'ouvre pas, et c'est le cœur de la décision.
+
+        Un précomptage ne pose plus aucune référence : la référence de la
+        campagne est unique — le stock ERP du jour J — et elle arrive au jour J.
+        Ouvrir `book_stock` en préparation laisserait poser une seconde
+        référence, antérieure, par la porte d'à côté.
+        """
+        editable = mutability_of(CampaignStatus.PREPARATION)
+        assert not editable.book_stock
+        assert not editable.count_journals
 
     def test_analysis_freezes_counting_and_opens_adjustments(self):
         editable = mutability_of(CampaignStatus.ANALYSIS)
         assert not editable.count_journals and not editable.count_sheets
         assert not editable.book_stock and not editable.locations
         assert editable.adjustments and editable.analysis
+
+    def test_the_cause_opens_with_the_count_not_with_the_analysis(self):
+        """Un écart se commente quand on l'a sous les yeux, et c'est le jour J.
+
+        Celui qui parcourt une allée sait, ce jour-là, que la palette était en
+        zone B ; trois semaines plus tard il le saura moins bien. Attendre le
+        changement de phase pour noter ce qu'on vient de constater revient à ne
+        pas le noter.
+
+        Les deux bornes tiennent toujours : rien avant le comptage — il n'y a
+        pas encore d'écart à commenter — et rien après la clôture.
+        """
+        assert mutability_of(CampaignStatus.COUNTING).analysis
+        assert mutability_of(CampaignStatus.ANALYSIS).analysis
+        assert not mutability_of(CampaignStatus.PREPARATION).analysis
+        assert not mutability_of(CampaignStatus.CLOSED).analysis
+
+    def test_but_the_count_does_not_open_the_adjustments_with_it(self):
+        """Ce que l'ouverture de la cause au comptage n'emporte pas.
+
+        Un ajustement déplace des quantités ; il attend que le comptage soit
+        clos. C'est précisément ce que la cause n'est pas.
+        """
+        assert not mutability_of(CampaignStatus.COUNTING).adjustments
+        assert mutability_of(CampaignStatus.COUNTING).count_entries
 
     def test_closed_freezes_everything_that_feeds_the_campaign_s_figures(self):
         """Une seule exception, et elle est nommée ici pour ne pas s'étendre.
@@ -109,6 +165,57 @@ class TestFreezeMatrix:
         assert mutability_of(CampaignStatus.PREPARATION).settings is True
         assert mutability_of(CampaignStatus.ANALYSIS).settings is False
         assert mutability_of(CampaignStatus.CLOSED).settings is False
+
+
+class TestLesGestionnairesRestentModifiablesJusquALaCloture:
+    """Ils ont longtemps partagé la garde des seuils. La règle n'était pas la leur.
+
+    Un seuil décide de ce qui sera signalé comme exception, et le changer en
+    cours de route changerait la liste sous les yeux de qui la traite : il gèle
+    à l'entrée en comptage, et c'est juste.
+
+    Un gestionnaire ne décide de rien. Ce n'est pas une habilitation mais un
+    filtre — « mon périmètre » — et chacun garde le droit d'agir partout. Le
+    figer ne protégeait aucun chiffre, et coûtait le seul moment où le personnel
+    bouge vraiment : quelqu'un tombe malade le matin du jour J, un renfort
+    arrive à midi, un entrepôt apparaît dans un import de l'après-midi. Le cycle
+    de vie étant strictement en avant, corriger une adresse e-mail demandait de
+    recréer la campagne.
+    """
+
+    def test_ils_sont_ouverts_pendant_le_comptage(self):
+        assert mutability_of(CampaignStatus.COUNTING).managers is True
+
+    def test_et_pendant_l_analyse_qui_dure_des_semaines(self):
+        assert mutability_of(CampaignStatus.ANALYSIS).managers is True
+
+    def test_des_la_preparation_evidemment(self):
+        assert mutability_of(CampaignStatus.PREPARATION).managers is True
+
+    def test_mais_plus_une_fois_la_campagne_close(self):
+        """Le dossier est immuable, et qui a compté quoi en fait partie."""
+        assert mutability_of(CampaignStatus.CLOSED).managers is False
+
+    def test_ils_ne_gelent_plus_avec_les_seuils(self):
+        """Le fond du changement. S'ils reconvergent, ce contrôle le dit."""
+        for status in (CampaignStatus.COUNTING, CampaignStatus.ANALYSIS):
+            editable = mutability_of(status)
+            assert editable.managers is True
+            assert editable.thresholds is False, (
+                f"au statut {status}, les deux aspects ont de nouveau la même "
+                "valeur : la séparation n'a plus rien à garantir"
+            )
+
+    def test_ils_ne_gelent_pas_non_plus_avec_les_zones(self):
+        """L'affectation d'une zone est portée par cet aspect, pas par `zones`.
+
+        La zone se fige à l'analyse — elle porte des quantités relevées sur le
+        terrain. Son gestionnaire n'est qu'un filtre, et le réaffecter est
+        précisément ce qu'on fait quand l'analyse se répartit.
+        """
+        analysis = mutability_of(CampaignStatus.ANALYSIS)
+        assert analysis.managers is True
+        assert analysis.zones is False
 
 
 class TestTransitionBlockers:

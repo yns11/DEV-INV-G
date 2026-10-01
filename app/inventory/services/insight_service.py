@@ -77,11 +77,21 @@ class InsightService:
                     "movementCount": int(getattr(row, "movement_count", 0)),
                 }
 
+        from ..domain.inversion import offsetting_groups
+
+        lines = self.analysis.variances(campaign, granularity="item")
+        products = ctx.products.by_item(campaign.id)
         suggestions = InsightEngine().suggest_causes(
-            variances=self.analysis.variances(campaign, granularity="item"),
+            variances=lines,
             causes=ctx.analysis.list_causes(),
             items=ctx.referentials.items_by_number(campaign.id),
             features=features,
+            products=products,
+            # Le rapprochement est fait ici, pas demandé au modèle : c'est une
+            # soustraction, elle a une réponse exacte, et la lui faire chercher
+            # dans quarante lignes de JSON revenait à tirer au sort qu'il la
+            # trouve.
+            compensations=[c.as_dict() for c in offsetting_groups(lines, products)],
             max_items=max_items,
         )
         if not suggestions:
@@ -152,11 +162,33 @@ class InsightService:
             for a in ctx.adjustments.list(campaign.id)
             if a.item_number == item_number
         ]
+        products = ctx.products.by_item(campaign.id)
+        product = products.get(item_number, "")
+        # Les autres références du même assemblage, et leur écart. Deux pièces
+        # qui se ressemblent et voisinent : l'une comptée à la place de l'autre
+        # rend deux anomalies qui n'en sont qu'une, et rien d'autre dans le
+        # dossier ne permet de le voir.
+        siblings = (
+            [
+                {
+                    "reference": l.item_number,
+                    "ecartQte": float(l.variance_qty),
+                    "ecartValeur": float(l.variance_value),
+                }
+                for l in self.analysis.variances(campaign, granularity="item")
+                if l.item_number != item_number
+                and products.get(l.item_number) == product
+                and l.variance_qty
+            ]
+            if product else []
+        )
         text = InsightEngine().explain_variance(
             line=line,
             item=ctx.referentials.items_by_number(campaign.id).get(item_number),
             wip_breakdown=breakdown,
             movements=movements,
+            product=product,
+            siblings=siblings,
             # Ce que la ligne d'écart ne porte pas : de quoi le net backflush est
             # fait, d'où vient la quantité comptée, et ce que « significatif »
             # veut dire ici. Le modèle devinait les trois.

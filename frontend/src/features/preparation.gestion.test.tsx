@@ -24,45 +24,84 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import { SettingsTab } from './preparation.gestion'
+import { JournalScopeTab, ManagersTab, SettingsTab } from './preparation.gestion'
 import { ToastProvider } from '../components/ui'
 import type { Overview } from '../lib/types'
 
 const saveSettings = vi.fn(() => Promise.resolve({}))
+const saveManagers = vi.fn(() => Promise.resolve([]))
+const assignWarehouses = vi.fn(() => Promise.resolve({ updated: 1 }))
+
+const MANAGERS = {
+  managers: [
+    {
+      code: 'GESTIONNAIRE_1',
+      label: 'Atelier',
+      actor: 'atelier@usine.fr',
+      active: true,
+      zoneCount: 2,
+      journalCount: 3,
+    },
+  ],
+  warehouses: [
+    { warehouseId: 'B06', managerCode: '', journalCount: 4, isCatchAll: false, known: true },
+  ],
+  zones: [],
+}
 
 vi.mock('../lib/api', () => ({
   api: {
     thresholds: () => Promise.resolve([]),
     saveThresholds: () => Promise.resolve([]),
     saveSettings: (...args: unknown[]) => saveSettings(...(args as [])),
+    managers: () => Promise.resolve(MANAGERS),
+    saveManagers: (...args: unknown[]) => saveManagers(...(args as [])),
+    assignWarehouses: (...args: unknown[]) => assignWarehouses(...(args as [])),
   },
 }))
 
 function overview({
   allowFormulas = false,
   settings = true,
-}: { allowFormulas?: boolean; settings?: boolean } = {}): Overview {
+  managers = true,
+  thresholds = false,
+  status = 'COUNTING',
+}: {
+  allowFormulas?: boolean
+  settings?: boolean
+  managers?: boolean
+  thresholds?: boolean
+  status?: string
+} = {}): Overview {
   return {
     campaign: {
       id: 'camp-1',
       code: 'INV-2026-T3',
-      status: 'COUNTING',
+      status,
       config: { allow_formulas: allowFormulas },
     },
-    permissions: { settings, thresholds: false },
+    permissions: { settings, thresholds, managers, zones: false },
   } as unknown as Overview
 }
 
-function show(over: Parameters<typeof overview>[0] = {}) {
+function mount(
+  node: (over: Overview) => React.ReactNode,
+  over: Parameters<typeof overview>[0] = {},
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
   return render(
     <QueryClientProvider client={client}>
-      <ToastProvider>
-        <SettingsTab campaignId="camp-1" overview={overview(over)} />
-      </ToastProvider>
+      <ToastProvider>{node(overview(over))}</ToastProvider>
     </QueryClientProvider>,
+  )
+}
+
+function show(over: Parameters<typeof overview>[0] = {}) {
+  return mount(
+    (o) => <SettingsTab campaignId="camp-1" overview={o} />,
+    over,
   )
 }
 
@@ -147,5 +186,91 @@ describe('quand le réglage est gelé', () => {
   it('rien n’est dit quand il ne l’est pas', () => {
     show({ settings: true })
     expect(screen.queryByText('Réglage gelé')).toBeNull()
+  })
+})
+
+
+describe('les seuils gardent leur propre garde', () => {
+  /* Le point de la demande : « tout sauf les seuils ». Les gestionnaires se
+     sont ouverts au comptage et à l'analyse ; si l'écran des seuils suivait le
+     même drapeau, il s'ouvrirait avec eux — et la liste des exceptions
+     changerait sous les yeux de qui la traite. */
+
+  it('restent gelés alors que les gestionnaires sont ouverts', () => {
+    show({ managers: true, thresholds: false })
+    expect(screen.getByText('Seuils gelés')).toBeTruthy()
+  })
+
+  it('et s’ouvrent quand c’est leur propre drapeau qui le dit', () => {
+    show({ managers: false, thresholds: true })
+    expect(screen.queryByText('Seuils gelés')).toBeNull()
+  })
+})
+
+describe('l’onglet Gestionnaires suit le drapeau des gestionnaires', () => {
+  /* Il suivait celui des seuils, qui gèle à l'entrée en comptage. Un
+     gestionnaire n'est pas un seuil : c'est un filtre, « mon périmètre », et le
+     seul moment où le personnel bouge est précisément celui où l'écran se
+     fermait. */
+
+  const saisie = () => screen.findByPlaceholderText('prenom.nom@exemple.fr')
+
+  it('l’identité se corrige pendant le comptage', async () => {
+    mount((o) => <ManagersTab campaignId="camp-1" overview={o} />, {
+      managers: true,
+      thresholds: false,
+    })
+    expect(await saisie()).toBeTruthy()
+  })
+
+  it('et pendant l’analyse', async () => {
+    mount((o) => <ManagersTab campaignId="camp-1" overview={o} />, {
+      managers: true,
+      thresholds: false,
+      status: 'ANALYSIS',
+    })
+    expect(await saisie()).toBeTruthy()
+  })
+
+  it('mais plus une fois la campagne close', async () => {
+    mount((o) => <ManagersTab campaignId="camp-1" overview={o} />, {
+      managers: false,
+      status: 'CLOSED',
+    })
+    expect(await screen.findByText('Gestionnaires gelés')).toBeTruthy()
+    expect(screen.queryByPlaceholderText('prenom.nom@exemple.fr')).toBeNull()
+  })
+
+  it('le gel ne suit plus les seuils', async () => {
+    /* Le drapeau des seuils est faux ici : s'il décidait encore, l'écran
+       serait gelé. */
+    mount((o) => <ManagersTab campaignId="camp-1" overview={o} />, {
+      managers: true,
+      thresholds: false,
+    })
+    await saisie()
+    expect(screen.queryByText('Gestionnaires gelés')).toBeNull()
+  })
+})
+
+describe('l’onglet Affectation journaux aussi', () => {
+  const choix = () => screen.findByRole('combobox')
+
+  it('un entrepôt se réaffecte pendant l’analyse', async () => {
+    mount((o) => <JournalScopeTab campaignId="camp-1" overview={o} />, {
+      managers: true,
+      thresholds: false,
+      status: 'ANALYSIS',
+    })
+    expect(((await choix()) as HTMLSelectElement).disabled).toBe(false)
+  })
+
+  it('et plus une fois la campagne close', async () => {
+    mount((o) => <JournalScopeTab campaignId="camp-1" overview={o} />, {
+      managers: false,
+      status: 'CLOSED',
+    })
+    expect(((await choix()) as HTMLSelectElement).disabled).toBe(true)
+    expect(screen.getByText('Affectations gelées')).toBeTruthy()
   })
 })

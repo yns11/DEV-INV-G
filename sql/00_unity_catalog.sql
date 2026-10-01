@@ -13,6 +13,10 @@
 --
 -- Rejouable sans risque : tout est en CREATE ... IF NOT EXISTS ou CREATE OR
 -- REPLACE VIEW. Les tables déjà présentes et leurs données ne sont pas touchées.
+-- Seule exception, les ALTER TABLE ... ADD COLUMNS qui portent une colonne
+-- ajoutée après coup : ADD COLUMNS n'admet pas de IF NOT EXISTS dans Databricks
+-- SQL, et c'est scripts/apply_unity_catalog.py qui les rejoue sans erreur quand
+-- la colonne est déjà là.
 --
 -- The catalog itself is NOT created here: this project only has rights to add
 -- schemas, tables and volumes inside the existing `emotors_data_champions`.
@@ -255,18 +259,62 @@ CREATE TABLE IF NOT EXISTS variance_analysis (
     campaign_id        STRING NOT NULL,
     campaign_code      STRING NOT NULL,
     item_number        STRING NOT NULL,
-    cause_code         STRING COMMENT 'Décision humaine',
+    cause_code         STRING COMMENT 'Décision humaine : code du référentiel de site (1 à 13, 99)',
+    cause_label        STRING COMMENT 'Libellé de la cause retenue, tel qu''il était à la publication',
+    cause_family       STRING COMMENT 'Famille de la cause retenue, ex. « Counting mistakes »',
     comment            STRING,
     analyst            STRING,
     accepted           BOOLEAN,
     ai_suggested_cause STRING COMMENT 'Proposition IA, jamais confondue avec la décision',
+    ai_suggested_cause_label STRING COMMENT 'Libellé de la proposition IA',
     ai_confidence      FLOAT,
     ai_rationale       STRING,
     published_at       TIMESTAMP NOT NULL
 )
 USING DELTA
 PARTITIONED BY (campaign_id)
-COMMENT 'Analyse des écarts : la cause retenue par un humain et, à côté, ce que l''IA avait proposé.';
+COMMENT 'Analyse des écarts : la cause retenue par un humain, nommée, et à côté ce que l''IA avait proposé.';
+
+-- Les libellés sont **recopiés** sur la ligne, et non laissés à une jointure sur
+-- le référentiel ci-dessous. Le référentiel est de site : il n'est pas gelé avec
+-- la campagne, et reformuler la cause 7 l'an prochain changerait rétroactivement
+-- ce que dit un dossier clos. Une ligne porte donc le libellé de l'époque ; la
+-- table `assignable_cause` porte celui d'aujourd'hui.
+
+-- Les trois colonnes ci-dessus ont été ajoutées après coup. Un déploiement
+-- existant ne les recevrait pas du CREATE, que `IF NOT EXISTS` rend inopérant
+-- dès que la table est là — et publier dans un catalogue qui n'a pas la colonne
+-- écrirait une archive muette sur ses causes sans que rien ne le signale.
+--
+-- `ADD COLUMNS` n'admet pas d'`IF NOT EXISTS` dans Databricks SQL : c'est
+-- `scripts/apply_unity_catalog.py` qui rend ces trois instructions rejouables,
+-- en traitant « la colonne existe déjà » comme un succès pour elles seules.
+ALTER TABLE variance_analysis
+    ADD COLUMNS (cause_label STRING COMMENT 'Libellé de la cause retenue, tel qu''il était à la publication');
+ALTER TABLE variance_analysis
+    ADD COLUMNS (cause_family STRING COMMENT 'Famille de la cause retenue, ex. « Counting mistakes »');
+ALTER TABLE variance_analysis
+    ADD COLUMNS (ai_suggested_cause_label STRING COMMENT 'Libellé de la proposition IA');
+
+-- --------------------------------------------------------------------------
+-- Site referential: the standard root causes, by name
+-- --------------------------------------------------------------------------
+-- Pas de `campaign_id`, et c'est le point : ce vocabulaire est celui du site, et
+-- il est réécrit en entier à chaque publication. Il répond à ce que les lignes
+-- d'analyse ne peuvent pas dire — la description longue d'une cause, et **les
+-- causes que personne n'a retenues**, qui est une information de synthèse à part
+-- entière.
+CREATE TABLE IF NOT EXISTS assignable_cause (
+    code          STRING NOT NULL COMMENT 'Code tel qu''il est saisi : 1 à 13, puis 99',
+    label         STRING NOT NULL COMMENT 'Libellé courant, ex. « Écart consommation (backflush) »',
+    family        STRING COMMENT 'Regroupement, ex. « Goods incoming », « Counting mistakes »',
+    description   STRING COMMENT 'Ce que la cause couvre, quand elle n''est pas évidente',
+    display_order INT COMMENT 'Ordre de présentation à l''écran',
+    active        BOOLEAN COMMENT 'Faux : cause conservée pour l''historique, plus proposée',
+    published_at  TIMESTAMP NOT NULL
+)
+USING DELTA
+COMMENT 'Référentiel de site des causes d''écart — le vocabulaire courant, toutes campagnes confondues. Les campagnes publiées portent, elles, le libellé qui avait cours au moment de la décision.';
 
 CREATE TABLE IF NOT EXISTS audit_event (
     campaign_id   STRING,
@@ -313,6 +361,21 @@ adjusted AS (
     SELECT campaign_id, item_number, SUM(qty) AS adjusted_qty
     FROM adjustment
     GROUP BY campaign_id, item_number
+),
+-- La décision humaine sur l'écart. Seule CTE qui n'agrège rien, et elle n'en a
+-- pas besoin : `variance_analysis` porte une ligne par (campagne, article) —
+-- c'est un index unique côté Lakebase — donc la jointure ne peut pas démultiplier
+-- les écarts.
+--
+-- Cette vue est le point d'entrée naturel de toute synthèse de campagne, et la
+-- cause n'y était pas : ni le code, ni le libellé, ni le commentaire. Demander
+-- « quelle est la principale cause d'écart de cette campagne » obligeait à
+-- connaître une table que la vue ne nomme pas.
+analysis AS (
+    SELECT campaign_id, item_number, cause_code, cause_label, cause_family,
+           comment AS cause_comment, accepted AS cause_accepted,
+           ai_suggested_cause, ai_suggested_cause_label
+    FROM variance_analysis
 )
 SELECT
     COALESCE(b.campaign_id, c.campaign_id)                  AS campaign_id,
@@ -335,7 +398,14 @@ SELECT
     (COALESCE(c.counted_qty, 0) - COALESCE(b.book_qty, 0) - COALESCE(a.adjusted_qty, 0))
         * COALESCE(b.unit_cost, i.std_price, 0)             AS residual_value,
     b.item_number IS NULL                                   AS counted_only,
-    c.item_number IS NULL                                   AS book_only
+    c.item_number IS NULL                                   AS book_only,
+    an.cause_code,
+    an.cause_label,
+    an.cause_family,
+    an.cause_comment,
+    an.cause_accepted,
+    an.ai_suggested_cause,
+    an.ai_suggested_cause_label
 FROM book b
 FULL OUTER JOIN counted c
   ON b.campaign_id = c.campaign_id AND b.item_number = c.item_number
@@ -344,10 +414,13 @@ LEFT JOIN adjusted a
  AND COALESCE(b.item_number, c.item_number) = a.item_number
 LEFT JOIN item_snapshot i
   ON COALESCE(b.campaign_id, c.campaign_id) = i.campaign_id
- AND COALESCE(b.item_number, c.item_number) = i.item_number;
+ AND COALESCE(b.item_number, c.item_number) = i.item_number
+LEFT JOIN analysis an
+  ON COALESCE(b.campaign_id, c.campaign_id) = an.campaign_id
+ AND COALESCE(b.item_number, c.item_number) = an.item_number;
 
 COMMENT ON VIEW v_variance IS
-    'Écarts réconciliés par article. Recalculable à l''identique depuis les snapshots.';
+    'Écarts réconciliés par article, avec la cause retenue et son libellé. Recalculable à l''identique depuis les snapshots.';
 
 -- Campaign-level KPIs. The three reliability measures answer three different
 -- questions and are deliberately kept apart — see docs/02-data-model.md.

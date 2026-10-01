@@ -374,17 +374,58 @@ Alimenté par `jobs/publish_campaign_to_delta.py`, partitionné par
 | `count_result` | Comptages retenus, importé et manuel côte à côte |
 | `wip_breakdown` | Traçabilité de l'éclatement du WIP |
 | `adjustment` | Mouvements post-comptage |
-| `variance_analysis` | Cause humaine + proposition IA |
+| `variance_analysis` | Cause humaine **nommée** + proposition IA nommée |
+| `assignable_cause` | Référentiel de site des causes — hors campagne, réécrit à chaque publication |
 | `audit_event` | Journal d'audit archivé |
+
+#### La cause publiée porte son libellé
+
+`variance_analysis` ne publiait que `cause_code` — « 1 », « 11 », « 99 » — et le
+référentiel qui les traduit ne vivait que dans Lakebase. Un lecteur du catalogue
+voyait donc des causes qu'il lui était impossible de nommer, et une synthèse
+disait « cause 11 » là où il fallait lire « écart consommation (backflush) ». Une
+archive qui ne se comprend pas sans la base opérationnelle qu'elle est censée
+survivre n'est pas une archive.
+
+Le libellé est donc **recopié** sur la ligne (`cause_label`, `cause_family`, et
+`ai_suggested_cause_label` pour la proposition du modèle), résolu au moment de la
+publication. C'est une dénormalisation voulue : le référentiel est de site, il
+n'est pas gelé avec la campagne, et reformuler la cause 7 l'an prochain
+changerait rétroactivement ce que dit un dossier clos — or un dossier clos est
+précisément ce qui ne doit plus bouger.
+
+`assignable_cause` publie à côté le vocabulaire **courant**, avec la description
+longue et l'ordre d'affichage. Les deux ne disent pas la même chose et aucun ne
+remplace l'autre : la ligne porte le libellé de l'époque, la table celui
+d'aujourd'hui. Et c'est la table, seule, qui permet de répondre à « quelles
+causes le site reconnaît-il, et lesquelles n'ont jamais servi ».
+
+Ces trois colonnes ont été ajoutées après coup. `CREATE TABLE IF NOT EXISTS` ne
+touche pas une table déjà déployée, donc le fichier porte aussi trois
+`ALTER TABLE … ADD COLUMNS` — que `scripts/apply_unity_catalog.py` rejoue sans
+erreur, `ADD COLUMNS` n'admettant pas d'`IF NOT EXISTS` dans Databricks SQL.
+Sans eux, un catalogue existant aurait gardé l'ancienne forme et la publication y
+aurait écrit des libellés absents sans rien signaler : le job aligne sur le
+schéma de la table et comble par NULL ce qu'elle n'a pas.
 
 ### Vues
 
 | Vue | Usage |
 |---|---|
-| `v_variance` | Écarts réconciliés par article — la base de tout le reste |
+| `v_variance` | Écarts réconciliés par article, **avec la cause et son libellé** — la base de tout le reste |
 | `v_campaign_kpi` | Indicateurs de campagne, trois fiabilités distinctes |
 | `v_variance_recurrence` | Récurrence inter-campagnes : fuite structurelle vs accident |
 | `v_wip_contribution` | Où le WIP envoie de la valeur |
+
+`v_variance` est le point d'entrée naturel de toute synthèse de campagne, et la
+cause n'y figurait pas du tout : la vue joignait le stock, le comptage, les
+ajustements et le référentiel articles, jamais l'analyse. Demander « quelle est la
+principale cause d'écart de cette campagne » obligeait donc à connaître une table
+que la vue ne nomme pas — ce qu'un lecteur génératif, interrogeant le catalogue en
+langage naturel, ne devine pas. Elle porte maintenant `cause_code`, `cause_label`,
+`cause_family`, `cause_comment`, `cause_accepted` et les deux colonnes de la
+proposition IA. La jointure ne démultiplie rien : `variance_analysis` a une ligne
+par (campagne, article), garantie par un index unique côté Lakebase.
 
 ## 5. Les indicateurs, et pourquoi ils sont trois
 

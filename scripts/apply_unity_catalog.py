@@ -41,6 +41,32 @@ DEFAULT_FILE = ROOT / "sql" / "00_unity_catalog.sql"
 #: ``USE CATALOG x`` / ``USE SCHEMA y``, sous leurs formes acceptées.
 USE = re.compile(r"^\s*USE\s+(CATALOG|SCHEMA|DATABASE)\s+`?([^\s`;]+)`?\s*$", re.I)
 
+#: ``ALTER TABLE … ADD COLUMN(S) …``, la seule instruction non rejouable du
+#: fichier.
+#:
+#: Tout le reste est en ``CREATE … IF NOT EXISTS`` ou ``CREATE OR REPLACE VIEW``,
+#: donc rejouable par construction. Ajouter une colonne à une table existante ne
+#: l'est pas : ``ADD COLUMNS`` n'admet pas de ``IF NOT EXISTS`` dans Databricks
+#: SQL — la référence du langage ne le prévoit pas — et le second passage échoue
+#: sur « la colonne existe déjà ».
+#:
+#: Les trois issues possibles étaient : ne rien ajouter et laisser un déploiement
+#: existant sans les nouvelles colonnes, ce qui fait publier une archive muette ;
+#: documenter un geste manuel, et ce dépôt porte un fichier de contrôles entier
+#: sur la fois où ``make uc`` ne marchait pas comme documenté ; ou rendre la
+#: rejouabilité vraie ici. C'est la troisième.
+ADD_COLUMNS = re.compile(r"^\s*ALTER\s+TABLE\s+.*\bADD\s+COLUMNS?\b", re.I | re.S)
+
+#: Ce que répond le warehouse quand la colonne demandée est déjà là.
+#:
+#: Plusieurs formulations plutôt qu'une : le message est de l'outil, pas du
+#: contrat, et la classe d'erreur comme la phrase ont déjà changé de nom entre
+#: deux versions du moteur.
+ALREADY_THERE = re.compile(
+    r"already exist|FIELDS_ALREADY_EXIST|FIELD_ALREADY_EXISTS|DELTA_ADD_COLUMN_EXISTING",
+    re.I,
+)
+
 
 def split_statements(sql: str) -> list[str]:
     """Les instructions d'un script SQL, séparées sur les ``;`` de premier rang.
@@ -152,12 +178,32 @@ def apply(client: Any, warehouse_id: str, sql: str) -> int:
         state = getattr(getattr(response, "status", None), "state", None)
         if str(getattr(state, "value", state)) not in ("SUCCEEDED", "PENDING", "RUNNING"):
             error = getattr(getattr(response, "status", None), "error", None)
+            message = str(getattr(error, "message", error) or "")
+            if tolerated(statement, message):
+                print("       déjà présente, ignorée", flush=True)
+                done += 1
+                continue
             raise RuntimeError(
-                f"Instruction refusée ({state}) : {getattr(error, 'message', error)}\n"
-                f"  {head}"
+                f"Instruction refusée ({state}) : {message}\n  {head}"
             )
         done += 1
     return done
+
+
+def tolerated(statement: str, message: str) -> bool:
+    """Un refus qui veut dire « c'est déjà fait », et seulement celui-là.
+
+    Deux conditions, toutes les deux nécessaires : l'instruction doit être un
+    ajout de colonne — la seule du fichier qui ne sache pas se rejouer — et le
+    refus doit nommer une colonne déjà présente. Un ``ADD COLUMNS`` refusé pour
+    une autre raison, une table absente ou un type invalide, échoue comme le
+    reste.
+
+    Avaler large serait pire que de ne rien avaler : un déploiement qui se
+    déclare appliqué sans l'être est exactement le défaut que ce script a été
+    écrit pour corriger.
+    """
+    return bool(ADD_COLUMNS.match(statement)) and bool(ALREADY_THERE.search(message))
 
 
 def main() -> int:

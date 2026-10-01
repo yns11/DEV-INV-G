@@ -327,3 +327,173 @@ def test_l_ecriture_consulte_bien_les_colonnes_vides():
 def test_les_deux_curseurs_rendent_la_meme_chose(cursor_class):
     """Le job doit pouvoir changer de ``row_factory`` sans changer de données."""
     assert publish.fetch(cursor_class([CAMPAGNE]), "SELECT ...", {}) == [CAMPAGNE]
+
+
+# --------------------------------------------------------------------------- #
+# Deux façons d'écrire, et une seule qui convient à chaque table
+# --------------------------------------------------------------------------- #
+
+class FauxEcrivain:
+    """Le `DataFrameWriter` de Spark, réduit à ce que le job en appelle."""
+
+    def __init__(self, journal: dict[str, Any]) -> None:
+        self.journal = journal
+
+    def format(self, name: str) -> FauxEcrivain:
+        self.journal["format"] = name
+        return self
+
+    def mode(self, name: str) -> FauxEcrivain:
+        self.journal["mode"] = name
+        return self
+
+    def option(self, key: str, value: str) -> FauxEcrivain:
+        self.journal.setdefault("options", {})[key] = value
+        return self
+
+    def saveAsTable(self, fqn: str) -> None:  # noqa: N802 — nom de l'API Spark
+        self.journal["table"] = fqn
+
+
+class FauxCadre:
+    """Un DataFrame : il connaît ses colonnes et sait se projeter."""
+
+    def __init__(self, colonnes: list[str], journal: dict[str, Any]) -> None:
+        self.columns = colonnes
+        self._journal = journal
+
+    @property
+    def write(self) -> FauxEcrivain:
+        return FauxEcrivain(self._journal)
+
+    def selectExpr(self, *expressions: str) -> FauxCadre:  # noqa: N802
+        return self
+
+    def select(self, *noms: str) -> FauxCadre:
+        return self
+
+    def withColumn(self, nom: str, valeur: Any) -> FauxCadre:  # noqa: N802
+        self.columns = [*self.columns, nom]
+        return self
+
+
+class SparkEcrivant:
+    """Un Spark qui note ce qu'on lui demande d'écrire, et où."""
+
+    def __init__(self, colonnes: list[str]) -> None:
+        self.colonnes = colonnes
+        self.journal: dict[str, Any] = {}
+
+    def table(self, fqn: str) -> Any:
+        champs = [
+            type("F", (), {"name": nom, "dataType": type("T", (), {
+                "simpleString": staticmethod(lambda: "string")
+            })()})()
+            for nom in self.colonnes
+        ]
+        return type("T", (), {"schema": type("S", (), {"fields": champs})()})()
+
+    def createDataFrame(self, rows: Any, schema: Any = None) -> FauxCadre:  # noqa: N802
+        colonnes = list(rows[0]) if rows and isinstance(rows[0], dict) else self.colonnes
+        return FauxCadre(colonnes, self.journal)
+
+
+class TestHowEachTableIsOverwritten:
+    """Une tranche de campagne se remplace ; un référentiel de site se réécrit.
+
+    Les deux passent par ``mode("overwrite")``, et c'est le ``replaceWhere`` qui
+    fait toute la différence : avec lui, seule la partition de la campagne est
+    touchée et les autres campagnes ne bougent pas ; sans lui, la table entière
+    est remplacée.
+
+    Le référentiel des causes n'a pas de ``campaign_id`` — c'est le vocabulaire
+    du site — donc aucun prédicat ne pourrait le viser. Mais la permission ainsi
+    ouverte est dangereuse là où elle ne doit pas aller : un ``None`` glissé sur
+    une table partitionnée effacerait toutes les campagnes à la publication
+    d'une seule.
+    """
+
+    def test_une_tranche_de_campagne_porte_son_predicat(self):
+        spark = SparkEcrivant(["campaign_id", "item_number"])
+        publish._write(
+            spark, Args, "variance_analysis",
+            [{"campaign_id": "c-1", "item_number": "P-1"}],
+            partition_column="campaign_id",
+            replace_predicate="campaign_id = 'c-1'",
+        )
+
+        assert spark.journal["mode"] == "overwrite"
+        assert spark.journal["options"] == {"replaceWhere": "campaign_id = 'c-1'"}
+
+    def test_un_referentiel_de_site_se_reecrit_en_entier(self):
+        spark = SparkEcrivant(["code", "label"])
+        publish._write(
+            spark, Args, "assignable_cause",
+            [{"code": "1", "label": "Écarts réception"}],
+            partition_column=None,
+            replace_predicate=None,
+        )
+
+        assert spark.journal["mode"] == "overwrite"
+        assert "options" not in spark.journal
+
+    def test_la_tranche_vide_efface_quand_meme_la_partition(self):
+        """Une ligne supprimée survivrait sinon pour toujours dans l'archive."""
+        spark = SparkEcrivant(["campaign_id"])
+        publish._write(
+            spark, Args, "variance_analysis", [],
+            partition_column="campaign_id",
+            replace_predicate="campaign_id = 'c-1'",
+        )
+
+        assert spark.journal["options"] == {"replaceWhere": "campaign_id = 'c-1'"}
+
+    def test_et_un_referentiel_vide_n_invente_pas_de_predicat(self):
+        spark = SparkEcrivant(["code"])
+        publish._write(
+            spark, Args, "assignable_cause", [],
+            partition_column=None,
+            replace_predicate=None,
+        )
+
+        assert "options" not in spark.journal
+
+
+class TestTheCauseLabelLeavesWithTheCampaign:
+    """Le libellé est lu dans Lakebase, pas reconstitué dans Delta."""
+
+    def test_la_requete_joint_le_referentiel_deux_fois(self):
+        """Une fois pour la décision, une fois pour la proposition du modèle."""
+        requete = publish.QUERIES["variance_analysis"]
+        assert requete.count("LEFT JOIN inventory.assignable_cause") == 2
+
+    def test_les_libelles_sont_nommes_comme_les_colonnes_cibles(self):
+        """Le job projette sur le schéma de la table : un alias qui diverge
+        donnerait une colonne silencieusement remplie de NULL."""
+        requete = publish.QUERIES["variance_analysis"]
+        for alias in ("AS cause_label", "AS cause_family", "AS ai_suggested_cause_label"):
+            assert alias in requete, alias
+
+    def test_le_referentiel_est_lu_sans_parametre_de_campagne(self):
+        """Il n'appartient à aucune campagne ; lui passer un identifiant
+        signifierait le contraire."""
+        assert "%(campaign_id)s" not in publish.REFERENTIAL["assignable_cause"]
+        assert "campaign_id" not in publish.REFERENTIAL["assignable_cause"]
+
+
+def test_le_referentiel_figure_au_manifeste():
+    """Le manifeste décompte ce que la publication a écrit, table par table.
+
+    Y laisser le référentiel permet de voir qu'il est passé ; l'en omettre
+    donnerait un décompte qui ne couvre pas tout ce qui a été touché.
+    """
+    import ast
+
+    arbre = ast.parse(JOB.read_text(encoding="utf-8"))
+    principale = next(
+        n for n in ast.walk(arbre)
+        if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
+    source = ast.unparse(principale)
+    bloc = source[source.index("for table, query in REFERENTIAL.items()"):]
+    assert "published[table] = len(rows)" in bloc[:700]
